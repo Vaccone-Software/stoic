@@ -91,6 +91,7 @@ public final class GracefulTermination {
             finished.continuation.yield(true)
         }
         let timer = Task {
+            // stoic:allow(discarded-try): only cancellation ends this sleep early, and then the shutdown has already answered
             try? await clock.sleep(until: clock.now.advanced(by: deadline), tolerance: nil)
             finished.continuation.yield(false)
         }

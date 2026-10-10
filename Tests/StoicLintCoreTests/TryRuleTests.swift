@@ -17,6 +17,15 @@ struct DiscardedTryTests {
         #expect(rules(in: source) == Array(repeating: discarded, count: 3))
     }
 
+    @Test func testCodeIsExempt() {
+        let source = """
+            func f() async {
+                _ = try? await task.value
+            }
+            """
+        #expect(rules(in: source, path: "/work/Tests/AppTests/FTests.swift").isEmpty)
+    }
+
     @Test func assigningToTheWildcardIsFlagged() {
         let source = """
             func f() {

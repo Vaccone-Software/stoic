@@ -13,9 +13,12 @@ import SwiftSyntax
 /// an implicit return) returns the value, so it is not discarded, with one
 /// exception: the body of a `Task { }` that is itself a statement, because
 /// nobody can read that task's result.
+///
+/// Test code is exempt: tests routinely discard the error of work they have
+/// just cancelled, and an unexpected error there fails an expectation anyway.
 final class DiscardedTryRule: RuleVisitor {
     override func visit(_ node: CodeBlockItemSyntax) -> SyntaxVisitorContinueKind {
-        guard let tried = discardedOptionalTry(in: node) else { return .visitChildren }
+        guard !reporter.isTestFile, let tried = discardedOptionalTry(in: node) else { return .visitChildren }
         reporter.report(
             .discardedTry, at: tried,
             message:

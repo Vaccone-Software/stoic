@@ -50,6 +50,7 @@ public func stoicTasksStillRunning(within limit: Duration = .seconds(1)) async -
     let deadline = clock.now.advanced(by: limit)
     while clock.now < deadline {
         if TaskLedger.entries(tag: tag).isEmpty { return [] }
+        // stoic:allow(discarded-try): a cancelled poll simply checks once more and returns
         try? await clock.sleep(for: .milliseconds(1))
     }
     return TaskLedger.entries(tag: tag)
