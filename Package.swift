@@ -16,6 +16,17 @@ let strict: [SwiftSetting] = [
     .enableUpcomingFeature("InferIsolatedConformances"),
 ]
 
+// The lint tool's own build setting: present only when a consumer (or a
+// developer running `swift build --traits Lint`) opts in. SwiftPM builds
+// every target of a package it builds, trait or no trait, so the lint
+// sources compile to nothing without it. See design/13.
+let lintTrait: Set<String> = ["Lint"]
+let lintDefine: SwiftSetting = .define("STOIC_LINT", .when(traits: lintTrait))
+let swiftSyntax: [Target.Dependency] = [
+    .product(name: "SwiftSyntax", package: "swift-syntax", condition: .when(traits: lintTrait)),
+    .product(name: "SwiftParser", package: "swift-syntax", condition: .when(traits: lintTrait)),
+]
+
 let package = Package(
     name: "stoic",
     // Swift 6.4's runtime (cancellation shields, async defer) ships with the
@@ -35,6 +46,18 @@ let package = Package(
         .library(name: "StoicUIKit", targets: ["StoicUIKit"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
+    ],
+    traits: [
+        .trait(
+            name: "Lint",
+            description: "Build the StoicLint plugin and its stoic-lint tool. Pulls in swift-syntax, which is fetched only when this trait is enabled."
+        ),
+        .default(enabledTraits: []),
+    ],
+    dependencies: [
+        // Used only by targets conditioned on the `Lint` trait, so a
+        // consumer that does not enable it never fetches swift-syntax.
+        .package(url: "https://github.com/swiftlang/swift-syntax", from: "604.0.0"),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
@@ -67,5 +90,15 @@ let package = Package(
         // UIKit lifecycle: background work bounded by the time the system
         // grants. Empty on platforms without UIKit.
         .target(name: "StoicUIKit", dependencies: ["Stoic"], swiftSettings: strict),
+
+        // The lint rules: pure functions from source text to findings, over
+        // SwiftSyntax. No file system, no process, so every rule is testable
+        // from an inline string.
+        .target(name: "StoicLintCore", dependencies: swiftSyntax, swiftSettings: strict + [lintDefine]),
+        .testTarget(
+            name: "StoicLintCoreTests",
+            dependencies: ["StoicLintCore"] + swiftSyntax,
+            swiftSettings: strict + [lintDefine]
+        ),
     ]
 )
