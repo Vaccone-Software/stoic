@@ -14,7 +14,9 @@ struct FieldModel {
     var typeText: String
     var doc: String?
     var unit: String?
-    var aliases: [(value: String, source: String)] = []
+    var aliases: [(value: String, source: String, node: Syntax)] = []
+    /// The default value as written, if there is one.
+    var defaultValue: ExprSyntax?
     var deprecation: String?
     var isSecret = false
     var isNullable = false
@@ -177,8 +179,12 @@ private func readField(
     var field = FieldModel(
         property: name, key: name.trimmingBackticks, keyLiteral: swiftLiteral(name.trimmingBackticks),
         type: type ?? .bool, typeText: typeText ?? "", doc: documentation(of: variable),
-        node: Syntax(binding), keyNode: Syntax(pattern))
+        defaultValue: binding.initializer?.value, node: Syntax(binding), keyNode: Syntax(pattern))
     readMarkers(found, into: &field, model: &model, reporter: reporter)
+    if let type {
+        checkMarkersAgainstType(found, type: type, field: field, reporter: reporter)
+        checkConstraints(of: &field, type: type, reporter: reporter)
+    }
     if type?.isSecret == true { field.isSecret = true }
     // The property that keeps unknown keys is read by the schema, not a field of it.
     if found.contains(where: { $0.kind == .preserveUnknownKeys }) { return nil }
@@ -271,7 +277,7 @@ private func readMarkers(
                         Problem(id: "alias-not-literal", message: "an alias must be a string literal, so that it can be checked against the other keys"))
                     continue
                 }
-                field.aliases.append((value, source))
+                field.aliases.append((value, source, Syntax(argument.expression)))
             }
         case .deprecated:
             if let argument = marker.arguments.first {
@@ -289,6 +295,32 @@ private func readMarkers(
             break
         case .preserveUnknownKeys:
             model.preserving = field.property
+        case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern:
+            field.scalar.append(marker)
+        case .count, .unique:
+            field.collection.append(marker)
+        }
+    }
+}
+
+/// The markers that are about the property as a whole.
+private func checkMarkersAgainstType(_ found: [Marker], type: ValueType, field: FieldModel, reporter: Reporter) {
+    for marker in found {
+        switch marker.kind {
+        case .nullable where !type.isOptional:
+            reporter.error(
+                marker.node,
+                Problem(
+                    id: "nullable-not-optional",
+                    message: "@Nullable says that `nil` is written as `null`, and `\(field.property)` is not optional"),
+                fixIts: [.removing(marker.node, "remove @Nullable")])
+        case .secret where type.isSecret:
+            reporter.warning(
+                marker.node,
+                Problem(
+                    id: "redundant-secret",
+                    message: "`\(field.property)` is a `Secret` already, so it is a secret field without @Secret"),
+                fixIts: [.removing(marker.node, "remove @Secret")])
         default:
             break
         }

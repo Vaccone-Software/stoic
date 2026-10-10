@@ -50,4 +50,13 @@ struct AliasesMacro: MarkerMacro { static let kind = MarkerKind.aliases }
 struct DeprecatedMacro: MarkerMacro { static let kind = MarkerKind.deprecated }
 struct NullableMacro: MarkerMacro { static let kind = MarkerKind.nullable }
 struct IgnoredMacro: MarkerMacro { static let kind = MarkerKind.ignored }
+
+struct RangeMacro: MarkerMacro { static let kind = MarkerKind.range }
+struct GreaterThanMacro: MarkerMacro { static let kind = MarkerKind.greaterThan }
+struct LessThanMacro: MarkerMacro { static let kind = MarkerKind.lessThan }
+struct MultipleOfMacro: MarkerMacro { static let kind = MarkerKind.multipleOf }
+struct LengthMacro: MarkerMacro { static let kind = MarkerKind.length }
+struct PatternMacro: MarkerMacro { static let kind = MarkerKind.pattern }
+struct CountMacro: MarkerMacro { static let kind = MarkerKind.count }
+struct UniqueMacro: MarkerMacro { static let kind = MarkerKind.unique }
 #endif

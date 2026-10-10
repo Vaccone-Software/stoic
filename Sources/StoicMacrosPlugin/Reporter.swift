@@ -73,7 +73,11 @@ extension FixIt {
 
     /// Removes `node`.
     static func removing(_ node: some SyntaxProtocol, _ message: String) -> FixIt {
-        replacing(node, with: "", message)
+        // The attribute's own space goes with it, so no double space is left.
+        let empty = TokenSyntax.identifier("").with(\.leadingTrivia, node.leadingTrivia)
+        return FixIt(
+            message: Fix(message: message),
+            changes: [.replace(oldNode: Syntax(node), newNode: Syntax(fromProtocol: empty))])
     }
 }
 #endif

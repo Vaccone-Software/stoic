@@ -13,6 +13,14 @@ struct StoicMacrosPlugin: CompilerPlugin {
         DeprecatedMacro.self,
         NullableMacro.self,
         IgnoredMacro.self,
+        RangeMacro.self,
+        GreaterThanMacro.self,
+        LessThanMacro.self,
+        MultipleOfMacro.self,
+        LengthMacro.self,
+        PatternMacro.self,
+        CountMacro.self,
+        UniqueMacro.self,
     ]
 }
 #else

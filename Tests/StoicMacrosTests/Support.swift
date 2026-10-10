@@ -19,13 +19,22 @@ let allMacros: [String: MacroSpec] = [
     "Ignored": MacroSpec(type: IgnoredMacro.self),
 ]
 
+/// A diagnostic at a line and column of the source passed to ``expand``.
+func problem(
+    _ message: String, _ line: Int, _ column: Int, _ severity: DiagnosticSeverity = .error,
+    fixIts: [String] = []
+) -> DiagnosticSpec {
+    DiagnosticSpec(
+        message: message, line: line, column: column, severity: severity, fixIts: fixIts.map { FixItSpec(message: $0) })
+}
+
 /// Expands `source` and compares the result with `expanded` (and the
 /// diagnostics with `diagnostics`), recording each difference as a Swift
 /// Testing issue at the caller's line.
 func expand(
     _ source: String,
-    to expanded: String,
     diagnostics: [DiagnosticSpec] = [],
+    to expanded: String,
     macros: [String: MacroSpec] = allMacros,
     fixIts: [String]? = nil,
     fixed: String? = nil,
@@ -40,6 +49,9 @@ func expand(
         source, expandedSource: expanded, diagnostics: diagnostics, macroSpecs: macros,
         applyFixIts: fixIts, fixedSource: fixed,
         failureHandler: { failure in
+            if expanded.isEmpty, diagnostics.isEmpty, failure.message.hasPrefix("Expected 0 diagnostics") {
+                print("RECORDDIAG \(filePath):\(line)\n\(failure.message)\nENDRECORD")
+            }
             if expanded.isEmpty, let range = failure.message.firstRange(of: "Actual expanded source:\n") {
                 // Recording mode: an empty expectation prints what to put there.
                 print("RECORD \(filePath):\(line)\n\(failure.message[range.upperBound...])\nENDRECORD")

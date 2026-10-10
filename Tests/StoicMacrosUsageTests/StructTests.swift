@@ -17,10 +17,10 @@ typealias Port = Refined<IntRange<1, 65_535>>
 @Schema
 struct Network: Equatable {
     /// Server names, tried in order.
-    var hosts: [String] = ["localhost"]
+    @Length(1...253) @Count(0...8) @Unique var hosts: [String] = ["localhost"]
     /// TCP port.
     var port: Port = Port(clamping: 8080)
-    @Unit("s") var timeoutSeconds: Double = 30
+    @Unit("s") @GreaterThan(0) @Range(...600) var timeoutSeconds: Double = 30
     var useTLS = true
 }
 
@@ -28,9 +28,9 @@ extension Network {
     static let byHand = Schema.object(
         Network.self, default: Network(), doc: "How the app reaches its servers."
     ) {
-        Field("hosts", \.hosts, .array(of: .string()), doc: "Server names, tried in order.")
+        Field("hosts", \.hosts, .array(of: .string(.length(1...253)), .count(0...8), .unique), doc: "Server names, tried in order.")
         Field("port", \.port, Port.schema, doc: "TCP port.")
-        Field("timeoutSeconds", \.timeoutSeconds, .double(), unit: "s")
+        Field("timeoutSeconds", \.timeoutSeconds, .double(.greaterThan(0), .range(...600)), unit: "s")
         Field("useTLS", \.useTLS, .bool)
     }
 }
@@ -39,33 +39,39 @@ extension Network {
 @Schema
 struct Settings: Equatable {
     /// Pixels per second.
-    @Unit("px/s") var scrollSpeed: Double = 1200
+    @Unit("px/s") @Range(200...4000) var scrollSpeed: Double = 1200
     /// Colour scheme.
     var theme: Theme = .system
     /// Credential for the sync service.
-    @Key("api_token") @Secret var apiToken: String = ""
+    @Key("api_token") @Secret @Length(...128) var apiToken: String = ""
     var network = Network()
-    var maxHistory: Int = 100
-    var windowTitle: String? = nil
+    @Range(0...10_000) var maxHistory: Int = 100
+    @Length(1...64) var windowTitle: String? = nil
     @Nullable var note: String? = "none"
-    var shortcuts: [String: String] = [:]
+    @Count(...50) @Length(1...32) var shortcuts: [String: String] = [:]
+    /// A lowercase code.
+    @Pattern("^[a-z]+$") @Length(...20, unit: .utf8Bytes) var code = "abc"
+    /// Every fifth step.
+    @MultipleOf(5) @Range(0..<50) var step: Int = 5
     @Aliases("legacy", "old_mode") @Deprecated("Use `theme` instead.") var legacyMode = false
-    var channel: UInt8 = 3
+    @Range(1...9) var channel: UInt8 = 3
     @Ignored var cache: [String: Int] = [:]
 }
 
 extension Settings {
     static let byHand = Schema.object(Settings.self, default: Settings(), doc: "Application settings.") {
-        Field("scrollSpeed", \.scrollSpeed, .double(), doc: "Pixels per second.", unit: "px/s")
+        Field("scrollSpeed", \.scrollSpeed, .double(.range(200...4000)), doc: "Pixels per second.", unit: "px/s")
         Field("theme", \.theme, Theme.schema, doc: "Colour scheme.")
-        Field("api_token", \.apiToken, .string(), doc: "Credential for the sync service.", secret: true)
+        Field("api_token", \.apiToken, .string(.length(...128)), doc: "Credential for the sync service.", secret: true)
         Field("network", \.network, Network.schema)
-        Field("maxHistory", \.maxHistory, .int())
-        Field("windowTitle", \.windowTitle, .optional(.string()))
+        Field("maxHistory", \.maxHistory, .int(.range(0...10_000)))
+        Field("windowTitle", \.windowTitle, .optional(.string(.length(1...64))))
         Field("note", \.note, .optional(.string(), nullable: true))
-        Field("shortcuts", \.shortcuts, .dictionary(of: .string()))
+        Field("shortcuts", \.shortcuts, .dictionary(of: .string(.length(1...32)), .count(...50)))
+        Field("code", \.code, .string(.pattern("^[a-z]+$"), .length(...20, unit: .utf8Bytes)), doc: "A lowercase code.")
+        Field("step", \.step, .int(.multipleOf(5), .range(0..<50)), doc: "Every fifth step.")
         Field("legacyMode", \.legacyMode, .bool, aliases: ["legacy", "old_mode"], deprecated: "Use `theme` instead.")
-        Field("channel", \.channel, .integer(UInt8.self))
+        Field("channel", \.channel, .integer(UInt8.self, [.range(1...9)]))
     }
 }
 

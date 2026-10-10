@@ -45,4 +45,44 @@ public macro Nullable() = #externalMacro(module: "StoicMacrosPlugin", type: "Nul
 /// Leaves a property out of the schema. It keeps the default instance's value.
 @attached(peer)
 public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "IgnoredMacro")
+
+// MARK: Constraints
+//
+// Each is the `Constraint` of the same name, written beside the property it
+// is about. They apply to the innermost value (the `Int` of `[Int]?`),
+// except `@Count` and `@Unique`, which are about the outermost array or
+// dictionary.
+
+/// A number within `bounds`: `@Range(200...4000)`.
+@attached(peer)
+public macro Range<Bounds: NumberBounds>(_ bounds: Bounds) = #externalMacro(module: "StoicMacrosPlugin", type: "RangeMacro")
+
+/// A number strictly above `bound`.
+@attached(peer)
+public macro GreaterThan<Bound: NumericBound>(_ bound: Bound) = #externalMacro(module: "StoicMacrosPlugin", type: "GreaterThanMacro")
+
+/// A number strictly below `bound`.
+@attached(peer)
+public macro LessThan<Bound: NumericBound>(_ bound: Bound) = #externalMacro(module: "StoicMacrosPlugin", type: "LessThanMacro")
+
+/// A number that is a whole multiple of `step`.
+@attached(peer)
+public macro MultipleOf<Step: NumericBound>(_ step: Step) = #externalMacro(module: "StoicMacrosPlugin", type: "MultipleOfMacro")
+
+/// A string whose length, in `unit`, is within `bounds`.
+@attached(peer)
+public macro Length<Bounds: CountBounds>(_ bounds: Bounds, unit: LengthUnit = .characters) =
+    #externalMacro(module: "StoicMacrosPlugin", type: "LengthMacro")
+
+/// A string matching the regular expression, found anywhere in it.
+@attached(peer)
+public macro Pattern(_ regex: String) = #externalMacro(module: "StoicMacrosPlugin", type: "PatternMacro")
+
+/// An array with `bounds` elements, or a dictionary with `bounds` entries.
+@attached(peer)
+public macro Count<Bounds: CountBounds>(_ bounds: Bounds) = #externalMacro(module: "StoicMacrosPlugin", type: "CountMacro")
+
+/// An array whose elements are pairwise different.
+@attached(peer)
+public macro Unique() = #externalMacro(module: "StoicMacrosPlugin", type: "UniqueMacro")
 #endif
