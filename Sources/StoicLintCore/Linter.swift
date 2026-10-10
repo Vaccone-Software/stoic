@@ -56,6 +56,8 @@ public struct Linter: Sendable {
         { SleepForTimeoutRule(reporter: $0) },
         { UnboundedStreamRule(reporter: $0) },
         { BlockingInAsyncRule(reporter: $0) },
+        { DiscardedTryRule(reporter: $0) },
+        { ForceTryRule(reporter: $0) },
     ]
 }
 
