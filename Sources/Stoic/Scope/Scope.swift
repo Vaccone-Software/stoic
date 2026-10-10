@@ -133,9 +133,11 @@ public struct Resource<Value: Sendable, Failure: Error>: Sendable {
 ///   `ScopeState.exitDeadlineFloor` (a quarter of a second), because cleanup
 ///   that never runs is worse than cleanup that runs late. The floor lifts
 ///   only what the budget left over; it never lengthens a timeout asked for,
-///   so `timeout: .milliseconds(10)` means ten milliseconds. A finalizer that overruns is
-///   abandoned — it keeps running, unwatched — and reported
-///   (`scope.finalizer_abandoned`), and the next one runs.
+///   so `timeout: .milliseconds(10)` means ten milliseconds. A finalizer that
+///   overruns is abandoned — it keeps running, unwatched, but listed in
+///   ``AbandonedWork/current`` until it ends — and reported
+///   (`scope.finalizer_abandoned`, then `abandoned.completed` when it
+///   finally finishes), and the next one runs.
 /// - **Cannot change the outcome.** A finalizer that throws is reported
 ///   (`scope.finalizer_failed`); the body's result or error is returned
 ///   unchanged. Work whose failure must change the outcome — committing a
@@ -245,16 +247,30 @@ final class ScopeState: Sendable {
             instrumentation.record(Event(name, level: level, label: label, fields: [.init("finalizer", .string(finalizer.label), privacy: .public)] + fields))
         }
         // Each finalizer runs in its own task, so one that hangs can be
-        // abandoned without holding every later release hostage.
-        let task = Task<(any Error)?, Never> {
+        // abandoned without holding every later release hostage. It is
+        // entered in the abandonment ledger from the start and removed when
+        // it finishes, so if it is abandoned it is listed in
+        // `AbandonedWork` until it does, and its late end is reported.
+        let ledger = AbandonedWork.ledger
+        let start = clock.now
+        let ledgerLabel = "scope finalizer \(finalizer.label)"
+        let id = ledger.admit(label: ledgerLabel)
+        let task = Task<(any Error)?, Never>.stoic {
+            let failure: (any Error)?
             do {
                 try await finalizer.run(exit)
-                return nil
+                failure = nil
             } catch {
-                return error
+                failure = error
             }
+            if let lateness = ledger.finish(id) {
+                report("abandoned.completed", .notice, [
+                    .init("ran_for", .duration(start.duration(to: clock.now))),
+                    .init("late_by", .duration(lateness)),
+                ])
+            }
+            return failure
         }
-        let start = clock.now
         switch await waitForTask(task, within: allowed, clock: clock) {
         case .finished(let error?):
             report("scope.finalizer_failed", .error, [.init("error", .error(error))])
@@ -265,6 +281,7 @@ final class ScopeState: Sendable {
             }
         case .timedOut:
             task.cancel()
+            _ = ledger.abandon(id, deadline: clock.now, clock: clock)
             report("scope.finalizer_abandoned", .error, [.init("allowed", .duration(allowed))])
         }
     }

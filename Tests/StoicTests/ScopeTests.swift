@@ -112,6 +112,29 @@ struct ScopeTests {
         hung.open()
     }
 
+    @Test func anAbandonedFinalizerIsCountedUntilItFinishes() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let hung = AsyncGate()
+        let name = "scope finalizer hangs-\(UInt64.random(in: 0...UInt64.max))"
+        let task = Task {
+            await withTestAmbient(clock: clock, events: events) {
+                await withScope(finalizerTimeout: .seconds(2)) { scope in
+                    scope.onExit(label: String(name.dropFirst("scope finalizer ".count))) { _ in await hung.wait() }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(2))
+        await task.value
+        #expect(events.names.contains("scope.finalizer_abandoned"))
+        #expect(AbandonedWork.current.contains { $0.label == name })
+
+        hung.open()
+        #expect(await eventually { !AbandonedWork.current.contains { $0.label == name } })
+        #expect(await eventually { events.names.contains("abandoned.completed") })
+    }
+
     @Test func theExitBudgetBoundsTheWholeExit() async throws {
         let clock = TestClock()
         let task = Task {
