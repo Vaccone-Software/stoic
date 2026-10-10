@@ -72,7 +72,9 @@ struct BulkheadTests {
                 }
             }
         }
-        while outcomes.value.rejected < 45 { await Task.yield() }
+        // A rejection can be decided while a task that was admitted is still on its
+        // way into the queue, so wait for the queue itself to fill too.
+        await waitUntil { outcomes.value.rejected == 45 && bulkhead.queuedCount == 3 }
         #expect(bulkhead.activeCount == 2)
         #expect(bulkhead.queuedCount == 3)
         gate.open()

@@ -443,8 +443,9 @@ Limiter: `ratelimiter.rejected` (reason: `would_exceed_deadline`, `queue_full`,
 `ratelimiter.oversized`, `ratelimiter.waited` (permits, waited; debug).
 Bulkhead: `bulkhead.rejected` (reason: `bulkhead_full`, `cancelled`,
 `deadline_exceeded`; capacity; waiting when full).
-Hedge: `hedge.started` (attempt, elapsed), `hedge.won` (attempt, started,
-latency; only when a hedge was started), `hedge.budget_exhausted`,
+Hedge: `hedge.started` (attempt, elapsed), `hedge.attempt_failed` (attempt,
+running, error; debug), `hedge.won` (attempt, started, latency; only when a
+hedge was started), `hedge.budget_exhausted`,
 `hedge.deadline_skip`, `hedge.all_failed`.
 Every event carries the policy's label. Rejections are events, never errors
 the caller has to log themselves.

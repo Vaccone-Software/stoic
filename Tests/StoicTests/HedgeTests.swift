@@ -128,12 +128,18 @@ struct HedgeTests {
         let events = RecordingInstrumentation()
         let gate = AsyncGate()
         let returned = SendableBox(false)
+        let loserCancelled = SendableBox(false)
         let task = Task {
             let result = await withTestAmbient(clock: clock, events: events) { () async -> String? in
                 do throws(HedgeError) {
                     return try await hedge(.idempotent, after: .milliseconds(100)) { attempt throws(HedgeError) in
                         if attempt.number == 1 {
-                            await gate.wait()   // cannot be cancelled
+                            // Cannot be cancelled, but can see that it was.
+                            await withTaskCancellationHandler {
+                                await gate.wait()
+                            } onCancel: {
+                                loserCancelled.mutate { $0 = true }
+                            }
                             return "slow"
                         }
                         return "hedge"
@@ -147,8 +153,9 @@ struct HedgeTests {
         }
         await clock.waitForSleepers(count: 1)
         await clock.advance(by: .milliseconds(100))
-        for _ in 0..<200 { await Task.yield() }
-        #expect(!returned.value)   // the hedge won, but the loser is still running
+        await waitUntil { loserCancelled.value }   // the hedge has a winner and has cancelled the loser
+        for _ in 0..<50 { await Task.yield() }
+        #expect(!returned.value)   // but the loser is still running, so hedge has not returned
         gate.open()
         #expect(await task.value == "hedge")
         #expect(returned.value)
@@ -211,7 +218,7 @@ struct HedgeTests {
         await clock.advance(by: .milliseconds(100))
         await clock.waitForSleepers(count: 2)
         await clock.advance(by: .milliseconds(100))   // attempt 2 fails; attempt 1 still runs
-        await clock.waitForSleepers(count: 1)
+        await waitUntil { events.events(named: "hedge.attempt_failed").count == 1 }   // hedge has consumed it
         #expect(log.running == 1)
         await clock.advance(by: .milliseconds(300))
         #expect(await task.value == .failure(.failed(2)))
@@ -231,7 +238,7 @@ struct HedgeTests {
         #expect(await task.value == .failure(.failed(1)))
         #expect(log.started == [1])               // failure is retry's business
         #expect(clock.sleeperCount == 0)          // and the hedge timer was cancelled
-        #expect(events.names == ["hedge.all_failed"])
+        #expect(events.names == ["hedge.attempt_failed", "hedge.all_failed"])
     }
 
     @Test func noMoreAttemptsStartThanMaxAttemptsAndEachWaitsItsOwnDelay() async {
@@ -251,7 +258,7 @@ struct HedgeTests {
         #expect(log.elapsed(3) == .milliseconds(200))
         await clock.advance(by: .seconds(5))           // far past any further delay
         #expect(log.started.count == 3)
-        await clock.advance(by: .seconds(5))
+        await clock.advance(to: .init(offset: .seconds(10)))   // attempt 1 is due; 2 and 3 are not
         #expect(await task.value == .success("attempt 1"))
         #expect(log.cancelled == [2, 3])
     }
@@ -343,14 +350,16 @@ struct HedgeTests {
             var timerPending = true
             var winner: Int?
             var firstFailure: Int?
-            var steps: [(time: Int, sleepersBefore: Int)] = []
+            var steps: [(time: Int, sleepersBefore: Int, failsHere: Bool)] = []
             var finished = false
             for event in timeline where !finished {
                 if case .tick(let index) = event.kind {
                     guard timerPending, index == started else { continue }
                 }
                 if case .end(let index) = event.kind, !running.contains(index) { continue }
-                steps.append((event.time, running.count + (timerPending ? 1 : 0)))
+                var failsHere = false
+                if case .end(let index) = event.kind { failsHere = !plan[index].succeeds }
+                steps.append((event.time, running.count + (timerPending ? 1 : 0), failsHere))
                 switch event.kind {
                 case .tick(let index):
                     running.insert(index)
@@ -376,9 +385,18 @@ struct HedgeTests {
                 let step = captured[attempt.number - 1]
                 return try await self.nap(attempt, .milliseconds(step.duration), clock: clock, log: log, returning: step.succeeds ? "attempt \(attempt.number)" : nil)
             }
+            var failuresConsumed = 0
             for step in steps {
                 await clock.waitForSleepers(count: step.sleepersBefore)
                 await clock.advance(to: .init(offset: .milliseconds(step.time)))
+                if step.failsHere {
+                    // Completion order is the order the hedge consumes results in,
+                    // so let it consume this failure before time moves again.
+                    failuresConsumed += 1
+                    await waitUntil("seed \(seed): failure \(failuresConsumed) never consumed") {
+                        events.events(named: "hedge.attempt_failed").count == failuresConsumed
+                    }
+                }
             }
             let result = await task.value
             if let winner {

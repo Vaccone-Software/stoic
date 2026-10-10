@@ -118,6 +118,11 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
                     group.cancelAll()
                 case .failure(let failure):
                     failures.append(failure)
+                    report("hedge.attempt_failed", [
+                        .init("attempt", .int(number)),
+                        .init("running", .int(running)),
+                        .init("error", .error(failure)),
+                    ], level: .debug)
                     if running == 0 {
                         // Nothing is left to wait for: failure is retry's
                         // business, not a reason to hedge.
