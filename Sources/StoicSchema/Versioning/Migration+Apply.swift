@@ -138,6 +138,7 @@ enum PathEdit {
     }
 
     static func remove(_ keys: ArraySlice<String>, from object: inout JSONObject, pruning: Bool = false) {
+        // stoic:allow(discarded-try): without `create`, nothing is created, so nothing can fail
         _ = try? withParent(of: keys, in: &object, create: false) { parent, key in parent[key] = nil }
         // A move out of `a.b` should not leave `a` behind as an empty husk.
         if pruning, keys.count > 1, case .object(let parent)? = value(at: keys.dropLast(), in: object), parent.isEmpty {
