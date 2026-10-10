@@ -32,6 +32,7 @@ let package = Package(
         .library(name: "StoicTesting", targets: ["StoicTesting"]),
         .library(name: "StoicAppKit", targets: ["StoicAppKit"]),
         .library(name: "StoicApple", targets: ["StoicApple"]),
+        .library(name: "StoicUIKit", targets: ["StoicUIKit"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
     ],
@@ -63,5 +64,8 @@ let package = Package(
         // for retry, and HTTP status semantics.
         .target(name: "StoicApple", dependencies: ["Stoic"], swiftSettings: strict),
         .testTarget(name: "StoicAppleTests", dependencies: ["StoicApple", "StoicTesting"], swiftSettings: strict),
+        // UIKit lifecycle: background work bounded by the time the system
+        // grants. Empty on platforms without UIKit.
+        .target(name: "StoicUIKit", dependencies: ["Stoic"], swiftSettings: strict),
     ]
 )

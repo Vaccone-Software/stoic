@@ -23,6 +23,9 @@ public struct CancellationCause: Hashable, Sendable, CustomStringConvertible {
     public static let superseded = CancellationCause(rawValue: "superseded")
     /// A sibling failed, and the group it belonged to stopped.
     public static let siblingFailed = CancellationCause(rawValue: "sibling_failed")
+    /// The system is ending the time it granted: a background task expired,
+    /// or the app is being suspended.
+    public static let systemExpiring = CancellationCause(rawValue: "system_expiring")
     /// The scope that owned it ended.
     public static let scopeEnded = CancellationCause(rawValue: "scope_ended")
     /// The supervisor that owned it stopped it.

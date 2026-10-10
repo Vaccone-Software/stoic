@@ -177,3 +177,26 @@ final class AsyncGate: Sendable {
         waiters.forEach { $0.resume() }
     }
 }
+
+@Suite("Expiring work")
+struct ExpiringWorkTests {
+    @Test func expiryIsReportedAsTheSystemTakingTimeBack() async {
+        let expiring = ExpiringWork()
+        let observed = SendableBox<CancellationCause?>(nil)
+        let started = AsyncGate()
+        let task = Task {
+            try await expiring.run {
+                started.open()
+                do { try await Task.sleep(for: .seconds(60)) } catch {
+                    observed.mutate { $0 = CancellationCause.current }
+                    throw error
+                }
+            }
+        }
+        await started.wait()
+        expiring.expire()
+        task.cancel()
+        _ = try? await task.value
+        #expect(observed.value == .systemExpiring)
+    }
+}
