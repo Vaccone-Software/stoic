@@ -111,7 +111,7 @@ private func standardDecision(for failure: any Error) -> RetryDecision? {
 
 private func decision(for rejection: Rejection) -> RetryDecision {
     switch rejection.reason {
-    case .budgetExhausted, .shuttingDown, .abandonmentLimit:
+    case .budgetExhausted, .shuttingDown, .abandonmentLimit, .cancelled:
         return .stop
     default:
         return rejection.retryAfter.map(RetryDecision.retryAfter) ?? .retry

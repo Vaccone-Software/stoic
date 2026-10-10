@@ -75,6 +75,8 @@ public struct Rejection: Error, Hashable, Sendable, CustomStringConvertible {
         public static let rateLimited = Reason(rawValue: "rate_limited")
         /// A retry budget has no tokens left.
         public static let budgetExhausted = Reason(rawValue: "budget_exhausted")
+        /// The caller was cancelled before the operation could start or finish.
+        public static let cancelled = Reason(rawValue: "cancelled")
         /// The owner of the policy is shutting down.
         public static let shuttingDown = Reason(rawValue: "shutting_down")
 
