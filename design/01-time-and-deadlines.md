@@ -47,8 +47,8 @@ public nonisolated(nonsending) func withTimeout<R: Sendable, Failure: Error>(
 
 // For work that cannot be cancelled: stop waiting, keep it accountable. (Not yet built; see below.)
 public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>(
-    _ duration: Duration, label: String, limit: Int = 2, on executor: BlockingExecutor,
-    operation: sending @escaping () throws(Failure) -> R
+    _ duration: Duration, label: String, limit: Int = 2, clock: AnyClock? = nil,
+    qos: DispatchQoS.QoSClass = .userInitiated, operation: @escaping @Sendable () throws(Failure) -> R
 ) async throws(PolicyError<Failure>) -> R
 
 // Why the current task was cancelled: an extensible struct, first cause wins.
@@ -112,10 +112,11 @@ design answers each:
 
 - **Thread starvation.** Blocking work holds a thread of the cooperative
   pool, which is only about as wide as the core count. Abandonable work
-  therefore must run on a `BlockingExecutor`: a task executor with its own
-  small, capped set of threads (`withTaskExecutorPreference`). The
-  operation is synchronous by signature, so it cannot be mistaken for
-  well-behaved async work.
+  therefore runs on a Dispatch queue, whose threads are not the
+  cooperative pool's. The operation is synchronous by signature, so it
+  cannot be mistaken for well-behaved async work. (A dedicated task
+  executor was the first plan; Dispatch gives the same isolation with no
+  unsafe executor code.)
 - **Use after close.** Abandoned work may still hold a resource that its
   scope is about to release. Scopes count abandoned work started inside
   them and hand that count to finalizers (`Exit.abandoned`), and a resource
@@ -129,7 +130,8 @@ design answers each:
 
 Abandoned work is listed in a process-wide ledger (label, age, call site)
 and appears in diagnostics until it finishes; a late finish is reported with
-its lateness. Built after the blocking-executor spike.
+its lateness. Built: `abandoningAfter(_:label:limit:clock:qos:operation:)`.
+The scope integration (`Exit.abandoned`, quarantined releases) is planned.
 
 **Clocks.** Deadlines use the ambient continuous clock: if the machine
 sleeps through a deadline, it has passed. A deadline remembers its clock;

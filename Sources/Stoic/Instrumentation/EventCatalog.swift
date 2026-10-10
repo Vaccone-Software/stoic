@@ -15,6 +15,9 @@ public enum EventCatalog {
 
     /// Every event, sorted by name.
     public static let entries: [Entry] = [
+        Entry(name: "abandoned.completed", level: .notice, meaning: "Abandoned work finally finished; reports how late it was."),
+        Entry(name: "abandoned.started", level: .warning, meaning: "Work ignored its deadline or its caller's cancellation and was abandoned, still running."),
+        Entry(name: "abandoned.wedged", level: .error, meaning: "A label reached its limit of abandoned work and refused a new call."),
         Entry(name: "channel.dropped", level: .debug, meaning: "A channel's overflow policy discarded an element."),
         Entry(name: "deadline.expired", level: .notice, meaning: "A deadline passed before its operation finished; reports the budget, the overrun and how the operation ended."),
         Entry(name: "race.all_failed", level: .notice, meaning: "Every operation in a race failed; the first failure was thrown."),
