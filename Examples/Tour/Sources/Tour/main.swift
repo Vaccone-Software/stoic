@@ -1,6 +1,9 @@
+import Foundation
 import Stoic
 import StoicJSON
 import StoicSchema
+import StoicSettings
+import StoicStore
 import Synchronization
 
 // Every Stoic decision in this tour is printed as it happens.
@@ -107,6 +110,45 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
         _ = try Settings.schema.decode(text)
     } catch {
         print("\(error)".split(separator: "\n").map { "  \($0)" }.joined(separator: "\n"))
+    }
+
+    let directory = FileManager.default.temporaryDirectory.appending(path: "stoic-tour-\(UUID().uuidString)").path()
+    try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: directory) }
+
+    section("SettingsStore: validated, crash-safe, and an older build cannot ruin it")
+    let settings = try SettingsStore.open(at: directory + "/settings.json", schema: Settings.schema)
+    print("  first launch: \(settings.value.scrollSpeed) from \(settings.source)")
+    try settings.update { $0.scrollSpeed = 900 }
+    do {
+        try settings.update { $0.scrollSpeed = 99_999 }
+    } catch {
+        print("  refused: \(error)")
+    }
+    let reopened = try SettingsStore.open(at: directory + "/settings.json", schema: Settings.schema)
+    print("  next launch: \(reopened.value.scrollSpeed) from \(reopened.source)")
+
+    section("FlightRecorder: the next launch reads what this one was doing")
+    do {
+        let recorder = try FlightRecorder(path: directory + "/flight.rec", capacity: 64 * 1024)
+        recorder.record(Event("tour.sync_started", level: .info, label: "sync"))
+        recorder.record(Event("tour.retrying", level: .warning, label: "sync", fields: [.init("attempt", .int(2))]))
+        // …and the process dies here, without markCleanExit().
+    }
+    let recorder = try FlightRecorder(path: directory + "/flight.rec", capacity: 64 * 1024)
+    if let last = recorder.previousRun {
+        print("  previous run ended cleanly: \(last.endedCleanly); its last events:")
+        for event in last.events { print("    \(event)") }
+    }
+
+    section("Quarantine: never close a handle a wedged call may still be using")
+    await withScope { scope in
+        scope.onExit(label: "close audio handle", ifWorkAbandoned: .quarantine) { _ in print("  closed the handle") }
+        _ = try? await abandoningAfter(.milliseconds(50), label: "tour.audio") { () throws(Flaky) -> Int in
+            Thread.sleep(forTimeInterval: 0.2)   // a call that ignores every deadline
+            return 1
+        }
+        print("  abandoned work in this scope: \(scope.abandonedWork)")
     }
 }
 print("\nDone.")

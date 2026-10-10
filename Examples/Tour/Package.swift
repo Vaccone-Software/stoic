@@ -9,7 +9,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Tour",
-            dependencies: [.product(name: "Stoic", package: "stoic"), .product(name: "StoicSchema", package: "stoic"), .product(name: "StoicJSON", package: "stoic")],
+            dependencies: [
+                .product(name: "Stoic", package: "stoic"), .product(name: "StoicSchema", package: "stoic"),
+                .product(name: "StoicJSON", package: "stoic"), .product(name: "StoicStore", package: "stoic"),
+                .product(name: "StoicSettings", package: "stoic"),
+            ],
             swiftSettings: [.treatAllWarnings(as: .error)]
         ),
     ]
