@@ -1,9 +1,14 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stoic-mark-dark.svg">
+  <img src="docs/assets/stoic-mark-light.svg" alt="Stoic's mark: an arched niche between two columns, sheltering a green sphere." width="72">
+</picture>
+
 # Stoic
 
 [![CI](https://github.com/Vaccone-Software/stoic/actions/workflows/ci.yml/badge.svg)](https://github.com/Vaccone-Software/stoic/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Robustness primitives for Swift apps.
+Robustness primitives for Swift apps. [Website](https://vaccone-software.github.io/stoic-site/) · [Documentation](https://vaccone-software.github.io/stoic-site/docs/documentation/stoic/)
 
 Stoic gives an app the guarantees that make long-lived, asynchronous
 software dependable — resources are always released, failures are
