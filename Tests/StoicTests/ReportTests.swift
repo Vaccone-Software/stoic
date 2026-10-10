@@ -40,6 +40,49 @@ struct ReportTests {
         #expect(CancellationError().context("anything") is CancellationError)
     }
 
+    // MARK: Typed throws
+
+    static func read() async throws(FileError) -> Int { throw .missing }
+
+    static func load() async throws(Report) -> Int {
+        try await withContext("loading") { () async throws(FileError) -> Int in
+            try await read()
+        }
+    }
+
+    @Test func withContextWorksInsideATypedThrowsFunction() async {
+        do {
+            _ = try await Self.load()
+            Issue.record("expected an error")
+        } catch {
+            // `error` is a Report: the function's declared error type.
+            #expect(error.frames.map(\.message) == ["loading"])
+            #expect(error.first(FileError.self) == .missing)
+        }
+    }
+
+    @Test func theSynchronousTypedFormThrowsAReport() {
+        func load() throws(Report) -> Int {
+            try withContext("parsing") { () throws(FileError) -> Int in throw .missing }
+        }
+        #expect(throws: Report.self) { try load() }
+        do { _ = try load() } catch { #expect(error.first(FileError.self) == .missing) }
+    }
+
+    @Test func aTypedWithContextCarriesCancellationAsTheRoot() async {
+        func run() async throws(Report) {
+            try await withContext("working") { () async throws(CancellationError) in throw CancellationError() }
+        }
+        do {
+            try await run()
+            Issue.record("expected an error")
+        } catch {
+            #expect(error.isCancellation)
+            #expect(error.first(CancellationError.self) != nil)
+        }
+        #expect(!Report(FileError.missing).isCancellation)
+    }
+
     @Test func reportingAReportAddsAFrameInsteadOfNesting() {
         let first = FileError.missing.context("inner")
         let second = first.context("outer")

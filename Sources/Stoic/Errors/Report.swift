@@ -103,6 +103,11 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
         first(type) != nil
     }
 
+    /// Whether the root is, or wraps, a `CancellationError`.
+    public var isCancellation: Bool {
+        containsCancellation(root)
+    }
+
     /// Whether the root is a ``Defect``, directly or inside a wrapper.
     public var isDefect: Bool {
         containsDefect(root)
@@ -145,7 +150,13 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
 ///     }
 ///
 /// A `CancellationError` passes through unwrapped. Any other error becomes a
-/// ``Report`` (or gains a frame, if it already is one).
+/// ``Report`` (or gains a frame, if it already is one) — so a `catch
+/// MyError.missing` outside no longer matches. Match with
+/// ``Report/first(_:)`` instead: `(error as? Report)?.first(MyError.self)`.
+///
+/// This form throws `any Error`, so it cannot be used inside a function that
+/// declares a typed throw. Annotate the closure's error type
+/// (`{ () async throws(MyError) in … }`) to get the `throws(Report)` form.
 public nonisolated(nonsending) func withContext<R>(
     _ message: @autoclosure () -> String,
     metadata: [Event.Field] = [],
@@ -173,6 +184,59 @@ public func withContext<R>(
         return try operation()
     } catch {
         throw error.context(message(), metadata: metadata, fileID: fileID, line: line)
+    }
+}
+
+/// Runs `operation`, adding a frame of context to any error it throws, and
+/// throws a ``Report`` — the form for a function that itself declares
+/// `throws(Report)`.
+///
+///     func load() async throws(Report) -> Settings {
+///         try await withContext("loading settings") { () async throws(StoreError) in
+///             try await store.read(Settings.self)
+///         }
+///     }
+///
+/// This is chosen over the untyped `withContext` only when the closure
+/// declares its error type, as above: Swift 6.4 does not infer a typed throw
+/// from a closure body, and an unannotated closure keeps the untyped form
+/// (which throws `any Error` and cannot be used in a `throws(Report)`
+/// function). Because `Report` is the only error the call can throw,
+/// a `CancellationError` cannot pass through as itself here: it arrives as
+/// the report's ``Report/root``. Test for it with ``Report/isCancellation``
+/// (or `first(CancellationError.self)`), and rethrow it as itself where the
+/// function's error type allows.
+///
+/// Like the untyped form, this turns any error into a report. A `catch
+/// MyError.missing` stops matching what comes out; `report.first(MyError.self)`
+/// still finds it.
+public nonisolated(nonsending) func withContext<R, Failure: Error>(
+    _ message: @autoclosure () -> String,
+    metadata: [Event.Field] = [],
+    fileID: String = #fileID,
+    line: UInt = #line,
+    operation: nonisolated(nonsending) () async throws(Failure) -> R
+) async throws(Report) -> R {
+    do throws(Failure) {
+        return try await operation()
+    } catch {
+        throw Report(error).adding(Report.Frame(message(), metadata: metadata, fileID: fileID, line: line))
+    }
+}
+
+/// Runs `operation`, adding a frame of context to any error it throws, and
+/// throws a ``Report``. The synchronous form of the typed `withContext`.
+public func withContext<R, Failure: Error>(
+    _ message: @autoclosure () -> String,
+    metadata: [Event.Field] = [],
+    fileID: String = #fileID,
+    line: UInt = #line,
+    operation: () throws(Failure) -> R
+) throws(Report) -> R {
+    do throws(Failure) {
+        return try operation()
+    } catch {
+        throw Report(error).adding(Report.Frame(message(), metadata: metadata, fileID: fileID, line: line))
     }
 }
 

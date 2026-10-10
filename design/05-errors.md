@@ -35,6 +35,9 @@ public struct Report: Error {
 public func withContext<R>(_ message: @autoclosure () -> String, metadata: [Event.Field] = [],
                            operation: nonisolated(nonsending) () async throws -> R) async throws -> R
 public func withContext<R>(…, operation: () throws -> R) throws -> R
+// Typed forms, chosen when the closure declares its error: `{ () async throws(E) in … }`.
+public func withContext<R, Failure: Error>(…, operation: nonisolated(nonsending) () async throws(Failure) -> R) async throws(Report) -> R
+public func withContext<R, Failure: Error>(…, operation: () throws(Failure) -> R) throws(Report) -> R
 extension Error { public func context(_ message: String, metadata: [Event.Field] = []) -> any Error }
 
 public protocol Defect: Error {}
@@ -49,6 +52,14 @@ the root's type and description.
 **Cancellation is never wrapped.** `withContext` and `context(_:)` pass a
 `CancellationError` through as itself, so `catch is CancellationError` and
 Stoic's own cancellation checks keep working.
+
+**Typed forms.** The untyped `withContext` throws `any Error`, so it does
+not fit inside a `throws(E)` function. When the closure declares its error
+type, `withContext` resolves to a form that throws `Report`, which fits a
+`throws(Report)` function. With only `Report` to throw, cancellation cannot
+pass through as itself there: it is the report's root (`Report.isCancellation`).
+Either form turns every error into a `Report`, so `catch MyError.x` outside
+stops matching; use `report.first(MyError.self)`.
 
 **The root stays reachable.** `first(_:)` looks through reports, rejected
 and failed `PolicyError`s and `ConcurrentFailure`s; Stoic's classification
