@@ -1,3 +1,5 @@
+internal import Synchronization
+
 /// One attempt of a retried operation.
 public struct Attempt: Sendable, Hashable, CustomStringConvertible {
     /// 1 for the first attempt, 2 for the first retry, and so on.
@@ -53,8 +55,14 @@ public struct RetryClassifier<Failure: Error>: Sendable {
         self.decide = decideWithTimeout
     }
 
+    /// The decision for one failure. Three rules hold whatever the
+    /// classifier says: a defect anywhere in the error stops; an attempt that
+    /// timed out is transient; a cancellation that did not come from the
+    /// attempt's own timeout stops (the work was cancelled on purpose).
     func decision(for failure: Failure, attemptTimedOut: Bool) -> RetryDecision {
-        if failure.isDefect { return .stop }
+        if containsDefect(failure) { return .stop }
+        if attemptTimedOut { return .retry }
+        if containsCancellation(failure) { return .stop }
         return decide(failure, attemptTimedOut)
     }
 
@@ -102,11 +110,47 @@ private func standardDecision(for failure: any Error) -> RetryDecision? {
     case let policy as any RejectionCarrying:
         if let rejection = policy.carriedRejection { return decision(for: rejection) }
         return policy.carriedFailure.flatMap(standardDecision(for:))
+    case let concurrent as any PrimaryFailureCarrying:
+        return standardDecision(for: concurrent.primaryFailure)
     case is DecodingError, is EncodingError:
         return .stop
     default:
         return nil
     }
+}
+
+/// Whether `error`, or any error it wraps, is a ``Defect``.
+func containsDefect(_ error: any Error) -> Bool {
+    if error.isDefect { return true }
+    if let policy = error as? any RejectionCarrying, let inner = policy.carriedFailure {
+        return containsDefect(inner)
+    }
+    if let concurrent = error as? any PrimaryFailureCarrying {
+        return concurrent.allFailures.contains(where: containsDefect)
+    }
+    return false
+}
+
+/// Whether `error` is, or wraps, a cancellation.
+func containsCancellation(_ error: any Error) -> Bool {
+    if error.isCancellation { return true }
+    if let rejection = error as? Rejection { return rejection.reason == .cancelled }
+    if let policy = error as? any RejectionCarrying {
+        if let rejection = policy.carriedRejection { return rejection.reason == .cancelled }
+        if let inner = policy.carriedFailure { return containsCancellation(inner) }
+    }
+    return false
+}
+
+/// Lets classification see inside a ``ConcurrentFailure`` of any failure type.
+protocol PrimaryFailureCarrying {
+    var primaryFailure: any Error { get }
+    var allFailures: [any Error] { get }
+}
+
+extension ConcurrentFailure: PrimaryFailureCarrying {
+    var primaryFailure: any Error { primary }
+    var allFailures: [any Error] { failures.map { $0 } }
 }
 
 private func decision(for rejection: Rejection) -> RetryDecision {
@@ -141,11 +185,23 @@ public enum RetryNesting: Sendable, Hashable {
 }
 
 /// The retry whose attempt is running in the current task.
-struct RetryContext: Sendable {
-    let label: String?
-    let site: String
+///
+/// An attempt's context goes stale when the attempt ends, so a task that an
+/// attempt left running (an unstructured `Task {}` inherits task-locals)
+/// does not make every later retry it starts look nested.
+final class RetryContext: Sendable {
+    private let live = Mutex(true)
 
     @TaskLocal static var active: RetryContext?
+
+    /// Whether a retry's attempt is running in the current task right now.
+    static var isInsideAttempt: Bool {
+        active?.live.withLock { $0 } ?? false
+    }
+
+    func end() {
+        live.withLock { $0 = false }
+    }
 }
 
 // MARK: - retry
@@ -177,16 +233,18 @@ public nonisolated(nonsending) func retry<R, Failure: Error>(
     budget: RetryBudget = .perCallSite,
     classify: RetryClassifier<Failure> = .standard,
     nesting: RetryNesting = .singleAttempt,
+    clock: AnyClock? = nil,
     label: String? = nil,
     fileID: String = #fileID,
     line: UInt = #line,
     operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
 ) async throws(Failure) -> R {
-    let context = RetryContext(label: label, site: "\(fileID):\(line)")
     return try await retryLoop(
-        schedule, budget: budget, classify: classify, nesting: nesting,
+        schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
         label: label, fileID: fileID, line: line
     ) { attempt in
+        let context = RetryContext()
+        defer { context.end() }
         let result: Result<R, Failure> = await RetryContext.$active.withValue(context) {
             do throws(Failure) {
                 return .success(try await operation(attempt))
@@ -214,19 +272,21 @@ public nonisolated(nonsending) func retry<R: Sendable, Failure: Error>(
     budget: RetryBudget = .perCallSite,
     classify: RetryClassifier<Failure> = .standard,
     nesting: RetryNesting = .singleAttempt,
+    clock: AnyClock? = nil,
     label: String? = nil,
     fileID: String = #fileID,
     line: UInt = #line,
     @_inheritActorContext operation: @escaping @Sendable @isolated(any) (Attempt) async throws(Failure) -> R
 ) async throws(Failure) -> R {
-    let context = RetryContext(label: label, site: "\(fileID):\(line)")
     return try await retryLoop(
-        schedule, budget: budget, classify: classify, nesting: nesting,
+        schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
         label: label, fileID: fileID, line: line
     ) { attempt in
+        let context = RetryContext()
+        defer { context.end() }
         let outcome = await RetryContext.$active.withValue(context) {
             await runWithDeadline(
-                .after(attemptTimeout),
+                .after(attemptTimeout, clock: clock),
                 tolerance: nil,
                 label: label.map { "\($0) attempt \(attempt.number)" },
                 fileID: fileID,
@@ -246,15 +306,16 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     budget: RetryBudget,
     classify: RetryClassifier<Failure>,
     nesting: RetryNesting,
+    clock explicitClock: AnyClock?,
     label: String?,
     fileID: String,
     line: UInt,
     runAttempt: nonisolated(nonsending) (Attempt) async -> (result: Result<R, Failure>, timedOut: Bool)
 ) async throws(Failure) -> R {
     let ambient = Ambient.current
-    let clock = ambient.clock
-    let storage = budget.resolved(fileID: fileID, line: line)
-    let nested = RetryContext.active != nil && nesting == .singleAttempt
+    let clock = explicitClock ?? ambient.clock
+    let storage = budget.resolved(fileID: fileID, line: line, registry: ambient.budgets)
+    let nested = RetryContext.isInsideAttempt && nesting == .singleAttempt
     var stepper = schedule.makeStepper(random: ambient.random.generator(fileID: fileID, line: line))
     let start = clock.now
     var number = 1
@@ -287,6 +348,7 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
 
         // 1. The caller, not the attempt, was cancelled.
         if Task.isCancelled {
+            report("retry.cancelled", common, level: .debug)
             throw error
         }
         // 2. Nested inside another retry.
@@ -297,7 +359,8 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
         // 3. Classification.
         let decision = classify.decision(for: error, attemptTimedOut: timedOut)
         if decision == .stop {
-            report(error.isDefect ? "retry.defect" : "retry.permanent", common, level: error.isDefect ? .error : .info)
+            let defect = containsDefect(error)
+            report(defect ? "retry.defect" : "retry.permanent", common, level: defect ? .error : .info)
             throw error
         }
         // 4. The schedule.
@@ -330,11 +393,20 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             throw error
         }
 
-        report("retry.attempt_failed", common + [.init("delay", .duration(delay)), .init("timed_out", .bool(timedOut))])
+        report("retry.attempt_failed", common + [
+            .init("delay", .duration(delay)),
+            .init("timed_out", .bool(timedOut)),
+            .init("decision", .string(decision == .retry ? "retry" : "retry_after"), privacy: .public),
+        ])
         do {
             try await clock.sleep(until: clock.now.advanced(by: delay), tolerance: nil)
         } catch _ {
             // Cancelled while waiting: the last real failure is the answer.
+            report("retry.cancelled", common, level: .debug)
+            throw error
+        }
+        if Task.isCancelled {
+            report("retry.cancelled", common, level: .debug)
             throw error
         }
         number += 1
