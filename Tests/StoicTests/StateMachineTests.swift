@@ -86,16 +86,14 @@ struct StateMachineTests {
         machine.send(.start)
         await clock.waitForSleepers(count: 1)
         await clock.advance(by: .seconds(13))
-        for _ in 0..<200 where machine.state != .failed { await Task.yield() }
-        #expect(machine.state == .failed)
+        #expect(await eventually { machine.state == .failed })
 
         // A visit that ends before its timeout cancels the timer.
         machine.send(.start)          // failed -> idle
         machine.send(.start)          // idle -> listening, timer armed
         await clock.waitForSleepers(count: 1)
         machine.send(.heard)          // listening -> transcribing; timer cancelled
-        for _ in 0..<200 where clock.sleeperCount > 0 { await Task.yield() }
-        #expect(clock.sleeperCount == 0)
+        #expect(await eventually { clock.sleeperCount == 0 }, "the timer of the left state is cancelled")
         await clock.advance(by: .seconds(13))
         #expect(machine.state == .transcribing)
     }

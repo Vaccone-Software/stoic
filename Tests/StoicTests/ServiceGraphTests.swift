@@ -165,14 +165,16 @@ struct ServiceGraphReviewTests {
     }
 
     @Test func cancellingTheCallerIsReportedAsCancellation() async {
+        let starting = AsyncGate()
         let graph = try! ServiceGraph(label: "app") {
             Provide(Self.slow) { _ in
+                starting.open()
                 try await Task.sleep(for: .seconds(60))
                 return 1
             }
         }
         let task = Task { try await graph.run { _ in } }
-        try? await Task.sleep(for: .milliseconds(20))
+        await starting.wait()
         task.cancel()
         await #expect(throws: CancellationError.self) { try await task.value }
     }

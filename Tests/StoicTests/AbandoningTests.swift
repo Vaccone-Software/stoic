@@ -170,13 +170,15 @@ struct AbandoningTests {
         let wedge = Wedge()
         defer { wedge.release() }
         let label = Self.uniqueLabel("cancel")
+        let entered = AsyncGate()
         let task = Task {
             try await abandoningAfter(.seconds(3600), label: label) { () throws(Failure) -> Int in
+                entered.open()
                 wedge.block()
                 return 1
             }
         }
-        try await Task.sleep(for: .milliseconds(20))
+        await entered.wait()
         task.cancel()
         do {
             _ = try await task.value

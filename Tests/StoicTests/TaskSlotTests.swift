@@ -25,10 +25,12 @@ struct TaskSlotTests {
         }
         // Finish them out of order: the newest first, then the stale ones.
         gates[2].open()
-        while slot.isRunning { await Task.yield() }
+        #expect(await eventually { model.delivered == ["result 2"] })
         gates[0].open()
         gates[1].open()
-        for _ in 0..<100 { await Task.yield() }
+        // The stale work has run to its end (and been dropped) once the slot
+        // holds nothing: only then is "still just result 2" a real statement.
+        #expect(await eventually { slot.unfinishedCount == 0 })
         #expect(model.delivered == ["result 2"])
     }
 
@@ -47,8 +49,7 @@ struct TaskSlotTests {
         } deliver: { _ in }
         await started.wait()
         slot.run {} deliver: { _ in }
-        while slot.isRunning { await Task.yield() }
-        for _ in 0..<100 where observed.value == nil { await Task.yield() }
+        #expect(await eventually { observed.value != nil })
         #expect(observed.value == .superseded)
     }
 
@@ -61,13 +62,15 @@ struct TaskSlotTests {
             await firstGate.wait()          // winding down takes a while
             gauge.mutate { $0.current -= 1 }
         } deliver: { _ in }
-        for _ in 0..<10 { await Task.yield() }
+        #expect(await eventually { gauge.value.current == 1 })
         let done = AsyncGate()
         slot.runExclusively {
             gauge.mutate { $0.overlapped = $0.overlapped || $0.current > 0; $0.current += 1 }
             gauge.mutate { $0.current -= 1 }
         } deliver: { _ in done.open() }
-        for _ in 0..<10 { await Task.yield() }
+        #expect(slot.unfinishedCount == 2)
+        // Exclusive work has had its chance to start; it must not have.
+        #expect(await holdsThroughout { gauge.value.current == 1 && !gauge.value.overlapped })
         firstGate.open()
         await done.wait()
         #expect(gauge.value.overlapped == false)
@@ -83,21 +86,25 @@ struct TaskSlotTests {
         } deliver: { model.delivered.append($0.get()) }
         slot.cancel()
         gate.open()
-        for _ in 0..<100 { await Task.yield() }
+        // The work has finished (its late answer was dropped) once the slot
+        // holds nothing; only then does "nothing delivered" mean something.
+        #expect(await eventually { slot.unfinishedCount == 0 })
         #expect(model.delivered.isEmpty)
         #expect(!slot.isRunning)
     }
 
     @Test func aReleasedSlotCancelsItsWork() async throws {
         let cancelled = AsyncGate()
+        let started = AsyncGate()
         var slot: TaskSlot<Void, any Error>? = TaskSlot(label: "released")
         slot?.run {
+            started.open()
             do { try await Task.sleep(for: .seconds(60)) } catch {
                 cancelled.open()
                 throw error
             }
         } deliver: { _ in Issue.record("a released slot must not deliver") }
-        for _ in 0..<10 { await Task.yield() }
+        await started.wait()
         slot = nil
         await cancelled.wait()
     }
@@ -112,8 +119,7 @@ struct TaskSlotTests {
             } deliver: { model.delivered.append($0.get()) }
             if index % 7 == 0 { await Task.yield() }
         }
-        while slot.isRunning { await Task.yield() }
-        for _ in 0..<100 { await Task.yield() }
+        #expect(await eventually { slot.unfinishedCount == 0 })
         #expect(model.delivered.last == "499")
         #expect(model.delivered.count <= 500)
         // Deliveries only ever move forward: never an older one after a newer.
@@ -147,8 +153,8 @@ struct TaskSlotReviewTests {
             await microphone.use(until: TestGate.alreadyOpen)
         } deliver: { _ in done.open() }
         second.open()
-        try? await Task.sleep(for: .milliseconds(20))
-        #expect(microphone.live.value.now == 1, "the first work is still running; exclusive work must not start")
+        #expect(await eventually { microphone.live.value.now == 1 }, "the second work ended")
+        #expect(await holdsThroughout { microphone.live.value.now == 1 }, "the first work is still running; exclusive work must not start")
         first.open()
         await done.wait()
         #expect(microphone.live.value.peak == 2, "previously 3: exclusive work overlapped the first")
@@ -163,8 +169,7 @@ struct TaskSlotReviewTests {
         slot.cancel()
         let done = TestGate()
         slot.runExclusively { await microphone.use(until: TestGate.alreadyOpen) } deliver: { _ in done.open() }
-        try? await Task.sleep(for: .milliseconds(20))
-        #expect(microphone.live.value.peak == 1)
+        #expect(await holdsThroughout { microphone.live.value.peak == 1 }, "exclusive work must wait for the cancelled work")
         first.open()
         await done.wait()
         #expect(microphone.live.value.peak == 1, "previously overlapped: cancel() forgot the cancelled work")

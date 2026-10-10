@@ -48,7 +48,7 @@ struct SingleFlightTests {
                     }
                 }
             }
-            for _ in 0..<100 { await Task.yield() }
+            await eventually { flight.waiterCount(for: 1) == 5 }
             gate.open()
             return await group.reduce(into: []) { $0.append($1) }
         }
@@ -62,7 +62,7 @@ struct SingleFlightTests {
         let first = Task { try await flight.run(1) { started.open(); await gate.wait(); return "done" } }
         await started.wait()
         let second = Task { try await flight.run(1) { "never runs" } }
-        for _ in 0..<50 { await Task.yield() }
+        await eventually { flight.waiterCount(for: 1) == 2 }
         first.cancel()
         do {
             _ = try await first.value

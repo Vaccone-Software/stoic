@@ -37,7 +37,7 @@ struct TestingToolsTests {
         }
         await clock.waitForSleepers(count: 1)
         await clock.advance(by: .seconds(1))
-        for _ in 0..<50 { await Task.yield() }
+        #expect(await eventually { clock.sleeperCount == 0 }, "the timeout fired and was not waited out")
         #expect(!gate.isOpen)
         gate.open()
         #expect(try await task.value == "late", "cooperative timeouts wait for uncooperative work")

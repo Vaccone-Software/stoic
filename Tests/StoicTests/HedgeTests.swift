@@ -154,8 +154,7 @@ struct HedgeTests {
         await clock.waitForSleepers(count: 1)
         await clock.advance(by: .milliseconds(100))
         await waitUntil { loserCancelled.value }   // the hedge has a winner and has cancelled the loser
-        for _ in 0..<50 { await Task.yield() }
-        #expect(!returned.value)   // but the loser is still running, so hedge has not returned
+        #expect(await holdsThroughout { !returned.value })   // but the loser is still running, so hedge has not returned
         gate.open()
         #expect(await task.value == "hedge")
         #expect(returned.value)

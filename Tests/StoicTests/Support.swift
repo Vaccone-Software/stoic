@@ -38,3 +38,17 @@ func eventually(within limit: Duration = .seconds(5), _ condition: () -> Bool) a
     }
     return true
 }
+
+/// Whether `invariant` stays true for `window` of real time: the way to
+/// assert that something does *not* happen. Use it only after a positive
+/// signal that the thing would have happened by now if it were going to
+/// (a gate that was opened, a task that was woken), and never in place of one.
+func holdsThroughout(for window: Duration = .milliseconds(30), _ invariant: () -> Bool) async -> Bool {
+    let clock = ContinuousClock()
+    let end = clock.now.advanced(by: window)
+    while clock.now < end {
+        if !invariant() { return false }
+        try? await clock.sleep(for: .milliseconds(1))
+    }
+    return invariant()
+}
