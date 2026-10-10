@@ -86,10 +86,12 @@ public enum Severity: String, Sendable {
 extension Finding {
     /// The diagnostic in the format Xcode and SwiftPM both parse:
     /// `/abs/File.swift:12:5: error: [stoic.rule] message`, followed by the
-    /// suggestion as a `note:` on the same position when there is one.
+    /// suggestion as a `note:` on the same position when there is one. A
+    /// baselined warning omits the note: it is already accepted, and a
+    /// hundred of them should not bury the one new error.
     public func diagnostic(as severity: Severity = .error) -> String {
         var text = "\(file):\(line):\(column): \(severity.rawValue): [\(rule.rawValue)] \(message)"
-        if let fixIt {
+        if severity == .error, let fixIt {
             text += "\n\(file):\(line):\(column): note: \(fixIt)"
         }
         return text

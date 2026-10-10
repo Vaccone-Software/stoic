@@ -46,6 +46,9 @@ let package = Package(
         .library(name: "StoicUIKit", targets: ["StoicUIKit"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
+        // The command the build-tool plugin runs (design/13). Needs the
+        // `Lint` trait: `.package(url: …, traits: ["Lint"])`.
+        .executable(name: "stoic-lint", targets: ["stoic-lint"]),
     ],
     traits: [
         .trait(
@@ -95,6 +98,9 @@ let package = Package(
         // SwiftSyntax. No file system, no process, so every rule is testable
         // from an inline string.
         .target(name: "StoicLintCore", dependencies: swiftSyntax, swiftSettings: strict + [lintDefine]),
+        // The command line around the rules, in the format Xcode and SwiftPM
+        // parse. A host tool: it never links into an app.
+        .executableTarget(name: "stoic-lint", dependencies: ["StoicLintCore"], swiftSettings: strict + [lintDefine]),
         .testTarget(
             name: "StoicLintCoreTests",
             dependencies: ["StoicLintCore"] + swiftSyntax,
