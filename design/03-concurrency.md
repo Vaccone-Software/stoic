@@ -21,105 +21,85 @@ cancellation and failure semantics written down.
 ## API
 
 ```swift
-// Only the latest: starting new work cancels and awaits the previous.
+// Only the newest work delivers, on the caller's actor.
 public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
-    public init(label: String, isolation: isolated (any Actor)? = #isolation)
-    public func run(_ op: sending @escaping @isolated(any) () async throws(Failure) -> Success,
-                    deliver: @escaping @isolated(any) (Result<Success, Failure>) -> Void)
-    public func cancel() async
-    public var isRunning: Bool { get }
+    public init(label: String)
+    public func run(isolation: isolated (any Actor)? = #isolation,
+                    @_inheritActorContext _ operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
+                    deliver: sending @escaping (Result<Success, Failure>) -> Void)
+    public func runExclusively(…)            // waits for the superseded work to finish first
+    public func cancel(); public func cancelAndWait() async
+    public var isRunning: Bool
 }
 
-// First success wins; losers cancelled and awaited.
-public nonisolated(nonsending) func race<R: Sendable, Failure: Error>(
-    _ operations: [@Sendable () async throws(Failure) -> R]
-) async throws(ConcurrentFailure<Failure>) -> R
-
-// Second attempt after a delay if the first is slow. Only for idempotent work.
-public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
-    _ idempotency: Idempotency,            // must be .idempotent — the argument is the acknowledgement
-    after delay: HedgeDelay,               // .fixed(Duration) or .percentile(0.95, of: LatencyTracker)
-    maxAttempts: Int = 2,
-    budget: RetryBudget? = nil,
-    operation: @escaping @Sendable (Attempt) async throws(Failure) -> R
-) async throws(ConcurrentFailure<Failure>) -> R
+// First success wins; losers cancelled and awaited. Fixed arities plus [Racer].
+public func race<R: Sendable, Failure: Error>(label:, _ first: @escaping @concurrent @Sendable () async throws(Failure) -> R,
+                                               _ second: …) async throws(Failure) -> R   // and 3, 4, [Racer<R, Failure>]
 
 // Bounded parallel map; results in input order.
-public nonisolated(nonsending) func mapConcurrent<Element: Sendable, R: Sendable, Failure: Error>(
-    _ elements: some Collection<Element>,
-    limit: Int,
-    onFailure: FailurePolicy = .cancelRemaining,   // or .collectAll
-    transform: @escaping @Sendable (Element) async throws(Failure) -> R
-) async throws(ConcurrentFailure<Failure>) -> [R]
+public func mapConcurrent<C: Collection, R: Sendable, Failure: Error>(_ elements: C, limit: Int,
+    transform: @escaping @concurrent @Sendable (C.Element) async throws(Failure) -> R) async throws(Failure) -> [R]
+public func mapConcurrentResults<…>(…) async -> [Result<R, Failure>]
 
-// FIFO, cancellation-aware. Scoped use only: no public acquire/release pair.
+// FIFO, cancellation- and deadline-aware. Scoped use only.
 public final class AsyncSemaphore: Sendable {
     public init(permits: Int, label: String)
-    public nonisolated(nonsending) func withPermit<R, Failure: Error>(
-        _ body: nonisolated(nonsending) () async throws(Failure) -> R
-    ) async throws(PolicyError<Failure>) -> R    // .rejected(.deadlineExceeded) if the wait outlives the deadline
+    public func withPermit<R, Failure: Error>(_ body: nonisolated(nonsending) () async throws(Failure) -> R) async throws(PolicyError<Failure>) -> R
 }
+public final class AsyncMutex: Sendable { public func withLock<R, Failure>(…) async throws(PolicyError<Failure>) -> R }
 
 // Concurrent callers for the same key share one execution.
 public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failure: Error>: Sendable {
-    public nonisolated(nonsending) func run(
-        _ key: Key, _ op: @escaping @Sendable () async throws(Failure) -> Value
-    ) async throws(Failure) -> Value
+    public func run(_ key: Key, operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value) async throws(PolicyError<Failure>) -> Value
 }
 ```
 
 ## Semantics
 
-**TaskSlot.** The structured replacement for generation counters. `run`
-cancels the slot's current task with cause `.superseded`, starts the new
-one, and guarantees that only the newest task's result is ever delivered:
-a superseded task that finishes late (because it ignored cancellation) has
-its result dropped inside the slot, so no caller-side comparison is needed.
-`deliver` runs on the slot's isolation (typically the main actor) so it can
-touch UI state directly. `cancel()` cancels and awaits the current task.
-When the slot's owner ends — a scope, a state (design/07), a supervisor
-child — the slot is cancelled with it. A slot that is deinitialised with a
-task still running cancels it and emits `slot.dropped`, which the test kit
-turns into a failure.
+**TaskSlot.** `run` supersedes the current work — cancelled with cause
+`superseded` — and starts the new work at once; `runExclusively` waits for
+the superseded work to finish first, for work that must never overlap (two
+uses of one microphone). `deliver` runs on the actor that called `run`, and
+the is-this-still-the-newest check happens there, synchronously with the
+delivery, so no newer `run` can slip between them. Late results from
+superseded work are dropped and reported (`slot.superseded_late`). The work
+holds the slot weakly, and a released slot cancels its work: a view model
+that goes away takes its in-flight request with it.
 
-**race.** Every operation runs as a child task. The first _success_ wins;
-the rest are cancelled with cause `.superseded` and then **awaited** —
-structured concurrency is kept, so race never returns while a loser is
-still running. For losers that cannot be cancelled, wrap them in the
-abandoning `withTimeout` (design/01); race itself never abandons. If every
-operation fails, race throws all the failures in completion order. An empty
-array is a precondition failure.
+**race.** Every operation runs as a child task. The first success wins; the
+rest are cancelled (`superseded`) and then awaited, so `race` never returns
+while a loser runs. If every operation fails, the first failure is thrown and
+the rest reported (`race.all_failed`) — passthrough, not a wrapper. The
+natural variadic spelling crashes the Swift 6.4 compiler at call sites (a
+SILGen assertion), and array literals of closures are not inferred
+`@Sendable`, hence fixed arities and `Racer`.
 
-**hedge.** Starts attempt 1; if it has not finished after `delay`, starts
-attempt 2 without cancelling attempt 1, and so on up to `maxAttempts`. The
-first success wins and the rest are cancelled and awaited. Each hedge draws
-from the retry budget, so hedging cannot amplify load during an outage
-beyond the budget's ratio. The `Idempotency` argument has a single case,
-`.idempotent`: it exists so that hedging non-idempotent work requires
-writing a lie in the source. `.percentile` delays read a rolling latency
-histogram the caller owns.
+**hedge.** Moves to the resilience policies (design/10).
 
-**mapConcurrent.** At most `limit` transforms run at once; elements are
-started in order; results come back in input order regardless of completion
-order. `.cancelRemaining` (default) cancels outstanding work on the first
-failure and throws every failure observed before the group drained;
-`.collectAll` runs everything and throws all failures at the end. `limit` ≤ 0
-is a precondition failure; `limit` larger than the collection is fine.
+**mapConcurrent.** At most `limit` transforms run; elements start in
+order; results return in input order. On the first failure the rest are
+cancelled (`siblingFailed`) and that failure alone is thrown — failures
+caused by the cancellation are not reported as failures.
+`mapConcurrentResults` runs everything and returns each outcome.
 
-**AsyncSemaphore.** Strict FIFO. A waiter that is cancelled, or whose
-deadline passes, is removed from the queue _and never consumes a permit_ —
-the classic bug in hand-written async semaphores, where a permit granted to
-an already-cancelled waiter leaks. The only public use is `withPermit`, so a
-permit cannot be leaked by a missing release; the permit is returned on
-success, failure and cancellation. A bulkhead (design/10) is a semaphore
-with a bounded queue that rejects instead of waiting.
+**Child-task closures are `@concurrent`.** They run concurrently by design;
+the explicit attribute keeps that true under `NonisolatedNonsendingByDefault`.
 
-**SingleFlight.** The first caller for a key starts the operation; later
-callers for the same key await the same result. Cancellation is reference
-counted: one waiter cancelling detaches only that waiter; the operation is
-cancelled when the _last_ waiter has cancelled. When it finishes, the key is
-cleared, so the next call starts fresh (single-flight is deduplication, not
-caching).
+**AsyncSemaphore and AsyncMutex.** Strict FIFO. A waiter that is cancelled,
+or whose `Deadline.current` passes, leaves the queue and never consumes a
+permit — arrivals are tracked so even a cancellation that lands before the
+waiter queues is honoured. Cancellation caused by an enclosing deadline is
+reported as `deadlineExceeded`. `withPermit` is the only way to hold a
+permit. Re-acquiring a semaphore the task already holds is reported as
+`semaphore.reentrant` — a self-deadlock in waiting. `AsyncMutex` is the
+one-permit form: the cure for actor reentrancy's check–await–act race.
+
+**SingleFlight.** The flight owns the operation. Callers leave with a
+rejection (`cancelled` or `deadlineExceeded`) when they stop waiting; the
+operation is cancelled only when the last caller leaves, and the key is
+retired at once so newcomers start fresh instead of joining a flight being
+cancelled. The operation runs without the first caller's deadline; each
+caller's wait is bounded by its own.
 
 ## Failure modes
 
