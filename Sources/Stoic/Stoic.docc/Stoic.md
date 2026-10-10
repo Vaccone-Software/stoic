@@ -16,6 +16,14 @@ program beneath runs on virtual time with a fixed seed.
 
 ## Topics
 
+### Guide
+
+- <doc:Time>
+- <doc:Failure>
+- <doc:Resources>
+- <doc:Lifecycle>
+- <doc:Testing>
+
 ### Time
 
 - ``withTimeout(_:clock:tolerance:label:fileID:line:operation:)``
