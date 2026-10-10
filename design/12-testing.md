@@ -17,6 +17,69 @@ controllable.
 | `FaultInjector`                       | Scripted failures, latency, hangs, and hangs that ignore cancellation.                                                                               |
 | `TestGate`                            | Sequencing steps, and modelling work that cannot be interrupted.                                                                                     |
 | `StateGraph.explore`                  | Exhaustive exploration of a state machine's transitions.                                                                                             |
+| `simulate(seed:)`, `simulate(seeds:)` | Deterministic simulation: every interleaving decided by a seed, virtual time, deadlocks and livelocks reported, a failing seed replayed exactly.       |
+
+## Deterministic simulation
+
+FoundationDB tested its database for years in a simulator before trusting
+real machines with it, and TigerBeetle and Antithesis made the method
+famous: run the whole system on one thread, let a seed choose every
+ordering, make time virtual, and a failing seed becomes a recording of the
+bug. Concurrency bugs live in rare orderings; a stress run reaches them once
+in thousands of tries, a simulation explores hundreds of orderings a second
+and replays any of them on demand.
+
+```swift
+try await simulate(seeds: 0..<500) { sim in
+    let engine = SyncEngine(store: FakeStore())
+    try await engine.syncAll()
+    #expect(engine.pending.isEmpty)
+}
+// simulation with seed 137 threw after 412 steps, 31.5 seconds of virtual
+// time: … Reproduces: simulate(seed: 137)
+```
+
+**How it works.** A `TaskExecutor` queues every job instead of running it;
+a driver on one dedicated thread takes the next job from among all runnable
+ones by the seed, and runs it. When nothing is runnable, it moves the
+`TestClock` to the next deadline and wakes its sleepers — so time is
+virtual and an hour of backoff takes milliseconds. The body and its
+structured children run there by executor preference, actors without their
+own executor follow the task calling them, and every task Stoic starts
+follows `Ambient.taskExecutor` (unstructured tasks do not inherit a
+preference, so Stoic passes it on).
+
+**What it reports.**
+
+- `threw`: the body failed. `simulate(seeds:)` runs the failing seed again
+  and says whether it reproduced at the same step.
+- `stalled`: nothing runnable, nothing asleep, and nothing arrived from
+  outside within `limits.stall` of real time — a deadlock, or a wait on
+  something the simulation does not drive. Lists the Stoic tasks still
+  running, by label.
+- `virtualTimeLimit`: still going after `limits.virtualTime` — a livelock,
+  such as a retry without a bound or a timer that re-arms itself.
+- `stepLimit`, `cancelled`.
+
+A run that succeeds returns the value with its step count, virtual time,
+a fingerprint of every scheduling decision (equal fingerprints, equal
+paths) and the Stoic tasks still running when the body returned — almost
+always a leak. After a failure the body is cancelled and its cleanup still
+runs simulated, bounded.
+
+**Limits, stated rather than hidden.** The main actor and actors with their
+own executors run where they always do; so do `Task {}` started by app code
+(start it from a Stoic primitive, or with `Task(executorPreference:
+Ambient.current.taskExecutor)`), Dispatch, real I/O and real clocks. Work
+arriving from there is waited for, but its timing is not seeded, so such a
+run may not replay exactly; the fingerprint says when it did not. A job
+that blocks its thread blocks the simulation.
+
+**Verified.** The same seed gives the same trace, step count, virtual time
+and fingerprint; twenty seeds give many distinct interleavings of a scenario
+with a task group, an actor, a semaphore and a jittered retry; a read–yield–
+write lost update is found within 200 seeds and reproduces; a deadlock is
+reported with the stuck state work by name; a livelock hits the time limit.
 
 ## How Stoic tests itself
 
@@ -45,12 +108,14 @@ controllable.
   registered with its label and owner; a test's teardown asserts nothing is
   left running, no sleeper is pending, no scope is open and no work is
   abandoned — leaks become test failures that name their owner.
-- **Deterministic simulation.** Run the tasks Stoic starts on a seeded
-  executor (`withTaskExecutorPreference`) that chooses the next runnable job
-  from the seed and drives the `TestClock`, with named fault points in
-  every primitive (FoundationDB's "buggify"). A failing seed reproduces the
-  exact interleaving. The main actor and actors with their own executors
-  ignore executor preference; that limit is documented, not hidden.
+- **Buggify.** Named fault points in every primitive, enabled only under
+  simulation and chosen by the seed (FoundationDB's `BUGGIFY`): a send
+  delayed, a permit granted last, a finalizer slow, a file write torn — the
+  rare paths exercised on every run instead of never.
+- **Smarter scheduling.** Uniform choice finds shallow bugs fast; PCT-style
+  priority schedules find deep ones with known probability. And shrinking:
+  replay a failing seed with fewer preemptions until the minimal ordering
+  remains.
 - **Executable failure-mode tables.** The tables in `design/` as data that
   generates the documentation, test skeletons and a coverage gate: a row
   without a test fails the build.

@@ -261,7 +261,7 @@ incident review is the wrong default.
 | 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                       | Built                                      |
 | 10  | [Resilience policies](design/10-resilience-policies.md)           | nothing between the app and a failing dependency          | Built                                      |
 | 11  | [Observability](design/11-observability.md)                       | silent decisions                                          | Built, with swift-log and swift-metrics adapters |
-| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built, with task ledger and random walks; simulation planned |
+| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built: task ledger, random walks, deterministic simulation; buggify planned |
 | 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | Built: `StoicLint` plugin with a baseline  |
 | 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | Built: README, AGENTS.md, llms.txt, skill  |
 | 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | Built: `StoicStore`                        |
