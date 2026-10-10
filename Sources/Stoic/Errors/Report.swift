@@ -31,7 +31,7 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
     public private(set) var suppressed: [any Error]
 
     /// One layer of context.
-    public struct Frame: Sendable, CustomStringConvertible {
+    public struct Frame: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         public let message: String
         public let metadata: [Event.Field]
         public let fileID: String
@@ -44,10 +44,24 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
             self.line = line
         }
 
+        /// The frame as it may appear in a log: a private field's value is
+        /// replaced by `<private>`, as ``Diagnostics`` does for events.
         public var description: String {
+            render(includePrivate: false)
+        }
+
+        /// The frame with every field's value, for a debugger or a local console.
+        public var debugDescription: String {
+            render(includePrivate: true)
+        }
+
+        fileprivate func render(includePrivate: Bool) -> String {
             var text = message
             if !metadata.isEmpty {
-                text += " [" + metadata.map(\.description).joined(separator: ", ") + "]"
+                let fields = metadata.map { field in
+                    field.privacy == .private && !includePrivate ? "\(field.key)=<private>" : field.description
+                }
+                text += " [" + fields.joined(separator: ", ") + "]"
             }
             return text + "  (\(fileID):\(line))"
         }
@@ -94,24 +108,28 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
         containsDefect(root)
     }
 
+    /// The report as it may appear in a log: frames' private metadata is
+    /// redacted (`<private>`), and suppressed errors are left out.
     public var description: String {
-        render(includeSuppressed: false)
+        render(includePrivate: false)
     }
 
+    /// Everything: private metadata values and the suppressed errors.
     public var debugDescription: String {
-        render(includeSuppressed: true)
+        render(includePrivate: true)
     }
 
-    private func render(includeSuppressed: Bool) -> String {
+    private func render(includePrivate: Bool) -> String {
         var lines: [String] = []
         var indent = ""
         for frame in frames.reversed() {
-            lines.append(lines.isEmpty ? frame.description : indent + "╰─ " + frame.description)
+            let text = frame.render(includePrivate: includePrivate)
+            lines.append(lines.isEmpty ? text : indent + "╰─ " + text)
             if lines.count > 1 { indent += "   " }
         }
         let rootLine = "\(String(reflecting: type(of: root))): \(root)"
         lines.append(lines.isEmpty ? rootLine : indent + "╰─ " + rootLine)
-        if includeSuppressed {
+        if includePrivate {
             for error in suppressed {
                 lines.append("  suppressed: \(error)")
             }

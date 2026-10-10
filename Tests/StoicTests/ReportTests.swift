@@ -74,6 +74,23 @@ struct ReportTests {
         #expect(!report.description.contains("suppressed"))
     }
 
+    @Test func descriptionRedactsPrivateMetadataAndDebugDescriptionDoesNot() {
+        let report = Report(FileError.missing.context("loading", metadata: [
+            .init("token", .string("hunter2"), privacy: .private),
+            .init("bytes", .int(42)),
+        ]))
+        #expect(report.description.contains("token=<private>"))
+        #expect(report.description.contains("bytes=42"))
+        #expect(!report.description.contains("hunter2"))
+        #expect(!"\(report.frames[0])".contains("hunter2"))
+        #expect(report.debugDescription.contains("token=hunter2"))
+        #expect(report.frames[0].debugDescription.contains("token=hunter2"))
+        // A string field is private unless said otherwise.
+        let defaulted = Report(FileError.missing).adding(.init("opening", metadata: [.init("path", .string("/Users/ada/secret"))]))
+        #expect(!defaulted.description.contains("/Users/ada"))
+        #expect(defaulted.debugDescription.contains("/Users/ada/secret"))
+    }
+
     @Test func framesCarryMetadataAndLocation() {
         let report = Report(FileError.missing.context("reading", metadata: [.init("bytes", .int(42))]))
         #expect(report.frames[0].metadata.first?.key == "bytes")
