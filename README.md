@@ -127,7 +127,7 @@ layer.
 @Test(.stoic(seed: 42))
 func retriesThroughAnOutage() async throws {
     let clock = TestClock()
-    let api = FaultInjector<APIError>.failing(2, with: .offline)
+    let api = FaultInjector<any Error>.failing(2, with: APIError.offline)
     async let user = withTestAmbient(clock: clock) {
         try await retry(.fixed(.seconds(30)).attempts(5)) { _ in try await api.run { try await fetchUser() } }
     }
