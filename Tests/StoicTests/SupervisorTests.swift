@@ -110,7 +110,7 @@ struct SupervisorTests {
         _ = try? await run.value
     }
 
-    @Test func aChildThatStopsBeatingIsRestarted() async throws {
+    @Test(.failureMode("design/09", "a child stops beating")) func aChildThatStopsBeatingIsRestarted() async throws {
         let clock = TestClock()
         let script = Script()
         let events = RecordingInstrumentation()
