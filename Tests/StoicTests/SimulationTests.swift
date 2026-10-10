@@ -144,7 +144,7 @@ struct SimulationTests {
     @Test func onceOutsideWorkHasTakenPartTheWaitIsTheLongOne() async throws {
         // A real sleep arrives from another thread: after it, the run knows
         // outside work exists, and a second, longer wait is not a stall.
-        let run = try await simulate(seed: 0, limits: .init(stall: .seconds(5), quietStall: .milliseconds(250))) { _ in
+        let run = try await simulate(seed: 0, limits: .init(stall: .seconds(5), quietStall: .milliseconds(250)), allowEscapes: true) { _ in
             try await Task.sleep(for: .milliseconds(1))
             try await Task.sleep(for: .milliseconds(700))
             return true
@@ -165,7 +165,7 @@ struct SimulationTests {
     }
 
     @Test func workStillRunningWhenTheBodyReturnsIsReported() async throws {
-        let run = try await simulate(seed: 0, schedule: .uniform) { _ in
+        let run = try await simulate(seed: 0, schedule: .uniform, allowEscapes: true) { _ in
             let machine = StateMachine<SimulationPhase, SimulationPhase>(initial: .idle, label: "left on") { _, to in .to(to) }
             machine.whileIn(.on, label: "humming") { _ in
                 try? await Ambient.sleep(for: .seconds(3600))
@@ -203,7 +203,7 @@ struct SimulationTests {
         // 10 ms of real blocking work under a 5 s (virtual) timeout: the
         // timeout must not fire before work that is nearly done in real time.
         for seed in 0..<10 as Range<UInt64> {
-            let run = try await simulate(seed: seed) { _ in
+            let run = try await simulate(seed: seed, allowEscapes: true) { _ in
                 try await abandoningAfter(.seconds(5), label: "sim.outside.\(seed)") { () throws(Never) -> Int in
                     usleep(10_000)   // stoic:allow(blocking-in-async): models blocking work, on a Dispatch thread
                     return 1
@@ -427,7 +427,7 @@ struct SimulationTests {
     @Test func whatTheRunLeftAsleepIsUnwoundAndFreed() async throws {
         let before = Canary.alive.load(ordering: .relaxed)
         let cleaned = Mutex(false)
-        let run = try await simulate(seed: 0, schedule: .uniform) { _ in
+        let run = try await simulate(seed: 0, schedule: .uniform, allowEscapes: true) { _ in
             let canary = Canary()
             // A task of the user's, asleep on the simulation's clock …
             Task(executorPreference: Ambient.current.taskExecutor) {
@@ -458,7 +458,7 @@ struct SimulationTests {
 
     @Test func whatCannotBeUnwoundIsReportedAsStuck() async throws {
         let waiters = Mutex<[CheckedContinuation<Void, Never>]>([])
-        let run = try await simulate(seed: 0) { _ in
+        let run = try await simulate(seed: 0, allowEscapes: true) { _ in
             let machine = StateMachine<SimulationPhase, SimulationPhase>(initial: .idle, label: "wedged") { _, to in .to(to) }
             machine.whileIn(.on, label: "forever") { _ in
                 await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in waiters.withLock { $0.append(k) } }   // ignores cancellation

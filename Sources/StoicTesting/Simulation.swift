@@ -1,7 +1,8 @@
-public import Stoic
 internal import Darwin
 internal import Dispatch
+public import Stoic
 internal import Synchronization
+public import Testing
 
 /// Runs `body` as a deterministic simulation: every interleaving decided by
 /// `seed`, time virtual and advanced only when everything is asleep.
@@ -52,6 +53,14 @@ internal import Synchronization
 ///   - limits: When to give up: virtual time, steps, and real time stalled.
 ///   - faults: How often fault points perturb the run.
 ///   - schedule: How the next job is chosen; the seed's choice by default.
+///   - allowEscapes: Whether work that left the simulation is acceptable. By
+///     default a run that took part with something the simulator does not
+///     drive (an unstructured `Task {}`, `Task.detached`, Dispatch, a
+///     `Timer`, a real-clock sleep, the main actor) or that ended with Stoic
+///     tasks still running records a test issue: the run may not replay, and
+///     the seed is not the whole story. Pass `true` when that is deliberate;
+///     ``Simulated/report`` says what happened either way.
+///   - sourceLocation: Where an escape is reported.
 ///   - body: The scenario. Runs on the simulation's executor.
 /// - Returns: The body's value, with how the run went.
 /// - Throws: ``SimulationFailure``, naming the seed that reproduces it.
@@ -60,6 +69,23 @@ public func simulate<R: Sendable>(
     limits: SimulationLimits = .standard,
     faults: SimulatedFaults = .standard,
     schedule: SimulationSchedule = .portfolio,
+    allowEscapes: Bool = false,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ body: @escaping @Sendable (SimulationContext) async throws -> R
+) async throws(SimulationFailure) -> Simulated<R> {
+    let simulated = try await run(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
+    if !allowEscapes, simulated.report.hasEscapes {
+        Issue.record(Comment(rawValue: "simulation with seed \(simulated.seed): \(simulated.report)"), sourceLocation: sourceLocation)
+    }
+    return simulated
+}
+
+/// One run, without judging what it left behind.
+private func run<R: Sendable>(
+    seed: UInt64?,
+    limits: SimulationLimits,
+    faults: SimulatedFaults,
+    schedule: SimulationSchedule,
     _ body: @escaping @Sendable (SimulationContext) async throws -> R
 ) async throws(SimulationFailure) -> Simulated<R> {
     let seed = seed ?? StoicTest.current?.seed ?? 0
@@ -88,6 +114,13 @@ public func simulate<R: Sendable>(
 /// Runs `body` once per seed, stopping at the first failure — after running
 /// that seed again to confirm it reproduces.
 ///
+///
+/// Work that left the simulation (see `allowEscapes` on ``simulate(seed:limits:faults:schedule:allowEscapes:sourceLocation:_:)``)
+/// is reported as one issue for the whole exploration: the first seed that
+/// did it, and how many others did.
+///
+/// - Parameter allowEscapes: Pass `true` when escaping the simulation is
+///   deliberate, to record no issue for it.
 /// - Throws: The first ``SimulationFailure``; its ``SimulationFailure/reproduced``
 ///   says whether the second run failed the same way, at the same step,
 ///   along the same path. A body that keeps state between runs (captured
@@ -97,17 +130,33 @@ public func simulate(
     limits: SimulationLimits = .standard,
     faults: SimulatedFaults = .standard,
     schedule: SimulationSchedule = .portfolio,
+    allowEscapes: Bool = false,
+    sourceLocation: SourceLocation = #_sourceLocation,
     _ body: @escaping @Sendable (SimulationContext) async throws -> Void
 ) async throws(SimulationFailure) {
+    var escaped: (seed: UInt64, report: SimulationReport)?
+    var escapedCount = 0
+    var ran = 0
+    defer {
+        if let escaped {
+            let others = escapedCount > 1 ? " (and \(escapedCount - 1) of the other \(ran - 1) seeds run)" : ""
+            Issue.record(Comment(rawValue: "simulation with seed \(escaped.seed)\(others): \(escaped.report)"), sourceLocation: sourceLocation)
+        }
+    }
     for seed in seeds {
         do {
-            _ = try await simulate(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
+            ran += 1
+            let simulated = try await run(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
+            if !allowEscapes, simulated.report.hasEscapes {
+                escapedCount += 1
+                if escaped == nil { escaped = (seed, simulated.report) }
+            }
         } catch {
             var failure = error
             // A cancelled exploration is over; there is nothing to reproduce.
             if case .cancelled = failure.kind { throw failure }
             do {
-                _ = try await simulate(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
+                _ = try await run(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
                 failure.reproduced = false
             } catch let again {
                 failure.reproduced = again.kind.name == failure.kind.name
@@ -258,11 +307,96 @@ public struct Simulated<Value: Sendable>: Sendable {
     public let stuck: [TaskLedger.Entry]
     /// How many times each fault point fired, by site.
     public let faultsFired: [String: Int]
+    /// What escaped the simulation: work from outside, tasks left running,
+    /// and whether the run is deterministic as far as the simulator can
+    /// tell. ``simulate(seed:limits:faults:schedule:allowEscapes:sourceLocation:_:)``
+    /// records an issue for it unless told not to.
+    public let report: SimulationReport
+
+    /// How many jobs and sleeps came from outside the simulation. See
+    /// ``SimulationReport/outsideArrivals``.
+    public var outsideArrivals: Int { report.outsideArrivals }
+
+    /// Whether the simulator saw nothing it could not replay. See
+    /// ``SimulationReport/isDeterministic``.
+    public var isDeterministic: Bool { report.isDeterministic }
+}
+
+/// What a finished simulation let escape, and whether it can be replayed.
+///
+/// A simulation is deterministic only while everything runs on its executor
+/// and its clock. Work that does not — an unstructured `Task {}` (it does
+/// not inherit the executor), `Task.detached`, Dispatch, a Foundation
+/// `Timer`, `Task.sleep` on a real clock, an actor with its own executor,
+/// the main actor — runs on real threads whose timing the seed does not
+/// decide. Such work is waited for, so the run still finishes, but "the seed
+/// that failed" may not fail again. This says how much of it there was.
+public struct SimulationReport: Sendable, CustomStringConvertible {
+    /// Jobs that were queued onto the simulation's executor from a thread
+    /// other than its driver's: an unstructured task or a real timer waking
+    /// a task that prefers the simulation.
+    public let outsideJobs: Int
+    /// Sleeps begun on the simulation's clock by a thread other than its
+    /// driver's: a task the simulation does not drive, sleeping on the
+    /// ambient ``TestClock``.
+    public let outsideSleeps: Int
+    /// Stoic tasks still running when the body returned: a leak. A fixed
+    /// point: they were cancelled and driven to a stop afterwards.
+    public let leftover: [TaskLedger.Entry]
+    /// Of those, the ones still running after the simulation cancelled them.
+    public let stuck: [TaskLedger.Entry]
+
+    /// Everything that arrived from outside: jobs and clock sleeps.
+    public var outsideArrivals: Int { outsideJobs + outsideSleeps }
+
+    /// Whether the simulator saw nothing that makes the run unreplayable:
+    /// no arrival from outside. It cannot see work that never touched the
+    /// simulation at all (an unstructured `Task {}` the body never waits
+    /// for), so `true` means "as far as it can tell".
+    public var isDeterministic: Bool { outsideArrivals == 0 }
+
+    /// Whether anything escaped: outside arrivals, or tasks left running.
+    public var hasEscapes: Bool { !isDeterministic || !leftover.isEmpty }
+
+    init(outsideJobs: Int, outsideSleeps: Int, leftover: [TaskLedger.Entry], stuck: [TaskLedger.Entry]) {
+        self.outsideJobs = outsideJobs
+        self.outsideSleeps = outsideSleeps
+        self.leftover = leftover
+        self.stuck = stuck
+    }
+
+    public var description: String {
+        guard hasEscapes else { return "nothing escaped; the run is deterministic as far as the simulator can tell" }
+        var parts: [String] = []
+        if !isDeterministic {
+            parts.append(
+                """
+                work escaped the simulation: \(outsideJobs) job(s) were queued from threads the simulator does not drive and \
+                \(outsideSleeps) sleep(s) on its clock began there, so the run may not replay from its seed. \
+                Likely causes: an unstructured Task {} or Task.detached in app code (neither inherits the simulation's executor), \
+                DispatchQueue, a Foundation Timer, a sleep on a real clock (Task.sleep(for:), ContinuousClock), a hop to the main actor, \
+                or abandoningAfter (its work runs on Dispatch). \
+                Fix: start tasks the way Stoic does, with Task(executorPreference: Ambient.current.taskExecutor) { … } \
+                (Task.stoic inside Stoic itself) or through a Stoic primitive, and sleep with Ambient.sleep(for:) \
+                or a clock: parameter given sim.clock, never a real clock
+                """)
+        }
+        if !leftover.isEmpty {
+            parts.append(
+                """
+                \(leftover.count) Stoic task(s) were still running when the body returned\
+                \(stuck.isEmpty ? "" : ", \(stuck.count) of them still running after being cancelled"): \
+                \(leftover.map(\.description).joined(separator: ", ")). \
+                A leak: await or cancel what the body starts (a Supervisor, a StateMachine, a TaskSlot, a scope) before it returns
+                """)
+        }
+        return parts.joined(separator: "\n") + "\nIf this is deliberate, pass allowEscapes: true."
+    }
 }
 
 /// A simulation that went wrong, and the seed that makes it go wrong again.
 public struct SimulationFailure: Error, CustomStringConvertible {
-    public enum Kind: Sendable {
+    public enum Kind: Sendable, CustomStringConvertible {
         /// The body threw.
         case threw(any Error)
         /// Nothing could run, nothing was asleep, and nothing arrived from
@@ -276,13 +410,23 @@ public struct SimulationFailure: Error, CustomStringConvertible {
         /// The run was cancelled from outside.
         case cancelled
 
-        var name: String {
+        /// A short name for the kind: `threw`, `stalled`, `virtual time
+        /// limit`, `step limit`, `cancelled`.
+        public var name: String {
             switch self {
             case .threw: "threw"
             case .stalled: "stalled"
             case .virtualTimeLimit: "virtual time limit"
             case .stepLimit: "step limit"
             case .cancelled: "cancelled"
+            }
+        }
+
+        public var description: String {
+            switch self {
+            case .threw(let error): "threw \(error)"
+            case .stalled(let tasks): tasks.isEmpty ? "stalled" : "stalled with \(tasks.map(\.description).joined(separator: ", ")) running"
+            default: name
             }
         }
     }
@@ -339,6 +483,9 @@ final class Simulation<R: Sendable>: Sendable {
     private let result = Mutex<Result<R, any Error>?>(nil)
     private let tag = LedgerTags.next()
     private let cancelRequested = Atomic<Bool>(false)
+    // Sleeps on the simulation's clock begun by something other than the
+    // driver: an unstructured task, a hop from another thread.
+    private let outsideSleeps = Atomic<Int>(0)
 
     init(seed: UInt64, limits: SimulationLimits, faults: SimulatedFaults, schedule: SimulationSchedule, body: @escaping @Sendable (SimulationContext) async throws -> R) {
         self.seed = seed
@@ -348,6 +495,16 @@ final class Simulation<R: Sendable>: Sendable {
         let resolved = ResolvedSchedule(schedule, seed: seed)
         self.resolved = resolved
         self.executor = SimulationExecutor(seed: seed, strategy: resolved.strategy)
+        // A task the simulation does not drive that goes to sleep on its
+        // clock must wake the driver: otherwise the driver, finding nothing
+        // runnable and no sleeper yet, waits out its patience and calls the
+        // run stalled while the sleeper it needs is already registered.
+        clock.observeSleeps { [weak self] in
+            if let self, !executor.isOnDriverThread {
+                outsideSleeps.add(1, ordering: .relaxed)
+                executor.wake()
+            }
+        }
     }
 
     func requestCancellation() {
@@ -459,9 +616,19 @@ final class Simulation<R: Sendable>: Sendable {
                 continue
             }
             // Nothing runnable, nothing asleep. If nothing from outside has
-            // taken part in this run, nothing is likely to start now.
-            let patience = executor.sawOutsideArrival || ExternalWork.isOutstanding(tag: tag) ? limits.stall : min(limits.quietStall, limits.stall)
+            // taken part in this run, nothing is likely to start now. Only
+            // silence counts: a job arriving, or anything outside registering
+            // on the clock, wakes the driver and the window starts again.
+            let outside = executor.outsideArrivals > 0 || outsideSleeps.load(ordering: .relaxed) > 0 || ExternalWork.isOutstanding(tag: tag)
+            let patience = outside ? limits.stall : min(limits.quietStall, limits.stall)
             if executor.waitForArrival(within: patience) { continue }
+            // A quiet window is real time, and real time is load: a busy
+            // machine may not have started a task of the app's in fifty
+            // milliseconds. Before calling the run stalled, prove the
+            // thread pools are answering, and give what they had queued
+            // one last moment to arrive.
+            if !outside, failure == nil, executor.waitForPoolsToAnswer(within: limits.stall),
+               executor.waitForArrival(within: max(.milliseconds(5), limits.quietStall / 10)) { continue }
             if failure != nil { break }
             fail(.stalled(TaskLedger.entries(tag: tag)))
         }
@@ -469,6 +636,8 @@ final class Simulation<R: Sendable>: Sendable {
         let elapsed = start.duration(to: clock.now)
         // What the run left behind, before it is cleaned up.
         let leftover = TaskLedger.entries(tag: tag)
+        let outsideJobs = executor.outsideArrivals
+        let outsideSleepCount = outsideSleeps.load(ordering: .relaxed)
         let stuck = unwind(task)
         if let failure {
             return .failure(SimulationFailure(kind: failure, seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value, schedule: resolved.description))
@@ -478,7 +647,8 @@ final class Simulation<R: Sendable>: Sendable {
             return .success(Simulated(
                 value: value, seed: seed, steps: steps, elapsed: elapsed,
                 fingerprint: fingerprint.value, schedule: resolved.description, leftover: leftover, stuck: stuck,
-                faultsFired: faults.fired
+                faultsFired: faults.fired,
+                report: SimulationReport(outsideJobs: outsideJobs, outsideSleeps: outsideSleepCount, leftover: leftover, stuck: stuck)
             ))
         case .failure(let error)?:
             return .failure(SimulationFailure(kind: .threw(error), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value, schedule: resolved.description))
@@ -657,7 +827,7 @@ final class SimulationExecutor: TaskExecutor {
         // The driver's thread, once it starts, and whether any job has been
         // enqueued from another one since.
         var driverThread: UInt64?
-        var sawOutside = false
+        var outsideArrivals = 0
     }
 
     /// PCT's bookkeeping. `State.jobs` is a max-heap by priority while it is
@@ -713,7 +883,7 @@ final class SimulationExecutor: TaskExecutor {
         // The task's identity is read from the job's description, outside the lock.
         let identity = wantsIdentity ? JobIdentity(job) : .unknown
         state.withLock { state in
-            if let driver = state.driverThread, driver != thread { state.sawOutside = true }
+            if let driver = state.driverThread, driver != thread { state.outsideArrivals += 1 }
             state.arrivals += 1
             var entry = Entry(job: job, arrival: state.arrivals, priority: 0, task: nil)
             if state.pct != nil {
@@ -756,9 +926,15 @@ final class SimulationExecutor: TaskExecutor {
         state.withLock { $0.driverThread = thread }
     }
 
-    /// Whether a job has arrived from a thread other than the driver's.
-    var sawOutsideArrival: Bool {
-        state.withLock { $0.sawOutside }
+    /// How many jobs have arrived from a thread other than the driver's.
+    var outsideArrivals: Int {
+        state.withLock { $0.outsideArrivals }
+    }
+
+    /// Whether the calling thread is the driver's.
+    var isOnDriverThread: Bool {
+        let thread = currentThreadID()
+        return state.withLock { $0.driverThread == thread }
     }
 
     /// How many jobs are runnable.
@@ -798,6 +974,19 @@ final class SimulationExecutor: TaskExecutor {
         // Capped at a day: a larger wait would overflow the dispatch time.
         let nanoseconds = Int(min(max(seconds, 0), 86_400)) * 1_000_000_000 + Int(attoseconds / 1_000_000_000)
         return arrival.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success
+    }
+
+    /// Waits up to `limit` of real time for the cooperative thread pool to run
+    /// a trivial task: proof that a task the app started a moment ago has
+    /// had its chance to run, even on a machine that is busy. Called from the
+    /// driver's own thread, outside any task, so the probe has no executor
+    /// preference and goes where an app's unstructured `Task {}` goes.
+    func waitForPoolsToAnswer(within limit: Duration) -> Bool {
+        let answered = DispatchSemaphore(value: 0)
+        Task { answered.signal() }
+        let (seconds, attoseconds) = limit.components
+        let nanoseconds = Int(min(max(seconds, 0), 86_400)) * 1_000_000_000 + Int(attoseconds / 1_000_000_000)
+        return answered.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success
     }
 
     /// Wakes a driver waiting for arrivals, to notice a cancellation.
