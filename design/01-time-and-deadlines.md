@@ -24,36 +24,38 @@ work that will not stop.
 
 ```swift
 // The deadline in force for the current task, if any. Narrowed, never widened.
-public struct Deadline: Sendable, Comparable {
+public struct Deadline: Sendable {
     public let instant: AnyClock.Instant
     public let clock: AnyClock
+    public static func after(_ duration: Duration, clock: AnyClock? = nil) -> Deadline
     public static var current: Deadline? { get }
-    public var remaining: Duration { get }        // ≤ .zero once passed
+    public var remaining: Duration { get }        // zero once passed
     public var hasPassed: Bool { get }
+    public func earlier(_ other: Deadline) -> Deadline
 }
 
 // Cooperative: cancel the operation when the deadline passes, then wait for it.
-public nonisolated(nonsending) func withDeadline<R, Failure: Error>(
-    _ deadline: Deadline,
-    operation: nonisolated(nonsending) () async throws(Failure) -> R
+public nonisolated(nonsending) func withDeadline<R: Sendable, Failure: Error>(
+    _ deadline: Deadline, tolerance: Duration? = nil, label: String? = nil,
+    @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
 ) async throws(Failure) -> R
 
-public nonisolated(nonsending) func withTimeout<R, Failure: Error>(
-    _ duration: Duration,
-    clock: AnyClock? = nil,
-    operation: nonisolated(nonsending) () async throws(Failure) -> R
-) async throws(Failure) -> R
-
-// For work that cannot be cancelled: stop waiting, keep it accountable.
 public nonisolated(nonsending) func withTimeout<R: Sendable, Failure: Error>(
-    _ duration: Duration,
-    onUncooperative: Abandonment,           // .abandon(limit:, label:)
-    operation: sending @escaping @isolated(any) () async throws(Failure) -> R
+    _ duration: Duration, clock: AnyClock? = nil, tolerance: Duration? = nil, label: String? = nil,
+    @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
+) async throws(Failure) -> R
+
+// For work that cannot be cancelled: stop waiting, keep it accountable. (Not yet built; see below.)
+public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>(
+    _ duration: Duration, label: String, limit: Int = 2, on executor: BlockingExecutor,
+    operation: sending @escaping () throws(Failure) -> R
 ) async throws(PolicyError<Failure>) -> R
 
-// Why the current task was cancelled, when Stoic did it.
-public enum CancellationCause: Sendable { case deadline, userRequested, superseded, scopeEnded, supervisorStopped }
-public var currentCancellationCause: CancellationCause? { get }
+// Why the current task was cancelled: an extensible struct, first cause wins.
+public struct CancellationCause: Hashable, Sendable {
+    public static let deadline, userRequested, superseded, scopeEnded, supervisorStopped
+    public static var current: CancellationCause? { get }
+}
 ```
 
 ## Semantics
@@ -65,14 +67,34 @@ two-second deadline gets two seconds. Every Stoic primitive consults
 semaphores and rate limiters stop waiting at it, scopes bound their
 finalizers by it (with their own floor, design/04).
 
-**Cooperative timeout.** The operation runs in a child task; a timer runs in
-a sibling. When the operation finishes, the timer is cancelled — the defect
-hand-rolled versions share. When the timer fires first, the operation's task is
-cancelled with cause `.deadline` and Stoic _waits for it to finish_. The
-result is whatever the operation returns or throws: passthrough, exactly as
-SE-0526. An operation that honours cancellation throws `CancellationError`,
-and `currentCancellationCause` (or `Task.cancellationReason` once SE-0526
-ships) says why.
+**Execution model.** The operation runs as a child task in a task group;
+a timer runs as its sibling. This is the only model that lets a deadline
+cancel the operation without cancelling the caller — cancellation is
+irrevocable, so cancelling the caller's own task would leave it cancelled
+after `withDeadline` returned. Two consequences, both deliberate:
+
+- The closure is `sending @escaping @isolated(any)` and carries
+  `@_inheritActorContext`, exactly like `Task {}`: written on the main
+  actor, it runs on the main actor and may touch main-actor state, verified
+  under Swift 6.4. The attribute is underscored; it is how the standard
+  library spells this today, and Stoic will follow its replacement.
+- The result must be `Sendable`, because it crosses from the child task.
+  SE-0526, which the runtime implements without a child task, lifts this;
+  Stoic forwards to it when it ships.
+
+**Cooperative timeout.** When the operation finishes, the timer is cancelled — the defect
+hand-rolled versions share — and the clock is left with no pending sleeper.
+When the timer fires first, Stoic records ``CancellationCause/deadline`` and
+cancels the operation's task, then _waits for it to finish_. The result is
+whatever the operation returns or throws: passthrough, exactly as SE-0526.
+
+**Causes.** Stoic records a cause before every cancellation it initiates,
+in a box the cancelled task can read; nested scopes consult their enclosing
+scopes' boxes. Cancellation no Stoic scope initiated reads as
+`userRequested`, SE-0526's default. A first version recorded the caller's
+cancellation from a cancellation handler; 300 repeated runs showed the child
+can observe its cancellation before the handler runs, so the cause is now
+resolved by elimination instead of by a racing write.
 
 **Already passed.** If the deadline has passed before `withDeadline` is
 entered, the operation is still run, already cancelled, so cancellation-aware
@@ -81,23 +103,33 @@ SE-0526 and keeps "the operation always ran" true for callers who rely on it.
 Policies that would rather not start at all check `Deadline.current` first and
 throw `.rejected(.deadlineExceeded)` (design/10).
 
-**Abandoning timeout.** For operations that ignore cancellation (a CoreAudio
-start on a wedged queue), `onUncooperative: .abandon` returns at the deadline
-with `PolicyError.rejected(.deadlineExceeded)` and leaves the operation
-running as an unstructured task Stoic still tracks:
+**Abandoning timeout (`abandoningAfter`).** For work that ignores
+cancellation — a synchronous CoreAudio call on a wedged queue, an
+Accessibility call into a hung process — `abandoningAfter` returns
+`.rejected(.deadlineExceeded)` at the deadline and leaves the work running,
+accounted for. Review surfaced three hazards the first draft missed, and the
+design answers each:
 
-- The operation is cancelled first, so if it _can_ notice, it does.
-- It is registered in a process-wide abandonment ledger with its label,
-  start time and call site; `Abandoned.current` lists them for diagnostics.
-- `limit:` caps concurrent abandoned operations per label (default 4). Past
-  the cap, `withTimeout` refuses to start another: `.rejected(.abandonmentLimit)`.
-  A hung subsystem therefore costs a bounded number of threads, not one per
-  attempt.
-- When an abandoned operation finally finishes, its result is dropped and an
-  `abandoned.completed` event records how late it was; a never-finishing one
-  shows up in `abandoned.outstanding` on every diagnostics snapshot.
-- The closure is `sending @isolated(any)` because it outlives the caller; the
-  type system makes the caller give up what it captured.
+- **Thread starvation.** Blocking work holds a thread of the cooperative
+  pool, which is only about as wide as the core count. Abandonable work
+  therefore must run on a `BlockingExecutor`: a task executor with its own
+  small, capped set of threads (`withTaskExecutorPreference`). The
+  operation is synchronous by signature, so it cannot be mistaken for
+  well-behaved async work.
+- **Use after close.** Abandoned work may still hold a resource that its
+  scope is about to release. Scopes count abandoned work started inside
+  them and hand that count to finalizers (`Exit.abandoned`), and a resource
+  may declare its release `.quarantine`: leak it deliberately and report,
+  rather than close it under a zombie.
+- **A permanent dead end.** Past `limit` abandoned operations under a label,
+  `abandoningAfter` refuses at once (`.rejected(.abandonmentLimit)`) and
+  emits `abandoned.wedged`, which a supervisor (design/09) can escalate to
+  its terminal action: restart the process, the only cure for a wedged
+  system framework.
+
+Abandoned work is listed in a process-wide ledger (label, age, call site)
+and appears in diagnostics until it finishes; a late finish is reported with
+its lateness. Built after the blocking-executor spike.
 
 **Clocks.** Deadlines use the ambient continuous clock: if the machine
 sleeps through a deadline, it has passed. A deadline remembers its clock;

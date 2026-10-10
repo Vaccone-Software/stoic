@@ -81,3 +81,19 @@ extension Ambient {
         current.instrumentation.record(event)
     }
 }
+
+extension Ambient {
+    /// Sleeps for `duration` on the ambient clock.
+    ///
+    /// Use this instead of `Task.sleep(for:)` in code that tests should be
+    /// able to run on virtual time.
+    public static func sleep(for duration: Duration, tolerance: Duration? = nil) async throws {
+        let clock = current.clock
+        try await clock.sleep(until: clock.now.advanced(by: duration), tolerance: tolerance)
+    }
+
+    /// Sleeps until `instant` on the ambient clock.
+    public static func sleep(until instant: AnyClock.Instant, tolerance: Duration? = nil) async throws {
+        try await current.clock.sleep(until: instant, tolerance: tolerance)
+    }
+}
