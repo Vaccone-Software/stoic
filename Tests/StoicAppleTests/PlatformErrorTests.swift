@@ -63,3 +63,11 @@ final class SendableCounter: Sendable {
     func increment() { count.withLock { $0 += 1 } }
     var value: Int { count.withLock { $0 } }
 }
+
+@Suite("Device conditions")
+struct DeviceConditionsTests {
+    @Test func theDeviceReportsPlausibleConditions() {
+        let conditions = DeviceConditions.shared.current
+        #expect(conditions.backoffFactor >= 1 && conditions.backoffFactor <= 8)
+    }
+}
