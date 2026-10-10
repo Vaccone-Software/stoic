@@ -305,4 +305,56 @@ struct OutboxTests {
         }
         #expect(events.names.filter { $0.rawValue.hasPrefix("store.") } == ["store.outbox_delivered", "store.outbox_delivery_failed"])
     }
+
+    // MARK: Opening a long outbox
+
+    /// A journal holding `pending + acknowledged` enqueues and `acknowledged`
+    /// acknowledgements (every fifth entry), written as the outbox would.
+    func writeLongOutbox(_ disk: SimulatedFileSystem, pending: Int, acknowledged: Int) throws {
+        let journal = try Journal.open(at: "/d/outbox", fileSystem: disk)
+        let total = pending + acknowledged
+        let step = max(1, total / max(1, acknowledged))
+        var records: [[UInt8]] = []
+        var acknowledgements = 0
+        for index in 0..<total {
+            let key = IdempotencyKey(rawValue: "key-\(index)")
+            records.append(try Outbox<String>.enqueueRecord(key: key, item: Array("item \(index)".utf8)))
+            if index % step == 0, acknowledgements < acknowledged {
+                records.append(try Outbox<String>.acknowledgeRecord(key: key))
+                acknowledgements += 1
+            }
+        }
+        try journal.append(batch: records)
+        try journal.close()
+    }
+
+    func timeToOpen(pending: Int, acknowledged: Int) async throws -> Duration {
+        let disk = SimulatedFileSystem(recordsHistory: false)
+        try disk.createDirectory("/d")
+        try writeLongOutbox(disk, pending: pending, acknowledged: acknowledged)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let outbox = try open(disk)
+        let elapsed = clock.now - start
+        #expect(await outbox.pendingCount == pending)
+        return elapsed
+    }
+
+    @Test func openingTwentyThousandPendingEntriesIsFast() async throws {
+        let elapsed = try await timeToOpen(pending: 20_000, acknowledged: 4_000)
+        // Quadratic, this took 17 seconds (and 1.1 s at 5,000). The bound is
+        // generous for a slow, loaded machine and a debug build; it still
+        // fails by an order of magnitude on a quadratic open.
+        #expect(elapsed < .seconds(3), "opened 20,000 pending entries in \(elapsed)")
+    }
+
+    @Test func theTimeToOpenGrowsLinearlyNotQuadratically() async throws {
+        let small = try await timeToOpen(pending: 5_000, acknowledged: 1_000)
+        let large = try await timeToOpen(pending: 20_000, acknowledged: 4_000)
+        // Four times the entries: about four times the time when linear,
+        // sixteen when quadratic. The floor keeps timer noise on a small
+        // run from making the ratio meaningless.
+        let floor = Duration.milliseconds(20)
+        #expect(large < max(small, floor) * 10, "5,000 entries took \(small), 20,000 took \(large)")
+    }
 }

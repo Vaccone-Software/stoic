@@ -192,7 +192,11 @@ the sequence number is what makes every crash point correct.
 Journal records: `0x01 | keyLength | key | item` (enqueue) and
 `0x02 | keyLength | key` (acknowledge). The pending list is the snapshot's
 entries plus the log, enqueues in order minus acknowledged keys. `enqueue` is
-idempotent in its key. `deliverPending` takes the pending list as of its start;
+idempotent in its key. The pending list is kept in enqueue order with a key
+index (removal leaves a hole that is squeezed out later), so opening,
+enqueueing and acknowledging are linear in the journal, not quadratic: 20,000
+pending entries open in tens of milliseconds, where a list searched per record
+took 17 seconds. `deliverPending` takes the pending list as of its start;
 each entry runs `retry(policy.schedule, budget:, classify:)` around the user's
 closure, and is acknowledged durably the moment the closure returns. Failures
 stay pending. Semantics are at least once: an entry delivered but not yet
