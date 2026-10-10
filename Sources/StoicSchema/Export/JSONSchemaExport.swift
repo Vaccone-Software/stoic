@@ -105,6 +105,17 @@ struct JSONSchemaExporter {
             out["type"] = "string"
             out["enum"] = .array(cases.map { .string($0) })
 
+        case .integerEnumeration(_, let cases):
+            out["type"] = "integer"
+            out["enum"] = .array(cases.map { .number(JSONNumber($0.value)) })
+            out["x-stoic-enum-names"] = .array(cases.map { .string($0.name) })
+
+        case .transformed(let transform):
+            out = export(transform.base, location: location)
+            out["x-stoic-transform"] = .object([
+                "name": .string(transform.name), "description": .string(transform.description),
+            ])
+
         case .array(let element, let constraints):
             out["type"] = "array"
             out["items"] = .object(export(element, location: location + "[]"))

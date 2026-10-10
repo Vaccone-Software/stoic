@@ -21,6 +21,9 @@ public indirect enum SchemaNode: Sendable {
     case string(constraints: [Constraint])
     /// A string drawn from the cases of a Swift enumeration.
     case enumeration(name: String, cases: [String])
+    /// An integer drawn from the cases of a Swift enumeration whose raw
+    /// values are `Int`s.
+    case integerEnumeration(name: String, cases: [IntegerCase])
     case array(element: SchemaNode, constraints: [Constraint])
     /// An object with arbitrary string keys and one kind of value.
     case dictionary(value: SchemaNode, constraints: [Constraint])
@@ -31,6 +34,12 @@ public indirect enum SchemaNode: Sendable {
     /// Any JSON value, passed through untouched.
     case json(constraints: [Constraint])
     case object(ObjectNode)
+    /// A value that is read as its base and then converted by code: a
+    /// timestamp that is a string on the wire, a URL, a unit of measure.
+    /// The tree records what is on the wire (the base) and how to speak of
+    /// the conversion; the conversion itself is a closure, so exporters
+    /// and generators treat it as opaque and rely on ``TransformNode/examples``.
+    case transformed(TransformNode)
     /// A schema named so it can refer to itself. `resolve` produces its
     /// node on demand: calling it while the tree is being built would
     /// recurse forever, so a consumer calls it once per name and refers to
@@ -44,7 +53,8 @@ public indirect enum SchemaNode: Sendable {
             .array(_, let constraints), .dictionary(_, let constraints), .json(let constraints):
             constraints
         case .optional(let wrapped, _): wrapped.constraints
-        case .boolean, .enumeration, .object, .lazy: []
+        case .transformed(let transform): transform.base.constraints
+        case .boolean, .enumeration, .integerEnumeration, .object, .lazy: []
         }
     }
 
@@ -60,7 +70,10 @@ public indirect enum SchemaNode: Sendable {
         case .dictionary(let value, let constraints): return .dictionary(value: value, constraints: constraints + extra)
         case .json(let constraints): return .json(constraints: constraints + extra)
         case .optional(let wrapped, let nullable): return .optional(wrapped.adding(extra), nullable: nullable)
-        case .boolean, .enumeration, .object, .lazy: return self
+        case .transformed(var transform):
+            transform.base = transform.base.adding(extra)
+            return .transformed(transform)
+        case .boolean, .enumeration, .integerEnumeration, .object, .lazy: return self
         }
     }
 
@@ -74,11 +87,50 @@ public indirect enum SchemaNode: Sendable {
         case .string: "a string"
         case .enumeration(_, let cases): "one of " + cases.map { "\"\($0)\"" }.joined(separator: ", ")
         case .array: "an array"
+        case .integerEnumeration(_, let cases): "one of " + cases.map { String($0.value) }.joined(separator: ", ")
         case .dictionary, .object: "an object"
+        case .transformed(let transform): transform.description
         case .optional(let wrapped, _): wrapped.expectation
         case .json: "any JSON value"
         case .lazy(let name, _): "a \(name)"
         }
+    }
+}
+
+/// One case of an enumeration whose raw values are integers.
+public struct IntegerCase: Sendable, Hashable {
+    /// The Swift case's name, for documentation and UI; never on the wire.
+    public var name: String
+    /// The raw value, which is what the wire carries.
+    public var value: Int
+
+    public init(name: String, value: Int) {
+        self.name = name
+        self.value = value
+    }
+}
+
+/// A conversion layered on a base schema; see ``SchemaNode/transformed(_:)``.
+public struct TransformNode: Sendable {
+    /// What is on the wire. Decoding reads this first, so every constraint
+    /// of the base holds before the conversion runs.
+    public var base: SchemaNode
+    /// The Swift type the conversion produces.
+    public var name: String
+    /// The conversion in words, as an issue expects it: `an RFC 3339
+    /// timestamp`. Exported as `x-stoic-transform`.
+    public var description: String
+    /// Encoded values the conversion is known to accept, for generators:
+    /// a closure cannot be inspected, so the schema's author supplies the
+    /// proof that some values pass. Without examples a generator can only
+    /// try base values and hope.
+    public var examples: [JSONValue]
+
+    public init(base: SchemaNode, name: String, description: String, examples: [JSONValue] = []) {
+        self.base = base
+        self.name = name
+        self.description = description
+        self.examples = examples
     }
 }
 

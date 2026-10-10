@@ -245,6 +245,38 @@ above left open:
   rules that were only annotated). Recursive schemas use `$defs`/`$ref`;
   named non-recursive types are inlined.
 
+## As built: phase 2 (StoicSchema)
+
+Phase 2 completes Layer 3 and the bridge of Layer 4. What was decided, in
+the order it was built:
+
+### Custom schemas
+
+- **`Schema.transform(base:decode:encode:describe:name:examples:)`** reads
+  the base schema first and then converts, so the base's constraints hold
+  (and all its issues are reported) before the closure runs. The closure
+  throws a `TransformFailure` (message, code, expectation, suggestions),
+  which becomes one `invalid_value` issue at the value's path. `encode` is
+  total.
+- **The tree describes it** as `SchemaNode.transformed(TransformNode)`: the
+  base node, the Swift type's name, a description and `examples`. The export
+  is the base's keywords plus `x-stoic-transform {name, description}`. The
+  rule "constraints are data" survives in the only way it can for code:
+  put everything the base can say _in_ the base.
+- **Examples exist for the generators.** A generator cannot look inside a
+  closure, so a transform declares encoded values it is known to accept;
+  without them the generator tries base values and the suite says so.
+- **`Schema.custom(describing:description:decode:encode:)`** is the escape
+  hatch for shapes no composition describes. Its decoder reports through a
+  `DecodingContext`, which knows the path (`context.report(…, at: ["low"])`
+  records `$.range.low`, with line and column when the input was text) and
+  decodes sub-values with other schemas (`context.decode(_, as:, at:)`).
+  A decoder that returns `nil` without reporting still fails with
+  `invalid_value`; one that returns a value after reporting an error fails.
+- **`Schema.enumeration(_:)` also takes `Int` raw values**
+  (`SchemaNode.integerEnumeration`, with the Swift case names kept for
+  documentation): `type: integer`, `enum: [...]`, `x-stoic-enum-names`.
+
 ## Non-goals
 
 Formats other than JSON in the first version (property lists and YAML can

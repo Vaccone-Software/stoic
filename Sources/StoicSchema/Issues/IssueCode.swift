@@ -67,6 +67,11 @@ public struct IssueCode: RawRepresentable, Hashable, Sendable, CustomStringConve
     /// value. The constraint's id and description are in the parameters.
     public static let custom = IssueCode(rawValue: "custom")
 
+    /// The value has the right shape but a conversion written in code
+    /// refused it: a timestamp that is not a date, a URL with no host. The
+    /// reason is in the `message` parameter.
+    public static let invalidValue = IssueCode(rawValue: "invalid_value")
+
     // MARK: Input and declarations
 
     /// The input is not well-formed JSON. The parser's own code, message and

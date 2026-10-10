@@ -157,6 +157,10 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let id = parameters["id"]?.string ?? "custom"
             let description = parameters["description"]?.string ?? want
             return "fails the `\(id)` check: \(description)"
+        case .invalidValue:
+            let reason = parameters["message"]?.string ?? "is not valid"
+            guard let expected else { return reason }
+            return "\(reason), expected \(expected)"
         case .parseError:
             return "invalid JSON: \(parameters["message"]?.string ?? "malformed input")"
         default:

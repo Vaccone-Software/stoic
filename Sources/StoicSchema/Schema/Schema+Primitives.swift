@@ -235,6 +235,36 @@ extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue ==
     }
 }
 
+extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue == Int {
+    /// An integer that is the raw value of a case of `type`: a priority
+    /// level, a protocol code, anything a wire format numbers.
+    ///
+    /// The number is read as an `Int` first (so `1.5` and `1e2` are
+    /// refused as for any integer), then looked up. One that is no case's
+    /// raw value is `not_one_of`, listing the raw values. The cases'
+    /// Swift names are kept in the node for documentation and UI, never
+    /// on the wire.
+    public static func enumeration(_ type: Value.Type) -> Schema<Value> {
+        let cases = Value.allCases.map { IntegerCase(name: String(describing: $0), value: $0.rawValue) }
+        var byRaw: [Int: Value] = [:]
+        for value in Value.allCases { byRaw[value.rawValue] = value }
+        let lookup = byRaw
+        let expectation = "one of " + cases.map { String($0.value) }.joined(separator: ", ")
+        let integer = Schema<Int>.int()
+        return Schema<Value>(
+            node: .integerEnumeration(name: String(describing: Value.self), cases: cases),
+            decoder: { json, state in
+                guard let raw = integer.decoder(json, &state) else { return nil }
+                guard let value = lookup[raw] else {
+                    state.report(.notOneOf, expected: expectation, actual: json.briefDescription)
+                    return nil
+                }
+                return value
+            },
+            encoder: { value, _ in .number(JSONNumber(value.rawValue)) })
+    }
+}
+
 // MARK: - Optional
 
 extension Schema {
