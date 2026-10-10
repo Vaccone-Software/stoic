@@ -101,6 +101,19 @@ retired at once so newcomers start fresh instead of joining a flight being
 cancelled. The operation runs without the first caller's deadline; each
 caller's wait is bounded by its own.
 
+**Channel.** A bounded queue between any number of producers and
+consumers; each element reaches exactly one consumer, in order. The
+producer chooses what a full channel means: `suspend` (backpressure — FIFO,
+cancellation- and deadline-aware, a rejected sender sent nothing),
+`dropOldest` (latest state wins: progress, location), `dropNewest`, or
+`reject` (the producer sheds load). Drops are counted and reported
+(`channel.dropped`). `finish()` rejects waiting senders with `closed`, and
+consumers drain what is buffered before seeing the end. It is an
+`AsyncSequence`; `receive()` returns `nil` at the end or when the receiving
+task is cancelled. Principle 2 says no queue is unbounded; this is the queue
+that keeps the promise, and the lint rule against
+`AsyncStream(bufferingPolicy: .unbounded)` points to it.
+
 ## Failure modes
 
 | What happens if…                                        | Behaviour                                                                                                                                             |
