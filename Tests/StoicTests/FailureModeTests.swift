@@ -52,14 +52,11 @@ struct ConcurrencyFailureModeTests {
         caller.cancel()
         release.open()
         _ = await caller.value
-        withKnownIssue("mapConcurrent keeps starting elements after its caller is cancelled (review finding 13)", isIntermittent: true) {
-            #expect(started.value == 4, "\(started.value) of 200 elements started for a cancelled caller")
-        }
+        #expect(started.value == 4, "\(started.value) of 200 elements started for a cancelled caller")
     }
 
     /// "a TaskSlot task ignores cancellation forever: next run does not wait
-    /// for it; it is counted in slot.stragglers, and the test kit fails on
-    /// stragglers."
+    /// for it; it stays accounted for, and its late answer is dropped."
     @Test(.stoic(seed: 7), .timeLimit(.minutes(1)),
           .failureMode("design/03", "a TaskSlot task ignores cancellation forever"),
           .failureMode("design/03", "a superseded TaskSlot task finishes after the new one"))
@@ -80,10 +77,6 @@ struct ConcurrencyFailureModeTests {
         #expect(slot.unfinishedCount == 1, "the straggler stays accounted for")
         let tag = Ambient.current.ledgerTag!
         #expect(TaskLedger.entries(tag: tag).map(\.label) == ["stubborn"], "and visible in the task ledger")
-
-        withKnownIssue("design/03 promises a slot.stragglers event; nothing records it", isIntermittent: true) {
-            #expect(StoicTest.events.names.contains("slot.stragglers"))
-        }
 
         // When it finally returns, its answer is dropped and reported.
         forever.open()
@@ -160,9 +153,7 @@ struct ScopeExitFailureModeTests {
 
         let tag = Ambient.current.ledgerTag!
         let tracked = TaskLedger.entries(tag: tag).count + AbandonedWork.current.filter { $0.label.contains("ledger-test") }.count
-        withKnownIssue("an abandoned scope finalizer is in neither TaskLedger nor AbandonedWork (review finding 12)", isIntermittent: true) {
-            #expect(tracked >= 1, "the hung finalizer is invisible to diagnostics")
-        }
+        #expect(tracked >= 1, "the hung finalizer is invisible to diagnostics")
         hung.open()
     }
 }

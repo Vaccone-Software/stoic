@@ -305,7 +305,7 @@ final class ScopeState: Sendable {
         // `AbandonedWork` until it does, and its late end is reported.
         let ledger = AbandonedWork.ledger
         let start = clock.now
-        let ledgerLabel = "scope finalizer \(finalizer.label)"
+        let ledgerLabel = "scope \(label.map { "\($0) " } ?? "")finalizer \(finalizer.label)"
         let id = ledger.admit(label: ledgerLabel)
         let task = Task<(any Error)?, Never>.stoic {
             // A finalizer that is slow to start exercises the slow and
