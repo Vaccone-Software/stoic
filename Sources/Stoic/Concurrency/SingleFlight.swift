@@ -57,6 +57,11 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         state.withLock { $0.flights.count }
     }
 
+    /// The number of callers waiting on `key`'s flight.
+    public func waiterCount(for key: Key) -> Int {
+        state.withLock { $0.flights[key]?.waiters.count ?? 0 }
+    }
+
     /// Runs `operation` for `key`, or joins the run already in flight.
     ///
     /// - Throws: `.failed` with the shared operation's error, or `.rejected`
@@ -134,7 +139,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
     private func launch(key: Key, flightID: UInt64, operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value) {
         let cause = state.withLock { $0.flights[key]?.id == flightID ? $0.flights[key]?.cause : nil }
         guard let cause else { return }   // every caller already left
-        let task = Task {
+        let task = TaskLedger.task(.flight, label: label) {
             let result: Result<Value, Failure> = await Deadline.$stored.withValue(nil) {
                 await CancellationCauseBox.$current.withValue(cause) {
                     do throws(Failure) {

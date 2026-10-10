@@ -32,6 +32,10 @@ public struct Ambient: Sendable {
     /// What the device is going through; backoff stretches with it.
     public var conditions: any SystemConditionsSource
 
+    /// Groups the tasks Stoic starts in the ``TaskLedger``, so a test can ask
+    /// whether everything *it* started has finished. Set by test tooling.
+    public var ledgerTag: UInt64?
+
     public init(
         clock: AnyClock = .continuous,
         livenessClock: AnyClock = .suspending,

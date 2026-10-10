@@ -147,7 +147,7 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
         let label = label
         // The task holds the slot weakly: a slot whose owner has gone away
         // cancels its work in `deinit` and delivers nothing.
-        let task = Task { [weak self] in
+        let task = TaskLedger.task(.slot, label: label) { [weak self] in
             if let previous {
                 await previous.value
                 guard self?.isCurrent(generation) == true, !Task.isCancelled else {

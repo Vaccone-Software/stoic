@@ -177,7 +177,7 @@ struct SupervisorRun {
         slots[index].cause = cause
         slots[index].startedAt = clock.now
         slots[index].finished = false
-        slots[index].task = Task {
+        slots[index].task = TaskLedger.task(.supervisorChild, label: child.label) {
             let failure: (any Error)?
             do {
                 try await withAmbient({ $0 = ambient }) {

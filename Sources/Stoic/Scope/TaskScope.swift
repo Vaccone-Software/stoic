@@ -57,16 +57,20 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
 ) async throws -> R {
     let resources = ScopeState(label: label, exitBudget: exitBudget, finalizerTimeout: finalizerTimeout)
     let tasks = TaskScopeState(label: label)
-    let bodyTask = Task<R, any Error> {
-        try await CancellationCauseBox.$current.withValue(tasks.cause) {
-            let scope = TaskScope(resources: resources, tasks: tasks)
-            return try await body(scope)
+    let bodyTask = TaskLedger.task(.scopeBody, label: label) { () async -> Result<R, any Error> in
+        do {
+            return .success(try await CancellationCauseBox.$current.withValue(tasks.cause) {
+                let scope = TaskScope(resources: resources, tasks: tasks)
+                return try await body(scope)
+            })
+        } catch {
+            return .failure(error)
         }
     }
     tasks.setBody(bodyTask)
 
     let bodyResult = await withTaskCancellationHandler {
-        await bodyTask.result
+        await bodyTask.value
     } onCancel: {
         tasks.cause.record(.userRequested)
         bodyTask.cancel()
@@ -119,13 +123,13 @@ final class TaskScopeState: Sendable {
         state.withLock { $0.failures }
     }
 
-    func setBody<R>(_ task: Task<R, any Error>) {
+    func setBody<R>(_ task: Task<R, Never>) {
         state.withLock { $0.bodyCancel = { task.cancel() } }
     }
 
     func fork(label: String, _ work: @escaping @Sendable () async throws -> Void) {
         let forkCause = CancellationCauseBox(parent: cause)
-        let task = Task {
+        let task = TaskLedger.task(.fork, label: label) {
             do {
                 try await CancellationCauseBox.$current.withValue(forkCause) {
                     try await work()

@@ -32,6 +32,7 @@ public struct StoicTrait: TestTrait, SuiteTrait, TestScoping {
                 ambient.random = .seeded(seed)
                 ambient.instrumentation = events
                 ambient.budgets = RetryBudgets()
+                ambient.ledgerTag = LedgerTags.next()
             }) {
                 try await function()
             }

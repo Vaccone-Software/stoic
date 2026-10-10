@@ -243,7 +243,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         if let timeout {
             let clock = clock
             let sender = makeSender(visit: visit)
-            core.stateWork.append(Task {
+            core.stateWork.append(TaskLedger.task(.stateTimeout, label: label) {
                 do {
                     try await clock.sleep(until: clock.now.advanced(by: timeout.after), tolerance: nil)
                 } catch {
@@ -259,7 +259,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         let cause = CancellationCauseBox(parent: nil)
         let sender = makeSender(visit: visit)
         let work = activity.work
-        let task = Task {
+        let task = TaskLedger.task(.stateWork, label: "\(label).\(activity.label)") {
             await CancellationCauseBox.$current.withValue(cause) { await work(sender) }
         }
         return Task {

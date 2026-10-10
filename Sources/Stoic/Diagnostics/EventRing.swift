@@ -87,6 +87,11 @@ public enum Diagnostics {
         } else {
             lines.append("Recent events: no event ring installed (Diagnostics.install)")
         }
+        let tasks = TaskLedger.current
+        lines.append("Stoic tasks running: \(tasks.isEmpty ? "none" : "\(tasks.count)")")
+        for task in tasks {
+            lines.append("  \(task)")
+        }
         let abandoned = AbandonedWork.current
         lines.append("Abandoned work: \(abandoned.isEmpty ? "none" : "")")
         for entry in abandoned {
