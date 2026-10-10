@@ -53,6 +53,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `Journal.open(at:)`: framed, checksummed append-only log; `append` durable on return; torn tails cut on open; `compact`.
 - `Outbox<Item>.open(at:codec:)`: `enqueue` (durable, assigns an `IdempotencyKey`), `deliverPending { entry in … }` under retry.
 - `LaunchGuard(path:).beginLaunch()` → `.normal` / `.safeMode(uncleanLaunches:)`; `markStable(after:)`, `markCleanExit()`.
+- `FlightRecorder(path:)`: an `Instrumentation` that keeps recent events in a fixed-size file; next launch reads `previousRun` (`events`, `endedCleanly`); `markCleanExit()`, `flush()`. Private values stored as `<private>`.
 - `SimulatedFileSystem` + crash-image exploration for crash-consistency tests.
 
 ## Observability

@@ -61,13 +61,43 @@ composition of sinks an app installs.
 `EventCatalog.entries` is the authoritative list, with each event's level
 and meaning.
 
+## Flight recorder (`StoicStore`)
+
+`FlightRecorder` is an `Instrumentation` that writes each event to a
+fixed-size file as it happens, so the next launch can read what the
+previous run was deciding when it died (`previousRun`), and whether it
+ended on purpose (`markCleanExit()`). The in-memory ring (`EventRing`,
+`Diagnostics.snapshot`) answers "what just happened" in this run; the
+recorder answers it about the run that crashed.
+
+- **Format.** A 32-byte header, then a circular region of records, each
+  `length | crc32c | sequence | payload`, 8-byte aligned. Recovery scans
+  every aligned offset and keeps records whose checksum holds, so neither a
+  torn record nor old bytes the writer partly overwrote can be misread, and
+  there is no index for a crash to leave inconsistent. Sequences continue
+  across runs; run boundaries are marker records.
+- **Durability.** One `pwrite` per event: the page cache outlives the
+  process, so a crash, a kill or a watchdog termination loses nothing
+  written. `flush()` (one full sync) makes everything so far survive power
+  loss too.
+- **Why not `mmap`.** It saves the system call, but a store to a mapped page
+  the disk cannot back — a full disk, a copy-on-write block under a
+  snapshot — kills the process with SIGBUS: the recorder would cause the
+  crash it exists to explain. A failed write stops the recorder
+  (`status`), and the app goes on. The file is allocated in full when
+  created, so a full disk shows up then.
+- **Privacy.** Private values are stored as `<private>` (an error keeps its
+  public type) unless `recordPrivateValues` is set; strings are cut at 256
+  bytes on a character boundary.
+- **Tested** at every crash point of a run, under every way the simulated
+  disk can lose unsynced data: recovery never misreads a record, never
+  reorders, and keeps everything recorded before a `flush()`. Breaking the
+  checksum check or the flush makes that test fail.
+
 ## Planned
 
 - Adapters, as package traits: swift-log, swift-metrics (counters per event
   name, histograms for durations), swift-distributed-tracing (events as
   span events; retries and deadlines as span attributes).
-- A bounded in-memory ring of recent events for a diagnostics bundle, and a
-  crash-surviving variant on a memory-mapped file, so the next launch can
-  say what the app was deciding when it died.
 - Golden-trace assertions in `StoicTesting`: a test asserts the sequence of
   decisions, not only the result.
