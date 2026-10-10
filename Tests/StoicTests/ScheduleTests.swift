@@ -129,3 +129,45 @@ struct ScheduleTests {
         #expect(description.contains("attempts(4)"))
     }
 }
+
+@Suite("Schedules: review fixes")
+struct ScheduleReviewTests {
+    @Test func cappingTwiceKeepsTheSmallerCap() {
+        #expect(Schedule.fixed(.seconds(5)).capped(at: .seconds(1)).capped(at: .seconds(10)).maximalDelays(limit: 2) == [.seconds(1), .seconds(1)])
+    }
+
+    @Test func aCapAfterJitterCanStillRaiseTheDefault() {
+        let delays = Schedule.exponential(base: .seconds(1)).jittered().capped(at: .seconds(3600)).maximalDelays(limit: 20)
+        #expect(delays.max() == .seconds(3600))
+    }
+
+    @Test func exponentialIsJitteredByDefaultAndCanBeMadeExact() {
+        var jittered = Schedule.exponential(base: .seconds(1)).makeStepper(random: RandomSource.seeded(1).generator())
+        var exact = Schedule.exponential(base: .seconds(1)).unjittered().makeStepper(random: RandomSource.seeded(1).generator())
+        let a = (0..<5).compactMap { _ in jittered.next(elapsed: .zero) }
+        let b = (0..<5).compactMap { _ in exact.next(elapsed: .zero) }
+        #expect(b == [1, 2, 4, 8, 16].map(Duration.seconds))
+        #expect(zip(a, b).allSatisfy { $0 <= $1 })
+        #expect(a != b)
+    }
+
+    @Test func degenerateBasesAndFactorsNeverTrap() {
+        #expect(Schedule.exponential(base: .zero).attempts(2000).maximumAttempts == 2000)
+        #expect(Schedule.exponential(base: .zero).attempts(2000).maximumTotalDelay == .zero)
+        #expect(Schedule.exponential(base: .seconds(1), factor: .infinity).attempts(5).maximumTotalDelay == .seconds(1 + 300 * 3))
+        #expect(Schedule.exponential(base: .seconds(1), factor: .nan).unjittered().attempts(3).maximumTotalDelay == .seconds(2))
+        #expect(Schedule.exponential(base: .seconds(1), factor: 0.5).unjittered().attempts(3).maximumTotalDelay == .seconds(2))
+    }
+
+    @Test func boundsAreStructuralAndCheap() {
+        // Previously O(n) in time and memory, and wrong under jitter + elapsed.
+        let huge = Schedule.immediate.attempts(Int.max)
+        #expect(huge.maximumAttempts == Int.max)
+        #expect(huge.maximumTotalDelay == .zero)
+        let jitteredElapsed = Schedule.fixed(.seconds(1)).jittered().upTo(elapsed: .seconds(10)).attempts(1000)
+        #expect(jitteredElapsed.maximumAttempts == 1000, "an elapsed limit cannot lower a true upper bound")
+        #expect(Schedule.fixed(.seconds(1)).attempts(3).andThen(Schedule.fixed(.seconds(2)).attempts(4)).maximumAttempts == 6)
+        #expect(Schedule.fixed(.seconds(1)).attempts(3).union(Schedule.fixed(.seconds(2)).attempts(4)).maximumAttempts == 4)
+        #expect(Schedule.fixed(.seconds(1)).attempts(3).intersection(Schedule.fixed(.seconds(2))).maximumAttempts == 3)
+    }
+}

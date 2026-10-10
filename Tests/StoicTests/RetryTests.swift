@@ -33,7 +33,7 @@ struct RetryTests {
         let events = RecordingInstrumentation()
         let operation = flaky(succeedOn: 3)
         let value = try await withTestAmbient(clock: clock, events: events) {
-            try await retry(.exponential(base: .seconds(1)).attempts(5), budget: .unlimited) { attempt throws(Failure) in
+            try await retry(.exponential(base: .seconds(1)).unjittered().attempts(5), budget: .unlimited) { attempt throws(Failure) in
                 try operation(attempt)
             }
         }

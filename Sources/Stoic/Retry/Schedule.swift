@@ -20,7 +20,9 @@ public struct Schedule: Sendable, Hashable, CustomStringConvertible {
         case delays([Duration])
         case decorrelated(base: Duration, cap: Duration)
         case capped(Node, Duration)
+        case defaultCap(Node, Duration)
         case jittered(Node, Jitter)
+        case defaultJitter(Node)
         case attempts(Node, Int)
         case elapsed(Node, Duration)
         case union(Node, Node)
@@ -49,15 +51,21 @@ public struct Schedule: Sendable, Hashable, CustomStringConvertible {
         Schedule(.linear(base.clampedNonNegative))
     }
 
-    /// `base × factor^(n−1)` before retry n, capped at five minutes unless
-    /// capped otherwise.
+    /// `base × factor^(n−1)` before retry n.
+    ///
+    /// Safe by default: capped at five minutes and fully jittered, as AWS
+    /// recommends, unless ``capped(at:)`` or ``jittered(_:)`` (or
+    /// ``unjittered()``) says otherwise. A factor below one is treated as one:
+    /// a backoff that shrinks is not a backoff.
     public static func exponential(base: Duration, factor: Double = 2) -> Schedule {
-        Schedule(.capped(.exponential(base: base.clampedNonNegative, factor: max(1, factor)), .seconds(300)))
+        let factor = factor.isNaN ? 1 : max(1, factor)
+        return Schedule(.defaultJitter(.defaultCap(.exponential(base: base.clampedNonNegative, factor: factor), .seconds(300))))
     }
 
-    /// Fibonacci multiples of `base`, capped at five minutes unless capped otherwise.
+    /// Fibonacci multiples of `base`; capped at five minutes and fully
+    /// jittered unless told otherwise, like ``exponential(base:factor:)``.
     public static func fibonacci(_ base: Duration) -> Schedule {
-        Schedule(.capped(.fibonacci(base.clampedNonNegative), .seconds(300)))
+        Schedule(.defaultJitter(.defaultCap(.fibonacci(base.clampedNonNegative), .seconds(300))))
     }
 
     /// Exactly these delays, then stop. Bounded by its own length.
@@ -73,19 +81,36 @@ public struct Schedule: Sendable, Hashable, CustomStringConvertible {
 
     // MARK: Shape
 
-    /// No delay longer than `maximum`. Replaces a cap applied directly
-    /// before it, including the default cap of ``exponential(base:factor:)``.
+    /// No delay longer than `maximum`.
+    ///
+    /// Replaces a base's *default* cap (so `.exponential(…).capped(at: .hours(1))`
+    /// can raise the five-minute default), and otherwise only ever tightens:
+    /// capping twice keeps the smaller cap.
     public func capped(at maximum: Duration) -> Schedule {
-        if case .capped(let inner, _) = node {
-            return Schedule(.capped(inner, maximum.clampedNonNegative))
+        let maximum = maximum.clampedNonNegative
+        if let replaced = node.replacingDefaultCap(with: maximum) {
+            return Schedule(replaced)
         }
-        return Schedule(.capped(node, maximum.clampedNonNegative))
+        if case .capped(let inner, let existing) = node {
+            return Schedule(.capped(inner, min(existing, maximum)))
+        }
+        return Schedule(.capped(node, maximum))
     }
 
     /// Randomises each delay. Full jitter, the default, draws uniformly from
     /// zero to the delay; it never lengthens a delay, so a cap still holds.
+    /// Replaces a base's default jitter.
     public func jittered(_ jitter: Jitter = .full) -> Schedule {
-        Schedule(.jittered(node, jitter))
+        if let replaced = node.replacingDefaultJitter(with: jitter) {
+            return Schedule(replaced)
+        }
+        return Schedule(.jittered(node, jitter))
+    }
+
+    /// Removes randomness, including a base's default jitter: for tests and
+    /// for the rare delay that must be exact.
+    public func unjittered() -> Schedule {
+        jittered(.none)
     }
 
     /// Stops once `duration` has elapsed since the first attempt. On its own
@@ -169,18 +194,37 @@ public struct BoundedSchedule: Sendable, Hashable, CustomStringConvertible {
     }
 
     /// The most attempts the schedule allows, first attempt included.
+    ///
+    /// Computed from the schedule's structure, so it is a true upper bound:
+    /// an elapsed-time limit never lowers it, because jitter can fit more
+    /// attempts under that limit than maximal delays would.
     public var maximumAttempts: Int {
-        schedule.maximalDelays(limit: .max).count + 1
+        schedule.node.attemptLimit ?? .max
     }
 
-    /// The longest total time the schedule can spend waiting between attempts.
+    /// The longest total time the schedule can spend waiting between
+    /// attempts: every delay at its maximum (jitter excluded), ignoring
+    /// elapsed-time limits.
     public var maximumTotalDelay: Duration {
-        schedule.maximalDelays(limit: .max).reduce(.zero) { $0.saturatingAdding($1) }
+        let retries = maximumAttempts - 1
+        var stepper = Schedule.Stepper(node: schedule.node.removingElapsedLimits, random: nil)
+        var total = Duration.zero
+        var longest = Duration.zero
+        let exact = min(retries, 100_000)
+        for _ in 0..<exact {
+            guard let delay = stepper.next(elapsed: .zero) else { return total }
+            total = total.saturatingAdding(delay)
+            longest = max(longest, delay)
+        }
+        // Beyond 100,000 retries, bound the rest by the longest delay seen
+        // rather than step them all.
+        return total.saturatingAdding(longest.saturatingMultiplied(by: Double(retries - exact)))
     }
 
     /// The longest a retry under this schedule can take, if each attempt is
     /// bounded by `attemptTimeout`: every attempt timing out, every delay at
-    /// its maximum.
+    /// its maximum. A `retryAfter` decision may replace a delay with up to
+    /// five minutes, which this bound does not include.
     public func worstCase(attemptTimeout: Duration) -> Duration {
         attemptTimeout
             .saturatingMultiplied(by: Double(maximumAttempts))
@@ -269,8 +313,9 @@ private indirect enum StepState: Sendable {
         case .fibonacci(let base): self = .fibonacci(base, previous: .zero, current: base)
         case .delays(let delays): self = .delays(delays, retry: 0)
         case .decorrelated(let base, let cap): self = .decorrelated(base: base, cap: cap, previous: base)
-        case .capped(let inner, let cap): self = .capped(StepState(inner), cap)
+        case .capped(let inner, let cap), .defaultCap(let inner, let cap): self = .capped(StepState(inner), cap)
         case .jittered(let inner, let jitter): self = .jittered(StepState(inner), jitter)
+        case .defaultJitter(let inner): self = .jittered(StepState(inner), .full)
         case .attempts(let inner, let limit): self = .attempts(StepState(inner), limit: limit, retry: 0)
         case .elapsed(let inner, let limit): self = .elapsed(StepState(inner), limit)
         case .union(let left, let right): self = .union(StepState(left), StepState(right), leftDone: false, rightDone: false)
@@ -414,7 +459,9 @@ extension Schedule.Node: CustomStringConvertible {
         case .delays(let delays): "delays(\(delays.map(\.description).joined(separator: ", ")))"
         case .decorrelated(let base, let cap): "decorrelated(\(base)…\(cap))"
         case .capped(let inner, let cap): "\(inner).capped(\(cap))"
+        case .defaultCap(let inner, let cap): "\(inner).capped(\(cap), default)"
         case .jittered(let inner, let jitter): "\(inner).jittered(\(jitter))"
+        case .defaultJitter(let inner): "\(inner).jittered(full, default)"
         case .attempts(let inner, let count): "\(inner).attempts(\(count))"
         case .elapsed(let inner, let limit): "\(inner).upTo(\(limit))"
         case .union(let left, let right): "(\(left) ∪ \(right))"
@@ -439,4 +486,74 @@ extension BoundedSchedule {
     public static func fibonacci(_ base: Duration) -> Schedule { Schedule.fibonacci(base) }
     public static func decorrelated(base: Duration, cap: Duration) -> Schedule { Schedule.decorrelated(base: base, cap: cap) }
     public static func delays(_ delays: [Duration]) -> BoundedSchedule { Schedule.delays(delays) }
+}
+
+extension Schedule.Node {
+    /// The most attempts this node allows, or `nil` when unbounded.
+    var attemptLimit: Int? {
+        switch self {
+        case .fixed, .linear, .exponential, .fibonacci, .decorrelated:
+            return nil
+        case .delays(let delays):
+            return delays.count + 1
+        case .capped(let inner, _), .defaultCap(let inner, _), .jittered(let inner, _), .defaultJitter(let inner), .elapsed(let inner, _):
+            return inner.attemptLimit
+        case .attempts(let inner, let limit):
+            return inner.attemptLimit.map { min($0, limit) } ?? limit
+        case .union(let left, let right):
+            guard let l = left.attemptLimit, let r = right.attemptLimit else { return nil }
+            return max(l, r)
+        case .intersection(let left, let right):
+            switch (left.attemptLimit, right.attemptLimit) {
+            case (let l?, let r?): return min(l, r)
+            case (let l?, nil): return l
+            case (nil, let r?): return r
+            case (nil, nil): return nil
+            }
+        case .andThen(let first, let second):
+            guard let f = first.attemptLimit, let s = second.attemptLimit else { return nil }
+            let (sum, overflow) = (f - 1).addingReportingOverflow(s - 1)
+            return overflow ? .max : sum + 1
+        }
+    }
+
+    /// This node with every elapsed-time limit removed: for computing bounds.
+    var removingElapsedLimits: Schedule.Node {
+        switch self {
+        case .fixed, .linear, .exponential, .fibonacci, .decorrelated, .delays: self
+        case .capped(let inner, let cap): .capped(inner.removingElapsedLimits, cap)
+        case .defaultCap(let inner, let cap): .defaultCap(inner.removingElapsedLimits, cap)
+        case .jittered(let inner, let jitter): .jittered(inner.removingElapsedLimits, jitter)
+        case .defaultJitter(let inner): .defaultJitter(inner.removingElapsedLimits)
+        case .attempts(let inner, let limit): .attempts(inner.removingElapsedLimits, limit)
+        case .elapsed(let inner, _): inner.removingElapsedLimits
+        case .union(let l, let r): .union(l.removingElapsedLimits, r.removingElapsedLimits)
+        case .intersection(let l, let r): .intersection(l.removingElapsedLimits, r.removingElapsedLimits)
+        case .andThen(let a, let b): .andThen(a.removingElapsedLimits, b.removingElapsedLimits)
+        }
+    }
+
+    /// This node with its default cap replaced, if its wrapper spine has one.
+    func replacingDefaultCap(with cap: Duration) -> Schedule.Node? {
+        switch self {
+        case .defaultCap(let inner, _): .capped(inner, cap)
+        case .defaultJitter(let inner): inner.replacingDefaultCap(with: cap).map { .defaultJitter($0) }
+        case .jittered(let inner, let jitter): inner.replacingDefaultCap(with: cap).map { .jittered($0, jitter) }
+        case .attempts(let inner, let limit): inner.replacingDefaultCap(with: cap).map { .attempts($0, limit) }
+        case .elapsed(let inner, let limit): inner.replacingDefaultCap(with: cap).map { .elapsed($0, limit) }
+        default: nil
+        }
+    }
+
+    /// This node with its default jitter replaced, if its wrapper spine has one.
+    func replacingDefaultJitter(with jitter: Jitter) -> Schedule.Node? {
+        switch self {
+        case .defaultJitter(let inner): .jittered(inner, jitter)
+        case .capped(let inner, let cap): inner.replacingDefaultJitter(with: jitter).map { .capped($0, cap) }
+        case .defaultCap(let inner, let cap): inner.replacingDefaultJitter(with: jitter).map { .defaultCap($0, cap) }
+        case .attempts(let inner, let limit): inner.replacingDefaultJitter(with: jitter).map { .attempts($0, limit) }
+        case .elapsed(let inner, let limit): inner.replacingDefaultJitter(with: jitter).map { .elapsed($0, limit) }
+        default: nil
+        }
+    }
 }

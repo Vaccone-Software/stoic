@@ -412,3 +412,15 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
         number += 1
     }
 }
+
+/// An unbounded retry does not compile; this overload exists only to say how
+/// to fix it.
+@available(*, unavailable, message: "retry needs a bounded schedule: end it with .attempts(n), e.g. .exponential(base: .seconds(1)).attempts(5)")
+public func retry<R, Failure: Error>(
+    _ schedule: Schedule,
+    budget: RetryBudget = .perCallSite,
+    classify: RetryClassifier<Failure> = .standard,
+    operation: (Attempt) async throws(Failure) -> R
+) async throws(Failure) -> R {
+    fatalError("unavailable")
+}
