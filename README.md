@@ -140,7 +140,8 @@ func retriesThroughAnOutage() async throws {
 | `Stoic`        | Every runtime primitive                                   | stdlib, `Synchronization`, `os` |
 | `StoicTesting` | Test clocks, fault injection, recorded events, test trait | `Stoic`, Swift Testing          |
 | `StoicJSON`    | Strict JSON: duplicate keys, exact numbers, positions     | stdlib                          |
-| `StoicSchema`  | Validation: one declaration drives decode, encode, defaults, every error, JSON Schema | `StoicJSON` |
+| `StoicSchema`  | One declaration per type: decode, encode, validate, JSON Schema, migrations, generators, `SchemaSuite` | `StoicJSON` |
+| `StoicSchemaTesting` | `expectSchemaSuite`, the Swift Testing glue for `SchemaSuite` | `StoicSchema`, Swift Testing |
 | `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard — checked at every crash point | `Stoic` |
 | `StoicApple`   | Platform errors that classify themselves for retry; HTTP status semantics; device conditions | `Stoic`, Foundation |
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
@@ -159,7 +160,7 @@ plugins: [.plugin(name: "StoicLint", package: "stoic")]
 See [design/13](design/13-build-enforcement.md) for the rules, the
 `// stoic:allow(rule): reason` suppression and the baseline ratchet.
 
-Coming: schema migrations, generators and a self-testing suite; `@Schema`.
+Coming: `@Schema`, a macro that writes a type's schema from its declaration.
 
 ## Design
 
