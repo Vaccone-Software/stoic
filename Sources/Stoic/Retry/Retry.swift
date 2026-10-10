@@ -380,6 +380,9 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             }
             delay = min(max(.zero, requested), cap)
         }
+        // A struggling device backs off further: hot, saving power, or low on memory.
+        let factor = ambient.conditions.current.backoffFactor
+        if factor > 1 { delay = delay.saturatingMultiplied(by: factor) }
         // 5. The deadline.
         if let deadline = Deadline.current {
             let needed = delay.saturatingAdding(attemptDuration)

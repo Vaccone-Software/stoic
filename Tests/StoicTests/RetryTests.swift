@@ -392,3 +392,25 @@ struct RetryReviewTests {
         #expect(attempts.value == 3, "the attempt had ended, so the later retry is not nested")
     }
 }
+
+@Suite("System conditions")
+struct ConditionsTests {
+    struct Transient: Error {}
+
+    @Test func backoffFactorsMultiplyAndCap() {
+        #expect(SystemConditions.normal.backoffFactor == 1)
+        #expect(SystemConditions(thermal: .serious).backoffFactor == 2)
+        #expect(SystemConditions(thermal: .serious, lowPowerMode: true).backoffFactor == 4)
+        #expect(SystemConditions(memoryPressure: .critical, thermal: .critical, lowPowerMode: true).backoffFactor == 8)
+    }
+
+    @Test func aHotDeviceBacksOffFurther() async {
+        let clock = ImmediateClock()
+        _ = try? await withTestAmbient(clock: clock) {
+            try await withAmbient({ $0.conditions = FixedConditions(SystemConditions(thermal: .serious)) }) {
+                try await retry(.fixed(.seconds(1)).attempts(3)) { _ throws(Transient) -> Int in throw Transient() }
+            }
+        }
+        #expect(clock.sleeps == [.seconds(2), .seconds(2)])
+    }
+}

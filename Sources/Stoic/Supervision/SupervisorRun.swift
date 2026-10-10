@@ -146,7 +146,8 @@ struct SupervisorRun {
         if let started = slots[index].startedAt, started.duration(to: now) >= supervisor.resetAfter {
             slots[index].stepper = supervisor.backoff.makeStepper(random: ambient.random.generator())
         }
-        let delay = slots[index].stepper.next(elapsed: .zero) ?? .zero
+        let scheduled = slots[index].stepper.next(elapsed: .zero) ?? .zero
+        let delay = scheduled.saturatingMultiplied(by: ambient.conditions.current.backoffFactor)
         publish.yield(.restarting(child: child.label, after: delay))
         record("supervisor.child_restarting", .info, child: index, extra: [.init("delay", .duration(delay))])
 
