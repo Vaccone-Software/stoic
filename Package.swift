@@ -1,4 +1,5 @@
 // swift-tools-version: 6.4
+import CompilerPluginSupport
 import PackageDescription
 
 // The settings every Stoic target is held to. A warning is an error here:
@@ -27,6 +28,51 @@ let swiftSyntax: [Target.Dependency] = [
     .product(name: "SwiftParser", package: "swift-syntax", condition: .when(traits: lintTrait)),
 ]
 
+// The macros' build setting and their swift-syntax products: present only
+// when `Macros` is on. The same arrangement as `Lint`, and for the same
+// reason: SwiftPM builds every target of the package, so the macro sources
+// compile to nothing without the define, and a consumer that never enables
+// the trait never fetches swift-syntax. See design/06 (Layer 4).
+let macrosTrait: Set<String> = ["Macros"]
+let macrosDefine: SwiftSetting = .define("STOIC_MACROS", .when(traits: macrosTrait))
+let macroSyntax: [Target.Dependency] = [
+    .product(name: "SwiftSyntax", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+    .product(name: "SwiftSyntaxMacros", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+    .product(name: "SwiftSyntaxBuilder", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+    .product(name: "SwiftDiagnostics", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+    .product(name: "SwiftParser", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+    .product(name: "SwiftCompilerPlugin", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+]
+let macroTestSupport: [Target.Dependency] = [
+    .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+    .product(name: "SwiftSyntaxMacroExpansion", package: "swift-syntax", condition: .when(traits: macrosTrait)),
+]
+
+// The macros are declared apart from the rest: one manifest expression this
+// size defeats the type checker.
+let macroTargets: [Target] = [
+    // Layer 4 of the validation design: the macros. The plugin is the
+    // compiler plugin that expands them (swift-syntax, host only); the
+    // library declares the attributes and depends on StoicSchema, which
+    // is all the generated code calls.
+    .macro(name: "StoicMacrosPlugin", dependencies: macroSyntax, swiftSettings: strict + [macrosDefine]),
+    .target(
+        name: "StoicMacros", dependencies: ["StoicSchema", "StoicMacrosPlugin"],
+        swiftSettings: strict + [macrosDefine]),
+    // Expansion tests: the macro's output, as text, for every shape of
+    // input and every diagnostic.
+    .testTarget(
+        name: "StoicMacrosTests",
+        dependencies: ["StoicMacrosPlugin"] + macroSyntax + macroTestSupport,
+        swiftSettings: strict + [macrosDefine]),
+    // Behaviour tests: types declared with the macros, compared with the
+    // same schemas written by hand, and run through SchemaSuite.
+    .testTarget(
+        name: "StoicMacrosUsageTests",
+        dependencies: ["StoicMacros", "StoicSchema", "StoicSchemaTesting", "StoicJSON", "Stoic"],
+        swiftSettings: strict + [macrosDefine]),
+]
+
 let package = Package(
     name: "stoic",
     // Swift 6.4's runtime (cancellation shields, async defer) ships with the
@@ -48,6 +94,9 @@ let package = Package(
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
         .library(name: "StoicSchemaTesting", targets: ["StoicSchemaTesting"]),
+        // `@Schema`, `@Refined` and the constraint attributes (design/06,
+        // Layer 4). Needs the `Macros` trait: `.package(url: …, traits: ["Macros"])`.
+        .library(name: "StoicMacros", targets: ["StoicMacros"]),
         .library(name: "StoicStore", targets: ["StoicStore"]),
         .library(name: "StoicSettings", targets: ["StoicSettings"]),
         // The build-tool plugin and the command it runs (design/13). Both
@@ -60,13 +109,17 @@ let package = Package(
             name: "Lint",
             description: "Build the StoicLint plugin and its stoic-lint tool. Pulls in swift-syntax, which is fetched only when this trait is enabled."
         ),
+        .trait(
+            name: "Macros",
+            description: "Build the StoicMacros product (@Schema, @Refined). Pulls in swift-syntax, which is fetched only when this trait is enabled."
+        ),
         .trait(name: "Logging", description: "Send Stoic's events to swift-log (StoicObservability). Fetches swift-log only when enabled."),
         .trait(name: "Metrics", description: "Count Stoic's events with swift-metrics (StoicObservability). Fetches swift-metrics only when enabled."),
         .default(enabledTraits: []),
     ],
     dependencies: [
-        // Used only by targets conditioned on the `Lint` trait, so a
-        // consumer that does not enable it never fetches swift-syntax.
+        // Used only by targets conditioned on the `Lint` or `Macros` trait, so a
+        // consumer that enables neither never fetches swift-syntax.
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "604.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.16.0"),
         .package(url: "https://github.com/apple/swift-metrics", from: "2.12.0"),
@@ -162,5 +215,5 @@ let package = Package(
         .testTarget(
             name: "StoicSettingsTests", dependencies: ["StoicSettings", "StoicSchema", "StoicStore", "StoicTesting"],
             swiftSettings: strict),
-    ]
+    ] + macroTargets
 )
