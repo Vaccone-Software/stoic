@@ -33,3 +33,17 @@ func rejection<P: Policy, R, F: Error>(
     case .failure(let error): error.rejection
     }
 }
+
+/// Yields until `condition` holds. The condition must become true without
+/// further help from the caller; a bound turns a hang into a failure.
+func waitUntil(_ message: @autoclosure () -> String = "the condition never became true", _ condition: () -> Bool) async {
+    var spins = 0
+    while !condition() {
+        spins += 1
+        if spins > 2_000_000 {
+            Issue.record(Comment(rawValue: message()))
+            return
+        }
+        await Task.yield()
+    }
+}
