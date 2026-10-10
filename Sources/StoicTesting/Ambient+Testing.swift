@@ -16,7 +16,12 @@ public nonisolated(nonsending) func withTestAmbient<C: Clock<Duration>, R, Failu
     events: RecordingInstrumentation = RecordingInstrumentation(),
     operation: nonisolated(nonsending) () async throws(Failure) -> R
 ) async throws(Failure) -> R {
-    let erased = AnyClock(clock)
+    let erased: AnyClock
+    switch clock {
+    case let test as TestClock: erased = test.erased
+    case let immediate as ImmediateClock: erased = immediate.erased
+    default: erased = AnyClock(clock)
+    }
     return try await withAmbient({ ambient in
         ambient.clock = erased
         ambient.livenessClock = erased

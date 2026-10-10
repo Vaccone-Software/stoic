@@ -19,7 +19,7 @@ struct FoundationTests {
 
     @Test func separateErasuresOfACustomClockAreDifferentClocks() {
         let test = TestClock()
-        #expect(!test.erased.isSameClock(as: test.erased))
+        #expect(!AnyClock(test).isSameClock(as: AnyClock(test)))
     }
 
     @Test func anyClockTracksTheUnderlyingClock() async {
@@ -216,5 +216,24 @@ struct ArithmeticEdgeTests {
         try? await Task.sleep(for: .milliseconds(20))
         task.cancel()
         _ = try? await task.value
+    }
+}
+
+@Suite("Test clocks: review fixes")
+struct TestClockReviewTests {
+    @Test func theTestAmbientUsesTheClocksOwnErasure() async {
+        let clock = TestClock()
+        await withTestAmbient(clock: clock) {
+            #expect(Ambient.current.clock.isSameClock(as: clock.erased))
+        }
+        #expect(clock.erased.isSameClock(as: clock.erased))
+    }
+
+    @Test func waitingForSleepersEndsWhenCancelled() async {
+        let clock = TestClock()
+        let waiter = Task { await clock.waitForSleepers(count: 1) }
+        try? await Task.sleep(for: .milliseconds(5))
+        waiter.cancel()
+        await waiter.value   // previously hung forever
     }
 }

@@ -7,6 +7,10 @@ internal import Synchronization
 /// against the wait: a retry's backoff sequence, a schedule's delays. Each
 /// sleep advances `now` to its deadline and is recorded, so a test can assert
 /// the exact delays a primitive chose.
+///
+/// Not for timeouts: a timer on this clock fires at once, so every
+/// `withTimeout`, `attemptTimeout` or deadline wait expires immediately. Use
+/// ``TestClock`` for anything that races work against time.
 public final class ImmediateClock: Clock, Sendable {
     public typealias Duration = Swift.Duration
     public typealias Instant = TestClock.Instant
@@ -17,12 +21,19 @@ public final class ImmediateClock: Clock, Sendable {
     }
 
     private let state = Mutex(State())
+    private let erasure = Mutex<AnyClock?>(nil)
 
     public init() {}
 
-    /// This clock, erased, for ``Ambient`` or any `clock:` parameter.
+    /// This clock, erased, for ``Ambient`` or any `clock:` parameter. Always
+    /// the same erasure.
     public var erased: AnyClock {
-        AnyClock(self, name: "immediate")
+        erasure.withLock { erasure in
+            if let erasure { return erasure }
+            let created = AnyClock(self, name: "immediate")
+            erasure = created
+            return created
+        }
     }
 
     public var now: Instant {

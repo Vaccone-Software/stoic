@@ -50,6 +50,7 @@ public final class TestClock: Clock, Sendable {
     }
 
     private struct CountWaiter {
+        let id: UInt64
         let count: Int
         let continuation: CheckedContinuation<Void, Never>
     }
@@ -58,6 +59,9 @@ public final class TestClock: Clock, Sendable {
         var now: Swift.Duration = .zero
         var nextID: UInt64 = 0
         var sleepers: [Sleeper] = []
+        // Sleepers with an id that have not registered yet, and those of
+        // them whose cancellation arrived first.
+        var arriving: Set<UInt64> = []
         var cancelledBeforeSleeping: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
         var totalSleeps = 0
@@ -71,12 +75,21 @@ public final class TestClock: Clock, Sendable {
     }
 
     private let state = Mutex(State())
+    private let erasure = Mutex<AnyClock?>(nil)
 
     public init() {}
 
     /// This clock, erased, for ``Ambient`` or any `clock:` parameter.
+    ///
+    /// Always the same erasure, so instants and deadlines taken through it
+    /// anywhere in a test compare exactly.
     public var erased: AnyClock {
-        AnyClock(self, name: "test")
+        erasure.withLock { erasure in
+            if let erasure { return erasure }
+            let created = AnyClock(self, name: "test")
+            erasure = created
+            return created
+        }
     }
 
     public var now: Instant {
@@ -104,6 +117,7 @@ public final class TestClock: Clock, Sendable {
         try Task.checkCancellation()
         let id = state.withLock { state -> UInt64 in
             defer { state.nextID += 1 }
+            state.arriving.insert(state.nextID)
             return state.nextID
         }
         try await withTaskCancellationHandler {
@@ -111,6 +125,7 @@ public final class TestClock: Clock, Sendable {
                 enum Outcome { case wake, cancel, sleep([CheckedContinuation<Void, Never>]) }
                 let outcome = state.withLock { state -> Outcome in
                     state.totalSleeps += 1
+                    state.arriving.remove(id)
                     if state.cancelledBeforeSleeping.remove(id) != nil { return .cancel }
                     if deadline.offset <= state.now { return .wake }
                     state.sleepers.append(Sleeper(id: id, deadline: deadline.offset, continuation: continuation))
@@ -127,7 +142,9 @@ public final class TestClock: Clock, Sendable {
                 if let index = state.sleepers.firstIndex(where: { $0.id == id }) {
                     return state.sleepers.remove(at: index)
                 }
-                state.cancelledBeforeSleeping.insert(id)
+                if state.arriving.contains(id) {
+                    state.cancelledBeforeSleeping.insert(id)
+                }
                 return nil
             }
             sleeper?.continuation.resume(throwing: CancellationError())
@@ -175,15 +192,29 @@ public final class TestClock: Clock, Sendable {
         return true
     }
 
-    /// Suspends until at least `count` tasks are asleep on this clock.
+    /// Suspends until at least `count` tasks are asleep on this clock, or
+    /// until the waiting task is cancelled — so a test that waits for a
+    /// sleeper that never comes ends with its time limit instead of hanging.
     public func waitForSleepers(count: Int = 1) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let satisfied = state.withLock { state -> Bool in
-                if state.sleepers.count >= count { return true }
-                state.countWaiters.append(CountWaiter(count: count, continuation: continuation))
-                return false
+        let id = state.withLock { state -> UInt64 in
+            defer { state.nextID += 1 }
+            return state.nextID
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let satisfied = state.withLock { state -> Bool in
+                    if state.sleepers.count >= count || Task.isCancelled { return true }
+                    state.countWaiters.append(CountWaiter(id: id, count: count, continuation: continuation))
+                    return false
+                }
+                if satisfied { continuation.resume() }
             }
-            if satisfied { continuation.resume() }
+        } onCancel: {
+            let waiter = state.withLock { state -> CountWaiter? in
+                guard let index = state.countWaiters.firstIndex(where: { $0.id == id }) else { return nil }
+                return state.countWaiters.remove(at: index)
+            }
+            waiter?.continuation.resume()
         }
     }
 
