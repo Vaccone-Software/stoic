@@ -1,0 +1,466 @@
+# 10 · Resilience policies
+
+Retries (design/02) decide what to do after a failure. These policies decide
+whether to call at all: a circuit breaker stops calling a dependency that is
+failing, a bulkhead stops one slow dependency from consuming every task, a
+rate limiter keeps a caller inside what a service will accept, and a hedge
+spends a little extra load to cut the slow tail. Each is a small value you
+construct once, share, and run operations through; a pipeline composes them
+without nesting their errors.
+
+## Origin
+
+- **Polly v8.** Resilience _pipelines_: an ordered list of strategies (timeout,
+  retry, circuit breaker, hedging, rate limiter), each wrapping the next, with
+  the order mattering and documented. Its breaker judges a failure _ratio_
+  over a _sampling duration_ once a _minimum throughput_ is reached, then
+  breaks for a _break duration_. Stoic's pipeline is the same idea; its
+  stages share one error type, so the order costs nothing in types.
+- **resilience4j.** The richest breaker vocabulary: count-based and time-based
+  sliding windows, a failure-rate threshold _and_ a slow-call-rate threshold
+  with a slow-call duration, `minimumNumberOfCalls`, a limited number of
+  permitted calls in the half-open state, and a configurable wait in the open
+  state. Also the bulkhead (`maxConcurrentCalls`, `maxWaitDuration`) and the
+  rate limiter (`limitForPeriod`, `limitRefreshPeriod`, `timeoutDuration`),
+  and the decorator order Retry → CircuitBreaker → RateLimiter → TimeLimiter →
+  Bulkhead → call. Stoic borrows the vocabulary and the order.
+- **Envoy.** Circuit breaking as hard _limits_ (connections, pending requests,
+  requests) that shed load rather than queue it; outlier detection that ejects
+  a host for a time that _grows with each repeated ejection_; a local token
+  bucket rate limit. Stoic's bulkhead has Envoy's "pending requests" bound,
+  and the breaker's open duration grows the same way.
+- **AWS Builders' Library.** "Timeouts, retries, and backoff with jitter":
+  retry at one layer, cap retries with a token bucket, jitter everything that
+  waits; and the warning that circuit breakers introduce _modal behaviour_
+  that is hard to test and can lengthen recovery. Stoic answers the warning
+  with a breaker whose every mode, transition and rejection is an event and a
+  test on virtual time, whose recovery is probed gradually, and whose open
+  periods are jittered so a fleet does not re-converge on a dependency at one
+  instant.
+- **tower (Rust).** Policies as composable layers (`ServiceBuilder`, outermost
+  first), `ConcurrencyLimit`, `RateLimit`, `LoadShed` (reject instead of
+  queue), `Retry` with a budget, and `Hedge`. Stoic's `Pipeline` is
+  `ServiceBuilder`; its bulkhead with a zero queue is `LoadShed`.
+- **"The Tail at Scale" (Dean and Barroso).** Hedged requests (design/03).
+- **In apps.** A boolean `isOffline` or `failureCount` property on a client
+  class, reset by a timer nobody remembers to cancel; a `DispatchSemaphore`
+  around a network call; a `lastRequestDate` compared to `Date()`. Each
+  breaks under concurrency, on a wake from sleep, or in a test that cannot
+  move time.
+
+Facts about the systems above are from prior knowledge, not re-checked.
+
+## API
+
+```swift
+// Every policy runs an operation inline, on the caller's actor.
+public protocol Policy: Sendable {
+    nonisolated(nonsending) func execute<R, Failure: Error>(
+        _ operation: nonisolated(nonsending) () async throws(Failure) -> R
+    ) async throws(PolicyError<Failure>) -> R
+}
+
+public final class CircuitBreaker: Policy {
+    public enum State: Sendable, Hashable { case closed, open, halfOpen }
+    public enum Window: Sendable, Hashable { case calls(Int), time(Duration) }
+    public struct OpenDuration: Sendable, Hashable {       // static fixed(_:), exponential(initial:factor:maximum:jitter:)
+        public var initial, maximum: Duration; public var factor, jitter: Double; public var resetAfter: Duration
+    }
+    public struct Configuration: Sendable {
+        public var window: Window                     // default .time(.seconds(60))
+        public var minimumCalls: Int                  // 10
+        public var failureRateThreshold: Double       // 0.5, trips at >=
+        public var slowCallDuration: Duration         // 10 s
+        public var slowCallRateThreshold: Double      // 1.0, trips at >=
+        public var openDuration: OpenDuration         // 30 s, ×2 per repeated trip, ≤ 5 min, 20% jitter
+        public var halfOpenProbes: Int                // 1
+        public var halfOpenTimeout: Duration          // 60 s
+        public var recordWhen: @Sendable (any Error) -> Bool    // default CircuitBreaker.countsByDefault
+    }
+    public struct Snapshot: Sendable { state, calls, failures, slowCalls, failureRate, slowCallRate, trips, retryAfter }
+
+    public init(label: String, _ configuration: Configuration = .init(), clock: AnyClock? = nil)
+    public let label: String
+    public var state: State { get }
+    public var snapshot: Snapshot { get }
+    public var stateChanges: AsyncStream<State> { get }     // .bufferingNewest(16), one stream per access
+    public nonisolated(nonsending) func execute<R, Failure: Error>(_:) async throws(PolicyError<Failure>) -> R
+    public func forceOpen(); public func forceClosed(); public func reset()
+    public static func countsByDefault(_ error: any Error) -> Bool
+}
+
+public final class RateLimiter: Policy {
+    public init(rate: Int, per interval: Duration = .seconds(1), burst: Int? = nil,
+                queueLimit: Int? = 100, label: String, clock: AnyClock? = nil)
+    public nonisolated(nonsending) func acquire(permits: Int = 1) async throws(Rejection)
+    public func tryAcquire(permits: Int = 1) -> Bool
+    public nonisolated(nonsending) func execute<R, Failure: Error>(_:) async throws(PolicyError<Failure>) -> R
+    public var availablePermits: Int { get }; public var waiterCount: Int { get }
+}
+
+public final class Bulkhead: Policy {
+    public init(maxConcurrent: Int, queueLimit: Int = 0, label: String)
+    public nonisolated(nonsending) func execute<R, Failure: Error>(_:) async throws(PolicyError<Failure>) -> R
+    public var activeCount: Int { get }; public var queuedCount: Int { get }
+}
+
+public enum Idempotency: Sendable { case idempotent }
+public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
+    _ idempotency: Idempotency, after delay: Duration, maxAttempts: Int = 2,
+    budget: RetryBudget = .perCallSite, label: String? = nil,
+    operation: @escaping @concurrent @Sendable (Attempt) async throws(Failure) -> R
+) async throws(Failure) -> R
+
+public struct Retrying: Policy {                      // design/02's retry, as a pipeline stage
+    public init(_ schedule: BoundedSchedule, budget: RetryBudget = .perCallSite,
+                classify: RetryClassifier<any Error> = .standard, label: String? = nil)
+}
+
+public struct Pipeline: Policy {                      // outermost stage first
+    public init(_ stages: [any Policy])
+    public init(_ stages: any Policy...)
+}
+```
+
+A realistic stack for an HTTP client, outermost first:
+
+```swift
+let pipeline = Pipeline(
+    Retrying(.exponential(base: .milliseconds(200)).jittered().attempts(3)),
+    CircuitBreaker(label: "api.example.com"),
+    RateLimiter(rate: 50, per: .seconds(1), burst: 100, label: "api.example.com"),
+    Bulkhead(maxConcurrent: 8, queueLimit: 16, label: "api.example.com")
+)
+
+func fetch(_ request: Request) async throws(PolicyError<HTTPError>) -> Response {
+    try await withTimeout(.seconds(10)) {                  // the whole call, retries included
+        try await pipeline.execute { () async throws(HTTPError) -> Response in
+            try await withTimeout(.seconds(2)) {           // each attempt
+                try await client.send(request)
+            }
+        }
+    }
+}
+```
+
+## Semantics
+
+**One error type, so composition is flat.** Every policy throws
+`PolicyError<Failure>`: `.failed(error)` when the operation ran and failed,
+`.rejected(rejection)` when the policy refused to run it. A policy placed
+around another policy would, taken literally, throw
+`PolicyError<PolicyError<F>>`. `Pipeline` removes that by construction: it
+runs each stage with the _rest of the pipeline_ as the stage's operation,
+whose failure type is `PolicyError<F>`, and maps the stage's error back down —
+`.rejected(r)` and `.failed(.rejected(r))` become `.rejected(r)`,
+`.failed(.failed(f))` becomes `.failed(f)`. The caller sees one flat
+`PolicyError<F>` however many stages there are. Stages see inner rejections
+as the operation's error, which is what lets a breaker decline to count them
+and `Retrying` honour a rejection's `retryAfter`.
+
+**A timeout is not a stage.** A timeout has to run the operation in a child
+task so that a deadline can cancel it without cancelling the caller
+(design/01); its closure is therefore `@Sendable` and `sending`, which a
+`Policy`'s inline `nonisolated(nonsending)` operation is not. Forcing one into
+the protocol would either drop the actor guarantee for every policy or
+quietly run operations off the caller's actor. Instead `withTimeout` composes
+by nesting, and its passthrough error type makes that flat too: wrapped
+around a pipeline it throws the pipeline's `PolicyError<F>` untouched; placed
+inside the operation it bounds one attempt and throws `F`.
+
+**Recommended order, outermost first** (the order of Polly's documentation and
+resilience4j's decorators, adjusted for Stoic): _overall timeout → retry →
+circuit breaker → rate limiter → bulkhead → attempt timeout → operation._
+
+- The overall timeout bounds the caller's wait, retries included.
+- Retry is outside the breaker so that every attempt is judged and an open
+  breaker's `retryAfter` shapes the backoff; one retry layer only (design/02).
+- The breaker is outside the limiter and bulkhead so that local load-shedding
+  (which says nothing about the dependency) never reaches its window, and so
+  that a call the limiter or bulkhead refuses never uses up a half-open probe.
+- The attempt timeout is innermost so that a hung call is _seen_ by the
+  breaker as a slow, failed call. A breaker outside every timeout would see
+  only the caller's cancellation, which it never counts.
+
+**Cancellation and deadlines, for every policy.** A policy that has not
+started the operation and finds the task cancelled rejects with `.cancelled`;
+one that finds `Deadline.current` already passed rejects with
+`.deadlineExceeded` rather than starting work that is already late (design/01
+leaves this to policies). A policy that is _waiting_ leaves when its task is
+cancelled, and when the cancellation came from an enclosing deadline
+(`CancellationCause.current == .deadline`) it reports `.deadlineExceeded`
+instead. A waiter that leaves never consumes what it was waiting for. Once the
+operation is running, the policy's job is only bookkeeping; cancellation is
+the operation's to honour and its error passes through.
+
+### CircuitBreaker
+
+**Admission is a synchronous check.** State lives in one `Mutex`; `execute`
+takes it, decides, releases it, and only then awaits the operation. There is no
+actor hop on the way in or out and no lock is held across the operation.
+Nothing runs in the background: the open period is not a timer but an instant
+on the breaker's clock, and the transition to half-open happens lazily, on the
+first call (or read of `state`) at or after it. A breaker therefore owns no
+task, needs no teardown, and costs nothing while idle.
+
+**States.** _Closed_: calls run and are recorded in the window. _Open_: calls
+are rejected with `.circuitOpen` and `retryAfter` = the time left. _Half-open_:
+up to `halfOpenProbes` calls run as probes; every other call is rejected
+(`retryAfter` is unknown, so `nil`). When every probe permit has returned a
+success, the breaker closes with an empty window. The first probe that is
+recorded as a failure re-opens it.
+
+**The window.** `.time(T)` (default) keeps the last `T` of calls in ten
+buckets of `T / 10`; `.calls(N)` keeps the last `N` calls exactly. Time-based
+is the default because app traffic is bursty and idle for long stretches: a
+count-based window would let a handful of failures from an hour ago, still the
+last `N` calls, trip the breaker on the next unlucky request, while a
+time-based one has forgotten them. The cost is coarse edges (the window is
+between `T − T/10` and `T`), and a quiet period leaves too few calls to judge,
+which `minimumCalls` already covers. Count-based is the right choice for a
+steady, high-volume dependency, where it is exact and independent of rate.
+
+**Judging.** After each recorded call in the closed state, if the window holds
+at least `minimumCalls` calls and the failure rate is at least
+`failureRateThreshold` _or_ the slow-call rate is at least
+`slowCallRateThreshold`, the breaker opens. Rates are compared in exact
+integers (parts per million), never with floating-point division, and a
+threshold must be in (0, 1]. A call is _slow_ when it took longer than
+`slowCallDuration` on the breaker's clock; a slow call that also failed counts
+in both rates. For a count-based window, `minimumCalls` must not exceed `N`.
+
+**What counts.** A completed call has one of three verdicts:
+
+1. _Ignored_ — not evidence about the dependency: the caller was cancelled
+   (the task is cancelled when the operation ends, whatever it threw), the
+   error is or wraps a `Defect` (a bug in our code, not the dependency's
+   health; it is rethrown, reported at error level, and a half-open probe's
+   permit is returned), or the call finished after the breaker had already
+   changed state (a _stale_ call, found by comparing generations).
+2. _Failure_ — `recordWhen` returned `true` for the error.
+3. _Success_ — a return, or an error for which `recordWhen` returned `false`.
+   A `404` is the dependency answering, and a probe that gets one should close
+   the breaker.
+
+`recordWhen` receives the operation's own error: `PolicyError` layers are
+removed first, so inside a pipeline it sees `F` or, for an inner policy's
+refusal, a `Rejection`. The default, `countsByDefault`, returns `false` for
+`Rejection`s — an inner bulkhead being full, an inner limiter refusing or an
+inner budget running dry say nothing about the dependency — and `true` for
+everything else, including a `CancellationError` thrown while the caller is
+_not_ cancelled, which means something inside (an attempt timeout) cut the call
+short. A caller who puts an abandoning timeout innermost should also count its
+`.deadlineExceeded` rejection:
+`{ CircuitBreaker.countsByDefault($0) || ($0 as? Rejection)?.reason == .deadlineExceeded }`.
+
+**Open duration and growth.** The k-th consecutive trip opens the breaker for
+`initial × factor^k`, capped at `maximum`, then shortened by a random fraction
+up to `jitter` (jitter only ever shortens, so the cap holds; the randomness is
+ambient and seeded per breaker construction site). `factor: 1` is a fixed
+duration. The trip count resets when the breaker has stayed closed for
+`resetAfter` (default: the maximum), so a dependency that recovers for long
+enough gets a fresh start and one that flaps keeps getting longer rests.
+Closing does not reset it, only sustained health does.
+
+**Half-open cannot wedge.** If a probe has been in flight for `halfOpenTimeout`
+without finishing, the next call (or `state` read) treats the episode as a
+failed probe and re-opens. The late probe, when it ends, is stale and ignored.
+Without this, one hung probe would hold the permit forever.
+
+**Manual control.** `forceOpen()` opens the breaker with no end: it is not
+probed and does not half-open, until `forceClosed()` or `reset()`.
+`forceClosed()` closes it now with an empty window; normal judging resumes
+(it is not a latch). `reset()` is `forceClosed()` plus forgetting the trip
+count. Calls in flight when state is forced finish as stale.
+
+**Observation.** `stateChanges` yields every transition, in order, on a stream
+that keeps the newest 16 and drops older ones for a consumer that falls
+behind; it does not replay the current state (read `state` after subscribing).
+Each access to `stateChanges` is its own stream. Because the move out of open
+is lazy, `half-open` is reported when first observed by a call or a `state`
+read, not at the instant the open period ends.
+
+**Clock.** A breaker measures time on one clock for its whole life: `clock:`
+if given, else the ambient clock at construction. (A policy with state that
+is compared across calls cannot follow an ambient clock that changes between
+them.) Events go to the ambient instrumentation at the time of the call.
+
+### RateLimiter
+
+**Token bucket, exact.** `rate` permits per `interval`, a bucket of `burst`
+permits (default `rate`), full at creation. The bucket is kept as an integer
+credit in units of `permit × interval-attoseconds`, so refill is
+`elapsed-attoseconds × rate` with no division and no rounding, and the time to
+afford a request is one ceiling division at the end. Refill is computed lazily
+from the elapsed time on the limiter's clock; nothing ticks. The invariant
+the tests check: permits granted by time `t` never exceed `burst + rate × t`.
+
+**Waiting is FIFO and bounded.** `acquire` takes permits at once when the
+bucket holds enough and nobody is queued. Otherwise it computes when it would
+be served — the cost of everyone ahead plus its own, less the credit — and
+decides before waiting at all: if that is later than `Deadline.current` allows,
+or the queue already holds `queueLimit` waiters, it throws `.rateLimited` with
+`retryAfter` set to the computed wait. Nothing is queued and nothing consumed.
+Otherwise it queues. Only the head of the queue sleeps, on the limiter's clock,
+until it can be afforded; when it is served the next waiter is woken to compute
+its own wait. This is the semaphore's waiter queue (design/03), including its
+"arriving"/"left early" bookkeeping for a cancellation that arrives before the
+waiter is queued, with a timer in place of a release. Recomputing at the head
+means a late wake-up or a departed waiter never leaves tokens unspent that a
+later waiter could use, and never grants tokens that were not earned.
+
+**No overtaking.** `tryAcquire` returns `false` whenever anyone is queued, even
+if the bucket could afford it: a newcomer must not pass a waiter. A request for
+more than `burst` can never be served and is rejected at once (`.rateLimited`,
+no `retryAfter`), with a `ratelimiter.oversized` event, rather than queued
+forever.
+
+**Tokens are not leases.** A permit taken is spent; a failing operation does
+not get it back. A limiter limits attempts, which is what the server counts.
+
+**Queue default.** `queueLimit` defaults to 100, not unbounded: an unbounded
+queue is a wait with no end except the caller's patience (Principle 2). `nil`
+opts into unbounded, still bounded by cancellation and deadlines.
+
+### Bulkhead
+
+At most `maxConcurrent` operations run at once; up to `queueLimit` more wait,
+first-in first-out; the next is rejected with `.bulkheadFull`. The default
+`queueLimit` of `0` makes it Envoy's and tower's load-shedder: when the
+dependency's capacity is spoken for, refuse at once instead of letting latency
+grow. It is the semaphore's queue with the "full" decision made in the same
+critical section as the "wait" decision, so the limit holds exactly under
+contention rather than within the number of racing arrivals. Cancellation and
+deadlines are the semaphore's: a waiter leaves and never takes a slot.
+
+### hedge
+
+As specified in design/03, with the shape settled by implementation. Attempt 1
+starts at once. If no attempt has _succeeded_ `delay` after the latest start,
+the next starts without cancelling the earlier ones, up to `maxAttempts`. The
+first success wins; the others are cancelled with cause `.superseded` and
+awaited before `hedge` returns. If every started attempt fails, `hedge` throws
+the first failure _in completion order_ (as `race` does). Hedging is a
+response to slowness only: when an attempt fails and none is still running,
+`hedge` throws at once rather than starting the next on a timer, because
+failure belongs to `retry`, and hedge-as-retry would double the load exactly
+when the dependency is failing. Each hedge withdraws a token from `budget`
+(the first attempt deposits, as in `retry`); no token, no hedge, and the
+attempts already running continue. `Idempotency` has one case, `.idempotent`,
+so hedging a non-idempotent call means writing a lie in the source. An
+`Attempt` tells the operation which attempt it is, so it can send an
+idempotency key or a `hedged` header.
+
+### Retrying
+
+`Retrying` runs design/02's `retry` as a pipeline stage. It sits outside the
+breaker, so a breaker's `.circuitOpen` rejection reaches the retry classifier
+as the attempt's error; the standard classifier already honours its `retryAfter`
+(a half-open rejection, with none, is retried on the schedule). Its classifier
+is typed `RetryClassifier<any Error>` because a stage does not know the
+failure type of the pipeline it will be placed in; the standard classifier
+sees through `PolicyError`. The budget is per call site of `Retrying(…)`.
+
+## Failure modes
+
+| What happens if…                                                          | Behaviour                                                                                                 |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| a breaker has fewer than `minimumCalls` calls in its window               | Stays closed whatever the rates                                                                           |
+| the failure rate reaches the threshold with enough calls                  | Opens; `breaker.opened` (trigger `failure_rate`)                                                          |
+| the slow-call rate reaches the threshold with enough calls                | Opens; `breaker.opened` (trigger `slow_calls`)                                                            |
+| a call arrives while open                                                 | `.rejected(.circuitOpen)` with `retryAfter` = time left; `breaker.rejected`                               |
+| the open duration has elapsed                                             | The next call or `state` read moves to half-open (`breaker.half_open`); the call is a probe               |
+| more calls arrive than there are probe permits                            | Rejected `.circuitOpen`, `retryAfter` nil; `breaker.rejected`                                             |
+| every probe succeeds                                                      | Closes with an empty window; `breaker.closed` (reason `probes_succeeded`)                                 |
+| a probe fails                                                             | Re-opens for the next, longer open duration; `breaker.opened` (trigger `probe_failed`)                    |
+| a probe is still running after `halfOpenTimeout`                          | The next call or read re-opens it (`probe_timeout`); the late probe is ignored as stale                   |
+| the caller is cancelled while the operation runs                          | Not recorded; a probe's permit is returned; `breaker.ignored` (reason `cancelled`)                        |
+| the operation throws a `Defect`                                           | Rethrown; not recorded; `breaker.defect` at error level; a probe's permit is returned                     |
+| an inner policy rejects (bulkhead full, limiter, budget)                  | Passed through; not recorded by default; `breaker.ignored` (reason `rejection`)                           |
+| the operation throws `CancellationError` and the caller is not cancelled  | Recorded like any error (an inner timeout cut the call short)                                             |
+| `recordWhen` returns `false` for an error                                 | Recorded as a success; the error still propagates                                                         |
+| a call finishes after the breaker changed state                           | Ignored as stale; `breaker.ignored` (reason `stale`)                                                      |
+| the task is cancelled, or the deadline has passed, before admission       | `.rejected(.cancelled)` / `.rejected(.deadlineExceeded)`; no probe permit used                            |
+| `forceOpen()`                                                             | Rejects every call (`retryAfter` nil) until `forceClosed()` or `reset()`; never half-opens                |
+| `forceClosed()` or `reset()`                                              | Closes with an empty window; `reset()` also forgets the trip count                                        |
+| a dependency stays healthy for `resetAfter` after closing                 | The next trip starts again from `initial`                                                                 |
+| a `stateChanges` consumer falls behind                                    | It keeps the newest 16 states; the breaker never waits for it                                             |
+| the limiter has enough tokens and no queue                                | Granted at once, no suspension                                                                            |
+| the limiter is empty and the wait fits the deadline and the queue         | The task queues FIFO; the head sleeps until it can be afforded                                            |
+| the wait would outlive `Deadline.current`                                 | Rejected at once: `.rateLimited` with `retryAfter` = the wait; nothing queued, nothing consumed           |
+| the limiter's queue is full                                               | Rejected at once: `.rateLimited` with `retryAfter` = the wait; `ratelimiter.rejected`                     |
+| a queued limiter waiter is cancelled                                      | Removed; `.rejected(.cancelled)`; consumes nothing; the next waiter recomputes its wait                   |
+| a queued limiter waiter's enclosing deadline cancels it                   | Removed; `.rejected(.deadlineExceeded)`; consumes nothing                                                 |
+| `permits` exceeds `burst`                                                 | Rejected at once: `.rateLimited`, no `retryAfter`; `ratelimiter.oversized`                                |
+| `tryAcquire` while others wait                                            | `false`: a newcomer never passes a waiter                                                                 |
+| the operation of a limiter's `execute` fails                              | `.failed`; the token stays spent                                                                          |
+| the limiter's clock wakes the head late                                   | The head recomputes from the credit it actually has                                                       |
+| a bulkhead has a free slot                                                | Runs at once                                                                                              |
+| the bulkhead is full and the queue has room                               | Queues FIFO; runs when a slot frees                                                                       |
+| the bulkhead and its queue are full (or `queueLimit` is 0 and it is full) | `.rejected(.bulkheadFull)`; `bulkhead.rejected`                                                           |
+| a queued bulkhead waiter is cancelled or its deadline passes              | Removed; `.cancelled` / `.deadlineExceeded`; takes no slot                                                |
+| the bulkhead's operation throws                                           | Slot returned; `.failed(error)`                                                                           |
+| the first hedged attempt finishes before `delay`                          | No hedge starts; its result is returned                                                                   |
+| the first attempt is slow                                                 | Attempt 2 starts after `delay`, attempt 1 keeps running; first success wins; `hedge.started`, `hedge.won` |
+| the winner is found                                                       | Every other attempt cancelled (`.superseded`) and awaited before return                                   |
+| the hedge budget has no token                                             | No hedge; running attempts continue; `hedge.budget_exhausted`                                             |
+| an attempt fails and none is running                                      | Throws that failure now; no further hedge (failure belongs to retry)                                      |
+| every attempt fails                                                       | Throws the first failure in completion order; `hedge.all_failed`                                          |
+| `maxAttempts` attempts have started                                       | No more hedges                                                                                            |
+| the caller is cancelled                                                   | Every attempt cancelled and awaited; the first failure returned                                           |
+| the deadline has passed when a hedge is due                               | No hedge; `hedge.deadline_skip`                                                                           |
+| a stage inside a pipeline rejects                                         | The caller sees one `.rejected(r)`, never a nested `PolicyError`                                          |
+| a pipeline's operation fails                                              | The caller sees `.failed(error)` with the operation's own error                                           |
+| a pipeline has no stages                                                  | The operation runs; a failure is `.failed`                                                                |
+| `Retrying` meets `.circuitOpen` with a `retryAfter`                       | Backs off for at least that long (subject to the schedule's bounds and deadline)                          |
+
+## Events
+
+Breaker: `breaker.opened` (trigger, calls, failures, slow_calls, open_for,
+trips), `breaker.half_open`, `breaker.closed` (reason), `breaker.rejected`
+(state, retry_after), `breaker.recorded` (outcome, slow, state; debug),
+`breaker.ignored` (reason), `breaker.defect`.
+Limiter: `ratelimiter.rejected` (reason, permits, retry_after),
+`ratelimiter.oversized`, `ratelimiter.waited` (permits, waited; debug).
+Bulkhead: `bulkhead.rejected` (reason, active, queued).
+Hedge: `hedge.started` (attempt, elapsed), `hedge.won` (attempt, started,
+latency), `hedge.budget_exhausted`, `hedge.deadline_skip`, `hedge.all_failed`.
+Every event carries the policy's label. Rejections are events, never errors
+the caller has to log themselves.
+
+## Testing
+
+- Every failure-mode row has a test on `TestClock`, with no real waiting.
+- Breaker: opens at the threshold only after `minimumCalls`; a slow-call trip;
+  open rejection and its exact `retryAfter`; exactly `N` concurrent probes with
+  the rest rejected; probe success closes, probe failure re-opens with a longer
+  duration; the growth reset; cancellation and defects never counted; stale
+  completions; forced control; the transitions on `stateChanges` in order,
+  including under consumers that cancel mid-transition; both window kinds
+  against a reference model under random call sequences (the model counts the
+  last `N` calls, or the calls within the bucketed span, directly).
+- Limiter: burst then the steady rate on virtual time; FIFO among waiters;
+  cancelled and deadline-cancelled waiters never consume; immediate rejection
+  when the wait exceeds the deadline; property test: for any random schedule of
+  advances, `tryAcquire`s and waiting `acquire`s, permits granted by `t` never
+  exceed `burst + rate × t`, and with enough demand they equal it exactly.
+- Bulkhead: concurrency never exceeds the limit under 300 contending tasks;
+  the queue limit is exact; random cancellations never leak a slot.
+- Hedge: slow first attempt, winner returned, loser cancelled and awaited
+  (checked by a flag set after the loser's cancellation handler _and_ its
+  cleanup), budget exhaustion, all-fail, no hedge after a fast failure.
+- Pipeline: flattening for every stage kind, stage order, and the HTTP stack
+  of the API example end to end on virtual time.
+- Stress: each concurrency suite under
+  `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`,
+  and under `--sanitize=thread`.
+
+## Non-goals
+
+A timeout _stage_ (see "A timeout is not a stage"); adaptive concurrency
+limits (Netflix's `concurrency-limits`, TCP-Vegas-style) — a bulkhead's limit
+is configured, and adaptive limiting needs latency measurements this contract
+does not collect; distributed rate limiting (a limiter is per process); a
+fallback policy (a `catch` at the call site is clearer than a stage that
+swallows the error); automatic transition out of open by timer (it would need
+an owner and a teardown for a task whose only job is to flip a flag).

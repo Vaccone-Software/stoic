@@ -35,6 +35,20 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
 // First success wins; losers cancelled and awaited. Fixed arities plus [Racer].
 public func race<R: Sendable, Failure: Error>(label:, _ first: @escaping @concurrent @Sendable () async throws(Failure) -> R,
                                                _ second: …) async throws(Failure) -> R   // and 3, 4, [Racer<R, Failure>]
+// First success wins; losers cancelled and awaited.
+public nonisolated(nonsending) func race<R: Sendable, Failure: Error>(
+    _ operations: [@Sendable () async throws(Failure) -> R]
+) async throws(ConcurrentFailure<Failure>) -> R
+
+// Second attempt after a delay if the first is slow. Only for idempotent work.
+// Throws the first failure, as race does; the contract is design/10.
+public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
+    _ idempotency: Idempotency,            // must be .idempotent — the argument is the acknowledgement
+    after delay: Duration,
+    maxAttempts: Int = 2,
+    budget: RetryBudget = .perCallSite,
+    operation: @escaping @concurrent @Sendable (Attempt) async throws(Failure) -> R
+) async throws(Failure) -> R
 
 // Bounded parallel map; results in input order.
 public func mapConcurrent<C: Collection, R: Sendable, Failure: Error>(_ elements: C, limit: Int,
@@ -75,6 +89,14 @@ SILGen assertion), and array literals of closures are not inferred
 `@Sendable`, hence fixed arities and `Racer`.
 
 **hedge.** Moves to the resilience policies (design/10).
+**hedge.** Starts attempt 1; if it has not finished after `delay`, starts
+attempt 2 without cancelling attempt 1, and so on up to `maxAttempts`. The
+first success wins and the rest are cancelled and awaited. Each hedge draws
+from the retry budget, so hedging cannot amplify load during an outage
+beyond the budget's ratio. The `Idempotency` argument has a single case,
+`.idempotent`: it exists so that hedging non-idempotent work requires
+writing a lie in the source. A latency-percentile delay (read from a rolling histogram the caller
+owns) is future work; the delay is a fixed `Duration` for now.
 
 **mapConcurrent.** At most `limit` transforms run; elements start in
 order; results return in input order. On the first failure the rest are
