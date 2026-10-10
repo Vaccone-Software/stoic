@@ -168,6 +168,9 @@ final class AsyncGate: Sendable {
         }
     }
 
+    /// Tasks suspended at the gate right now.
+    var waiterCount: Int { state.value.waiters.count }
+
     func open() {
         let waiters = state.mutate { state -> [CheckedContinuation<Void, Never>] in
             state.open = true

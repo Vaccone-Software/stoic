@@ -1,4 +1,4 @@
-import Stoic
+@testable import Stoic
 import Testing
 
 /// Records a test failure from inside an operation that must not run. Returns
@@ -45,5 +45,27 @@ func waitUntil(_ message: @autoclosure () -> String = "the condition never becam
             return
         }
         await Task.yield()
+    }
+}
+
+extension Event {
+    /// A string field's value.
+    func text(_ key: String) -> String? {
+        if case .string(let value)? = self[key] { value } else { nil }
+    }
+
+    /// An integer field's value.
+    func number(_ key: String) -> Int? {
+        if case .int(let value)? = self[key] { value } else { nil }
+    }
+
+    /// A duration field's value.
+    func duration(_ key: String) -> Duration? {
+        if case .duration(let value)? = self[key] { value } else { nil }
+    }
+
+    /// A boolean field's value.
+    func flag(_ key: String) -> Bool? {
+        if case .bool(let value)? = self[key] { value } else { nil }
     }
 }
