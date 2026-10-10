@@ -1,4 +1,12 @@
+import Foundation
 import Synchronization
+
+/// How much to multiply the size of every property and model test by.
+/// The default keeps the suite fast; `STOIC_TEST_SCALE=20 swift test` hunts
+/// harder, and a failure still names its seed.
+let testScale: Int = {
+    ProcessInfo.processInfo.environment["STOIC_TEST_SCALE"].flatMap(Int.init).map { max(1, $0) } ?? 1
+}()
 
 /// A value shared between test tasks behind a lock.
 final class SendableBox<Value: Sendable>: Sendable {
