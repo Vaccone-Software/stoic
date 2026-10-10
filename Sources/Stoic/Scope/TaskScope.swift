@@ -6,7 +6,8 @@ internal import Synchronization
 /// heartbeat, a pump, an observer. When the body ends, every fork is
 /// cancelled (``CancellationCause/scopeEnded``) and awaited, and only then do
 /// the scope's finalizers run, so nothing still running can use a resource
-/// that has been released.
+/// that has been released. A fork that finishes is forgotten at once, so a
+/// scope that lives long and forks per event holds only what is running.
 ///
 /// A fork that fails cancels the body and every other fork
 /// (``CancellationCause/siblingFailed``): one broken part stops the whole.
@@ -126,6 +127,11 @@ final class TaskScopeState: Sendable {
         state.withLock { $0.failures }
     }
 
+    /// How many forks the scope is holding on to: those still running.
+    var trackedForkCount: Int {
+        state.withLock { $0.forks.count }
+    }
+
     func setBody<R>(_ task: Task<R, Never>) {
         let cancelNow = state.withLock { state -> Bool in
             state.bodyCancel = { task.cancel() }
@@ -142,10 +148,11 @@ final class TaskScopeState: Sendable {
         guard open else { rejectFork(label: label); return }
         let forkCause = CancellationCauseBox(parent: cause)
         // The task waits at this gate until it is registered, so a fork that
-        // loses the race with `close()` never runs a line of its work.
-        let registered = OnceCell<Bool>()
+        // loses the race with `close()` never runs a line of its work. The
+        // gate hands it its registration, `nil` if it lost.
+        let registered = OnceCell<UInt64?>()
         let task = TaskLedger.task(.fork, label: label) {
-            guard await registered.value else { return }
+            guard let id = await registered.value else { return }
             do {
                 try await CancellationCauseBox.$current.withValue(forkCause) {
                     try await work()
@@ -153,18 +160,26 @@ final class TaskScopeState: Sendable {
             } catch {
                 self.failed(error, label: label)
             }
+            // Finished, and its failure (if any) recorded: the scope has
+            // nothing left to cancel or await, so it lets go of the task. A
+            // long-lived scope that forks per event stays the same size.
+            self.finished(id)
         }
-        let accepted = state.withLock { state -> Bool in
-            guard !state.closed else { return false }
+        let id = state.withLock { state -> UInt64? in
+            guard !state.closed else { return nil }
+            defer { state.nextID += 1 }
             state.forks[state.nextID] = task
-            state.nextID += 1
-            return true
+            return state.nextID
         }
-        registered.resolve(accepted)
-        if !accepted {
+        registered.resolve(id)
+        if id == nil {
             task.cancel()
             rejectFork(label: label)
         }
+    }
+
+    private func finished(_ id: UInt64) {
+        state.withLock { _ = $0.forks.removeValue(forKey: id) }
     }
 
     /// Forked after the body ended (from work the body left behind): a scope
@@ -206,6 +221,7 @@ final class TaskScopeState: Sendable {
     }
 
     /// Refuses new forks, cancels the running ones, and waits for them.
+    /// A fork that is not in the table any more has finished its work.
     func close() async {
         let forks = state.withLock { state -> [Task<Void, Never>] in
             state.closed = true
