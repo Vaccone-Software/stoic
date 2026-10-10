@@ -58,9 +58,11 @@ public final class FaultInjector<Failure: Error>: Sendable {
         case .fail(let failure):
             throw failure
         case .latency(let duration):
+            // stoic:allow(discarded-try): only cancellation can end the sleep early; the call proceeds and `operation` observes the cancellation itself
             try? await Ambient.sleep(for: duration)
         case .hang:
             while !Task.isCancelled {
+                // stoic:allow(discarded-try): only cancellation can end the sleep early, and the loop condition tests for exactly that
                 try? await Ambient.sleep(for: .seconds(3600))
             }
         case .hangIgnoringCancellation(let gate):

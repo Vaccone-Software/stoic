@@ -41,6 +41,7 @@ struct SupervisorRun {
     }
 
     func execute() async throws {
+        // stoic:allow(unbounded-stream): each child generation yields at most an exit, a hang and a restart notice, and this loop drains them as they arrive
         let (signals, sink) = AsyncStream<Signal>.makeStream()
         var slots = supervisor.children.indices.map { _ in
             Slot(stepper: supervisor.backoff.makeStepper(random: ambient.random.generator()))
