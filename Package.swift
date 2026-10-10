@@ -99,6 +99,9 @@ let package = Package(
         .library(name: "StoicMacros", targets: ["StoicMacros"]),
         .library(name: "StoicStore", targets: ["StoicStore"]),
         .library(name: "StoicSettings", targets: ["StoicSettings"]),
+        // The resilient HTTP client (design/19), with a scripted transport
+        // for tests.
+        .library(name: "StoicHTTP", targets: ["StoicHTTP"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -214,6 +217,15 @@ let package = Package(
         .target(name: "StoicSettings", dependencies: ["Stoic", "StoicSchema", "StoicStore", "StoicJSON"], swiftSettings: strict),
         .testTarget(
             name: "StoicSettingsTests", dependencies: ["StoicSettings", "StoicSchema", "StoicStore", "StoicTesting"],
+            swiftSettings: strict),
+        // HTTP (design/19): per-host retry, breaker and bulkhead, idempotency
+        // keys, bounded responses decoded through schemas, request
+        // coalescing, over a transport that tests replace with a script.
+        .target(
+            name: "StoicHTTP", dependencies: ["Stoic", "StoicSchema", "StoicJSON", "StoicApple"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicHTTPTests",
+            dependencies: ["StoicHTTP", "Stoic", "StoicSchema", "StoicJSON", "StoicTesting"],
             swiftSettings: strict),
     ] + macroTargets
 )
