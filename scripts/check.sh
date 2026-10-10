@@ -81,7 +81,7 @@ if [ -d "$probe/.build/checkouts/swift-syntax" ] || [ -d "$probe/cache/repositor
 fi
 
 step "iOS: every library builds for iOS (UIKit paths compile only there)"
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicStore StoicSettings StoicApple StoicUIKit StoicAppKit StoicObservability; do
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done
