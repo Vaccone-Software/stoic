@@ -3,10 +3,6 @@ import Testing
 
 @testable import StoicSchema
 
-private enum Theme: String, CaseIterable, Sendable {
-    case light, dark, system
-}
-
 /// Decodes JSON text with a schema, parsing it with the same options the
 /// schema's entry point would, and returns the full result.
 private func decode<V>(_ schema: Schema<V>, _ text: String, _ options: DecodeOptions = .strict) -> Decoded<V> {
