@@ -146,8 +146,18 @@ struct ChannelTests {
 @Suite("Channel: delivery racing cancellation")
 struct ChannelCancellationRaceTests {
     /// Runs `round` in a loop on its own task for `duration`, and reports
-    /// whether progress stalled: a deadlock shows as a counter that stops.
-    func runsWithoutStalling(for duration: Duration, _ round: @escaping @Sendable () async -> Void, background: @escaping @Sendable (SendableBox<Bool>) async -> Void) async -> Bool {
+    /// whether progress stalled: a deadlock shows as a counter that stops
+    /// *and stays stopped*. A single quiet window proves nothing: under a
+    /// loaded machine (the whole suite, repeated) the pool can starve these
+    /// busy loops for a quarter of a second at a time. So a stall is no
+    /// progress for `patience` straight, long enough for any starvation to
+    /// pass and a real deadlock (which never recovers) to be certain.
+    func runsWithoutStalling(
+        for duration: Duration,
+        patience: Duration = .seconds(5),
+        _ round: @escaping @Sendable () async -> Void,
+        background: @escaping @Sendable (SendableBox<Bool>) async -> Void
+    ) async -> Bool {
         let stop = SendableBox(false)
         let rounds = SendableBox(0)
         let worker = Task {
@@ -160,12 +170,21 @@ struct ChannelCancellationRaceTests {
         let clock = ContinuousClock()
         let end = clock.now.advanced(by: duration)
         var last = -1
+        var lastProgress = clock.now
         var stalled = false
-        while clock.now < end {
-            try? await clock.sleep(for: .milliseconds(250))
+        // Done once `duration` has passed and progress was seen after it: a
+        // deadlock that began late in the run is still caught.
+        while true {
+            try? await clock.sleep(for: .milliseconds(50))
             let now = rounds.value
-            if now == last { stalled = true; break }
-            last = now
+            if now != last {
+                last = now
+                lastProgress = clock.now
+                if clock.now >= end { break }
+            } else if lastProgress.duration(to: clock.now) >= patience {
+                stalled = true
+                break
+            }
         }
         stop.mutate { $0 = true }
         _ = (worker, other)
