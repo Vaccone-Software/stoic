@@ -66,6 +66,20 @@ public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "Igno
 @attached(peer)
 public macro PreserveUnknownKeys() = #externalMacro(module: "StoicMacrosPlugin", type: "PreserveUnknownKeysMacro")
 
+/// A named refinement: a checked type whose constraints are data.
+///
+///     @Refined(Double.self, .range(0.1...10), .finite)
+///     enum ScrollSpeedRule {}
+///     typealias ScrollSpeed = Refined<ScrollSpeedRule>
+///
+/// The macro writes `Base` and `constraints`, and the conformance to
+/// `Refinement`; the constraints are the library's own, checked here for
+/// what the macro can see.
+@attached(member, names: named(Base), named(constraints))
+@attached(extension, conformances: Refinement)
+public macro Refined<Base: Sendable>(_ base: Base.Type, _ constraints: Constraint...) =
+    #externalMacro(module: "StoicMacrosPlugin", type: "RefinedMacro")
+
 // MARK: Constraints
 //
 // Each is the `Constraint` of the same name, written beside the property it

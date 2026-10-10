@@ -1,4 +1,5 @@
 #if STOIC_MACROS
+import SwiftDiagnostics
 import SwiftSyntax
 
 /// The attributes `@Schema` reads from the declarations inside a type.
@@ -24,11 +25,13 @@ enum MarkerKind: String, CaseIterable {
     case pattern = "Pattern"
     case count = "Count"
     case unique = "Unique"
+    /// Only ever written as `.finite` in a `@Refined`; there is no attribute.
+    case finite = "Finite"
 
     /// The constraint kinds, which become `Constraint` values.
     var isConstraint: Bool {
         switch self {
-        case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern, .count, .unique: true
+        case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern, .count, .unique, .finite: true
         default: false
         }
     }
@@ -36,7 +39,7 @@ enum MarkerKind: String, CaseIterable {
     /// A constraint about a number.
     var constrainsNumbers: Bool {
         switch self {
-        case .range, .greaterThan, .lessThan, .multipleOf: true
+        case .range, .greaterThan, .lessThan, .multipleOf, .finite: true
         default: false
         }
     }
@@ -54,27 +57,32 @@ enum MarkerKind: String, CaseIterable {
     var spelling: String { "@" + rawValue }
 }
 
-/// One marker attribute found on a declaration.
+/// One constraint or marker, as written: an attribute on a declaration
+/// (`@Range(1...5)`) or, for `@Refined`, a call (`.range(1...5)`). Both say
+/// the same thing, so the same checks read both.
 struct Marker {
     var kind: MarkerKind
-    var node: AttributeSyntax
+    var node: Syntax
+    var arguments: [LabeledExprSyntax]
+    /// How it is spelt in a message: `@Range` or `.range`.
+    var name: String
 
-    var arguments: [LabeledExprSyntax] {
-        guard case .argumentList(let list)? = node.arguments else { return [] }
-        return Array(list)
+    /// The fix that takes the attribute away. (A constraint passed to
+    /// `@Refined` sits among other arguments, and removing it would leave a
+    /// stray comma, so it gets no fix.)
+    var removalFixIts: [FixIt] {
+        node.is(AttributeSyntax.self) ? [.removing(node, "remove \(name)")] : []
     }
 
     /// The constraint this attribute stands for, as the code that builds it.
     var constraintCode: String {
         precondition(kind.isConstraint)
-        let name = kind.rawValue.lowercasingFirst
-        guard case .argumentList(let list)? = node.arguments, !list.isEmpty else {
-            return "." + name
-        }
-        let text = list.map { argument in
+        let method = kind.rawValue.lowercasingFirst
+        guard !arguments.isEmpty else { return "." + method }
+        let text = arguments.map { argument in
             (argument.label.map { $0.text + ": " } ?? "") + argument.expression.trimmedDescription
         }.joined(separator: ", ")
-        return ".\(name)(\(text))"
+        return ".\(method)(\(text))"
     }
 }
 
@@ -93,7 +101,9 @@ func markers(in attributes: AttributeListSyntax) -> [Marker] {
             name = nil
         }
         guard let name, let kind = MarkerKind(rawValue: name) else { return nil }
-        return Marker(kind: kind, node: attribute)
+        var arguments: [LabeledExprSyntax] = []
+        if case .argumentList(let list)? = attribute.arguments { arguments = Array(list) }
+        return Marker(kind: kind, node: Syntax(attribute), arguments: arguments, name: kind.spelling)
     }
 }
 

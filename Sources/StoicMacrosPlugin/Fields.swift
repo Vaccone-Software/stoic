@@ -57,7 +57,7 @@ func readFields(of declaration: StructDeclSyntax, enclosing: String, reporter: R
                     marker.node,
                     Problem(
                         id: "static-property",
-                        message: "\(marker.kind.spelling) on a static property: a schema describes the instance's stored properties"))
+                        message: "\(marker.name) on a static property: a schema describes the instance's stored properties"))
             }
             continue
         }
@@ -88,7 +88,7 @@ private func readIgnored(_ variable: VariableDeclSyntax, markers found: [Marker]
             marker.node,
             Problem(
                 id: "ignored-with-marker",
-                message: "\(marker.kind.spelling) has no meaning on a property marked `@Ignored`, which the schema leaves out"))
+                message: "\(marker.name) has no meaning on a property marked `@Ignored`, which the schema leaves out"))
     }
 }
 
@@ -251,8 +251,8 @@ private func readMarkers(
         if !seen.insert(marker.kind).inserted {
             reporter.error(
                 marker.node,
-                Problem(id: "duplicate-marker", message: "\(marker.kind.spelling) appears twice on `\(field.property)`"),
-                fixIts: [.removing(marker.node, "remove the second \(marker.kind.spelling)")])
+                Problem(id: "duplicate-marker", message: "\(marker.name) appears twice on `\(field.property)`"),
+                fixIts: [.removing(marker.node, "remove the second \(marker.name)")])
             continue
         }
         switch marker.kind {
@@ -309,7 +309,7 @@ private func readMarkers(
             }
             model.preserving = field.property
             model.preservingNode = Syntax(marker.node)
-        case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern:
+        case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern, .finite:
             field.scalar.append(marker)
         case .count, .unique:
             field.collection.append(marker)
@@ -344,13 +344,13 @@ private func checkMarkersAgainstType(_ found: [Marker], type: ValueType, field: 
 /// The single string literal a marker takes, or a diagnostic.
 private func stringArgument(_ marker: Marker, reporter: Reporter) -> (value: String, source: String)? {
     guard let argument = marker.arguments.first else {
-        reporter.error(marker.node, Problem(id: "missing-argument", message: "\(marker.kind.spelling) needs a string literal"))
+        reporter.error(marker.node, Problem(id: "missing-argument", message: "\(marker.name) needs a string literal"))
         return nil
     }
     guard let literal = plainStringLiteral(argument.expression) else {
         reporter.error(
             argument.expression,
-            Problem(id: "argument-not-literal", message: "the argument of \(marker.kind.spelling) must be a string literal, so that the macro can read it"))
+            Problem(id: "argument-not-literal", message: "the argument of \(marker.name) must be a string literal, so that the macro can read it"))
         return nil
     }
     return literal

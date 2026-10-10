@@ -75,7 +75,7 @@ func expandEnum(
                 marker.node,
                 Problem(
                     id: "marker-on-raw-case",
-                    message: "\(marker.kind.spelling) does not apply to the case of an enumeration with a raw type: its raw value is what is written, so give the case one (`case \(item.element.name.text) = \"…\"`)"))
+                    message: "\(marker.name) does not apply to the case of an enumeration with a raw type: its raw value is what is written, so give the case one (`case \(item.element.name.text) = \"…\"`)"))
         }
     }
     guard let rawType else {
@@ -134,7 +134,7 @@ private func readUnionCase(
         guard marker.kind == .key else {
             reporter.error(
                 marker.node,
-                Problem(id: "marker-on-case", message: "\(marker.kind.spelling) does not apply to a case of a union; a payload's own schema holds its constraints"))
+                Problem(id: "marker-on-case", message: "\(marker.name) does not apply to a case of a union; a payload's own schema holds its constraints"))
             continue
         }
         if !seen.insert(marker.kind).inserted {

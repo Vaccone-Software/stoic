@@ -6,6 +6,7 @@ import SwiftSyntaxMacros
 struct StoicMacrosPlugin: CompilerPlugin {
     let providingMacros: [any Macro.Type] = [
         SchemaMacro.self,
+        RefinedMacro.self,
         KeyMacro.self,
         SecretMacro.self,
         UnitMacro.self,

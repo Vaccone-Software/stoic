@@ -11,56 +11,12 @@ import SwiftSyntax
 /// a failure in `SchemaSuite`; the point of doing it here is to put the
 /// error on the line that is wrong.
 func checkConstraints(of field: inout FieldModel, type: ValueType, reporter: Reporter) {
-    let name = field.property
     let startErrors = reporter.errorCount
-
-    // Fit.
-    for marker in field.scalar {
-        let leaf = type.leaf
-        let fits =
-            (marker.kind.constrainsNumbers && leaf == .number) || (marker.kind.constrainsStrings && leaf == .string)
-        if !fits {
-            let wanted = marker.kind.constrainsNumbers ? "a number" : "a string"
-            reporter.error(
-                marker.node,
-                Problem(id: "constraint-type-mismatch", message: mismatchMessage(marker, wanted: wanted, field: field, leaf: leaf)),
-                fixIts: [.removing(marker.node, "remove \(marker.kind.spelling)")])
-        }
-    }
-    for marker in field.collection {
-        let collection = type.collection
-        let fits = collection != nil && (marker.kind == .count || collection?.isArray == true)
-        if !fits {
-            let message: String
-            if marker.kind == .unique, collection != nil {
-                message = "@Unique applies to an array; `\(name)` is a dictionary, whose keys are already unique"
-            } else {
-                message = "\(marker.kind.spelling) applies to an array or a dictionary, and `\(name)` is `\(field.typeText)`"
-            }
-            reporter.error(
-                marker.node, Problem(id: "constraint-type-mismatch", message: message),
-                fixIts: [.removing(marker.node, "remove \(marker.kind.spelling)")])
-        }
-    }
+    let subject = Subject(name: "`\(field.property)`", typeText: field.typeText)
+    checkFit(scalar: field.scalar, collection: field.collection, type: type, subject: subject, reporter: reporter)
     if reporter.errorCount > startErrors { return }
-
-    // Coherence of each constraint.
-    for marker in field.scalar + field.collection {
-        checkCoherent(marker, reporter: reporter)
-    }
-    if reporter.errorCount > startErrors { return }
-    var allowed = Interval()
-    for marker in field.scalar where marker.kind.constrainsNumbers {
-        if let interval = interval(of: marker) { allowed.intersect(interval) }
-    }
-    if allowed.isEmpty {
-        let nodes = field.scalar.filter { $0.kind.constrainsNumbers }
-        reporter.error(
-            nodes.last.map { Syntax($0.node) } ?? field.node,
-            Problem(
-                id: "contradictory-constraints",
-                message: "the constraints on `\(name)` allow no number: \(nodes.map { $0.node.trimmedDescription }.joined(separator: ", "))"))
-    }
+    let allowed = checkCoherence(
+        scalar: field.scalar, collection: field.collection, subject: subject, anchor: field.node, reporter: reporter)
     if reporter.errorCount > startErrors { return }
 
     // The default, when it is a literal.
@@ -69,13 +25,72 @@ func checkConstraints(of field: inout FieldModel, type: ValueType, reporter: Rep
     }
 }
 
-private func mismatchMessage(_ marker: Marker, wanted: String, field: FieldModel, leaf: ValueType.Leaf) -> String {
-    switch leaf {
-    case .named:
-        return "\(marker.kind.spelling) cannot be applied to `\(field.property)`: the macro cannot look inside `\(field.typeText)`, so it cannot tell that it is \(wanted). Put the constraint in that type's own schema (a refined type, or its `@Schema`)"
-    default:
-        return "\(marker.kind.spelling) needs \(wanted), and `\(field.property)` is `\(field.typeText)`"
+/// What a constraint is about, in the words of a message.
+struct Subject {
+    /// `` `speed` `` for a property, "the base type" for a refinement.
+    var name: String
+    var typeText: String
+}
+
+/// Does each constraint fit the type it is about?
+func checkFit(scalar: [Marker], collection: [Marker], type: ValueType, subject: Subject, reporter: Reporter) {
+    for marker in scalar {
+        let leaf = type.leaf
+        let fits =
+            (marker.kind.constrainsNumbers && leaf == .number) || (marker.kind.constrainsStrings && leaf == .string)
+        if !fits {
+            let wanted = marker.kind.constrainsNumbers ? "a number" : "a string"
+            let message: String
+            if leaf == .named {
+                message =
+                    "\(marker.name) cannot be applied to \(subject.name): the macro cannot look inside `\(subject.typeText)`, so it cannot tell that it is \(wanted). Put the constraint in that type's own schema (a refined type, or its `@Schema`)"
+            } else {
+                message = "\(marker.name) needs \(wanted), and \(subject.name) is `\(subject.typeText)`"
+            }
+            reporter.error(
+                marker.node, Problem(id: "constraint-type-mismatch", message: message),
+                fixIts: marker.removalFixIts)
+        }
     }
+    for marker in collection {
+        let outer = type.collection
+        let fits = outer != nil && (marker.kind == .count || outer?.isArray == true)
+        if !fits {
+            let message: String
+            if marker.kind == .unique, outer != nil {
+                message = "\(marker.name) applies to an array; \(subject.name) is a dictionary, whose keys are already unique"
+            } else {
+                message = "\(marker.name) applies to an array or a dictionary, and \(subject.name) is `\(subject.typeText)`"
+            }
+            reporter.error(
+                marker.node, Problem(id: "constraint-type-mismatch", message: message),
+                fixIts: marker.removalFixIts)
+        }
+    }
+}
+
+/// Is each constraint possible, and are the numeric ones together? Returns
+/// the numbers they allow, as far as they are literal.
+func checkCoherence(
+    scalar: [Marker], collection: [Marker], subject: Subject, anchor: Syntax, reporter: Reporter
+) -> Interval {
+    let startErrors = reporter.errorCount
+    for marker in scalar + collection { checkCoherent(marker, reporter: reporter) }
+    if reporter.errorCount > startErrors { return Interval() }
+    var allowed = Interval()
+    for marker in scalar where marker.kind.constrainsNumbers {
+        if let interval = interval(of: marker) { allowed.intersect(interval) }
+    }
+    if allowed.isEmpty {
+        let numeric = scalar.filter { $0.kind.constrainsNumbers }
+        reporter.error(
+            numeric.last?.node ?? anchor,
+            Problem(
+                id: "contradictory-constraints",
+                message: "the constraints on \(subject.name) allow no number: \(numeric.map { $0.node.trimmedDescription }.joined(separator: ", "))"
+            ))
+    }
+    return allowed
 }
 
 private func checkCoherent(_ marker: Marker, reporter: Reporter) {
