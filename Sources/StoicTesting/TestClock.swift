@@ -25,11 +25,15 @@ public final class TestClock: Clock, Sendable {
         }
 
         public func advanced(by duration: Swift.Duration) -> Instant {
-            Instant(offset: offset + duration)
+            let (sum, overflow) = offset.attoseconds.addingReportingOverflow(duration.attoseconds)
+            guard overflow else { return Instant(offset: Swift.Duration(attoseconds: sum)) }
+            return Instant(offset: Swift.Duration(attoseconds: duration > .zero ? .max : .min))
         }
 
         public func duration(to other: Instant) -> Swift.Duration {
-            other.offset - offset
+            let (difference, overflow) = other.offset.attoseconds.subtractingReportingOverflow(offset.attoseconds)
+            guard overflow else { return Swift.Duration(attoseconds: difference) }
+            return Swift.Duration(attoseconds: other.offset > offset ? .max : .min)
         }
 
         public static func < (lhs: Instant, rhs: Instant) -> Bool {

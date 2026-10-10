@@ -55,7 +55,11 @@ public struct AnyClock: Clock, CustomStringConvertible {
             self.now = { origin.duration(to: clock.now) }
             self.minimumResolution = clock.minimumResolution
             self.sleep = { offset, tolerance in
-                try await clock.sleep(until: origin.advanced(by: offset), tolerance: tolerance)
+                // Clamp to the horizon: underlying clocks trap past what
+                // they can represent, and "wait a very long time" should
+                // mean "wait for cancellation", never a crash.
+                let limit = origin.duration(to: clock.now).saturatingAdding(.horizon)
+                try await clock.sleep(until: origin.advanced(by: min(offset, limit)), tolerance: tolerance)
             }
         }
     }

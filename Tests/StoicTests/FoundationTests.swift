@@ -185,3 +185,36 @@ final class OrderLog: Sendable {
     func append(_ value: String) { storage.mutate { $0.append(value) } }
     var values: [String] { storage.value }
 }
+
+@Suite("Arithmetic edges")
+struct ArithmeticEdgeTests {
+    @Test func multiplicationHandlesNaNProductsAndIntegralFactorsExactly() {
+        #expect(Duration.zero.saturatingMultiplied(by: .infinity) == .zero)
+        #expect(Duration.seconds(31_536_000).saturatingMultiplied(by: 1) == .seconds(31_536_000))
+        #expect(Duration.seconds(3).saturatingMultiplied(by: 4) == .seconds(12))
+        #expect(Duration.seconds(-3).saturatingMultiplied(by: 1e30) == .minimum)
+        #expect(Duration.maximum.saturatingMultiplied(by: 2) == .maximum)
+        #expect(Duration.maximum.saturatingMultiplied(by: -2) == .minimum)
+    }
+
+    @Test func enormousTimeoutsWaitInsteadOfTrapping() async throws {
+        // Previously "Overflow in +" inside the underlying clock.
+        let value = try await withTimeout(Duration(attoseconds: .max)) { () throws(CancellationError) -> Int in 7 }
+        #expect(value == 7)
+        let other = try await withTimeout(.seconds(Int64.max)) { () throws(CancellationError) -> Int in 8 }
+        #expect(other == 8)
+    }
+
+    struct Transient: Error {}
+
+    @Test func enormousScheduleDelaysAreClampedToTheHorizon() async {
+        let task = Task {
+            try await retry(Schedule.fixed(Duration(attoseconds: .max)).attempts(2), budget: .unlimited) { _ throws(Transient) -> Int in
+                throw Transient()
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        _ = try? await task.value
+    }
+}
