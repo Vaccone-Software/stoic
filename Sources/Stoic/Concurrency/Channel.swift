@@ -72,6 +72,20 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
 
     private let state = Mutex(State())
 
+    // Continuations are only ever resumed after `state` is unlocked. Resuming
+    // takes the woken task's status lock, and the runtime holds that same
+    // lock while it runs the task's cancellation handler — which takes
+    // `state`. Resuming under `state` is therefore a lock-order inversion
+    // that deadlocks when a delivery races a cancellation (found by review
+    // with a 100%-reproducible stress; now a regression test).
+    private enum SendStep {
+        case done
+        case handOff(CheckedContinuation<Element?, Never>)
+        case wait(UInt64)
+        case reject(Rejection)
+        case dropped
+    }
+
     public init(capacity: Int, overflow: Overflow = .suspend, label: String) {
         precondition(capacity >= 1, "a channel needs a capacity of at least one")
         self.capacity = capacity
@@ -106,9 +120,7 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
         let next = state.withLock { state -> SendStep in
             if state.finished { return .reject(Rejection(.closed, label: label)) }
             if !state.receivers.isEmpty {
-                let receiver = state.receivers.removeFirst()
-                receiver.continuation.resume(returning: element)
-                return .done
+                return .handOff(state.receivers.removeFirst().continuation)
             }
             if state.count < capacity {
                 state.buffer.append(element)
@@ -135,6 +147,8 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
         switch next {
         case .done:
             return
+        case .handOff(let receiver):
+            receiver.resume(returning: element)
         case .dropped:
             Ambient.record(Event("channel.dropped", level: .debug, label: label, fields: [
                 .init("policy", .string(overflow == .dropOldest ? "drop_oldest" : "drop_newest"), privacy: .public),
@@ -152,16 +166,17 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
     /// Never applies a drop policy and never waits.
     @discardableResult
     public func trySend(_ element: Element) -> Bool {
-        state.withLock { state in
-            guard !state.finished else { return false }
+        let (sent, receiver) = state.withLock { state -> (Bool, CheckedContinuation<Element?, Never>?) in
+            guard !state.finished else { return (false, nil) }
             if !state.receivers.isEmpty {
-                state.receivers.removeFirst().continuation.resume(returning: element)
-                return true
+                return (true, state.receivers.removeFirst().continuation)
             }
-            guard state.count < capacity else { return false }
+            guard state.count < capacity else { return (false, nil) }
             state.buffer.append(element)
-            return true
+            return (true, nil)
         }
+        receiver?.resume(returning: element)
+        return sent
     }
 
     private nonisolated(nonsending) func waitForSpace(_ id: UInt64, element: Element) async -> Rejection? {
@@ -178,12 +193,13 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
             }
             let outcome = await withTaskCancellationHandler {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Rejection?, Never>) in
+                    var receiver: CheckedContinuation<Element?, Never>?
                     let early = state.withLock { state -> Rejection?? in
                         let early = state.arriving.removeValue(forKey: id) ?? nil
                         if let early { return .some(early) }
                         // Space may have opened between the first check and now.
                         if !state.receivers.isEmpty {
-                            state.receivers.removeFirst().continuation.resume(returning: element)
+                            receiver = state.receivers.removeFirst().continuation
                             return .some(nil)
                         }
                         if state.count < capacity, !state.finished {
@@ -194,6 +210,8 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
                         state.senders.append(Sender(id: id, element: element, continuation: continuation))
                         return nil
                     }
+                    // Wake others only after the lock is released (see below).
+                    receiver?.resume(returning: element)
                     if let early { continuation.resume(returning: early) }
                 }
             } onCancel: {
@@ -232,25 +250,27 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
         }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Element?, Never>) in
+                var woken: CheckedContinuation<Rejection?, Never>?
                 let ready = state.withLock { state -> Element?? in
                     if let element = state.popFirst() {
                         // A waiting sender's element takes the freed place.
                         if !state.senders.isEmpty {
                             let sender = state.senders.removeFirst()
                             state.buffer.append(sender.element)
-                            sender.continuation.resume(returning: nil)
+                            woken = sender.continuation
                         }
                         return .some(element)
                     }
                     if !state.senders.isEmpty {
                         let sender = state.senders.removeFirst()
-                        sender.continuation.resume(returning: nil)
+                        woken = sender.continuation
                         return .some(sender.element)
                     }
                     if state.finished || Task.isCancelled { return .some(nil) }
                     state.receivers.append(Receiver(id: id, continuation: continuation))
                     return nil
                 }
+                woken?.resume(returning: nil)
                 if let ready { continuation.resume(returning: ready) }
             }
         } onCancel: {
@@ -302,11 +322,4 @@ extension Rejection.Reason {
     public static let closed = Rejection.Reason(rawValue: "closed")
     /// A bounded queue is full and its policy is to reject.
     public static let full = Rejection.Reason(rawValue: "full")
-}
-
-private enum SendStep {
-    case done
-    case wait(UInt64)
-    case reject(Rejection)
-    case dropped
 }

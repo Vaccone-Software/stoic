@@ -142,3 +142,97 @@ struct ChannelTests {
         #expect(total.value == expected)
     }
 }
+
+@Suite("Channel: delivery racing cancellation")
+struct ChannelCancellationRaceTests {
+    /// Runs `round` in a loop on its own task for `duration`, and reports
+    /// whether progress stalled: a deadlock shows as a counter that stops.
+    func runsWithoutStalling(for duration: Duration, _ round: @escaping @Sendable () async -> Void, background: @escaping @Sendable (SendableBox<Bool>) async -> Void) async -> Bool {
+        let stop = SendableBox(false)
+        let rounds = SendableBox(0)
+        let worker = Task {
+            while !stop.value {
+                await round()
+                rounds.mutate { $0 += 1 }
+            }
+        }
+        let other = Task { await background(stop) }
+        let clock = ContinuousClock()
+        let end = clock.now.advanced(by: duration)
+        var last = -1
+        var stalled = false
+        while clock.now < end {
+            try? await clock.sleep(for: .milliseconds(250))
+            let now = rounds.value
+            if now == last { stalled = true; break }
+            last = now
+        }
+        stop.mutate { $0 = true }
+        _ = (worker, other)
+        return !stalled
+    }
+
+    /// Regression: resuming a receiver while holding the channel's lock
+    /// deadlocked against that receiver's cancellation handler within a
+    /// second, every run.
+    @Test(.timeLimit(.minutes(1))) func receiversCancelledMidDeliveryNeverDeadlock() async {
+        let channel = Channel<Int>(capacity: 1, label: "race")
+        let ok = await runsWithoutStalling(for: .seconds(2), {
+            let consumer = Task { _ = await channel.receive() }
+            for _ in 0..<Int.random(in: 0...50) { await Task.yield() }
+            consumer.cancel()
+            await consumer.value
+        }, background: { stop in
+            var value = 0
+            while !stop.value {
+                value += 1
+                try? await channel.send(value)
+            }
+        })
+        #expect(ok, "no progress: a delivery deadlocked against a cancellation")
+        channel.finish()
+    }
+
+    @Test(.timeLimit(.minutes(1))) func sendersCancelledMidHandOffNeverDeadlock() async {
+        let channel = Channel<Int>(capacity: 1, label: "race")
+        let ok = await runsWithoutStalling(for: .seconds(2), {
+            let sender = Task { try? await channel.send(1) }
+            for _ in 0..<Int.random(in: 0...50) { await Task.yield() }
+            sender.cancel()
+            await sender.value
+        }, background: { stop in
+            while !stop.value {
+                if await channel.receive() == nil { await Task.yield() }
+            }
+        })
+        #expect(ok, "no progress: a hand-off deadlocked against a cancellation")
+        channel.finish()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func everyElementArrivesExactlyOnceUnderCancellation() async throws {
+        let channel = Channel<Int>(capacity: 4, label: "exactly-once")
+        let received = SendableBox<[Int]>([])
+        let sentOK = SendableBox<[Int]>([])
+        let consumers = (0..<4).map { _ in
+            Task {
+                while let value = await channel.receive() { received.mutate { $0.append(value) } }
+            }
+        }
+        await withTaskGroup { group in
+            for producer in 0..<4 {
+                group.addTask {
+                    for index in 0..<400 {
+                        let value = producer * 10_000 + index
+                        let sender = Task { try await channel.send(value) }
+                        if index % 7 == 0 { sender.cancel() }
+                        if (try? await sender.value) != nil { sentOK.mutate { $0.append(value) } }
+                    }
+                }
+            }
+        }
+        channel.finish()
+        for consumer in consumers { await consumer.value }
+        #expect(received.value.sorted() == sentOK.value.sorted(), "every successful send is received exactly once")
+    }
+}
