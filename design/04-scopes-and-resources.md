@@ -112,7 +112,10 @@ returned to the body and kept by the release closure).
 ## Events
 
 `scope.finalizer_failed`, `scope.finalizer_abandoned`, `scope.finalizer_slow`
-(over half its allowance), `scope.child_failed`, `scope.fork_after_exit`.
+(over half its allowance), `scope.child_failed`, `scope.fork_after_exit`,
+`saga.compensation_failed` (a saga's compensation threw; the scope event is
+not also emitted), and `abandoned.completed` when an abandoned finalizer
+finally ends (it is listed in `AbandonedWork` until then).
 
 ## Testing
 
