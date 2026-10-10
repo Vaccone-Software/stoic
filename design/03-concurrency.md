@@ -18,6 +18,7 @@ cancellation and failure semantics written down.
   is a stale UI. Single-flight written by hand around a shared optional
   task. `DispatchSemaphore` used to bound async work, which blocks a thread
   of the cooperative pool.
+
 ## API
 
 ```swift
@@ -35,10 +36,6 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
 // First success wins; losers cancelled and awaited. Fixed arities plus [Racer].
 public func race<R: Sendable, Failure: Error>(label:, _ first: @escaping @concurrent @Sendable () async throws(Failure) -> R,
                                                _ second: …) async throws(Failure) -> R   // and 3, 4, [Racer<R, Failure>]
-// First success wins; losers cancelled and awaited.
-public nonisolated(nonsending) func race<R: Sendable, Failure: Error>(
-    _ operations: [@Sendable () async throws(Failure) -> R]
-) async throws(ConcurrentFailure<Failure>) -> R
 
 // Second attempt after a delay if the first is slow. Only for idempotent work.
 // Throws the first failure, as race does; the contract is design/10.
@@ -88,8 +85,7 @@ natural variadic spelling crashes the Swift 6.4 compiler at call sites (a
 SILGen assertion), and array literals of closures are not inferred
 `@Sendable`, hence fixed arities and `Racer`.
 
-**hedge.** Moves to the resilience policies (design/10).
-**hedge.** Starts attempt 1; if it has not finished after `delay`, starts
+**hedge.** Its full contract is in design/10. Starts attempt 1; if it has not finished after `delay`, starts
 attempt 2 without cancelling attempt 1, and so on up to `maxAttempts`. The
 first success wins and the rest are cancelled and awaited. Each hedge draws
 from the retry budget, so hedging cannot amplify load during an outage
