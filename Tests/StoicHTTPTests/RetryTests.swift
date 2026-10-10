@@ -10,7 +10,7 @@ import Testing
 @Suite("HTTP retry")
 struct HTTPRetryTests {
     // Row: a GET gets 503 twice, then 200.
-    @Test func aGetRetriesTwiceWithBackoffThenReturnsTheSuccess() async throws {
+    @Test(.failureMode("design/19", "a GET gets 503 twice, then 200")) func aGetRetriesTwiceWithBackoffThenReturnsTheSuccess() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/users/42"), respond: [.status(503), .status(503), .json(#"{"id": 42}"#)])
             let task = rig.start(.get("/users/42"))
@@ -59,7 +59,7 @@ struct HTTPRetryTests {
     }
 
     // Row: a POST without an idempotency key times out.
-    @Test func anUnkeyedPostThatTimesOutIsNotRetried() async throws {
+    @Test(.failureMode("design/19", "a POST without an idempotency key times out")) func anUnkeyedPostThatTimesOutIsNotRetried() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.post("/orders", json: [:]), respond: [.hang])
             let task = rig.start(.post("/orders", json: [:]))
@@ -83,7 +83,7 @@ struct HTTPRetryTests {
     }
 
     // Row: a POST with a key gets 503.
-    @Test func aKeyedPostIsRetriedWithTheSameKeyOnEveryAttempt() async throws {
+    @Test(.failureMode("design/19", "a POST with a key gets 503")) func aKeyedPostIsRetriedWithTheSameKeyOnEveryAttempt() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.post("/orders", json: [:]), respond: [.status(503), .failure(.networkConnectionLost), .status(201)])
             let key = IdempotencyKey.random()
@@ -124,7 +124,7 @@ struct HTTPRetryTests {
     }
 
     // Row: the server says 429 with Retry-After: 30.
-    @Test func retryAfterInSecondsReplacesTheBackoff() async throws {
+    @Test(.failureMode("design/19", "the server says 429 with Retry-After: 30")) func retryAfterInSecondsReplacesTheBackoff() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [.status(429, headers: ["Retry-After": "30"]), .status(200)])
             let task = rig.start(.get("/a"))
@@ -178,7 +178,7 @@ struct HTTPRetryTests {
     }
 
     // Row: one attempt hangs.
-    @Test func aHangingAttemptIsCutAtTheTimeoutAndRetried() async throws {
+    @Test(.failureMode("design/19", "one attempt hangs")) func aHangingAttemptIsCutAtTheTimeoutAndRetried() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [.hang, .status(200)])
             let task = rig.start(.get("/a"))
@@ -194,7 +194,7 @@ struct HTTPRetryTests {
     }
 
     // Row: the caller's deadline passes mid-backoff.
-    @Test func noAttemptIsStartedThatCouldNotFinishBeforeTheDeadline() async throws {
+    @Test(.failureMode("design/19", "the caller's deadline passes mid-backoff")) func noAttemptIsStartedThatCouldNotFinishBeforeTheDeadline() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [.status(503)])
             let api = rig.api

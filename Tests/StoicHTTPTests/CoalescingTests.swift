@@ -8,7 +8,7 @@ import Testing
 @Suite("HTTP coalescing")
 struct HTTPCoalescingTests {
     // Row: ten identical GETs at once.
-    @Test func tenIdenticalGetsMakeOneRequestAndGetTenResults() async throws {
+    @Test(.failureMode("design/19", "ten identical GETs at once")) func tenIdenticalGetsMakeOneRequestAndGetTenResults() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/avatar/7"), respond: [Step.bytes([1, 2, 3]).after(.seconds(1))])
             let request = HTTPRequest.get("/avatar/7")

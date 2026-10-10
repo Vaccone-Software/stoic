@@ -15,7 +15,7 @@ struct HTTPFailureTests {
     static let breakerAfterFour = CircuitBreaker.Configuration(minimumCalls: 4, failureRateThreshold: 0.5)
 
     // Row: the server says 404.
-    @Test func a404IsFinalAndTheBreakerDoesNotCountIt() async throws {
+    @Test(.failureMode("design/19", "the server says 404")) func a404IsFinalAndTheBreakerDoesNotCountIt() async throws {
         try await withRig(.testing(breaker: Self.breakerAfterFour)) { (rig) async throws in
             rig.transport.on(.get("/missing"), respond: [.status(404, body: "no such user")])
             for _ in 0..<10 {
@@ -41,7 +41,7 @@ struct HTTPFailureTests {
     }
 
     // Row: the host keeps failing.
-    @Test func aHostThatKeepsFailingOpensTheBreakerAndCallsFailFast() async throws {
+    @Test(.failureMode("design/19", "the host keeps failing")) func aHostThatKeepsFailingOpensTheBreakerAndCallsFailFast() async throws {
         try await withRig(.testing(attempts: 1, breaker: Self.breakerAfterFour)) { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [.status(500)])
             for _ in 0..<4 { _ = await rig.httpError(of: rig.start(.get("/a"))) }
@@ -168,7 +168,7 @@ struct HTTPFailureTests {
     }
 
     // Row: the response is 2 GB.
-    @Test func aResponseOverTheLimitIsCutAndNeverRetried() async throws {
+    @Test(.failureMode("design/19", "the response is 2 GB")) func aResponseOverTheLimitIsCutAndNeverRetried() async throws {
         try await withRig(.testing(maxResponseBytes: 1000)) { (rig) async throws in
             rig.transport.on(.get("/huge"), respond: [.oversized(2_000_000_000)])
             let error = await rig.httpError(of: rig.start(.get("/huge")))
@@ -191,7 +191,7 @@ struct HTTPFailureTests {
     }
 
     // Row: the body does not match the schema.
-    @Test func aBodyThatDoesNotMatchIsADecodingErrorWithEveryIssueAndIsNotRetried() async throws {
+    @Test(.failureMode("design/19", "the body does not match the schema")) func aBodyThatDoesNotMatchIsADecodingErrorWithEveryIssueAndIsNotRetried() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/users/1"), respond: [.json(#"{"id": 0, "name": 5}"#)])
             let api = rig.api
@@ -227,7 +227,7 @@ struct HTTPFailureTests {
     }
 
     // Row: the caller is cancelled.
-    @Test func cancellingTheCallerCancelsTheRequestAndThrowsCancellationError() async throws {
+    @Test(.failureMode("design/19", "the caller is cancelled")) func cancellingTheCallerCancelsTheRequestAndThrowsCancellationError() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [.hang])
             let task = rig.start(.get("/a"))

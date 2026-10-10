@@ -137,15 +137,3 @@ design/18 | the file is torn or not JSON
 design/18 | the write fails (disk full, read-only volume)
 design/18 | there is no file
 design/18 | two updates race
-design/19 | a GET gets 503 twice, then 200
-design/19 | a POST with a key gets 503
-design/19 | a POST without an idempotency key times out
-design/19 | one attempt hangs
-design/19 | ten identical GETs at once
-design/19 | the body does not match the schema
-design/19 | the caller is cancelled
-design/19 | the caller's deadline passes mid-backoff
-design/19 | the host keeps failing
-design/19 | the response is 2 GB
-design/19 | the server says 404
-design/19 | the server says 429 with Retry-After: 30
