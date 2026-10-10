@@ -50,3 +50,48 @@ struct TestingToolsTests {
         #expect(StoicTest.events.names.contains("retry.exhausted"))
     }
 }
+
+@Suite("Golden traces")
+struct GoldenTraceTests {
+    enum Flaky: Error, Retryable {
+        case unavailable
+        var retryDecision: RetryDecision { .retry }
+    }
+
+    @Test func aRetryScenarioMakesExactlyTheDecisionsItShould() async throws {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let failures = SendableBox(0)
+        let task = Task {
+            try await withTestAmbient(clock: clock, seed: 1, events: events) {
+                try await retry(.fixed(.milliseconds(200)).attempts(3), budget: .unlimited, label: "sync") { _ async throws(Flaky) -> Int in
+                    if failures.mutate({ $0 += 1; return $0 }) < 2 { throw .unavailable }
+                    return 1
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .milliseconds(200))
+        _ = try await task.value
+        expectTrace(events, """
+            info retry.attempt_failed label=sync attempt=1 error=<private> delay=0.2 seconds timed_out=false decision=retry
+            info retry.succeeded label=sync attempts=2 elapsed=0.2 seconds
+            """)
+    }
+
+    @Test func aDifferentTraceIsAnIssueThatShowsTheActualOne() {
+        let events = RecordingInstrumentation()
+        events.record(Event("retry.succeeded", level: .info, label: "sync", fields: [.init("attempts", .int(2))]))
+        withKnownIssue {
+            expectTrace(events, "info retry.succeeded label=sync attempts=3")
+        } matching: { issue in
+            "\(issue)".contains("attempts=2")
+        }
+    }
+
+    @Test func privateValuesAreRedactedInTraces() {
+        let events = RecordingInstrumentation()
+        events.record(Event("test.private", level: .warning, fields: [.init("user", .string("alice"))]))
+        #expect(events.trace() == "warning test.private user=<private>")
+    }
+}

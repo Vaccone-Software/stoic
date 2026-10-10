@@ -61,6 +61,16 @@ composition of sinks an app installs.
 `EventCatalog.entries` is the authoritative list, with each event's level
 and meaning.
 
+## Golden traces (`StoicTesting`)
+
+`events.trace()` renders the recorded decisions one per line — level, name,
+label, fields, private values as `<private>`, debug events left out — and
+`expectTrace(events, """…""")` compares them with a golden copy, showing
+the first differing line and the whole actual trace on a mismatch. A result
+says the scenario ended well; a trace says it got there as intended: two
+attempts, not five; one breaker trip; nothing abandoned. On the test clock
+with a fixed seed, traces are exact, durations included.
+
 ## Flight recorder (`StoicStore`)
 
 `FlightRecorder` is an `Instrumentation` that writes each event to a
@@ -99,5 +109,3 @@ recorder answers it about the run that crashed.
 - Adapters, as package traits: swift-log, swift-metrics (counters per event
   name, histograms for durations), swift-distributed-tracing (events as
   span events; retries and deadlines as span attributes).
-- Golden-trace assertions in `StoicTesting`: a test asserts the sequence of
-  decisions, not only the result.
