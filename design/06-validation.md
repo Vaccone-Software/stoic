@@ -353,6 +353,43 @@ the order it was built:
   under today's schema; a second test fails when the history grows without a
   capsule entry. See `PrefsCapsule` in `VersionedFixtures.swift`.
 
+### The Codable bridge
+
+- **Inbound.** `schema.decode(from: decoder)` reads whatever the decoder
+  holds into a `JSONValue` (`JSONValue(reading:)`: a keyed container walked
+  with a `DynamicKey: CodingKey`, else an unkeyed one, else a single value,
+  tried in that order), runs the schema, and returns the value or throws
+  **one** `DecodingError.dataCorrupted` whose description lists every issue
+  with its full path from the document root (the decoder's coding path, then
+  the schema's) and whose `underlyingError` is the `ValidationFailure`.
+  Accumulation survives inside the subtree; the surrounding `Codable` code
+  still stops at its first error, as it must.
+- **Outbound.** `schema.encode(value, to: encoder)` writes the schema's JSON
+  through the encoder (`JSONValue.write(to:)`): objects as keyed containers,
+  arrays as unkeyed, integers as `Int64`/`UInt64`, other numbers as `Double`.
+  A value the schema cannot write (NaN) is an `EncodingError`.
+- **`SchemaCoded<T: Schematic>`** is the wrapper (`Codable`, `Equatable` and
+  `Hashable` when `T` is) for a property, an element or a top-level value;
+  `decodeSchema`/`decodeSchemaIfPresent`/`encodeSchema` on the containers
+  serve hand-written `init(from:)`. `CodingUserInfoKey.schemaDecodeOptions`
+  and `.schemaEncodeStyle` choose lenient decoding or sparse encoding through
+  `userInfo`, without touching any conformance.
+- **What `Decodable` costs.** A `Decoder` hides the source text: numbers
+  arrive as `Int64`, `UInt64` or `Double` (so `1.0` is `1` and a negative
+  zero is `0`, and a non-integer is as precise as a `Double`), object members
+  arrive sorted by key, and `JSONDecoder` cannot tell `"é"` from `"e\u{301}"`
+  in a key. There are no source ranges. The schema's own text entry points
+  keep all of that; use them for files and the bridge for `Codable` graphs.
+- **Not provided:** `Schema.codable(T.self)` (wrapping an existing `Codable`
+  type as a leaf) and the `userInfo` collector that lets a generated
+  `init(from:)` continue after a failed field (both are in the review's 3.9;
+  neither is needed without macros).
+- **Tested** against a minimal `Decoder`/`Encoder` over `JSONValue` written
+  in the test target with no Foundation, and, in the one test file that
+  imports Foundation, against `JSONDecoder`/`JSONEncoder` and
+  `PropertyListDecoder`/`PropertyListEncoder`. A test also scans the sources
+  of `StoicSchema` and `StoicJSON` for `import Foundation`.
+
 ### SchemaSuite
 
 `try SchemaSuite(Settings.schema).run(seed: 1, cases: 500)` is the
