@@ -124,6 +124,34 @@ struct SimulationTests {
         #expect(running.contains { $0.label == "stuck.forever" })
     }
 
+    @Test func aDeadlockInsideTheSimulationIsReportedAtOnce() async throws {
+        // Default limits: two seconds of patience, but nothing from outside
+        // ever took part, so there is nothing to wait for.
+        let clock = ContinuousClock()
+        let start = clock.now
+        let failure = await #expect(throws: SimulationFailure.self) {
+            _ = try await simulate(seed: 0) { _ in
+                await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+            }
+        }
+        guard case .stalled? = failure?.kind else {
+            Issue.record("expected a stall, got \(String(describing: failure))")
+            return
+        }
+        #expect(start.duration(to: clock.now) < .seconds(1))
+    }
+
+    @Test func onceOutsideWorkHasTakenPartTheWaitIsTheLongOne() async throws {
+        // A real sleep arrives from another thread: after it, the run knows
+        // outside work exists, and a second, longer wait is not a stall.
+        let run = try await simulate(seed: 0, limits: .init(stall: .seconds(2), quietStall: .milliseconds(20))) { _ in
+            try await Task.sleep(for: .milliseconds(5))
+            try await Task.sleep(for: .milliseconds(300))
+            return true
+        }
+        #expect(run.value)
+    }
+
     @Test func aLivelockHitsTheVirtualTimeLimit() async throws {
         let failure = await #expect(throws: SimulationFailure.self) {
             _ = try await simulate(seed: 0, limits: .init(virtualTime: .seconds(60))) { _ in

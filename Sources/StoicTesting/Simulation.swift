@@ -1,4 +1,5 @@
 public import Stoic
+internal import Darwin
 internal import Dispatch
 internal import Synchronization
 
@@ -152,14 +153,28 @@ public struct SimulationLimits: Sendable {
     /// simulation (the main actor, Dispatch, real I/O) before calling the
     /// run stalled.
     public var stall: Duration
+    /// How long a run that nothing outside has ever touched waits before it
+    /// is called stalled. When no job has arrived from another thread, and
+    /// no outside work is outstanding, nothing is likely to — a deadlock
+    /// inside the simulation needs no two seconds of waiting. The little
+    /// that remains covers a first hop to the main actor that has not
+    /// arrived yet.
+    public var quietStall: Duration
 
-    public init(virtualTime: Duration = .seconds(24 * 3600), steps: Int = 5_000_000, stall: Duration = .seconds(2)) {
+    public init(
+        virtualTime: Duration = .seconds(24 * 3600),
+        steps: Int = 5_000_000,
+        stall: Duration = .seconds(2),
+        quietStall: Duration = .milliseconds(50)
+    ) {
         self.virtualTime = virtualTime
         self.steps = steps
         self.stall = stall
+        self.quietStall = quietStall
     }
 
-    /// A simulated day, five million steps, two seconds stalled.
+    /// A simulated day, five million steps, two seconds stalled (50
+    /// milliseconds when nothing outside the simulation ever took part).
     public static let standard = SimulationLimits()
 }
 
@@ -305,6 +320,7 @@ final class Simulation<R: Sendable>: Sendable {
 
     /// Runs the simulation to its end on the calling thread.
     func drive(_ task: Task<Void, Never>) -> Outcome {
+        executor.beginDriving()
         FaultPoint.install()
         defer { FaultPoint.uninstall() }
         let faults = faults
@@ -349,7 +365,7 @@ final class Simulation<R: Sendable>: Sendable {
             // it would be done by now in real time.
             // Once a wait for it has timed out, it is wedged, not slow: stop
             // waiting for it before every timer.
-            if !ExternalWork.isOutstanding {
+            if !ExternalWork.isOutstanding(tag: tag) {
                 outsideIsWedged = false
             } else if !outsideIsWedged {
                 if executor.waitForArrival(within: limits.stall) { continue }
@@ -360,7 +376,10 @@ final class Simulation<R: Sendable>: Sendable {
                 if start.duration(to: now) > limits.virtualTime { fail(.virtualTimeLimit) }
                 continue
             }
-            if executor.waitForArrival(within: limits.stall) { continue }
+            // Nothing runnable, nothing asleep. If nothing from outside has
+            // taken part in this run, nothing is likely to start now.
+            let patience = executor.sawOutsideArrival || ExternalWork.isOutstanding(tag: tag) ? limits.stall : min(limits.quietStall, limits.stall)
+            if executor.waitForArrival(within: patience) { continue }
             if failure != nil { break }
             fail(.stalled(TaskLedger.entries(tag: tag)))
         }
@@ -437,6 +456,10 @@ final class SimulationExecutor: TaskExecutor {
         var jobs: [(job: UnownedJob, arrival: UInt64)] = []
         var arrivals: UInt64 = 0
         var random: SplitMix
+        // The driver's thread, once it starts, and whether any job has been
+        // enqueued from another one since.
+        var driverThread: UInt64?
+        var sawOutside = false
     }
 
     private let state: Mutex<State>
@@ -450,11 +473,25 @@ final class SimulationExecutor: TaskExecutor {
 
     func enqueue(_ job: consuming ExecutorJob) {
         let job = UnownedJob(job)
+        let thread = currentThreadID()
         state.withLock { state in
+            if let driver = state.driverThread, driver != thread { state.sawOutside = true }
             state.arrivals += 1
             state.jobs.append((job, state.arrivals))
         }
         arrival.signal()
+    }
+
+    /// Marks the calling thread as the driver. Jobs enqueued from any other
+    /// thread after this are work from outside the simulation.
+    func beginDriving() {
+        let thread = currentThreadID()
+        state.withLock { $0.driverThread = thread }
+    }
+
+    /// Whether a job has arrived from a thread other than the driver's.
+    var sawOutsideArrival: Bool {
+        state.withLock { $0.sawOutside }
     }
 
     /// Removes a job chosen by the seed among all runnable ones. Also returns
@@ -490,6 +527,13 @@ final class SimulationExecutor: TaskExecutor {
     func wake() {
         arrival.signal()
     }
+}
+
+/// An identifier of the calling thread, stable for its life.
+func currentThreadID() -> UInt64 {
+    var id: UInt64 = 0
+    unsafe pthread_threadid_np(nil, &id)
+    return id
 }
 
 /// SplitMix64: small, fast, and identical on every platform.

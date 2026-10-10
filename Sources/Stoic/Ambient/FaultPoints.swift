@@ -63,21 +63,25 @@ package enum FaultPoint {
 
 /// Work a primitive has handed to something a simulation does not drive —
 /// `abandoningAfter`'s operation on a Dispatch queue — and is waiting for.
-/// A simulation does not move virtual time while any is outstanding:
-/// otherwise a timer would fire "before" work that, in real time, was
-/// already almost done.
+/// A simulation does not move virtual time while any of its own is
+/// outstanding: otherwise a timer would fire "before" work that, in real
+/// time, was already almost done. Counted per ledger tag, so one run's
+/// outside work never holds up another's.
 package enum ExternalWork {
-    private static let outstanding = Atomic<Int>(0)
+    private static let outstanding = Mutex<[UInt64: Int]>([:])
 
-    package static func begin() {
-        outstanding.wrappingAdd(1, ordering: .relaxed)
+    package static func begin(tag: UInt64?) {
+        outstanding.withLock { $0[tag ?? 0, default: 0] += 1 }
     }
 
-    package static func end() {
-        outstanding.wrappingSubtract(1, ordering: .relaxed)
+    package static func end(tag: UInt64?) {
+        outstanding.withLock { counts in
+            let remaining = (counts[tag ?? 0] ?? 1) - 1
+            counts[tag ?? 0] = remaining > 0 ? remaining : nil
+        }
     }
 
-    package static var isOutstanding: Bool {
-        outstanding.load(ordering: .relaxed) > 0
+    package static func isOutstanding(tag: UInt64?) -> Bool {
+        outstanding.withLock { $0[tag ?? 0] != nil }
     }
 }

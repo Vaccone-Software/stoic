@@ -83,10 +83,11 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
     let instrumentation = ambient.instrumentation
     let started = ambient.clock.now
     let ambientClock = ambient.clock
-    ExternalWork.begin()
+    let tag = ambient.ledgerTag
+    ExternalWork.begin(tag: tag)
     DispatchQueue.global(qos: qos).async {
         let result = Result<R, Failure> { () throws(Failure) -> R in try operation() }
-        ExternalWork.end()
+        ExternalWork.end(tag: tag)
         if let lateness = ledger.finish(id) {
             instrumentation.record(Event("abandoned.completed", level: .notice, label: label, fields: [
                 .init("ran_for", .duration(started.duration(to: ambientClock.now))),
