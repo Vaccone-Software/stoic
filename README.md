@@ -168,6 +168,12 @@ every primitive shares, and the quality bar. [design/](design/) has one
 contract per primitive — semantics, cancellation, errors, a failure-mode
 table, events and a test plan — and the code is held to them.
 
+## Adopting
+
+[docs/Adopting.md](docs/Adopting.md) walks an existing app onto Stoic one
+call site at a time: the lint baseline, warnings phased in by group, and the
+patterns to replace in order of payoff.
+
 ## For agents
 
 [AGENTS.md](AGENTS.md) is written for coding agents, and for anyone who
