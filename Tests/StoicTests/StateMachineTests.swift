@@ -138,3 +138,41 @@ struct StateMachineTests {
         #expect(graph.states.count == 50)
     }
 }
+
+@Suite("Random walks")
+struct RandomWalkTests {
+    enum Door: Hashable, Sendable { case closed, open, locked }
+    enum Action: Sendable, CaseIterable { case open, close, lock, unlock }
+
+    static let door: @Sendable (Door, Action) -> Transition<Door, Action> = { door, action in
+        switch (door, action) {
+        case (.closed, .open): .to(.open)
+        case (.open, .close): .to(.closed)
+        case (.closed, .lock): .to(.locked)
+        case (.locked, .unlock): .to(.closed)
+        // The bug: a locked door opens.
+        case (.locked, .open): .to(.open)
+        default: .ignore
+        }
+    }
+
+    @Test func findsAndShrinksAViolatingSequence() throws {
+        let violation = randomWalks(from: Door.closed, events: Action.allCases, seed: 3, transition: Self.door) { door, history in
+            // A door that was locked, and not unlocked since, must not open.
+            guard door == .open, let lastLock = history.lastIndex(where: { if case .lock = $0 { true } else { false } }) else { return nil }
+            let unlocked = history[lastLock...].contains { if case .unlock = $0 { true } else { false } }
+            return unlocked ? nil : "opened while locked"
+        }
+        let found = try #require(violation)
+        #expect(found.events.count == 2, "shrunk to lock → open, got \(found)")
+        #expect(found.message == "opened while locked")
+    }
+
+    @Test func aCorrectMachinePasses() {
+        let violation = randomWalks(from: Door.closed, events: Action.allCases, seed: 3, transition: { door, action in
+            if door == .locked, case .open = action { return .ignore }
+            return Self.door(door, action)
+        }) { door, _ in nil }
+        #expect(violation == nil)
+    }
+}
