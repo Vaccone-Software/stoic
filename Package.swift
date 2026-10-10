@@ -30,6 +30,7 @@ let package = Package(
     products: [
         .library(name: "Stoic", targets: ["Stoic"]),
         .library(name: "StoicTesting", targets: ["StoicTesting"]),
+        .library(name: "StoicAppKit", targets: ["StoicAppKit"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
     ],
@@ -53,5 +54,9 @@ let package = Package(
         .target(name: "StoicSchema", dependencies: ["StoicJSON"], swiftSettings: strict),
         .testTarget(name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
         .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
+        // AppKit lifecycle: finishing async shutdown before a Mac app quits.
+        // Empty on platforms without AppKit.
+        .target(name: "StoicAppKit", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicAppKitTests", dependencies: ["StoicAppKit", "StoicTesting"], swiftSettings: strict),
     ]
 )
