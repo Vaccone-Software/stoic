@@ -1,4 +1,5 @@
 @testable import Stoic
+import Observation
 import StoicTesting
 import Testing
 
@@ -174,5 +175,26 @@ struct RandomWalkTests {
             return Self.door(door, action)
         }) { door, _ in nil }
         #expect(violation == nil)
+    }
+}
+
+@Suite("StateMachine observation")
+struct StateMachineObservationTests {
+    enum Light: Hashable, Sendable { case red, green }
+    enum Change: Sendable { case go, stop }
+
+    @Test func readingTheStateRegistersForTheNextTransition() async {
+        let machine = StateMachine<Light, Change>(initial: .red, label: "light") { _, change in
+            switch change { case .go: .to(.green); case .stop: .to(.red) }
+        }
+        let changed = AsyncGate()
+        withObservationTracking {
+            _ = machine.state
+        } onChange: {
+            changed.open()
+        }
+        machine.send(.go)
+        await changed.wait()
+        #expect(machine.state == .green)
     }
 }

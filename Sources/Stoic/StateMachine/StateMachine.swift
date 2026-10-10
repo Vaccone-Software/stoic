@@ -1,4 +1,5 @@
 internal import Synchronization
+public import Observation
 
 /// What a state machine does with an event.
 public enum Transition<State: Hashable & Sendable, Event: Sendable>: Sendable {
@@ -58,7 +59,7 @@ public struct StateTimeout<Event: Sendable>: Sendable {
 /// **Thread-safe and observable.** Events may be sent from any task; they are
 /// applied one at a time, in order. ``states()`` streams the current state,
 /// for a UI to follow.
-public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Sendable {
+public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Sendable, Observable {
     public typealias TransitionFunction = @Sendable (State, Event) -> Transition<State, Event>
 
     /// Names the machine in events.
@@ -107,6 +108,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     private let transition: TransitionFunction
     private let clock: AnyClock
     private let core: Mutex<Core>
+    private let registrar = ObservationRegistrar()
 
     public init(
         initial: State,
@@ -130,13 +132,18 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     }
 
     /// The current state.
+    ///
+    /// Observable: a SwiftUI view (or anything using Observation) that reads
+    /// it is updated after every transition.
     public var state: State {
-        core.withLock { $0.state }
+        registrar.access(self, keyPath: \.state)
+        return core.withLock { $0.state }
     }
 
     /// The most recent transitions, oldest first, for diagnostics.
     public var history: [Record] {
-        core.withLock { $0.history }
+        registrar.access(self, keyPath: \.history)
+        return core.withLock { $0.history }
     }
 
     /// Handles `event`: computes the transition and applies it.
@@ -200,8 +207,13 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 return .moved(enter(next, timeout: timeout, cause: event, core: &core))
             }
         }
-        // Events are recorded outside the lock: an instrumentation sink must
-        // never be able to deadlock the machine.
+        // Observers and events are notified outside the lock: neither an
+        // observation callback nor an instrumentation sink may be able to
+        // deadlock the machine.
+        if case .moved = outcome {
+            registrar.withMutation(of: self, keyPath: \.state) {}
+            registrar.withMutation(of: self, keyPath: \.history) {}
+        }
         switch outcome {
         case .none:
             break
