@@ -15,14 +15,16 @@ internal import Synchronization
 ///   requests a second — can still retry.
 ///
 /// Each retry spends one token, earned first. With none left, the retry is
-/// refused and the last error is rethrown.
+/// refused and the last error is rethrown. Tokens are counted in exact
+/// thousandths, so ten deposits of 0.1 make exactly one token.
 ///
-/// Budgets are shared by everything that retries against one dependency:
-/// give them a name with ``named(_:)``, or let ``retry(_:budget:classify:nesting:label:fileID:line:operation:)``
-/// use the default, which is one budget per call site.
+/// Budgets live in the ambient ``RetryBudgets`` registry, so a test that
+/// installs a fresh registry (``withTestAmbient``) starts with full budgets
+/// and cannot be affected by another test's retries.
 public struct RetryBudget: Sendable, CustomStringConvertible {
     enum Kind: Sendable {
         case perCallSite
+        case named(String)
         case unlimited
         case storage(BudgetStorage)
     }
@@ -39,28 +41,29 @@ public struct RetryBudget: Sendable, CustomStringConvertible {
         self.kind = kind
     }
 
-    /// A new budget, not shared with anything that does not hold this value.
+    /// A new budget, shared only by whoever holds this value.
     public init(ratio: Double = 0.2, reservePerSecond: Double = 1, reserveCapacity: Double = 10) {
-        self.kind = .storage(BudgetStorage(ratio: ratio, reservePerSecond: reservePerSecond, reserveCapacity: reserveCapacity))
+        self.kind = .storage(BudgetStorage(settings: .init(ratio: ratio, reservePerSecond: reservePerSecond, reserveCapacity: reserveCapacity)))
     }
 
-    /// The process-wide budget called `name`, created with the default
-    /// settings the first time it is asked for. Use one name per dependency:
-    /// `RetryBudget.named("api.example.com")`.
+    /// The budget called `name` in the ambient registry, created with the
+    /// default settings the first time it is used. Use one name per
+    /// dependency: `.named("api.example.com")`.
     public static func named(_ name: String) -> RetryBudget {
-        RetryBudget(kind: .storage(BudgetRegistry.shared.budget(named: name)))
+        RetryBudget(kind: .named(name))
     }
 
-    /// The tokens available right now, earned and reserve together.
-    public var available: Double? {
-        guard case .storage(let storage) = kind else { return nil }
-        return storage.available(clock: Ambient.current.clock)
+    /// The tokens available right now, earned and reserve together, or `nil`
+    /// for an unlimited budget.
+    public func available(fileID: String = #fileID, line: UInt = #line) -> Double? {
+        let ambient = Ambient.current
+        return resolved(fileID: fileID, line: line, registry: ambient.budgets)?.available(clock: ambient.clock)
     }
 
-    /// Resolves the per-call-site default to the budget for that site.
-    func resolved(fileID: String, line: UInt) -> BudgetStorage? {
+    func resolved(fileID: String, line: UInt, registry: RetryBudgets) -> BudgetStorage? {
         switch kind {
-        case .perCallSite: BudgetRegistry.shared.budget(named: "\(fileID):\(line)")
+        case .perCallSite: registry.storage(named: "\(fileID):\(line)")
+        case .named(let name): registry.storage(named: name)
         case .unlimited: nil
         case .storage(let storage): storage
         }
@@ -69,27 +72,75 @@ public struct RetryBudget: Sendable, CustomStringConvertible {
     public var description: String {
         switch kind {
         case .perCallSite: "RetryBudget.perCallSite"
+        case .named(let name): "RetryBudget.named(\(name))"
         case .unlimited: "RetryBudget.unlimited"
         case .storage(let storage): "RetryBudget(\(storage.settings))"
         }
     }
 }
 
-/// The shared token state behind a ``RetryBudget``.
+/// The registry of shared retry budgets: per-call-site and named ones.
+///
+/// One lives in ``Ambient/budgets``. The process-wide default is shared by
+/// everything; a test installs a fresh one so its budgets start full. The
+/// registry holds at most 4,096 budgets, forgetting the least recently
+/// created beyond that, so dynamically generated names cannot grow it without
+/// bound.
+public final class RetryBudgets: Sendable {
+    /// The process-wide registry.
+    public static let shared = RetryBudgets()
+
+    static let limit = 4_096
+
+    private struct State {
+        var budgets: [String: BudgetStorage] = [:]
+        var order: [String] = []
+    }
+
+    private let state = Mutex(State())
+    private let defaults: BudgetStorage.Settings
+
+    /// A fresh registry whose budgets are created with these settings.
+    public init(ratio: Double = 0.2, reservePerSecond: Double = 1, reserveCapacity: Double = 10) {
+        defaults = .init(ratio: ratio, reservePerSecond: reservePerSecond, reserveCapacity: reserveCapacity)
+    }
+
+    func storage(named name: String) -> BudgetStorage {
+        state.withLock { state in
+            if let existing = state.budgets[name] { return existing }
+            let created = BudgetStorage(settings: defaults)
+            state.budgets[name] = created
+            state.order.append(name)
+            if state.order.count > Self.limit {
+                state.budgets[state.order.removeFirst()] = nil
+            }
+            return created
+        }
+    }
+}
+
+/// The shared token state behind a ``RetryBudget``, in thousandths of a token.
 final class BudgetStorage: Sendable {
     struct Settings: Sendable, CustomStringConvertible {
-        let ratio: Double
-        let reservePerSecond: Double
-        let reserveCapacity: Double
+        let ratio: Int64
+        let reservePerSecond: Int64
+        let reserveCapacity: Int64
+
+        init(ratio: Double, reservePerSecond: Double, reserveCapacity: Double) {
+            precondition(ratio >= 0 && reservePerSecond >= 0 && reserveCapacity >= 0, "budget settings must not be negative")
+            self.ratio = Int64((ratio * 1000).rounded())
+            self.reservePerSecond = Int64((reservePerSecond * 1000).rounded())
+            self.reserveCapacity = Int64((reserveCapacity * 1000).rounded())
+        }
 
         var description: String {
-            "ratio: \(ratio), reserve: \(reservePerSecond)/s up to \(reserveCapacity)"
+            "ratio: \(Double(ratio) / 1000), reserve: \(Double(reservePerSecond) / 1000)/s up to \(Double(reserveCapacity) / 1000)"
         }
     }
 
     private struct State {
-        var earned: Double = 0
-        var reserve: Double
+        var earned: Int64 = 0
+        var reserve: Int64
         // The clock the last refill was measured on. Instants from another
         // clock (a test clock replacing the real one) are not comparable,
         // so a change of clock restarts the refill measurement.
@@ -99,18 +150,17 @@ final class BudgetStorage: Sendable {
     let settings: Settings
     private let state: Mutex<State>
 
-    init(ratio: Double, reservePerSecond: Double, reserveCapacity: Double) {
-        precondition(ratio >= 0 && reservePerSecond >= 0 && reserveCapacity >= 0, "budget settings must not be negative")
-        settings = Settings(ratio: ratio, reservePerSecond: reservePerSecond, reserveCapacity: reserveCapacity)
-        state = Mutex(State(reserve: reserveCapacity))
+    init(settings: Settings) {
+        self.settings = settings
+        state = Mutex(State(reserve: settings.reserveCapacity))
     }
 
     /// Records a first attempt.
     func deposit() {
         state.withLock { state in
-            // Earned tokens are capped so a long quiet success streak cannot
-            // bank an unbounded burst of retries for the next outage.
-            state.earned = min(state.earned + settings.ratio, max(1, settings.reserveCapacity))
+            // Earned tokens are capped at one reserve's worth so that a long
+            // success streak cannot bank an unbounded burst for the next outage.
+            state.earned = min(state.earned + settings.ratio, max(1000, settings.reserveCapacity))
         }
     }
 
@@ -118,12 +168,12 @@ final class BudgetStorage: Sendable {
     func withdraw(clock: AnyClock) -> Bool {
         state.withLock { state in
             refill(&state, clock: clock)
-            if state.earned >= 1 {
-                state.earned -= 1
+            if state.earned >= 1000 {
+                state.earned -= 1000
                 return true
             }
-            if state.reserve >= 1 {
-                state.reserve -= 1
+            if state.reserve >= 1000 {
+                state.reserve -= 1000
                 return true
             }
             return false
@@ -133,31 +183,20 @@ final class BudgetStorage: Sendable {
     func available(clock: AnyClock) -> Double {
         state.withLock { state in
             refill(&state, clock: clock)
-            return state.earned + state.reserve
+            return Double(state.earned + state.reserve) / 1000
         }
     }
 
     private func refill(_ state: inout State, clock: AnyClock) {
         let now = clock.now
-        defer { state.refilledAt = (now, clock) }
-        guard let last = state.refilledAt, last.clock.isSameClock(as: clock) else { return }
-        let elapsed = max(.zero, last.instant.duration(to: now))
-        state.reserve = min(settings.reserveCapacity, state.reserve + elapsed.seconds * settings.reservePerSecond)
-    }
-}
-
-/// Named budgets, process-wide.
-final class BudgetRegistry: Sendable {
-    static let shared = BudgetRegistry()
-
-    private let budgets = Mutex<[String: BudgetStorage]>([:])
-
-    func budget(named name: String) -> BudgetStorage {
-        budgets.withLock { budgets in
-            if let existing = budgets[name] { return existing }
-            let created = BudgetStorage(ratio: 0.2, reservePerSecond: 1, reserveCapacity: 10)
-            budgets[name] = created
-            return created
+        guard let last = state.refilledAt, last.clock.isSameClock(as: clock) else {
+            state.refilledAt = (now, clock)
+            return
         }
+        let elapsed = max(.zero, last.instant.duration(to: now))
+        let gained = Int64(min(Double(Int64.max / 2), (elapsed.seconds * Double(settings.reservePerSecond)).rounded(.down)))
+        guard gained > 0 else { return }   // keep the old instant: sub-token time accrues
+        state.reserve = min(settings.reserveCapacity, state.reserve + gained)
+        state.refilledAt = (now, clock)
     }
 }

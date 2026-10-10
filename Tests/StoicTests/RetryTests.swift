@@ -284,3 +284,111 @@ struct RetryTests {
         #expect(await delays(seed: 78) != first)
     }
 }
+
+@Suite("Retry: review fixes")
+struct RetryReviewTests {
+    struct Bug: Defect {}
+    struct Transient: Error {}
+
+    @Test func aCancellationErrorIsNotRetriedWhenTheCallerIsNotCancelled() async {
+        let attempts = SendableBox(0)
+        await #expect(throws: CancellationError.self) {
+            try await withTestAmbient(clock: ImmediateClock()) {
+                try await retry(.fixed(.seconds(1)).attempts(3)) { _ in
+                    attempts.mutate { $0 += 1 }
+                    throw CancellationError()
+                }
+            }
+        }
+        #expect(attempts.value == 1)
+    }
+
+    @Test func aDefectInsideAPolicyErrorStops() async {
+        let events = RecordingInstrumentation()
+        let attempts = SendableBox(0)
+        await #expect(throws: PolicyError<Bug>.self) {
+            try await withTestAmbient(clock: ImmediateClock(), events: events) {
+                try await retry(.fixed(.seconds(1)).attempts(4)) { _ throws(PolicyError<Bug>) in
+                    attempts.mutate { $0 += 1 }
+                    throw .failed(Bug())
+                }
+            }
+        }
+        #expect(attempts.value == 1)
+        #expect(events.names == ["retry.defect"])
+    }
+
+    @Test func aTimedOutAttemptIsRetriedEvenUnderACustomClassifier() async throws {
+        let clock = TestClock()
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await retry(.fixed(.seconds(1)).attempts(3), attemptTimeout: .seconds(2),
+                                classify: RetryClassifier<any Error> { $0 is CancellationError ? .stop : .retry }) { attempt in
+                    if attempt.number == 1 { try await Ambient.sleep(for: .seconds(60)) }
+                    return attempt.number
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(2))
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(1))
+        #expect(try await task.value == 2)
+    }
+
+    @Test func theDefaultBudgetIsFreshInEveryTestAmbient() async {
+        func run() async -> Int {
+            let attempts = SendableBox(0)
+            _ = try? await withTestAmbient(clock: ImmediateClock()) {
+                try await retry(.fixed(.milliseconds(10)).attempts(5)) { _ throws(Transient) -> Int in
+                    attempts.mutate { $0 += 1 }
+                    throw Transient()
+                }
+            }
+            return attempts.value
+        }
+        var counts: [Int] = []
+        for _ in 0..<8 { counts.append(await run()) }
+        #expect(counts == Array(repeating: 5, count: 8), "previously [5, 5, 3, 1, 2, 1, 1, 1]")
+    }
+
+    @Test func tenDepositsOfATenthMakeExactlyOneToken() async {
+        let budget = RetryBudget(ratio: 0.1, reservePerSecond: 0, reserveCapacity: 0)
+        let attempts = SendableBox(0)
+        await withTestAmbient(clock: ImmediateClock()) {
+            for _ in 0..<10 {
+                _ = try? await retry(.fixed(.seconds(1)).attempts(1), budget: budget) { _ throws(Transient) -> Int in throw Transient() }
+            }
+            _ = try? await retry(.fixed(.seconds(1)).attempts(5), budget: budget) { _ throws(Transient) -> Int in
+                attempts.mutate { $0 += 1 }
+                throw Transient()
+            }
+        }
+        // The eleventh call deposits 0.1 more, so 1.1 tokens: exactly one retry.
+        #expect(attempts.value == 2)
+    }
+
+    @Test func aTaskLeftRunningByAnAttemptIsNotNested() async throws {
+        let attempts = SendableBox(0)
+        let gate = AsyncGate()
+        let leftover = SendableBox<Task<Void, Never>?>(nil)
+        try await withTestAmbient(clock: ImmediateClock()) {
+            _ = try await retry(.fixed(.seconds(1)).attempts(1)) { _ throws(Transient) -> Int in
+                // This task inherits the attempt's task-locals and outlives it.
+                leftover.mutate {
+                    $0 = Task {
+                        await gate.wait()
+                        _ = try? await retry(.fixed(.seconds(1)).attempts(3)) { _ throws(Transient) -> Int in
+                            attempts.mutate { $0 += 1 }
+                            throw Transient()
+                        }
+                    }
+                }
+                return 1
+            }
+        }
+        gate.open()
+        await leftover.value?.value
+        #expect(attempts.value == 3, "the attempt had ended, so the later retry is not nested")
+    }
+}

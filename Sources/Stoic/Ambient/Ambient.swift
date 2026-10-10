@@ -26,16 +26,21 @@ public struct Ambient: Sendable {
     /// Where events go.
     public var instrumentation: any Instrumentation
 
+    /// The shared retry budgets: per call site and named.
+    public var budgets: RetryBudgets
+
     public init(
         clock: AnyClock = .continuous,
         livenessClock: AnyClock = .suspending,
         random: RandomSource = .system,
-        instrumentation: any Instrumentation = OSLogInstrumentation()
+        instrumentation: any Instrumentation = OSLogInstrumentation(),
+        budgets: RetryBudgets = .shared
     ) {
         self.clock = clock
         self.livenessClock = livenessClock
         self.random = random
         self.instrumentation = instrumentation
+        self.budgets = budgets
     }
 
     @TaskLocal static var stored = Ambient()

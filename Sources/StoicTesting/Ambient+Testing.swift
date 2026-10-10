@@ -1,8 +1,9 @@
 import Stoic
 
 /// Runs `operation` with a fully controlled ambient context: the given clock
-/// for both deadlines and liveness, a seeded random source, and recorded
-/// instrumentation.
+/// for both deadlines and liveness, a seeded random source, recorded
+/// instrumentation, and fresh retry budgets, so no other test's retries can
+/// change what this one sees.
 ///
 ///     let clock = TestClock()
 ///     let events = RecordingInstrumentation()
@@ -21,5 +22,6 @@ public nonisolated(nonsending) func withTestAmbient<C: Clock<Duration>, R, Failu
         ambient.livenessClock = erased
         ambient.random = .seeded(seed)
         ambient.instrumentation = events
+        ambient.budgets = RetryBudgets()
     }, operation: operation)
 }
