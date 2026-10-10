@@ -44,6 +44,7 @@ let package = Package(
         .library(name: "StoicAppKit", targets: ["StoicAppKit"]),
         .library(name: "StoicApple", targets: ["StoicApple"]),
         .library(name: "StoicUIKit", targets: ["StoicUIKit"]),
+        .library(name: "StoicObservability", targets: ["StoicObservability"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
         // The command the build-tool plugin runs (design/13). Needs the
@@ -58,12 +59,16 @@ let package = Package(
             name: "Lint",
             description: "Build the StoicLint plugin and its stoic-lint tool. Pulls in swift-syntax, which is fetched only when this trait is enabled."
         ),
+        .trait(name: "Logging", description: "Send Stoic's events to swift-log (StoicObservability). Fetches swift-log only when enabled."),
+        .trait(name: "Metrics", description: "Count Stoic's events with swift-metrics (StoicObservability). Fetches swift-metrics only when enabled."),
         .default(enabledTraits: []),
     ],
     dependencies: [
         // Used only by targets conditioned on the `Lint` trait, so a
         // consumer that does not enable it never fetches swift-syntax.
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "604.0.0"),
+        .package(url: "https://github.com/apple/swift-log", from: "1.16.0"),
+        .package(url: "https://github.com/apple/swift-metrics", from: "2.12.0"),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
@@ -96,6 +101,32 @@ let package = Package(
         // UIKit lifecycle: background work bounded by the time the system
         // grants. Empty on platforms without UIKit.
         .target(name: "StoicUIKit", dependencies: ["Stoic"], swiftSettings: strict),
+        // Adapters to the server ecosystem's observability APIs, each behind
+        // its own trait so nobody fetches a package they did not ask for.
+        .target(
+            name: "StoicObservability",
+            dependencies: [
+                "Stoic",
+                .product(name: "Logging", package: "swift-log", condition: .when(traits: ["Logging"])),
+                .product(name: "Metrics", package: "swift-metrics", condition: .when(traits: ["Metrics"])),
+            ],
+            swiftSettings: strict + [
+                .define("STOIC_LOGGING", .when(traits: ["Logging"])),
+                .define("STOIC_METRICS", .when(traits: ["Metrics"])),
+            ]
+        ),
+        .testTarget(
+            name: "StoicObservabilityTests",
+            dependencies: [
+                "StoicObservability", "Stoic",
+                .product(name: "Logging", package: "swift-log", condition: .when(traits: ["Logging"])),
+                .product(name: "Metrics", package: "swift-metrics", condition: .when(traits: ["Metrics"])),
+            ],
+            swiftSettings: strict + [
+                .define("STOIC_LOGGING", .when(traits: ["Logging"])),
+                .define("STOIC_METRICS", .when(traits: ["Metrics"])),
+            ]
+        ),
 
         // The lint rules: pure functions from source text to findings, over
         // SwiftSyntax. No file system, no process, so every rule is testable
