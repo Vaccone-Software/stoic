@@ -56,6 +56,9 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `FlightRecorder(path:)`: an `Instrumentation` that keeps recent events in a fixed-size file; next launch reads `previousRun` (`events`, `endedCleanly`); `markCleanExit()`, `flush()`. Private values stored as `<private>`.
 - `SimulatedFileSystem` + crash-image exploration for crash-consistency tests.
 
+## Settings (StoicSettings)
+- `SettingsStore.open(at:schema:)`: `value` (Observable), `try update { $0.x = … }` (validated against the schema, written atomically, then published; throws `.invalid(issues)`, `.newerFormat`, `.storage`), `issues` (what the load repaired/migrated), `source` (`.file`, `.previousGeneration`, `.defaults(.missing/.unusable)`, `.newerFormat`). Never fails because of file contents; a newer app's file is read-only.
+
 ## Observability
 - `Ambient.instrumentation` (default OSLog), `Event` (stable names in `EventCatalog`), `RecordingInstrumentation`.
 

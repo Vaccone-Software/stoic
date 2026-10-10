@@ -143,6 +143,7 @@ func retriesThroughAnOutage() async throws {
 | `StoicSchema`  | One declaration per type: decode, encode, validate, JSON Schema, migrations, generators, `SchemaSuite` | `StoicJSON` |
 | `StoicSchemaTesting` | `expectSchemaSuite`, the Swift Testing glue for `SchemaSuite` | `StoicSchema`, Swift Testing |
 | `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read — checked at every crash point | `Stoic` |
+| `StoicSettings` | Settings that a crash, a bad value, an old format or a newer app version cannot ruin; observable | `StoicSchema`, `StoicStore` |
 | `StoicApple`   | Platform errors that classify themselves for retry; HTTP status semantics; device conditions | `Stoic`, Foundation |
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
 | `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |

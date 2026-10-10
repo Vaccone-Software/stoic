@@ -267,13 +267,14 @@ incident review is the wrong default.
 | 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | Built: `StoicStore`                        |
 | 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry, `LaunchGuard` |
 | 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot, flight recorder |
+| 18  | [Settings](design/18-settings.md)                                 | `Codable` + `Data.write`, settings lost to crashes and old builds | Built: `StoicSettings`                     |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical
 app, and each lands the way the others did: a contract in `design/`, a
 review, tests for every failure-mode row, small commits.
 
-1. **Settings that cannot corrupt (`StoicSettings`).** The composition the
+1. **Settings that cannot corrupt (`StoicSettings`, built: design/18).** The composition the
    pieces were built for: a schema-declared settings value, persisted with
    `AtomicFile`, migrated on read, validated on write, observable, with the
    last good file kept and a corrupt one quarantined. Settings are the most
