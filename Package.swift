@@ -48,7 +48,10 @@ let package = Package(
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
         // The command the build-tool plugin runs (design/13). Needs the
         // `Lint` trait: `.package(url: …, traits: ["Lint"])`.
+        // The build-tool plugin and the command it runs (design/13). Both
+        // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
+        .plugin(name: "StoicLint", targets: ["StoicLint"]),
     ],
     traits: [
         .trait(
@@ -101,6 +104,10 @@ let package = Package(
         // The command line around the rules, in the format Xcode and SwiftPM
         // parse. A host tool: it never links into an app.
         .executableTarget(name: "stoic-lint", dependencies: ["StoicLintCore"], swiftSettings: strict + [lintDefine]),
+        // Runs stoic-lint over a target's Swift sources on every build and
+        // fails the build on findings. Attach it with
+        // `plugins: [.plugin(name: "StoicLint", package: "stoic")]`.
+        .plugin(name: "StoicLint", capability: .buildTool(), dependencies: ["stoic-lint"]),
         .testTarget(
             name: "StoicLintCoreTests",
             dependencies: ["StoicLintCore"] + swiftSyntax,
