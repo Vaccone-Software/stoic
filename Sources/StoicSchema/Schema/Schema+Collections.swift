@@ -68,6 +68,10 @@ extension Schema {
     /// Constraints are about the entries: `.count(1...100)`. Keys are
     /// written in sorted order, so the same dictionary always encodes to the
     /// same text (Swift's own order changes from run to run).
+    ///
+    /// A Swift `String` key cannot tell `"é"` from `"e\u{301}"`, which JSON
+    /// keeps apart. A document with both would silently lose one entry, so
+    /// the second is a `duplicate_key` error instead.
     public static func dictionary<Entry: Sendable>(
         of value: Schema<Entry>,
         _ constraints: Constraint...
@@ -81,8 +85,21 @@ extension Schema {
                 }
                 var entries: [String: Entry] = [:]
                 entries.reserveCapacity(object.count)
+                var spelledFirst: [String: String] = [:]
                 var failed = false
                 for member in object {
+                    if let first = spelledFirst[member.key] {
+                        // Distinct in JSON, one key to Swift: refuse rather than
+                        // let the later entry replace the earlier.
+                        state.report(
+                            .duplicateKey, path: state.path.appending(key: member.key),
+                            sourcePath: state.inputPath.appending(key: member.key), target: .key,
+                            parameters: ["key": .string(member.key), "other": .string(first)],
+                            suggestionsAreFromInput: false)
+                        failed = true
+                        continue
+                    }
+                    spelledFirst[member.key] = member.key
                     state.push(key: member.key)
                     if let decoded = value.decoder(member.value, &state) {
                         entries[member.key] = decoded

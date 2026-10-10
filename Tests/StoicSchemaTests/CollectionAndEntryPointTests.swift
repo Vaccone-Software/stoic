@@ -97,6 +97,14 @@ struct DictionarySchemaTests {
     @Test func notAnObjectIsAMismatch() {
         #expect(Schema.dictionary(of: .int()).decodeReporting("[1]").issues.locations == ["$ type_mismatch"])
     }
+
+    @Test func keysSwiftCannotTellApartAreRefusedNotMerged() {
+        // JSON keeps "\u00e9" and "e\u0301" apart; a Swift dictionary would not.
+        let result = Schema.dictionary(of: .int()).decodeReporting(#"{"\u00e9": 1, "e\u0301": 2, "plain": 3}"#)
+        #expect(result.value == nil)
+        #expect(result.issues.map(\.code) == [.duplicateKey])
+        #expect(result.issues[0].source?.start.column == 15)
+    }
 }
 
 @Suite("Entry points")

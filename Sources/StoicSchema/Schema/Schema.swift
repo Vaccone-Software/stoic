@@ -78,7 +78,7 @@ public struct Schema<Value: Sendable>: Sendable {
         try decodeReporting(bytes, options: options).get()
     }
 
-    /// ``decode(_:options:)-(Collection<UInt8>,_)`` for text.
+    /// Parses `text` and decodes it; see the bytes overload.
     public func decode(_ text: String, options: DecodeOptions = .strict) throws(ValidationFailure) -> Value {
         try decodeReporting(text, options: options).get()
     }

@@ -25,6 +25,10 @@ extension Schema {
     /// told that `scrol_speed` was ignored and `scrollSpeed` was probably
     /// meant. Choose `.reject` for a wire format.
     ///
+    /// A key or alias declared twice is a mistake in the schema and traps
+    /// when the schema is first built, so it is found by the first test
+    /// that touches the schema rather than by a user.
+    ///
     /// **Nested objects** decode relative to their own default, not the
     /// outer one: a partial nested object fills its missing keys from the
     /// nested type's `init()`.

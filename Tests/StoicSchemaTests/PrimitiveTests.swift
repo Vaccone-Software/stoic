@@ -283,6 +283,15 @@ struct EnumerationSchemaTests {
         #expect(result.issues[0].expected == #"one of "light", "dark", "system""#)
     }
 
+    @Test func casesAreMatchedByScalarsNotCanonicalEquivalence() {
+        enum Accented: String, CaseIterable, Sendable { case cafe = "caf\u{E9}" }
+        let schema = Schema.enumeration(Accented.self)
+        #expect(decode(schema, "\"caf\\u00e9\"").value == .cafe)
+        let result = decode(schema, "\"cafe\\u0301\"")
+        #expect(result.value == nil)
+        #expect(result.issues.map(\.code) == [.notOneOf])
+    }
+
     @Test func nodeListsTheCasesInDeclarationOrder() {
         guard case .enumeration(let name, let cases) = Schema.enumeration(Theme.self).node else { return fail("node") }
         #expect(name == "Theme")

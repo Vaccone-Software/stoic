@@ -206,6 +206,45 @@ checked differentially against a small JSON Schema validator in the test
 target. Encoding is checked for round trips and sparse fixed points over
 generated values.
 
+## As built: phase 1 (StoicSchema)
+
+Layers 1 and 2 and the JSON Schema exporter of Layer 3 are implemented in
+`StoicSchema`, which depends on `StoicJSON` alone. The decisions the sketches
+above left open:
+
+- **Constraints are a struct over a `Kind` enum**, so `Constraint.range(…)`
+  reads as in the examples while exporters switch over `constraint.kind`.
+  Bounds are `JSONNumber`s and are compared as exact decimals (up to 38
+  digits), so `2^53 + 1` is above `2^53` and `0.3` is a multiple of `0.1`.
+  A constraint is silent about kinds of value it is not about, as JSON
+  Schema's keywords are.
+- **String length has a unit.** `.characters` is Unicode scalars, the only
+  unit JSON Schema counts; `.graphemes` and `.utf8Bytes` export as
+  `x-stoic-length`. A pattern is skipped when a length constraint on the
+  same value already failed.
+- **Patterns are stored as source** and compiled with `Regex` per decode
+  (`Regex` is not `Sendable`), with scalar matching semantics.
+- **`Refinement` also names `baseSchema`** (automatic for any `Schematic`
+  base), because checking a value means interpreting the constraints on its
+  JSON form. `init(clamping:)` exists for integer and `Double` bases and
+  clamps range constraints only.
+- **`Optional` has three states.** Absent means the field's default (or
+  `nil` where there is no default); `null` is a value only for
+  `nullable: true`; otherwise `nil` is written by omitting the key.
+- **Object form (b) reads fields into `Slot`s** and builds through a `Values`
+  token, so every field's issues exist before the initialiser runs; see the
+  note in `Schema+ReadObject.swift`. Form (a) defaults to `unknownKeys:
+  .warn`, form (b) to `.reject`.
+- **Respelled keys** (case and snake_case, plus declared aliases) are
+  accepted with a `deprecated_key` warning; the same field under two
+  spellings is `duplicate_key`.
+- **Encoding.** `EncodeStyle.sparse` leaves out secrets unless asked; `.full`
+  includes them. Sparse compares encoded JSON, not values. Deprecated
+  fields are written only when they differ from their default.
+- **Export.** `jsonSchema()` and `jsonSchemaExport()` (which also lists the
+  rules that were only annotated). Recursive schemas use `$defs`/`$ref`;
+  named non-recursive types are inlined.
+
 ## Non-goals
 
 Formats other than JSON in the first version (property lists and YAML can

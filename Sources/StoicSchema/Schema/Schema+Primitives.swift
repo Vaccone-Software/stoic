@@ -206,9 +206,14 @@ extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue ==
     ///
     /// A value that names no case is `not_one_of`, listing the cases and
     /// suggesting the nearest by spelling: `"Dark"` gets "did you mean
-    /// `dark`?". Matching is exact; the suggestion is the courtesy.
+    /// `dark`?". Matching is by Unicode scalars, as JSON compares strings, not
+    /// by Swift's canonical equivalence: a case named `"é"` is not matched by
+    /// `"e\u{301}"`. The suggestion is the courtesy.
     public static func enumeration(_ type: Value.Type) -> Schema<Value> {
         let cases = Value.allCases.map(\.rawValue)
+        var byName: [ExactKey: Value] = [:]
+        for value in Value.allCases { byName[ExactKey(value.rawValue)] = value }
+        let lookup = byName
         let name = String(describing: Value.self)
         let expectation = "one of " + cases.map { "\"\($0)\"" }.joined(separator: ", ")
         return Schema<Value>(
@@ -218,7 +223,7 @@ extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue ==
                     state.typeMismatch(expected: expectation, found: json)
                     return nil
                 }
-                guard let value = Value(rawValue: text) else {
+                guard let value = lookup[ExactKey(text)] else {
                     state.report(
                         .notOneOf, expected: expectation, actual: json.briefDescription,
                         suggestions: Suggestions.nearest(to: text, among: cases))
