@@ -182,6 +182,24 @@ public final class TestClock: Clock, Sendable {
         }
     }
 
+    /// Moves to the earliest pending deadline and wakes every sleeper due
+    /// then, in the order they went to sleep, without suspending: for a
+    /// driver that runs outside the clock's tasks, such as a simulation.
+    ///
+    /// - Returns: The new time, or `nil` if nothing is asleep.
+    func fireNextDeadline() -> Instant? {
+        let (now, due) = state.withLock { state -> (Swift.Duration, [Sleeper]) in
+            guard let earliest = state.sleepers.map(\.deadline).min() else { return (state.now, []) }
+            state.now = max(state.now, earliest)
+            let due = state.sleepers.filter { $0.deadline <= earliest }
+            state.sleepers.removeAll { $0.deadline <= earliest }
+            return (state.now, due.sorted { $0.id < $1.id })
+        }
+        if due.isEmpty { return nil }
+        for sleeper in due { sleeper.continuation.resume() }
+        return Instant(offset: now)
+    }
+
     /// Advances to the earliest pending deadline, if there is one.
     ///
     /// - Returns: Whether any sleeper was woken.
