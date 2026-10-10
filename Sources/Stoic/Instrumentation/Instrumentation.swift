@@ -1,0 +1,74 @@
+internal import os
+
+/// Where Stoic's events go.
+///
+/// `record` is called synchronously, on whatever task made the decision, so
+/// a sink must not block: buffer, hand off, or drop. Stoic never awaits an
+/// instrumentation call, so a slow sink can cost latency but never deadlock
+/// a primitive.
+public protocol Instrumentation: Sendable {
+    func record(_ event: Event)
+}
+
+/// Discards every event.
+public struct NoInstrumentation: Instrumentation {
+    public init() {}
+    public func record(_ event: Event) {}
+}
+
+/// Writes events to the unified logging system, subsystem `stoic`.
+///
+/// Event names, levels, labels and public fields are visible in collected
+/// logs; private fields (strings, error descriptions) are redacted outside
+/// a debugger, as OSLog does for any private interpolation.
+public struct OSLogInstrumentation: Instrumentation {
+    private let logger: Logger
+    private let minimumLevel: Event.Level
+
+    public init(subsystem: String = "stoic", category: String = "events", minimumLevel: Event.Level = .info) {
+        self.logger = Logger(subsystem: subsystem, category: category)
+        self.minimumLevel = minimumLevel
+    }
+
+    public func record(_ event: Event) {
+        guard event.level >= minimumLevel else { return }
+        var publicPart: [String] = []
+        var privatePart: [String] = []
+        if let label = event.label { publicPart.append("label=\(label)") }
+        for field in event.fields {
+            switch field.privacy {
+            case .public: publicPart.append(field.description)
+            case .private: privatePart.append(field.description)
+            }
+        }
+        let name = event.name.rawValue
+        let open = publicPart.joined(separator: " ")
+        let redacted = privatePart.joined(separator: " ")
+        logger.log(level: event.level.osLogType, "\(name, privacy: .public) \(open, privacy: .public) \(redacted, privacy: .private)")
+    }
+}
+
+extension Event.Level {
+    fileprivate var osLogType: OSLogType {
+        switch self {
+        case .debug: .debug
+        case .info: .info
+        case .notice: .default
+        case .warning: .error
+        case .error: .fault
+        }
+    }
+}
+
+/// Fans one event out to several sinks, in order.
+public struct CompositeInstrumentation: Instrumentation {
+    public let sinks: [any Instrumentation]
+
+    public init(_ sinks: [any Instrumentation]) {
+        self.sinks = sinks
+    }
+
+    public func record(_ event: Event) {
+        for sink in sinks { sink.record(event) }
+    }
+}

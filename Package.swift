@@ -29,6 +29,7 @@ let package = Package(
     ],
     products: [
         .library(name: "Stoic", targets: ["Stoic"]),
+        .library(name: "StoicTesting", targets: ["StoicTesting"]),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
@@ -36,5 +37,9 @@ let package = Package(
     // and separate targets as their milestones land (DESIGN.md, Roadmap).
     targets: [
         .target(name: "Stoic", swiftSettings: strict),
+        // Virtual clocks, seeded randomness and recorded events, for the
+        // tests of anything built on Stoic. Never linked into an app.
+        .target(name: "StoicTesting", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
     ]
 )
