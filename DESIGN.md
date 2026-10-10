@@ -279,9 +279,10 @@ review, tests for every failure-mode row, small commits.
    `AtomicFile`, migrated on read, validated on write, observable, with the
    last good file kept and a corrupt one quarantined. Settings are the most
    common persistent state in an app and the most commonly lost.
-2. **Smarter simulation.** Fault points are built; next, PCT-style
-   schedules for deep bugs, faults in the simulated file system, and
-   shrinking a failing seed to the fewest preemptions (design/12).
+2. **Smarter simulation.** Fault points, a PCT/uniform schedule portfolio
+   and early timers are built; next, faults in the simulated file system,
+   learned PCT horizons, and shrinking a failing seed to the fewest
+   preemptions (design/12).
 3. **Macros.** `@Schema` is built; next, `@StateMachine`, whose transition
    table becomes a compile-time-checked declaration with exhaustiveness; and
    `@Services`, which checks a service graph's dependencies at compile time

@@ -36,9 +36,22 @@ internal import Synchronization
 /// replay exactly; ``Simulated/fingerprint`` tells you whether two runs took
 /// the same path.
 ///
+/// **How the next job is chosen.** By default the seed also chooses a
+/// *schedule*: half the seeds pick uniformly among everything runnable, which
+/// finds the bugs that need two tasks to interleave once; the others run
+/// PCT (probabilistic concurrency testing) at depth two to four — tasks get
+/// random priorities, the highest runs, and a few random moments demote the
+/// task that just ran — which finds the bugs that need one task to run far
+/// ahead of another. Independently, half the seeds let virtual time pass
+/// while work is still runnable: a few times in a run the next timer fires
+/// early, so a timeout that lands in the middle of a computation is found
+/// too. ``Simulated/schedule`` says which a run used; `schedule:` forces one.
+///
 /// - Parameters:
 ///   - seed: Decides every choice. The ``StoicTrait``'s seed, or zero, if `nil`.
 ///   - limits: When to give up: virtual time, steps, and real time stalled.
+///   - faults: How often fault points perturb the run.
+///   - schedule: How the next job is chosen; the seed's choice by default.
 ///   - body: The scenario. Runs on the simulation's executor.
 /// - Returns: The body's value, with how the run went.
 /// - Throws: ``SimulationFailure``, naming the seed that reproduces it.
@@ -46,10 +59,11 @@ public func simulate<R: Sendable>(
     seed: UInt64? = nil,
     limits: SimulationLimits = .standard,
     faults: SimulatedFaults = .standard,
+    schedule: SimulationSchedule = .portfolio,
     _ body: @escaping @Sendable (SimulationContext) async throws -> R
 ) async throws(SimulationFailure) -> Simulated<R> {
     let seed = seed ?? StoicTest.current?.seed ?? 0
-    let simulation = Simulation(seed: seed, limits: limits, faults: faults, body: body)
+    let simulation = Simulation(seed: seed, limits: limits, faults: faults, schedule: schedule, body: body)
     // Started here, not on the driver's thread, so the body inherits the
     // caller's task-locals (the running test, its traits). Its first job
     // waits in the executor's queue until the driver runs it.
@@ -82,17 +96,18 @@ public func simulate(
     seeds: some Sequence<UInt64>,
     limits: SimulationLimits = .standard,
     faults: SimulatedFaults = .standard,
+    schedule: SimulationSchedule = .portfolio,
     _ body: @escaping @Sendable (SimulationContext) async throws -> Void
 ) async throws(SimulationFailure) {
     for seed in seeds {
         do {
-            _ = try await simulate(seed: seed, limits: limits, faults: faults, body)
+            _ = try await simulate(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
         } catch {
             var failure = error
             // A cancelled exploration is over; there is nothing to reproduce.
             if case .cancelled = failure.kind { throw failure }
             do {
-                _ = try await simulate(seed: seed, limits: limits, faults: faults, body)
+                _ = try await simulate(seed: seed, limits: limits, faults: faults, schedule: schedule, body)
                 failure.reproduced = false
             } catch let again {
                 failure.reproduced = again.kind.name == failure.kind.name
@@ -130,6 +145,48 @@ public struct SimulatedFaults: Sendable, Hashable {
 
     /// No perturbation: only the scheduler's choices.
     public static let none = SimulatedFaults(siteProbability: 0, fireProbability: 0, maxDelay: .zero)
+}
+
+/// How a simulation chooses which runnable job goes next, and whether time
+/// may pass while work is still runnable.
+public struct SimulationSchedule: Sendable, Hashable {
+    public enum Strategy: Sendable, Hashable {
+        /// The seed picks one of the others (about half the seeds uniform).
+        case portfolio
+        /// Uniformly among everything runnable.
+        case uniform
+        /// PCT: random task priorities, `depth - 1` random moments at which
+        /// the running task is demoted. `horizon` is a guess at how many
+        /// steps the run takes (the change points fall within it); the seed
+        /// picks a magnitude when `nil`.
+        case pct(depth: Int, horizon: Int?)
+    }
+
+    public var strategy: Strategy
+    /// Whether, on some seeds, the next timer may fire while jobs are still
+    /// runnable.
+    public var earlyTimers: Bool
+
+    public init(_ strategy: Strategy = .portfolio, earlyTimers: Bool = true) {
+        self.strategy = strategy
+        self.earlyTimers = earlyTimers
+    }
+
+    /// The seed picks the strategy and whether timers fire early.
+    public static let portfolio = SimulationSchedule()
+    /// Uniform choice only, timers only when everything is asleep.
+    public static let uniform = SimulationSchedule(.uniform, earlyTimers: false)
+    /// PCT at `depth` (at least 2), timers only when everything is asleep.
+    public static func pct(depth: Int, horizon: Int? = nil) -> SimulationSchedule {
+        SimulationSchedule(.pct(depth: depth, horizon: horizon), earlyTimers: false)
+    }
+
+    /// This schedule, with early timers on or off.
+    public func earlyTimers(_ on: Bool) -> SimulationSchedule {
+        var copy = self
+        copy.earlyTimers = on
+        return copy
+    }
 }
 
 /// What a simulated body is given.
@@ -190,6 +247,9 @@ public struct Simulated<Value: Sendable>: Sendable {
     /// A digest of every scheduling decision and clock move. Two runs with
     /// the same fingerprint took the same path.
     public let fingerprint: UInt64
+    /// The schedule the run followed, such as `uniform` or
+    /// `pct(depth 3, horizon 256), early timers 1 in 32`.
+    public let schedule: String
     /// Stoic tasks still running when the body returned — usually a leak.
     public let leftover: [TaskLedger.Entry]
     /// Of those, the ones that were still running after the simulation
@@ -235,12 +295,14 @@ public struct SimulationFailure: Error, CustomStringConvertible {
     public let elapsed: Duration
     /// The path the run took up to the failure (see ``Simulated/fingerprint``).
     public let fingerprint: UInt64
+    /// The schedule the run followed (see ``Simulated/schedule``).
+    public let schedule: String
     /// Whether running the seed again failed the same way at the same step,
     /// when ``simulate(seeds:limits:_:)`` checked; `nil` when not checked.
     public internal(set) var reproduced: Bool?
 
     public var description: String {
-        var text = "simulation with seed \(seed) \(kind.name) after \(steps) steps, \(elapsed) of virtual time"
+        var text = "simulation with seed \(seed) \(kind.name) after \(steps) steps, \(elapsed) of virtual time [\(schedule)]"
         switch kind {
         case .threw(let error): text += ": \(error)"
         case .stalled(let tasks):
@@ -271,18 +333,21 @@ final class Simulation<R: Sendable>: Sendable {
     private let faults: SeededFaults
     private let body: @Sendable (SimulationContext) async throws -> R
     private let executor: SimulationExecutor
+    private let resolved: ResolvedSchedule
     private let clock = TestClock()
     private let events = RecordingInstrumentation()
     private let result = Mutex<Result<R, any Error>?>(nil)
     private let tag = LedgerTags.next()
     private let cancelRequested = Atomic<Bool>(false)
 
-    init(seed: UInt64, limits: SimulationLimits, faults: SimulatedFaults, body: @escaping @Sendable (SimulationContext) async throws -> R) {
+    init(seed: UInt64, limits: SimulationLimits, faults: SimulatedFaults, schedule: SimulationSchedule, body: @escaping @Sendable (SimulationContext) async throws -> R) {
         self.seed = seed
         self.limits = limits
         self.faults = SeededFaults(seed: seed, settings: faults)
         self.body = body
-        self.executor = SimulationExecutor(seed: seed)
+        let resolved = ResolvedSchedule(schedule, seed: seed)
+        self.resolved = resolved
+        self.executor = SimulationExecutor(seed: seed, strategy: resolved.strategy)
     }
 
     func requestCancellation() {
@@ -338,6 +403,7 @@ final class Simulation<R: Sendable>: Sendable {
         var windDownSteps = 0
         var windDownEnds: TestClock.Instant?
         var outsideIsWedged = false
+        var earlyTimers = resolved.earlyTimers
 
         func fail(_ kind: SimulationFailure.Kind) {
             guard failure == nil else { return }
@@ -351,6 +417,18 @@ final class Simulation<R: Sendable>: Sendable {
             // The body's end is the run's end, even if something it left
             // behind could run forever: that is `leftover`, not a step limit.
             if self.result.withLock({ $0 != nil }) { break }
+            // Time may pass while work is still runnable: the next timer fires
+            // early, on some seeds, a bounded number of times — a timeout
+            // that lands in the middle of a computation. Never while outside
+            // work is outstanding, which time waits for.
+            if failure == nil, earlyTimers.budget > 0, executor.runnableCount > 0, clock.sleeperCount > 0,
+               earlyTimers.roll(), !ExternalWork.isOutstanding(tag: tag), let now = clock.fireNextDeadline() {
+                earlyTimers.budget -= 1
+                fingerprint.mix(0xE471)
+                fingerprint.mix(UInt64(truncatingIfNeeded: start.duration(to: now).attoseconds))
+                if start.duration(to: now) > limits.virtualTime { fail(.virtualTimeLimit) }
+                continue
+            }
             if let (job, arrival, runnable) = executor.takeNext() {
                 fingerprint.mix(UInt64(runnable))
                 fingerprint.mix(arrival)
@@ -393,19 +471,19 @@ final class Simulation<R: Sendable>: Sendable {
         let leftover = TaskLedger.entries(tag: tag)
         let stuck = unwind(task)
         if let failure {
-            return .failure(SimulationFailure(kind: failure, seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
+            return .failure(SimulationFailure(kind: failure, seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value, schedule: resolved.description))
         }
         switch self.result.withLock({ $0 }) {
         case .success(let value)?:
             return .success(Simulated(
                 value: value, seed: seed, steps: steps, elapsed: elapsed,
-                fingerprint: fingerprint.value, leftover: leftover, stuck: stuck,
+                fingerprint: fingerprint.value, schedule: resolved.description, leftover: leftover, stuck: stuck,
                 faultsFired: faults.fired
             ))
         case .failure(let error)?:
-            return .failure(SimulationFailure(kind: .threw(error), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
+            return .failure(SimulationFailure(kind: .threw(error), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value, schedule: resolved.description))
         case nil:
-            return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
+            return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value, schedule: resolved.description))
         }
     }
 }
@@ -482,35 +560,191 @@ final class SeededFaults: FaultPolicy {
     }
 }
 
+/// A schedule with every seeded choice made: the strategy, and how often
+/// timers fire early.
+struct ResolvedSchedule: Sendable {
+    enum Strategy: Sendable, Hashable {
+        case uniform
+        case pct(depth: Int, horizon: Int)
+    }
+
+    let strategy: Strategy
+    let earlyTimers: EarlyTimers
+
+    /// The portfolio, by seed: half uniform, half PCT at depths two to four.
+    /// Contiguous seeds cover it evenly, and the PCT seeds come early.
+    private static let portfolio: [Strategy?] = [nil, nil, nil, .pct(depth: 2, horizon: 0), nil, .pct(depth: 3, horizon: 0), nil, .pct(depth: 4, horizon: 0)]
+
+    init(_ schedule: SimulationSchedule, seed: UInt64) {
+        // Separate streams, so choosing one never shifts another.
+        var chooser = SplitMix(seed: seed ^ 0x5CED_01E5_C0DE_0001)
+        func horizon(_ forced: Int?) -> Int {
+            // No way to know how long a run is before it runs: a magnitude
+            // from sixteen steps to eight thousand, by the seed.
+            max(2, forced ?? 16 << Int(chooser.next() % 10))
+        }
+        switch schedule.strategy {
+        case .uniform:
+            strategy = .uniform
+        case .pct(let depth, let forced):
+            strategy = .pct(depth: max(2, depth), horizon: horizon(forced))
+        case .portfolio:
+            if case .pct(let depth, _)? = Self.portfolio[Int(seed % UInt64(Self.portfolio.count))] {
+                strategy = .pct(depth: depth, horizon: horizon(nil))
+            } else {
+                strategy = .uniform
+            }
+        }
+        if schedule.earlyTimers {
+            var timers = SplitMix(seed: seed ^ 0x71EE_5000_C0DE_0002)
+            let draw = timers.next()
+            // Half the seeds keep time to the quiet moments.
+            earlyTimers = draw & 1 == 0 ? .never : EarlyTimers(oneIn: [8, 32, 128][Int((draw >> 1) % 3)], random: timers)
+        } else {
+            earlyTimers = .never
+        }
+    }
+
+    var description: String {
+        var text: String
+        switch strategy {
+        case .uniform: text = "uniform"
+        case .pct(let depth, let horizon): text = "pct(depth \(depth), horizon \(horizon))"
+        }
+        if let oneIn = earlyTimers.oneIn { text += ", early timers 1 in \(oneIn)" }
+        return text
+    }
+}
+
+/// When a timer fires while jobs are still runnable: a seeded chance at
+/// every step, spent from a small budget so that progress is never starved.
+struct EarlyTimers: Sendable {
+    static let never = EarlyTimers(oneIn: nil, random: SplitMix(seed: 0))
+
+    let oneIn: Int?
+    private var random: SplitMix
+    var budget: Int
+
+    init(oneIn: Int?, random: SplitMix) {
+        self.oneIn = oneIn
+        self.random = random
+        self.budget = oneIn == nil ? 0 : 32
+    }
+
+    mutating func roll() -> Bool {
+        guard let oneIn else { return false }
+        return random.next() % UInt64(oneIn) == 0
+    }
+}
+
 /// A task executor that queues jobs and lets its driver run them one at a
-/// time, choosing the next from a seed.
+/// time, choosing the next from a seed: uniformly, or by PCT priorities.
 final class SimulationExecutor: TaskExecutor {
+    private struct Entry {
+        var job: UnownedJob
+        var arrival: UInt64
+        var priority: UInt64
+        /// The task the job belongs to; `nil` for a job that is not a task's
+        /// (an actor draining its mailbox).
+        var task: UInt64?
+    }
+
     private struct State {
-        var jobs: [(job: UnownedJob, arrival: UInt64)] = []
+        var jobs: [Entry] = []
         var arrivals: UInt64 = 0
         var random: SplitMix
+        var pct: PCT?
         // The driver's thread, once it starts, and whether any job has been
         // enqueued from another one since.
         var driverThread: UInt64?
         var sawOutside = false
     }
 
+    /// PCT's bookkeeping. `State.jobs` is a max-heap by priority while it is
+    /// in use.
+    fileprivate struct PCT {
+        var random: SplitMix
+        var priorities: [UInt64: UInt64] = [:]
+        /// Pick number to the priority the task picked then is demoted to.
+        var changePoints: [Int: UInt64] = [:]
+        var picks = 0
+        /// The task whose job is running, and how many picks in a row were
+        /// its own.
+        var running: UInt64?
+        var streak = 0
+    }
+
+    /// How many picks in a row a task may take, re-enqueuing itself each
+    /// time (`Task.yield` takes two picks), before the yield demotes it. Pure demotion at
+    /// the first yield turns PCT into round-robin for tasks that yield, and
+    /// a bug that needs one task to run twenty yields ahead of another can
+    /// no longer be found; none would let a spin-wait starve the task it
+    /// waits for.
+    static let spinLimit = 256
+
     private let state: Mutex<State>
     // Signalled on every arrival, so a driver with nothing to run can wait
     // for work from outside the simulation without spinning.
     private let arrival = DispatchSemaphore(value: 0)
+    private let wantsIdentity: Bool
 
-    init(seed: UInt64) {
-        state = Mutex(State(random: SplitMix(seed: seed)))
+    init(seed: UInt64, strategy: ResolvedSchedule.Strategy) {
+        var initial = State(random: SplitMix(seed: seed))
+        switch strategy {
+        case .uniform:
+            wantsIdentity = false
+        case .pct(let depth, let horizon):
+            wantsIdentity = true
+            var pct = PCT(random: SplitMix(seed: seed ^ 0xBC70_0000_0000_0003))
+            for k in 1..<depth {
+                // Distinct pick numbers; a collision moves to the next free one.
+                var pick = 1 + Int(pct.random.next() % UInt64(horizon))
+                while pct.changePoints[pick] != nil { pick += 1 }
+                pct.changePoints[pick] = UInt64(k)
+            }
+            initial.pct = pct
+        }
+        state = Mutex(initial)
     }
 
     func enqueue(_ job: consuming ExecutorJob) {
         let job = UnownedJob(job)
         let thread = currentThreadID()
+        // The task's identity is read from the job's description, outside the lock.
+        let identity = wantsIdentity ? JobIdentity(job) : .unknown
         state.withLock { state in
             if let driver = state.driverThread, driver != thread { state.sawOutside = true }
             state.arrivals += 1
-            state.jobs.append((job, state.arrivals))
+            var entry = Entry(job: job, arrival: state.arrivals, priority: 0, task: nil)
+            if state.pct != nil {
+                let onDriver = state.driverThread == thread
+                let owner: UInt64?
+                switch identity {
+                case .unknown where state.jobs.isEmpty && state.arrivals == 1:
+                    // The runtime's description is not what this expects:
+                    // choose uniformly rather than guess.
+                    state.pct = nil
+                    owner = nil
+                case .task(let id):
+                    owner = id
+                case .actor, .unknown:
+                    // Not a task's own job: an actor draining its mailbox, or
+                    // what `Task.yield` queues to resume the task. When the
+                    // job running now queues it, it belongs to that task's
+                    // thread of work and takes its priority.
+                    owner = onDriver ? state.pct?.running : nil
+                }
+                if state.pct != nil {
+                    if let owner {
+                        entry.task = owner
+                        entry.priority = state.pct!.priority(of: owner, enqueuedByItself: onDriver)
+                    } else {
+                        entry.priority = state.pct!.freshPriority()
+                    }
+                }
+            }
+            state.jobs.append(entry)
+            if state.pct != nil { Self.siftUp(&state.jobs, state.jobs.count - 1) }
         }
         arrival.signal()
     }
@@ -527,18 +761,28 @@ final class SimulationExecutor: TaskExecutor {
         state.withLock { $0.sawOutside }
     }
 
-    /// Removes a job chosen by the seed among all runnable ones. Also returns
-    /// its arrival number and how many were runnable, for the fingerprint:
-    /// the arrival number tells two runs apart that chose the same index
-    /// from queues in different orders.
+    /// How many jobs are runnable.
+    var runnableCount: Int {
+        state.withLock { $0.jobs.count }
+    }
+
+    /// Removes the next job to run. Also returns its arrival number and how
+    /// many were runnable, for the fingerprint: the arrival number tells two
+    /// runs apart that chose the same index from queues in different orders.
     func takeNext() -> (UnownedJob, UInt64, Int)? {
         state.withLock { state in
             guard !state.jobs.isEmpty else { return nil }
             let count = state.jobs.count
-            let index = Int(state.random.next() % UInt64(count))
-            state.jobs.swapAt(index, count - 1)
-            let (job, arrival) = state.jobs.removeLast()
-            return (job, arrival, count)
+            let entry: Entry
+            if state.pct != nil {
+                entry = Self.popMax(&state.jobs)
+                state.pct!.picked(entry.task)
+            } else {
+                let index = Int(state.random.next() % UInt64(count))
+                state.jobs.swapAt(index, count - 1)
+                entry = state.jobs.removeLast()
+            }
+            return (entry.job, entry.arrival, count)
         }
     }
 
@@ -559,6 +803,98 @@ final class SimulationExecutor: TaskExecutor {
     /// Wakes a driver waiting for arrivals, to notice a cancellation.
     func wake() {
         arrival.signal()
+    }
+
+    // MARK: Max-heap by priority, then by arrival (earlier first)
+
+    private static func before(_ a: Entry, _ b: Entry) -> Bool {
+        a.priority != b.priority ? a.priority > b.priority : a.arrival < b.arrival
+    }
+
+    private static func siftUp(_ heap: inout [Entry], _ start: Int) {
+        var child = start
+        while child > 0 {
+            let parent = (child - 1) / 2
+            guard before(heap[child], heap[parent]) else { return }
+            heap.swapAt(child, parent)
+            child = parent
+        }
+    }
+
+    private static func popMax(_ heap: inout [Entry]) -> Entry {
+        heap.swapAt(0, heap.count - 1)
+        let top = heap.removeLast()
+        var parent = 0
+        while true {
+            let left = 2 * parent + 1, right = left + 1
+            var best = parent
+            if left < heap.count, before(heap[left], heap[best]) { best = left }
+            if right < heap.count, before(heap[right], heap[best]) { best = right }
+            if best == parent { break }
+            heap.swapAt(parent, best)
+            parent = best
+        }
+        return top
+    }
+}
+
+extension SimulationExecutor {
+    /// Which task a job belongs to.
+    ///
+    /// The runtime offers no API for it. `UnownedJob.description` is
+    /// `UnownedJob(id: 12)` for a task's job and `UnownedJob(id: nil)` for
+    /// one that is not (an actor draining its mailbox). This is the only
+    /// place that reads it; if the format ever changes, the first job
+    /// reads as `unknown` and PCT falls back to uniform choice.
+    enum JobIdentity: Equatable {
+        case task(UInt64)
+        case actor
+        case unknown
+
+        init(_ job: UnownedJob) {
+            self.init(description: job.description)
+        }
+
+        init(description text: String) {
+            guard let marker = text.firstRange(of: "id: ") else {
+                self = .unknown
+                return
+            }
+            let rest = text[marker.upperBound...]
+            if rest.hasPrefix("nil") {
+                self = .actor
+            } else if let id = UInt64(rest.prefix { $0.isASCII && $0.isNumber }) {
+                self = .task(id)
+            } else {
+                self = .unknown
+            }
+        }
+    }
+}
+
+extension SimulationExecutor.PCT {
+    /// A priority above every demoted one.
+    mutating func freshPriority() -> UInt64 {
+        random.next() | (1 << 40)
+    }
+
+    /// The priority a task's next job queues with.
+    mutating func priority(of task: UInt64, enqueuedByItself: Bool) -> UInt64 {
+        if priorities[task] == nil { priorities[task] = freshPriority() }
+        // It is the one running, and it queued itself again: it yielded. A
+        // long streak of that is a spin-wait; give way to everyone else.
+        if enqueuedByItself, running == task, streak >= SimulationExecutor.spinLimit {
+            priorities[task] = 0   // below even the change points' demotions
+            streak = 0
+        }
+        return priorities[task]!
+    }
+
+    mutating func picked(_ task: UInt64?) {
+        picks += 1
+        if task != nil, task == running { streak += 1 } else { streak = 1 }
+        running = task
+        if let task, let demoted = changePoints[picks] { priorities[task] = demoted }
     }
 }
 

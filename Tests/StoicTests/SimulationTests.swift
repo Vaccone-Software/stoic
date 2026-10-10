@@ -1,6 +1,6 @@
 import Darwin
 @testable import Stoic
-import StoicTesting
+@testable import StoicTesting
 import Synchronization
 import Testing
 
@@ -144,9 +144,9 @@ struct SimulationTests {
     @Test func onceOutsideWorkHasTakenPartTheWaitIsTheLongOne() async throws {
         // A real sleep arrives from another thread: after it, the run knows
         // outside work exists, and a second, longer wait is not a stall.
-        let run = try await simulate(seed: 0, limits: .init(stall: .seconds(2), quietStall: .milliseconds(20))) { _ in
-            try await Task.sleep(for: .milliseconds(5))
-            try await Task.sleep(for: .milliseconds(300))
+        let run = try await simulate(seed: 0, limits: .init(stall: .seconds(5), quietStall: .milliseconds(250))) { _ in
+            try await Task.sleep(for: .milliseconds(1))
+            try await Task.sleep(for: .milliseconds(700))
             return true
         }
         #expect(run.value)
@@ -165,7 +165,7 @@ struct SimulationTests {
     }
 
     @Test func workStillRunningWhenTheBodyReturnsIsReported() async throws {
-        let run = try await simulate(seed: 0) { _ in
+        let run = try await simulate(seed: 0, schedule: .uniform) { _ in
             let machine = StateMachine<SimulationPhase, SimulationPhase>(initial: .idle, label: "left on") { _, to in .to(to) }
             machine.whileIn(.on, label: "humming") { _ in
                 try? await Ambient.sleep(for: .seconds(3600))
@@ -241,6 +241,181 @@ struct SimulationTests {
         }
     }
 
+    // MARK: Schedules
+
+    /// One task must run `steps` yields ahead of another, which sits between
+    /// two steps: uniform choice finds that with probability 2^-steps.
+    static func runAheadNeedle(steps: Int) -> @Sendable (SimulationContext) async throws -> Void {
+        { _ in
+            let finished = Mutex(false)
+            let sawFinished = Mutex(false)
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    for _ in 0..<steps { await Task.yield() }
+                    finished.withLock { $0 = true }
+                }
+                group.addTask {
+                    await Task.yield()
+                    if finished.withLock({ $0 }) { sawFinished.withLock { $0 = true } }
+                }
+            }
+            if sawFinished.withLock({ $0 }) { throw RanAhead() }
+        }
+    }
+
+    struct RanAhead: Error {}
+
+    @Test func uniformChoiceCannotFindARunAheadButThePortfolioDoes() async throws {
+        let needle = Self.runAheadNeedle(steps: 20)
+        // Twenty yields in a row for one task against one for the other.
+        try await simulate(seeds: 0..<200, faults: .none, schedule: .uniform, needle)
+        let failure = await #expect(throws: SimulationFailure.self) {
+            try await simulate(seeds: 0..<200, faults: .none, schedule: SimulationSchedule(.portfolio, earlyTimers: false), needle)
+        }
+        #expect(failure?.reproduced == true)
+        #expect(failure?.schedule.hasPrefix("pct(") == true)
+        if case .threw(let error)? = failure?.kind { #expect(error is RanAhead) }
+    }
+
+    /// Lost update with some unrelated yields before the critical section.
+    static func paddedLostUpdate(_ sim: SimulationContext) async throws {
+        let counter = Mutex(0)
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<2 {
+                group.addTask {
+                    for _ in 0..<10 { await Task.yield() }
+                    let read = counter.withLock { $0 }
+                    await Task.yield()
+                    counter.withLock { $0 = read + 1 }
+                }
+            }
+        }
+        if counter.withLock({ $0 }) != 2 { throw LostUpdate(count: counter.withLock { $0 }) }
+    }
+
+    @Test func theClassicsAreStillFoundQuickly() async throws {
+        // Uniform finds it in the first handful of seeds; the portfolio,
+        // half uniform, only a little later.
+        for schedule in [SimulationSchedule.uniform, SimulationSchedule(.portfolio, earlyTimers: false)] {
+            let failure = await #expect(throws: SimulationFailure.self) {
+                try await simulate(seeds: 0..<40, faults: .none, schedule: schedule, Self.paddedLostUpdate)
+            }
+            #expect(failure != nil, "\(schedule)")
+        }
+    }
+
+    @Test func aForcedScheduleIsUsedAndNamed() async throws {
+        let uniform = try await simulate(seed: 3, schedule: .uniform) { _ in 1 }
+        #expect(uniform.schedule == "uniform")
+        let pct = try await simulate(seed: 3, schedule: .pct(depth: 3, horizon: 100)) { _ in 1 }
+        #expect(pct.schedule == "pct(depth 3, horizon 100)")
+        let timers = try await simulate(seed: 3, schedule: SimulationSchedule(.uniform, earlyTimers: true)) { _ in 1 }
+        #expect(timers.schedule.hasPrefix("uniform"))
+    }
+
+    @Test func theSeedChoosesTheScheduleAndReplaysIt() async throws {
+        var names: Set<String> = []
+        for seed in 0..<16 as Range<UInt64> {
+            let first = try await simulate(seed: seed, Self.scenario)
+            let again = try await simulate(seed: seed, Self.scenario)
+            #expect(first.schedule == again.schedule)
+            #expect(first.fingerprint == again.fingerprint, "seed \(seed) \(first.schedule)")
+            #expect(first.value == again.value, "seed \(seed) \(first.schedule)")
+            names.insert(String(first.schedule.prefix { $0 != "," }))
+        }
+        #expect(names.contains("uniform"))
+        for depth in 2...4 { #expect(names.contains { $0.hasPrefix("pct(depth \(depth)") }) }
+    }
+
+    @Test func theRuntimesJobDescriptionIsReadForTheTask() async throws {
+        // The one place PCT depends on a format the runtime does not
+        // promise. If it changes, the first job reads as unknown and the
+        // run chooses uniformly.
+        typealias Identity = SimulationExecutor.JobIdentity
+        #expect(Identity(description: "UnownedJob(id: 12)") == .task(12))
+        #expect(Identity(description: "UnownedJob(id: nil)") == .actor)
+        #expect(Identity(description: "UnownedJob(task: 12)") == .unknown)
+        #expect(Identity(description: "UnownedJob(id: twelve)") == .unknown)
+        #expect(Identity(description: "") == .unknown)
+        // And what the runtime says today parses.
+        let executor = SimulationExecutor(seed: 0, strategy: .uniform)
+        let task = Task(executorPreference: executor) { 1 }
+        let job = try #require(executor.takeNext()).0
+        let identity = Identity(job)
+        executor.run(job)
+        _ = await task.value
+        guard case .task = identity else {
+            Issue.record("a task's job did not read as a task's: \(identity)")
+            return
+        }
+    }
+
+    @Test func aSpinWaitDoesNotStarveItsPartnerUnderPriorities() async throws {
+        // The spinner may have the top priority; its yields must still let
+        // the task it waits for run, or this ends at the step limit.
+        for seed in 0..<40 as Range<UInt64> {
+            _ = try await simulate(seed: seed, limits: .init(steps: 100_000), faults: .none, schedule: .pct(depth: 2, horizon: 8)) { _ in
+                let ready = Mutex(false)
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { while !ready.withLock({ $0 }) { await Task.yield() } }
+                    group.addTask {
+                        for _ in 0..<5 { await Task.yield() }
+                        ready.withLock { $0 = true }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Early timers
+
+    @Test func aTimerFiringInTheMiddleOfWorkIsFoundOnlyByEarlyTimers() async throws {
+        // A 1 ms timeout against ten steps of work that normally take
+        // microseconds. Time passes only when everything is asleep, so
+        // without early timers the work always wins.
+        let body: @Sendable (SimulationContext) async throws -> Void = { _ in
+            let expired = Mutex(false)
+            let sawExpired = Mutex(false)
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try? await Ambient.sleep(for: .milliseconds(1))
+                    expired.withLock { $0 = true }
+                }
+                group.addTask {
+                    for _ in 0..<10 { await Task.yield() }
+                    if expired.withLock({ $0 }) { sawExpired.withLock { $0 = true } }
+                }
+            }
+            if sawExpired.withLock({ $0 }) { throw TimerFiredMidWork() }
+        }
+        try await simulate(seeds: 0..<300, faults: .none, schedule: .uniform, body)
+        let failure = await #expect(throws: SimulationFailure.self) {
+            try await simulate(seeds: 0..<300, faults: .none, schedule: SimulationSchedule(.uniform, earlyTimers: true), body)
+        }
+        #expect(failure?.reproduced == true)
+        #expect(failure?.schedule.contains("early timers") == true)
+        // The default schedule has them too.
+        await #expect(throws: SimulationFailure.self) { try await simulate(seeds: 0..<300, faults: .none, body) }
+    }
+
+    struct TimerFiredMidWork: Error {}
+
+    @Test func earlyTimersNeverStarveProgress() async throws {
+        // Many timers, a body that needs them all, and a tight eight: the
+        // budget runs out and the rest fire at quiet moments, as before.
+        let run = try await simulate(seed: 5, schedule: SimulationSchedule(.uniform, earlyTimers: true)) { _ in
+            await withTaskGroup(of: Void.self) { group in
+                for index in 0..<200 {
+                    group.addTask {
+                        for _ in 0..<5 { try? await Ambient.sleep(for: .milliseconds(1 + index % 7)); await Task.yield() }
+                    }
+                }
+            }
+            return true
+        }
+        #expect(run.value)
+    }
+
     // MARK: Teardown
 
     final class Canary: Sendable {
@@ -252,7 +427,7 @@ struct SimulationTests {
     @Test func whatTheRunLeftAsleepIsUnwoundAndFreed() async throws {
         let before = Canary.alive.load(ordering: .relaxed)
         let cleaned = Mutex(false)
-        let run = try await simulate(seed: 0) { _ in
+        let run = try await simulate(seed: 0, schedule: .uniform) { _ in
             let canary = Canary()
             // A task of the user's, asleep on the simulation's clock …
             Task(executorPreference: Ambient.current.taskExecutor) {
@@ -315,8 +490,8 @@ struct SimulationTests {
     }
 
     @Test func faultPointsFindWhatSchedulingAloneCannot() async throws {
-        // Scheduling alone never makes the finalizer slow.
-        try await simulate(seeds: 0..<200, faults: .none, Self.closesBeforeTheScopeReturns)
+        // Choosing among runnable jobs never makes the finalizer slow.
+        try await simulate(seeds: 0..<200, faults: .none, schedule: .uniform, Self.closesBeforeTheScopeReturns)
         // Fault points do, and the seed replays it.
         let failure = await #expect(throws: SimulationFailure.self) {
             try await simulate(seeds: 0..<200, Self.closesBeforeTheScopeReturns)
