@@ -98,7 +98,13 @@ owns) is future work; the delay is a fixed `Duration` for now.
 order; results return in input order. On the first failure the rest are
 cancelled (`siblingFailed`) and that failure alone is thrown — failures
 caused by the cancellation are not reported as failures.
-`mapConcurrentResults` runs everything and returns each outcome.
+`mapConcurrentResults` runs everything and returns each outcome. A cancelled
+caller starts no further element: the running ones are cancelled and awaited,
+and `mapConcurrent` throws `CancellationError` if any element was left
+unstarted and `Failure` can hold one (`any Error`). A typed `Failure` cannot,
+so the caller gets the results of the elements that started — the leading
+ones, an array shorter than the input; `mapConcurrentResults` likewise returns
+only the started elements' outcomes.
 
 **Child-task closures are `@concurrent`.** They run concurrently by design;
 the explicit attribute keeps that true under `NonisolatedNonsendingByDefault`.
@@ -141,7 +147,7 @@ that keeps the promise, and the lint rule against
 | every racer fails                                       | `ConcurrentFailure` with all errors, completion order                                                                                                 |
 | a racer ignores cancellation after another won          | `race` waits for it (structured); `race.slow_loser` event after one overrun period                                                                    |
 | the hedge budget is empty                               | No further hedges; the attempts already running continue                                                                                              |
-| `mapConcurrent` caller is cancelled                     | All children cancelled and awaited; `CancellationError` propagates                                                                                    |
+| `mapConcurrent` caller is cancelled                     | No further element starts; children cancelled and awaited; `CancellationError` if `Failure` allows, else the started (leading) results               |
 | a semaphore waiter is cancelled while queued            | Removed from the queue; no permit consumed; `CancellationError`                                                                                       |
 | a semaphore waiter's deadline passes while queued       | Removed; `.rejected(.deadlineExceeded)`                                                                                                               |
 | a body inside `withPermit` throws                       | Permit returned; error passed through as `.failed`                                                                                                    |

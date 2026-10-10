@@ -102,6 +102,84 @@ struct RaceAndMapTests {
         }
     }
 
+    @Test func aCancelledCallerStartsNothingAndGetsCancellationError() async {
+        let started = SendableBox(0)
+        let cancelled = AsyncGate()
+        let task = Task {
+            await cancelled.wait()
+            return await Result {
+                try await mapConcurrent(Array(0..<1000), limit: 4) { (value: Int) async throws -> Int in
+                    started.mutate { $0 += 1 }
+                    return value
+                }
+            }
+        }
+        task.cancel()
+        cancelled.open()
+        let result = await task.value
+        #expect(started.value == 0)
+        #expect(throws: CancellationError.self) { try result.get() }
+    }
+
+    @Test func aCallerCancelledMidwayStopsStartingElements() async {
+        let started = SendableBox(0)
+        let entered = AsyncGate()
+        let release = AsyncGate()
+        let task = Task {
+            await Result {
+                try await mapConcurrent(Array(0..<1000), limit: 4) { (value: Int) async throws -> Int in
+                    if started.mutate({ $0 += 1; return $0 }) == 4 { entered.open() }
+                    await release.wait()
+                    return value
+                }
+            }
+        }
+        await entered.wait()
+        task.cancel()
+        release.open()
+        let result = await task.value
+        #expect(started.value == 4, "only the elements running when the caller was cancelled ever start")
+        #expect(throws: CancellationError.self) { try result.get() }
+    }
+
+    @Test func aTypedFailureGetsTheLeadingResultsFromACancelledCaller() async {
+        let started = SendableBox(0)
+        let entered = AsyncGate()
+        let release = AsyncGate()
+        let task = Task {
+            await mapConcurrent(Array(0..<100), limit: 3) { (value: Int) async throws(Never) -> Int in
+                if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
+                await release.wait()
+                return value
+            }
+        }
+        await entered.wait()
+        task.cancel()
+        release.open()
+        // A typed failure cannot say "cancelled": the caller gets the
+        // results of the elements that started, which are the leading ones.
+        #expect(await task.value == [0, 1, 2])
+    }
+
+    @Test func mapConcurrentResultsAlsoStopsForACancelledCaller() async {
+        let started = SendableBox(0)
+        let entered = AsyncGate()
+        let release = AsyncGate()
+        let task = Task {
+            await mapConcurrentResults(Array(0..<100), limit: 3) { (value: Int) async throws(Failure) -> Int in
+                if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
+                await release.wait()
+                return value
+            }
+        }
+        await entered.wait()
+        task.cancel()
+        release.open()
+        let outcomes = await task.value
+        #expect(outcomes.count == 3)
+        for (index, outcome) in outcomes.enumerated() { #expect((try? outcome.get()) == index) }
+    }
+
     @Test func mapConcurrentHandlesEmptyInput() async throws {
         let results = try await mapConcurrent([Int](), limit: 3) { (value: Int) async throws(Failure) -> Int in value }
         #expect(results.isEmpty)
