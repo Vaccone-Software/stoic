@@ -148,7 +148,7 @@ duplicate types are deprecated with one minor version of overlap.
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | the operation finishes first                                      | Timer cancelled and awaited; result returned; no event                                     |
 | the deadline passes, operation honours cancellation               | Operation cancelled with cause `.deadline`; its error passes through; `deadline.expired`   |
-| the deadline passes, operation ignores cancellation (cooperative) | Stoic waits — cooperative means cooperative; `deadline.overrun` event every overrun period |
+| the deadline passes, operation ignores cancellation (cooperative) | Stoic waits — cooperative means cooperative; `deadline.expired` reports the overrun when it ends |
 | the deadline passes, operation ignores cancellation (abandoning)  | Returns `.rejected(.deadlineExceeded)` at the deadline; operation tracked in the ledger    |
 | the abandonment limit for a label is reached                      | Refuses to start: `.rejected(.abandonmentLimit)`; `abandoned.limit` event                  |
 | the caller is cancelled                                           | Operation cancelled with cause `.userRequested`; timer cancelled; caller's error rules     |
