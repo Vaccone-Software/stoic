@@ -1,4 +1,5 @@
 #if STOIC_MACROS
+import Darwin
 import SwiftDiagnostics
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacroExpansion
@@ -17,6 +18,15 @@ let allMacros: [String: MacroSpec] = [
     "Deprecated": MacroSpec(type: DeprecatedMacro.self),
     "Nullable": MacroSpec(type: NullableMacro.self),
     "Ignored": MacroSpec(type: IgnoredMacro.self),
+    "PreserveUnknownKeys": MacroSpec(type: PreserveUnknownKeysMacro.self),
+    "Range": MacroSpec(type: RangeMacro.self),
+    "GreaterThan": MacroSpec(type: GreaterThanMacro.self),
+    "LessThan": MacroSpec(type: LessThanMacro.self),
+    "MultipleOf": MacroSpec(type: MultipleOfMacro.self),
+    "Length": MacroSpec(type: LengthMacro.self),
+    "Pattern": MacroSpec(type: PatternMacro.self),
+    "Count": MacroSpec(type: CountMacro.self),
+    "Unique": MacroSpec(type: UniqueMacro.self),
 ]
 
 /// A diagnostic at a line and column of the source passed to ``expand``.
@@ -27,6 +37,10 @@ func problem(
     DiagnosticSpec(
         message: message, line: line, column: column, severity: severity, fixIts: fixIts.map { FixItSpec(message: $0) })
 }
+
+/// Set `STOIC_RECORD=1` to have a mismatching expansion print what it
+/// expanded to, instead of only the difference, to update an expectation.
+let recording = unsafe getenv("STOIC_RECORD") != nil
 
 /// Expands `source` and compares the result with `expanded` (and the
 /// diagnostics with `diagnostics`), recording each difference as a Swift
@@ -52,7 +66,7 @@ func expand(
             if expanded.isEmpty, diagnostics.isEmpty, failure.message.hasPrefix("Expected 0 diagnostics") {
                 print("RECORDDIAG \(filePath):\(line)\n\(failure.message)\nENDRECORD")
             }
-            if expanded.isEmpty, let range = failure.message.firstRange(of: "Actual expanded source:\n") {
+            if expanded.isEmpty || recording, let range = failure.message.firstRange(of: "Actual expanded source:\n") {
                 // Recording mode: an empty expectation prints what to put there.
                 print("RECORD \(filePath):\(line)\n\(failure.message[range.upperBound...])\nENDRECORD")
             }

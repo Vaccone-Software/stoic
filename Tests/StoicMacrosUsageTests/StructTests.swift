@@ -58,6 +58,15 @@ struct Settings: Equatable {
     @Ignored var cache: [String: Int] = [:]
 }
 
+extension Loose {
+    static let byHand = Schema.object(
+        Loose.self, default: Loose(), doc: "Keeps what it does not understand, and has a history.", version: 2, versionKey: "v",
+        migrations: [.from(1, to: 2, .rename("title", to: "name"))], preservingUnknownKeysIn: \Loose.extra
+    ) {
+        Field("name", \.name, .string(.length(1...40)), doc: "A name.", aliases: ["label"])
+    }
+}
+
 extension Settings {
     static let byHand = Schema.object(Settings.self, default: Settings(), doc: "Application settings.") {
         Field("scrollSpeed", \.scrollSpeed, .double(.range(200...4000)), doc: "Pixels per second.", unit: "px/s")
@@ -98,6 +107,16 @@ struct Vault {
     var token: Secret<String> = Secret("")
     /// Keys.
     var spares: [Secret<String>] = []
+}
+
+/// Keeps what it does not understand, and has a history.
+@Schema(
+    version: 2, versionKey: "v",
+    migrations: [.from(1, to: 2, .rename("title", to: "name"))])
+struct Loose: Equatable {
+    /// A name.
+    @Length(1...40) @Aliases("label") var name = "untitled"
+    @PreserveUnknownKeys var extra = JSONObject()
 }
 
 @Suite("@Schema on a struct")
@@ -158,6 +177,16 @@ struct StructTests {
         let wrong = Vault.schema.decode(["token": 5])
         #expect(wrong.errors.count == 1)
         #expect(wrong.errors.allSatisfy { $0.actual == nil })
+    }
+
+    @Test func versionsMigrationsAndPreservedKeysArePassedThrough() {
+        expectEquivalent(Loose.schema, Loose.byHand, seeds: 0..<6)
+        // `unknownKeys:` together with a preserving property would be a
+        let decoded = Loose.schema.decode(["v": 1, "title": "x", "future": [1, 2]])
+        #expect(decoded.value?.name == "x")
+        #expect(decoded.value?.extra["future"] == [1, 2])
+        #expect(Loose.schema.encode(decoded.value ?? Loose()).object?["future"] == [1, 2])
+        #expect(Loose.schema.encode(Loose()).object?["v"] == 2)
     }
 
     @Test func theSuiteIsClean() {

@@ -51,6 +51,7 @@ struct DeprecatedMacro: MarkerMacro { static let kind = MarkerKind.deprecated }
 struct NullableMacro: MarkerMacro { static let kind = MarkerKind.nullable }
 struct IgnoredMacro: MarkerMacro { static let kind = MarkerKind.ignored }
 
+struct PreserveUnknownKeysMacro: MarkerMacro { static let kind = MarkerKind.preserveUnknownKeys }
 struct RangeMacro: MarkerMacro { static let kind = MarkerKind.range }
 struct GreaterThanMacro: MarkerMacro { static let kind = MarkerKind.greaterThan }
 struct LessThanMacro: MarkerMacro { static let kind = MarkerKind.lessThan }

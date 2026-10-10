@@ -20,13 +20,13 @@ struct ConstraintExpansionTests {
             """,
             to: """
                 struct Limits {
-                    @Range(200...4000) var speed: Double = 1000
-                    @GreaterThan(0) @LessThan(1.5) var ratio: Double = 1
-                    @MultipleOf(5) var step: Int = 5
-                    @Length(1...64) @Pattern("^[a-z]+$") var name: String = "a"
-                    @Length(...20, unit: .utf8Bytes) var code = ""
-                    @Count(0...8) @Unique var tags: [String] = []
-                    @Count(...50) var map: [String: Int] = [:]
+                    var speed: Double = 1000
+                    var ratio: Double = 1
+                    var step: Int = 5
+                    var name: String = "a"
+                    var code = ""
+                    var tags: [String] = []
+                    var map: [String: Int] = [:]
 
                     static let schema: StoicSchema::Schema<Limits> = StoicSchema::Schema.object(Limits.self, default: Limits()) {
                         StoicSchema::Field("speed", \\.speed, .double(.range(200 ... 4000)))
@@ -57,10 +57,10 @@ struct ConstraintExpansionTests {
             """,
             to: """
                 struct Deep {
-                    @Range(0...9) @Count(1...3) var grid: [[Int]]? = nil
-                    @Length(1...8) var names: [String: String?] = [:]
-                    @Range(1...5) var maybe: UInt8? = nil
-                    @Length(4...) var secret: Secret<String> = Secret("abcd")
+                    var grid: [[Int]]? = nil
+                    var names: [String: String?] = [:]
+                    var maybe: UInt8? = nil
+                    var secret: Secret<String> = Secret("abcd")
 
                     static let schema: StoicSchema::Schema<Deep> = StoicSchema::Schema.object(Deep.self, default: Deep()) {
                         StoicSchema::Field("grid", \\.grid, .optional(.array(of: .array(of: .int(.range(0 ... 9))), .count(1 ... 3))))
@@ -107,13 +107,13 @@ struct ConstraintDiagnosticTests {
             ],
             to: """
                 struct Bad {
-                    @Length(1...5) var count: Int = 0
-                    @Range(1...5) var name: String = ""
-                    @Range(1...5) var flag: Bool = false
-                    @Range(1...5) var port: Port = Port(clamping: 80)
-                    @Count(1...5) var number: Int = 0
-                    @Unique var map: [String: Int] = [:]
-                    @Pattern("a") var list: [Int] = []
+                    var count: Int = 0
+                    var name: String = ""
+                    var flag: Bool = false
+                    var port: Port = Port(clamping: 80)
+                    var number: Int = 0
+                    var map: [String: Int] = [:]
+                    var list: [Int] = []
                 }
                 """)
     }
@@ -145,14 +145,14 @@ struct ConstraintDiagnosticTests {
             ],
             to: """
                 struct Bad {
-                    @Range(10...1) var a: Int = 5
-                    @Range(1..<1) var b: Int = 1
-                    @Length(5...1) var c: String = ""
-                    @Length(-1...3) var d: String = ""
-                    @Count(3...2) var e: [Int] = []
-                    @MultipleOf(0) var f: Int = 0
-                    @Range(1...5) @GreaterThan(10) var g: Int = 3
-                    @Pattern("(") var h: String = ""
+                    var a: Int = 5
+                    var b: Int = 1
+                    var c: String = ""
+                    var d: String = ""
+                    var e: [Int] = []
+                    var f: Int = 0
+                    var g: Int = 3
+                    var h: String = ""
                 }
                 """)
     }
@@ -189,17 +189,17 @@ struct ConstraintDiagnosticTests {
             ],
             to: """
                 struct Bad {
-                    @Range(200...4000) var speed: Double = 5000
-                    @Range(0...9) var neg: Int = -1
-                    @Length(1...3) var name = "toolong"
-                    @Length(1...) var empty = ""
-                    @Count(1...2) var list: [Int] = []
-                    @Count(...1) var map: [String: Int] = ["a": 1, "b": 2]
-                    @Length(2...) var each: [String] = ["ok", "x"]
-                    @Unique var twice: [Int] = [1, 1]
-                    @MultipleOf(5) var step: Int = 7
-                    @Range(1...5) var maybe: Int? = 9
-                    @Range(1...5) var fine: Int? = nil
+                    var speed: Double = 5000
+                    var neg: Int = -1
+                    var name = "toolong"
+                    var empty = ""
+                    var list: [Int] = []
+                    var map: [String: Int] = ["a": 1, "b": 2]
+                    var each: [String] = ["ok", "x"]
+                    var twice: [Int] = [1, 1]
+                    var step: Int = 7
+                    var maybe: Int? = 9
+                    var fine: Int? = nil
                 }
                 """)
     }
@@ -238,7 +238,7 @@ struct ConstraintDiagnosticTests {
             ],
             to: """
                 struct Bad {
-                    @Length(1...5) var count: Int = 0
+                    var count: Int = 0
                 }
                 """,
             fixIts: ["remove @Length"],

@@ -11,10 +11,24 @@ public import StoicSchema
 /// `static let schema`, an object with a default instance, one field per
 /// stored property; the type then conforms to `Schematic`, so other schemas
 /// can refer to it. See the attributes below for what a property can add.
+///
+/// On an enumeration with a `String` or `Int` raw type it declares the
+/// enumeration schema; on one whose cases carry values, a tagged union.
+///
+/// The arguments are passed to the schema as written. A struct takes
+/// `name`, `unknownKeys`, `version`, `versionKey`, `missingVersion` and
+/// `migrations`; a union takes `name`, `discriminator` and `valueKey`.
 @attached(member, names: named(schema))
-@attached(extension, conformances: Schematic)
+@attached(extension, conformances: Schematic, CaseIterable)
 public macro Schema(
-    unknownKeys: UnknownKeyPolicy = .warn
+    name: String? = nil,
+    unknownKeys: UnknownKeyPolicy = .warn,
+    version: Int? = nil,
+    versionKey: String = "version",
+    missingVersion: MissingVersion = .oldest,
+    migrations: [Migration] = [],
+    discriminator: String = "type",
+    valueKey: String = "value"
 ) = #externalMacro(module: "StoicMacrosPlugin", type: "SchemaMacro")
 
 /// The key a property is written under, instead of its name.
@@ -45,6 +59,12 @@ public macro Nullable() = #externalMacro(module: "StoicMacrosPlugin", type: "Nul
 /// Leaves a property out of the schema. It keeps the default instance's value.
 @attached(peer)
 public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "IgnoredMacro")
+
+/// Marks the `JSONObject` property that keeps the keys the schema does not
+/// declare and writes them back, so that an older release never destroys
+/// what a newer one wrote.
+@attached(peer)
+public macro PreserveUnknownKeys() = #externalMacro(module: "StoicMacrosPlugin", type: "PreserveUnknownKeysMacro")
 
 // MARK: Constraints
 //

@@ -13,6 +13,7 @@ struct StoicMacrosPlugin: CompilerPlugin {
         DeprecatedMacro.self,
         NullableMacro.self,
         IgnoredMacro.self,
+        PreserveUnknownKeysMacro.self,
         RangeMacro.self,
         GreaterThanMacro.self,
         LessThanMacro.self,

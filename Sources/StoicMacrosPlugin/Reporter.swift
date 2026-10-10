@@ -71,6 +71,14 @@ extension FixIt {
             changes: [.replaceText(range: node.endPositionBeforeTrailingTrivia..<node.endPositionBeforeTrailingTrivia, with: text, in: Syntax(node))])
     }
 
+    /// Inserts `text` just before `node`.
+    static func inserting(_ text: String, before node: some SyntaxProtocol, _ message: String) -> FixIt {
+        let start = node.positionAfterSkippingLeadingTrivia
+        return FixIt(
+            message: Fix(message: message),
+            changes: [.replaceText(range: start..<start, with: text, in: Syntax(node))])
+    }
+
     /// Removes `node`.
     static func removing(_ node: some SyntaxProtocol, _ message: String) -> FixIt {
         // The attribute's own space goes with it, so no double space is left.

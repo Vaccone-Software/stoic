@@ -35,9 +35,18 @@ struct SchemaMacro: MemberMacro, ExtensionMacro {
         // not another. (The member pass has reported; this one is silent.)
         guard schemaDeclaration(of: declaration, attribute: node, reporter: Reporter(context, silent: true)) != nil
         else { return [] }
-        let wanted = protocols.filter { $0.trimmedDescription.hasSuffix("Schematic") }
+        // `Schematic` for every kind; `CaseIterable` too for an enumeration of
+        // raw values, whose `allCases` the library reads. (A union is not
+        // `CaseIterable`: its cases carry values.)
+        let rawEnumeration = declaration.as(EnumDeclSyntax.self).map { !$0.isUnion } ?? false
+        let wanted = protocols.compactMap { protocolType -> String? in
+            let name = protocolType.trimmedDescription
+            if name.hasSuffix("Schematic") { return "\(library)Schematic" }
+            if name == "CaseIterable" && rawEnumeration { return "CaseIterable" }
+            return nil
+        }
         guard !wanted.isEmpty else { return [] }
-        return [try ExtensionDeclSyntax("extension \(type.trimmed): \(raw: library)Schematic {}")]
+        return [try ExtensionDeclSyntax("extension \(type.trimmed): \(raw: wanted.joined(separator: ", ")) {}")]
     }
 }
 
@@ -47,14 +56,17 @@ func schemaDeclaration(
     of declaration: some DeclGroupSyntax, attribute: AttributeSyntax, reporter: Reporter
 ) -> String? {
     let access = accessPrefix(declaration)
-    guard let structure = declaration.as(StructDeclSyntax.self) else {
+    let text: String?
+    if let structure = declaration.as(StructDeclSyntax.self) {
+        text = expandStruct(structure, attribute: attribute, access: access, reporter: reporter)
+    } else if let enumeration = declaration.as(EnumDeclSyntax.self) {
+        text = expandEnum(enumeration, attribute: attribute, access: access, reporter: reporter)
+    } else {
         reporter.error(
             attribute, Problem(id: "unsupported-declaration", message: "@Schema applies to a struct or an enum"))
         return nil
     }
-    guard let text = expandStruct(structure, attribute: attribute, access: access, reporter: reporter),
-        !reporter.hasErrors
-    else { return nil }
+    guard let text, !reporter.hasErrors else { return nil }
     return text
 }
 

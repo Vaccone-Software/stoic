@@ -33,6 +33,7 @@ struct StructModel {
     var fields: [FieldModel] = []
     /// The property that receives unknown keys, if one is marked.
     var preserving: String?
+    var preservingNode: Syntax?
 }
 
 /// Reads the stored properties of `declaration`, reporting everything that
@@ -294,7 +295,20 @@ private func readMarkers(
         case .ignored:
             break
         case .preserveUnknownKeys:
+            if model.preserving != nil {
+                reporter.error(
+                    marker.node,
+                    Problem(id: "second-preserve", message: "only one property can keep the unknown keys, and `\(model.preserving!)` already does"))
+            }
+            if field.typeText != "JSONObject" && field.typeText != "StoicJSON.JSONObject" {
+                reporter.error(
+                    marker.node,
+                    Problem(
+                        id: "preserve-type",
+                        message: "@PreserveUnknownKeys needs a property of type `JSONObject`, and `\(field.property)` is `\(field.typeText)`"))
+            }
             model.preserving = field.property
+            model.preservingNode = Syntax(marker.node)
         case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern:
             field.scalar.append(marker)
         case .count, .unique:
