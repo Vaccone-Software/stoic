@@ -79,7 +79,9 @@ struct SemaphoreModelTests {
         }
     }
 
-    @Test(.stoic(seed: 101), .timeLimit(.minutes(1)), arguments: Array(0..<8))
+    @Test(.stoic(seed: 101), .timeLimit(.minutes(1)),
+          .failureMode("design/03", "a semaphore waiter is cancelled while queued"),
+          .failureMode("design/03", "a semaphore waiter's deadline passes while queued"), arguments: Array(0..<8))
     func randomOperationsMatchTheReferenceModel(round: Int) async {
         var generator = Ambient.current.random.generator(discriminator: UInt64(round))
         let capacity = Int.random(in: 1...4, using: &generator)

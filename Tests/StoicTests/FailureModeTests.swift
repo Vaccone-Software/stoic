@@ -10,7 +10,7 @@ struct ConcurrencyFailureModeTests {
 
     /// "mapConcurrent caller is cancelled: all children cancelled and
     /// awaited; CancellationError propagates."
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/03", "mapConcurrent caller is cancelled"))
     func aCancelledMapConcurrentCancelsAndAwaitsItsChildrenAndThrowsCancellation() async {
         let started = SendableBox(0)
         let running = SendableBox(0)
@@ -60,7 +60,9 @@ struct ConcurrencyFailureModeTests {
     /// "a TaskSlot task ignores cancellation forever: next run does not wait
     /// for it; it is counted in slot.stragglers, and the test kit fails on
     /// stragglers."
-    @Test(.stoic(seed: 7), .timeLimit(.minutes(1)))
+    @Test(.stoic(seed: 7), .timeLimit(.minutes(1)),
+          .failureMode("design/03", "a TaskSlot task ignores cancellation forever"),
+          .failureMode("design/03", "a superseded TaskSlot task finishes after the new one"))
     func workThatIgnoresCancellationForeverDoesNotBlockTheNextRun() async {
         let slot = TaskSlot<String, Never>(label: "stubborn")
         let forever = TestGate()
@@ -97,7 +99,7 @@ struct ScopeExitFailureModeTests {
     /// "the enclosing deadline has already passed at exit: finalizers still
     /// get exitDeadlineFloor each." The exit budget is spent here (zero) as
     /// well, so only the floor is left: 250 ms.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "the enclosing deadline has already passed at exit"))
     func finalizersStillGetTheFloorWhenTheEnclosingDeadlineHasPassed() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
@@ -174,7 +176,7 @@ struct ServiceFailureModeTests {
     /// "the app's task is cancelled" during the start phase: the caller sees
     /// cancellation (not a start failure), what finished starting is stopped
     /// (newest first, with Exit.cancelled), and what never finished is not.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/08", "the app's task is cancelled"))
     func cancellingWhileServicesStartStopsWhatStartedAndReportsCancellation() async {
         let log = OrderLog()
         let cacheEntered = TestGate()
@@ -224,7 +226,7 @@ struct SupervisionFailureModeTests {
     }
 
     /// "a child ran long then failed: backoff restarts" (resetAfter).
-    @Test(.timeLimit(.minutes(1)), arguments: [
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "a child ran long and then failed"), arguments: [
         (resetAfter: Duration.seconds(20), thirdDelay: Duration.seconds(1)),     // ran 25 s: starts over
         (resetAfter: Duration.seconds(3600), thirdDelay: Duration.seconds(4)),   // control: the backoff keeps growing
     ])
@@ -267,7 +269,7 @@ struct SupervisionFailureModeTests {
 
     /// "the Mac sleeps": heartbeats are measured on the liveness clock, which
     /// stops while the machine sleeps; the wall clock keeps going.
-    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "the Mac sleeps"), arguments: [false, true])
     func aHeartbeatDoesNotFireWhileTheLivenessClockStandsStill(machineSleeps: Bool) async {
         let wall = TestClock()
         let liveness = machineSleeps ? TestClock() : wall
@@ -318,7 +320,7 @@ struct SupervisionFailureModeTests {
 
     /// "the machine is deallocated: observers finish", and its running state
     /// work is cancelled.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/07", "the machine is deallocated"))
     func deallocatingAStateMachineFinishesItsObserversAndCancelsItsWork() async {
         let seen = SendableBox<[Mode]>([])
         let observerFinished = TestGate()

@@ -141,7 +141,9 @@ struct SingleFlightModelTests {
         }
     }
 
-    @Test(.stoic(seed: 404), .timeLimit(.minutes(1)), arguments: Array(0..<8))
+    @Test(.stoic(seed: 404), .timeLimit(.minutes(1)),
+          .failureMode("design/03", "two single-flight waiters, the first cancels"),
+          .failureMode("design/03", "every single-flight waiter cancels"), arguments: Array(0..<8))
     func randomOperationsMatchTheReferenceCountingModel(round: Int) async {
         var generator = Ambient.current.random.generator(discriminator: UInt64(round))
         let flight = SingleFlight<String, Int, CancellationError>(label: "model-\(round)")

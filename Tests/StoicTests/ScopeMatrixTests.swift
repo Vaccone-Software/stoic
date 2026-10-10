@@ -156,7 +156,12 @@ struct ScopeMatrixTests {
         return elapsed
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: cells)
+    @Test(.timeLimit(.minutes(1)),
+          .failureMode("design/04", "the body succeeds"),
+          .failureMode("design/04", "the body throws"),
+          .failureMode("design/04", "the task is cancelled mid-body"),
+          .failureMode("design/04", "a finalizer throws (logs) / fails"),
+          .failureMode("design/04", "a finalizer hangs"), arguments: cells)
     func everyCellEndsTheSameWayWhateverTheFinalizersDo(cell: Cell) async {
         let observed = await Self.run(cell)
 

@@ -121,7 +121,7 @@ struct ScopePropertyTests {
         return await task.value
     }
 
-    @Test(.stoic(seed: 505), .timeLimit(.minutes(1)), arguments: Array(0..<25))
+    @Test(.stoic(seed: 505), .timeLimit(.minutes(1)), .failureMode("design/04", "the acquire throws"), arguments: Array(0..<25))
     func randomScriptsReleaseEverythingOnceInReverse(round: Int) async {
         var generator = Ambient.current.random.generator(discriminator: UInt64(round))
         for attempt in 0..<(8 * testScale) {

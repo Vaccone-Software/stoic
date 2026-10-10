@@ -24,26 +24,12 @@ design/02 | the operation succeeds on attempt n
 design/02 | the schedule is unbounded
 design/02 | the server sends Retry-After longer than the cap
 design/02 | the task is cancelled during the backoff sleep
-design/03 | a TaskSlot task ignores cancellation forever
 design/03 | a body inside withPermit throws
 design/03 | a racer ignores cancellation after another won
-design/03 | a semaphore waiter is cancelled while queued
-design/03 | a semaphore waiter's deadline passes while queued
-design/03 | a superseded TaskSlot task finishes after the new one
 design/03 | every racer fails
-design/03 | every single-flight waiter cancels
-design/03 | mapConcurrent caller is cancelled
 design/03 | the hedge budget is empty
-design/03 | two single-flight waiters, the first cancels
-design/04 | a finalizer hangs
-design/04 | a finalizer throws (logs) / fails
 design/04 | a forked child throws
 design/04 | someone tries to keep the Scope
-design/04 | the acquire throws
-design/04 | the body succeeds
-design/04 | the body throws
-design/04 | the enclosing deadline has already passed at exit
-design/04 | the task is cancelled mid-body
 design/04 | work started in the scope was abandoned
 design/05 | a defect is wrapped in a report
 design/05 | a report wraps a PolicyError wrapping the root
@@ -64,7 +50,6 @@ design/07 | a state is left while its work runs
 design/07 | a state's timeout elapses during its visit
 design/07 | a thousand tasks send events at once
 design/07 | an event is invalid in the current state
-design/07 | the machine is deallocated
 design/07 | the state is left before its timeout
 design/07 | the work sends an event after its visit ended
 design/08 | a factory reads a service it did not declare
@@ -72,16 +57,13 @@ design/08 | a service needs one that is absent
 design/08 | a start throws or times out
 design/08 | a stop hangs
 design/08 | services need each other
-design/08 | the app's task is cancelled
 design/08 | the body throws
 design/08 | two services share a key
 design/09 | a child ignores cancellation on shutdown
-design/09 | a child ran long and then failed
 design/09 | a permanent child throws
 design/09 | a temporary child throws
 design/09 | a transient child returns
 design/09 | restarts exceed the intensity
-design/09 | the Mac sleeps
 design/09 | the supervisor's task is cancelled
 design/10 | Retrying meets .circuitOpen with a retryAfter
 design/10 | a breaker has fewer than minimumCalls calls in its window
