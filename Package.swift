@@ -31,6 +31,7 @@ let package = Package(
         .library(name: "Stoic", targets: ["Stoic"]),
         .library(name: "StoicTesting", targets: ["StoicTesting"]),
         .library(name: "StoicAppKit", targets: ["StoicAppKit"]),
+        .library(name: "StoicApple", targets: ["StoicApple"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
     ],
@@ -58,5 +59,9 @@ let package = Package(
         // Empty on platforms without AppKit.
         .target(name: "StoicAppKit", dependencies: ["Stoic"], swiftSettings: strict),
         .testTarget(name: "StoicAppKitTests", dependencies: ["StoicAppKit", "StoicTesting"], swiftSettings: strict),
+        // Foundation integration: platform errors that classify themselves
+        // for retry, and HTTP status semantics.
+        .target(name: "StoicApple", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicAppleTests", dependencies: ["StoicApple", "StoicTesting"], swiftSettings: strict),
     ]
 )
