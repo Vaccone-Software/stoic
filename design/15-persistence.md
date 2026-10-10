@@ -68,7 +68,7 @@ type, `StoreError`.
 
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSystem`                     | The 16 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, and `open` in four modes. |
+| `FileSystem`                     | The 17 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, and `open` in four modes. |
 | `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine.                                                                                                   |
@@ -117,6 +117,15 @@ type, `StoreError`.
   subset of the pending directory operations.
 
 ### Atomic file
+
+Symbolic links: `write` and `read` first resolve `path` through any links (up
+to 40 hops; a relative target is relative to the link's directory; a link to
+nothing resolves to where the file would be), then do everything beside the
+real file: `.tmp`, `.previous`, `.corrupt-N`, the rename and the directory sync.
+Renaming over the link itself would replace the link with a regular file and
+leave its target stale. A loop of links is `.invalidArgument`. The simulation
+models links as durable from the moment they exist, since the store never
+creates one.
 
 Permissions: the temporary is created, then given the permission bits of the
 file it will replace (`fchmod`, before a byte is written), so a write never

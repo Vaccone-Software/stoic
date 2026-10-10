@@ -353,4 +353,26 @@ struct SettingsStoreTests {
         try Self.open(disk, format: format).update { $0.speed = 700 }
         #expect(try disk.permissions(of: Self.path) == 0o640)
     }
+
+    @Test(.failureMode("design/18", "the settings file is a symbolic link"),
+          arguments: [SettingsStore<Prefs>.Format.appOwned, .handEdited])
+    func aSettingsFileThatIsALinkIsUpdatedThroughItAndStaysALink(format: SettingsStore<Prefs>.Format) throws {
+        let disk = SimulatedFileSystem()
+        try disk.createDirectory("/dotfiles")
+        try disk.createDirectory("/d")
+        let target = "/dotfiles/prefs.json"
+        try AtomicFile(fileSystem: disk, options: .init(envelope: format == .appOwned))
+            .write(Array(#"{"version": 2, "speed": 500}"#.utf8), to: target)
+        disk.symlink(at: Self.path, to: target)
+
+        let settings = try Self.open(disk, format: format)
+        #expect(settings.value.speed == 500)
+        try settings.update { $0.speed = 900 }
+
+        #expect(try disk.readLink(Self.path) == target, "still a link")
+        #expect(try Self.open(disk, format: format).value.speed == 900)
+        let stored = try #require(try AtomicFile(fileSystem: disk, options: .init(envelope: format == .appOwned)).read(target))
+        #expect(String(decoding: stored.bytes, as: UTF8.self).contains("900"), "the target holds the new value")
+        #expect(try disk.list(directory: "/d") == ["prefs.json"])
+    }
 }

@@ -40,6 +40,11 @@ internal import Stoic
 ///   file every time would hand it the default mode, usually `0o644`). A file
 ///   that does not exist yet is created with ``Options/newFileMode``. The
 ///   bits are set before any data is written.
+/// - **Symbolic links are followed.** Writing to a path that is a link
+///   replaces the file the link names, atomically and beside that file (its
+///   directory is synced), and leaves the link in place; a dotfiles setup can
+///   keep a settings file behind a link. `read` follows it too, and the
+///   previous generation and quarantined copies live beside the target.
 /// - **One writer per path.** Concurrent writers to the same path race on
 ///   the temporary name. Cross-process locking is out of scope.
 /// - **Cancellation and threads.** Calls are synchronous and blocking, and
@@ -108,9 +113,13 @@ public struct AtomicFile: Sendable {
     /// Replaces the file at `path` with `bytes`, durably and atomically.
     ///
     /// - Parameter options: Overrides the options given at `init` for this call.
-    public func write(_ bytes: [UInt8], to path: String, options override: Options? = nil) throws(StoreError) {
+    public func write(_ bytes: [UInt8], to requested: String, options override: Options? = nil) throws(StoreError) {
         let options = override ?? options
         let fileSystem = fileSystem
+        // Everything below happens beside the real file: the temporary, the
+        // previous generation and the directory sync. Renaming over a link
+        // would replace the link and leave its target as it was.
+        let path = try resolvingLinks(requested)
         let image = options.envelope ? Envelope.seal(bytes) : bytes
         let directory = StorePath.directory(of: path)
         let temporary = path + ".tmp"
@@ -179,11 +188,12 @@ public struct AtomicFile: Sendable {
     /// - Throws: ``StoreError`` of kind `.corrupt` if files existed but none
     ///   was usable; they are quarantined, so the next read returns `nil`.
     public func read(
-        _ path: String,
+        _ requested: String,
         options override: Options? = nil,
         validate: (([UInt8]) -> Bool)? = nil
     ) throws(StoreError) -> Contents? {
         let options = override ?? options
+        let path = try resolvingLinks(requested)
         var candidates: [(String, Contents.Source)] = [(path, .current)]
         if options.keepPrevious { candidates.append((path + ".previous", .previous)) }
 
@@ -219,6 +229,21 @@ public struct AtomicFile: Sendable {
     }
 
     // MARK: Helpers
+
+    /// `path`, if it is a symbolic link, replaced by the file it leads to
+    /// (through a chain of links, a relative link being relative to its own
+    /// directory). A link to nothing resolves to where the file would be:
+    /// the write creates it there, as `>` through a dangling link does.
+    private func resolvingLinks(_ path: String) throws(StoreError) -> String {
+        var current = path
+        for _ in 0..<Self.maxLinkDepth {
+            guard let target = try fileSystem.readLink(current) else { return current }
+            current = target.hasPrefix("/") ? target : StorePath.join(StorePath.directory(of: current), target)
+        }
+        throw StoreError(kind: .invalidArgument, operation: "resolve", path: path, detail: "too many levels of symbolic links")
+    }
+
+    private static let maxLinkDepth = 40
 
     private enum Check {
         case valid([UInt8])

@@ -200,12 +200,12 @@ extension SimulatedFileSystem {
     /// A file system holding exactly `files`, all of it durable.
     convenience init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], like other: State) {
         self.init(capacity: other.capacity, recordsHistory: other.recordsHistory)
-        restore(files, modes: modes, directories: other.directories)
+        restore(files, modes: modes, links: other.links, directories: other.directories)
     }
 
-    func restore(_ files: [String: [UInt8]], modes: [String: UInt16] = [:], directories: Set<String>) {
+    func restore(_ files: [String: [UInt8]], modes: [String: UInt16] = [:], links: [String: String], directories: Set<String>) {
         state.withLock { state in
-            state = State(restoring: files, modes: modes, directories: directories, like: state)
+            state = State(restoring: files, modes: modes, links: links, directories: directories, like: state)
         }
     }
 }

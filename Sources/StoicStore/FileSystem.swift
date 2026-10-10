@@ -104,9 +104,20 @@ public protocol FileSystem: Sendable {
     /// ``fullSync(_:)``. The default does nothing, for a file system with no
     /// permissions to set.
     func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError)
+
+    /// Where the symbolic link at `path` points, exactly as it is stored
+    /// (it may be relative to the link's directory); `nil` if `path` is not a
+    /// link or does not exist.
+    ///
+    /// ``AtomicFile`` follows links with this, so a write replaces the file
+    /// the link names rather than the link. The default returns `nil` ("no
+    /// links here").
+    func readLink(_ path: String) throws(StoreError) -> String?
 }
 
 extension FileSystem {
+    public func readLink(_ path: String) throws(StoreError) -> String? { nil }
+
     public func permissions(of path: String) throws(StoreError) -> UInt16? { nil }
 
     public func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) {}

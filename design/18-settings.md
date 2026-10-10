@@ -93,6 +93,11 @@ keep passwords, API tokens and refresh tokens in the Keychain, and put only
 the account's name in settings. (The store does not integrate Keychain
 storage.)
 
+**A settings file may be a symbolic link** (dotfiles kept in a repository, a
+file shared between apps). `AtomicFile` follows the link: the temporary file,
+the previous generation and any quarantined copy live beside the real file, the
+rename replaces the real file, and the link is untouched.
+
 **Formats.** `.appOwned` (default): checksum envelope, write-back of
 migrations and repairs. `.handEdited`: plain JSON with comments allowed,
 nothing written back on load, and `update` rewrites the file without its
@@ -112,6 +117,7 @@ comments — say so in the UI that offers both.
 | the write fails (disk full, read-only volume) | `update` throws `.storage`; value and file unchanged                          |
 | two updates race                              | Serialised; each sees the other's result                                      |
 | the file is created or replaced                | Created `0600`; a replacement keeps the mode the file had; secret fields are in it in plain text |
+| the settings file is a symbolic link          | The target is replaced atomically, beside itself; the link stays a link       |
 | the document has keys the schema does not declare | Written back unchanged on every save (top level and nested objects); dropped only with `unknownKeys: .drop` |
 
 ## Events

@@ -189,6 +189,40 @@ struct AtomicFileCrashTests {
         #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 
+    /// Through a link, the link stays and the target is old or new at every
+    /// crash point; once the write returns it is new. Syncing the wrong
+    /// directory (the link's) would show here as a lost acknowledged write.
+    @Test(arguments: [true, false])
+    func aWriteThroughALinkIsAtomicAndKeepsTheLink(keepPrevious: Bool) async throws {
+        let options = AtomicFile.Options(keepPrevious: keepPrevious)
+        let target = "/real/settings"
+        let linked = "/links/settings"
+        let report = try await exploreCrashes(
+            "AtomicFile.write through a link previous=\(keepPrevious)",
+            setup: { disk in
+                try disk.createDirectory("/real")
+                try disk.createDirectory("/links")
+                try AtomicFile(fileSystem: disk, options: options).write(Self.old, to: target)
+                disk.symlink(at: linked, to: target)
+            },
+            operation: { disk in
+                try AtomicFile(fileSystem: disk, options: options).write(Self.new, to: linked)
+                disk.checkpoint("returned")
+            },
+            recovery: { disk in _ = try AtomicFile(fileSystem: disk, options: options).read(linked) },
+            check: { disk, context in
+                if try disk.readLink(linked) != target { return "the link was replaced or lost" }
+                let read: (SimulatedFileSystem) throws -> [UInt8]? = { image in try AtomicFile(fileSystem: image, options: options).read(linked)?.bytes }
+                if let failure = try atomicWriteInvariant(path: linked, old: Self.old, new: Self.new, read: read)(disk, context) { return failure }
+                if try disk.list(directory: "/links") != ["settings"] { return "something was left beside the link: \(try disk.list(directory: "/links"))" }
+                return nil
+            }
+        )
+        print(report)
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
+        #expect(report.images > report.crashPoints)
+    }
+
     // MARK: The harness must be able to fail
 
     static func exploreBroken(_ defect: BrokenAtomicWrite) async throws -> CrashReport {
