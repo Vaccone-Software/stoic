@@ -28,7 +28,7 @@ struct SupervisorTests {
         for expected in 2...3 {
             await clock.waitForSleepers(count: 1)
             await clock.advance(by: .seconds(2))
-            for _ in 0..<500 where script.count("worker") < expected { await Task.yield() }
+            await eventually { script.count("worker") >= expected }
             #expect(script.count("worker") == expected)
         }
         run.cancel()
@@ -78,7 +78,7 @@ struct SupervisorTests {
             }
         }
         let run = Task { try await withTestAmbient(clock: TestClock()) { try await supervisor.run() } }
-        for _ in 0..<2_000 where script.count("a") < 2 || script.count("b") < 2 { await Task.yield() }
+        await eventually { script.count("a") >= 2 && script.count("b") >= 2 }
         #expect(script.count("a") == 2)
         #expect(script.count("b") == 2)
         run.cancel()
@@ -102,7 +102,7 @@ struct SupervisorTests {
             }
         }
         let run = Task { try await withTestAmbient(clock: TestClock()) { try await supervisor.run() } }
-        for _ in 0..<2_000 where script.count("middle") < 2 || script.count("last") < 2 { await Task.yield() }
+        await eventually { script.count("middle") >= 2 && script.count("last") >= 2 }
         #expect(script.count("first") == 1)
         #expect(script.count("middle") == 2)
         #expect(script.count("last") == 2)
@@ -127,7 +127,7 @@ struct SupervisorTests {
         await clock.advance(by: .seconds(5))    // first miss
         await clock.waitForSleepers(count: 1)
         await clock.advance(by: .seconds(5))    // second miss: hung
-        for _ in 0..<2_000 where script.count("tap") < 2 { await Task.yield() }
+        await eventually { script.count("tap") >= 2 }
         #expect(script.count("tap") == 2)
         #expect(events.names.contains("supervisor.child_hung"))
         run.cancel()
@@ -146,6 +146,7 @@ struct SupervisorTests {
             }
         }
         let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        await eventually { beat.value != nil }
         for _ in 0..<5 {
             await clock.waitForSleepers(count: 1)
             beat.value?.beat()

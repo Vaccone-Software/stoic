@@ -20,8 +20,7 @@ struct SingleFlightTests {
                     }
                 }
             }
-            while runs.value == 0 { await Task.yield() }
-            for _ in 0..<50 { await Task.yield() }
+            await eventually { flight.waiterCount(for: "me") == 10 }
             gate.open()
             return try await group.reduce(into: []) { $0.append($1) }
         }
