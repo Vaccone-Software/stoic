@@ -117,7 +117,7 @@ extension HTTPError: Retryable {
 /// pipeline's stages see. The retry classifier and the breaker read this, and
 /// only this, which is what keeps "what counts against a host" and "what is
 /// retried" in one place.
-enum AttemptError: Error, Sendable {
+enum AttemptError: Error, Sendable, CustomStringConvertible {
     case status(code: Int, excerpt: String, retryAfter: Duration?)
     case transport(URLError.Code)
     case timedOut
@@ -169,6 +169,10 @@ enum AttemptError: Error, Sendable {
             return .stop
         }
     }
+
+    /// The failure without its body excerpt: this is what the retry and
+    /// breaker events print, and a response body is never recorded.
+    var description: String { reason }
 
     /// A short, public name for the failure, for events.
     var reason: String {
