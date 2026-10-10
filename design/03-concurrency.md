@@ -158,9 +158,18 @@ that keeps the promise, and the lint rule against
 
 ## Events
 
-`slot.superseded`, `slot.superseded_late`, `slot.dropped`, `race.won`
-(index, latency), `race.slow_loser`, `hedge.started` (attempt), `hedge.won`,
-`semaphore.wait` (when a wait exceeds a threshold), `singleflight.joined`.
+`slot.superseded`, `slot.superseded_late`, `race.won` (index, latency),
+`race.all_failed`, `hedge.started` (attempt), `hedge.won`, `semaphore.rejected`,
+`semaphore.reentrant`, `singleflight.joined`, `singleflight.abandoned`,
+`channel.dropped`.
+
+Considered and not built: `slot.dropped` and `slot.stragglers` (a slot has
+exactly one answer for late work, `slot.superseded_late`, and the task
+ledger already lists a superseded task still running), `race.slow_loser` (it
+needs a notion of "overrun" the API does not take; a loser that ignores
+cancellation is a timeout the caller should write), and `semaphore.wait` (it
+needs a caller-chosen threshold; `semaphore.rejected` and the deadline cover
+the waits that matter, and `Diagnostics` shows the queue).
 
 ## Testing
 
