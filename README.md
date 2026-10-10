@@ -128,10 +128,21 @@ func retriesThroughAnOutage() async throws {
 | `Stoic`        | Every runtime primitive                                   | stdlib, `Synchronization`, `os` |
 | `StoicTesting` | Test clocks, fault injection, recorded events, test trait | `Stoic`, Swift Testing          |
 | `StoicJSON`    | Strict JSON: duplicate keys, exact numbers, positions     | stdlib                          |
+| `StoicLint`    | Build-tool plugin: unsafe patterns fail the build         | swift-syntax, behind the `Lint` trait |
+
+`StoicLint` is opt in, so apps that do not use it never fetch swift-syntax:
+
+```swift
+.package(url: "https://github.com/…/stoic", from: "0.1.0", traits: ["Lint"]),
+// …and on a target:
+plugins: [.plugin(name: "StoicLint", package: "stoic")]
+```
+
+See [design/13](design/13-build-enforcement.md) for the rules, the
+`// stoic:allow(rule): reason` suppression and the baseline ratchet.
 
 Coming: `StoicSchema` (validation), resilience policies (circuit breaker,
-rate limiter, bulkhead, hedging), `StoicLint` (a build plugin that fails
-the build on unsafe patterns), and lifecycle bridges for AppKit and UIKit.
+rate limiter, bulkhead, hedging), and lifecycle bridges for AppKit and UIKit.
 
 ## Design
 

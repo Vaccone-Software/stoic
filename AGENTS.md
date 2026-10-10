@@ -41,7 +41,10 @@ Short on purpose: each rule is one you can check.
 6. **Release in finalizers; commit in the body.** A finalizer's failure
    does not change the outcome; a commit's failure must.
 7. **No escape hatches without a reason in a comment:** `@unchecked
-Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`.
+Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`. With the
+`StoicLint` plugin the first three fail the build unless the reason is
+written as `// stoic:allow(<rule>): <why>` on that line or the one above
+(`design/13`).
 8. **Test on virtual time.** `TestClock` for anything that races time,
    `ImmediateClock` only for recording delays (its timers fire at once),
    `FaultInjector` for failures, `@Test(.stoic(seed:))` for isolation.
@@ -63,6 +66,9 @@ Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`.
   Stress a suite with
   `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`;
   every concurrency test must survive it.
+- **Lint:** `swift run --traits Lint stoic-lint Sources Plugins Package.swift`
+  must stay clean; the lint tests are `swift test --traits Lint --filter
+StoicLintCoreTests`. Without the `Lint` trait, swift-syntax is never fetched.
 - **Contracts first.** Each primitive has a contract in `design/`. Change the
   contract and the code together; a failure-mode table row without a test
   is a gap.
