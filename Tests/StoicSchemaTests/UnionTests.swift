@@ -241,7 +241,7 @@ struct UnionEncodingTests {
     }
 
     @Test func theExportAgreesWithTheDecoderOnHandPickedDocuments() {
-        let validator = MiniJSONSchema(Shape.schema.jsonSchema())
+        let validator = JSONSchemaValidator(Shape.schema.jsonSchema())
         let documents: [String] = [
             #"{"type": "circle"}"#, #"{"type": "circle", "radius": 5}"#, #"{"type": "circle", "radius": 0}"#,
             #"{"type": "circle", "radius": 5, "radus": 1}"#, #"{"type": "rect", "width": 1, "height": 2}"#,
@@ -259,7 +259,7 @@ struct UnionEncodingTests {
     @Test func aRecursiveUnionExportsWithReferences() {
         let document = Expression.schema.jsonSchema().object
         #expect(document?["$defs"]?.object?["Expression"] != nil)
-        let validator = MiniJSONSchema(Expression.schema.jsonSchema())
+        let validator = JSONSchemaValidator(Expression.schema.jsonSchema())
         #expect(validator.accepts(json(#"{"op": "sum", "value": [{"op": "number", "value": 1}]}"#)))
         #expect(!validator.accepts(json(#"{"op": "sum", "value": []}"#)))
     }

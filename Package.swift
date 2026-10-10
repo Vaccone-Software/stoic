@@ -47,6 +47,7 @@ let package = Package(
         .library(name: "StoicObservability", targets: ["StoicObservability"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
+        .library(name: "StoicSchemaTesting", targets: ["StoicSchemaTesting"]),
         .library(name: "StoicStore", targets: ["StoicStore"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
@@ -87,7 +88,13 @@ let package = Package(
         // documents it (design/06). Foundation-free, and it depends on
         // StoicJSON alone, so a schema runs anywhere Swift does.
         .target(name: "StoicSchema", dependencies: ["StoicJSON"], swiftSettings: strict),
-        .testTarget(name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
+        // The Swift Testing glue for SchemaSuite. The suite itself lives in
+        // StoicSchema and asserts nothing, so the library that apps ship
+        // never links a test framework; this target is for test bundles.
+        .target(name: "StoicSchemaTesting", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicSchemaTesting", "StoicJSON"],
+            swiftSettings: strict),
         .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
         // AppKit lifecycle: finishing async shutdown before a Mac app quits.
         // Empty on platforms without AppKit.

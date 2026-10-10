@@ -153,7 +153,7 @@ struct TransformTests {
         #expect(transform?["name"] == "Timestamp")
         #expect(transform?["description"]?.string?.hasPrefix("an RFC 3339") == true)
         // A plain validator agrees with the decoder on everything the base can say.
-        let validator = MiniJSONSchema(document)
+        let validator = JSONSchemaValidator(document)
         #expect(validator.accepts("2024-02-29T12:00:00Z"))
         #expect(!validator.accepts("yesterday"))
         #expect(!validator.accepts(5))

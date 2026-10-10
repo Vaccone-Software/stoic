@@ -394,7 +394,7 @@ struct VersionedObjectTests {
     }
 
     @Test func theExportAgreesWithTheDecoderOnCurrentDocuments() {
-        let validator = MiniJSONSchema(Prefs.schema.jsonSchema())
+        let validator = JSONSchemaValidator(Prefs.schema.jsonSchema())
         let documents = [
             #"{"version": 4}"#, #"{"version": 4, "scrollSpeed": 200}"#, #"{"version": 4, "scrollSpeed": 199}"#,
             #"{"version": 5}"#, #"{"version": 4, "surprise": 1}"#, #"{"version": 4, "network": {"timeoutMillis": 0}}"#,
@@ -486,7 +486,7 @@ struct PreserveUnknownKeysTests {
     }
 
     @Test func aPreservingObjectAcceptsAnythingElseAValidatorWould() {
-        let validator = MiniJSONSchema(Loose.schema.jsonSchema())
+        let validator = JSONSchemaValidator(Loose.schema.jsonSchema())
         for text in [#"{"version": 2, "x": 1}"#, #"{"version": 2, "name": ""}"#, #"{"version": 2, "name": "ok"}"#] {
             let document = json(text)
             #expect(validator.accepts(document) == (Loose.schema.decode(document).value != nil), "\(text)")

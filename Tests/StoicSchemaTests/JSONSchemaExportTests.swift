@@ -210,7 +210,7 @@ struct ExportMappingTests {
     @Test func twoConstraintsOnOneKeywordAreBothKept() {
         let exported = export(Schema.double(.range(0...10), .range(2...20)))
         #expect(exported == json(#"{"type":"number","minimum":0,"maximum":10,"allOf":[{"minimum":2},{"maximum":20}]}"#))
-        let validator = MiniJSONSchema(exported)
+        let validator = JSONSchemaValidator(exported)
         #expect(validator.accepts(5))
         #expect(!validator.accepts(1))
         #expect(!validator.accepts(15))
@@ -267,7 +267,7 @@ struct ExportMappingTests {
             exported.value(
                 at: JSONPath([.key("$defs"), .key("Menu"), .key("properties"), .key("items"), .key("items"), .key("$ref")]))
                 == "#/$defs/Menu")
-        let validator = MiniJSONSchema(exported)
+        let validator = JSONSchemaValidator(exported)
         #expect(validator.accepts(json(#"{"title":"a","items":[{"title":"b","items":[{"title":"c"}]}]}"#)))
         #expect(!validator.accepts(json(#"{"title":"a","items":[{"title":""}]}"#)))
         #expect(!validator.accepts(json(#"{"title":"a","items":[{"itmes":[]}]}"#)))  // rejected key
@@ -277,7 +277,7 @@ struct ExportMappingTests {
         let schema = Schema<[Int]>.lazy("Ints") { Schema.array(of: .int()) }
         let exported = schema.jsonSchema()
         #expect(exported.value(at: JSONPath([.key("$ref")])) == "#/$defs/Ints")
-        #expect(MiniJSONSchema(exported).accepts([1, 2]))
-        #expect(!MiniJSONSchema(exported).accepts(["a"]))
+        #expect(JSONSchemaValidator(exported).accepts([1, 2]))
+        #expect(!JSONSchemaValidator(exported).accepts(["a"]))
     }
 }

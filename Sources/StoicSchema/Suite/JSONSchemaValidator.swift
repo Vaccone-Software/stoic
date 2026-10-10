@@ -1,24 +1,28 @@
-@testable import StoicSchema
-import StoicJSON
+public import StoicJSON
 
 /// A deliberately small JSON Schema (Draft 2020-12) validator: only the
-/// keywords the exporter writes, following the specification's meaning for
-/// each. It exists so the exporter can be tested against something that is
-/// not the decoder: if the two agree on a document, the document the
-/// schema describes is the document the decoder accepts.
+/// keywords ``Schema/jsonSchema()`` writes, following the specification's
+/// meaning for each, and nothing else.
 ///
-/// Numbers are compared by their decimal digits through `JSONNumber`
-/// ordering, as the decoder does, not through `Double`, so integer bounds
-/// beyond 2^53 are judged correctly.
-struct MiniJSONSchema {
-    let root: JSONValue
+/// It exists so the exporter can be tested against something that is not
+/// the decoder: if the two agree on a document, then the document the
+/// schema describes is the document the decoder accepts. ``SchemaSuite``
+/// runs that comparison on every generated document. It is not a general
+/// validator and is not a substitute for one: it ignores keywords it does
+/// not know (including every `x-stoic-` annotation) and has no `$ref`
+/// beyond local `#/` pointers.
+///
+/// Numbers are compared by their decimal digits, as the decoder does and not
+/// through `Double`, so integer bounds beyond 2^53 are judged correctly.
+public struct JSONSchemaValidator: Sendable {
+    public let root: JSONValue
 
-    init(_ root: JSONValue) {
+    public init(_ root: JSONValue) {
         self.root = root
     }
 
     /// Whether `instance` is valid against the root schema.
-    func accepts(_ instance: JSONValue) -> Bool {
+    public func accepts(_ instance: JSONValue) -> Bool {
         accepts(instance, against: root)
     }
 

@@ -353,6 +353,41 @@ the order it was built:
   under today's schema; a second test fails when the history grows without a
   capsule entry. See `PrefsCapsule` in `VersionedFixtures.swift`.
 
+### SchemaSuite
+
+`try SchemaSuite(Settings.schema).run(seed: 1, cases: 500)` is the
+one-line self-test. It generates valid documents and checks: round trip (as
+JSON, canonical text and pretty text; `validate` agrees); sparse fixed point
+(with and without secrets); that every minimal mutation yields exactly the
+expected errors at exactly the expected paths and the expected warnings;
+that two to four independent mutations yield exactly that many errors; that a
+misspelt key or tag is answered with the spelling it came from; that the
+exported JSON Schema and the decoder agree on the valid and the mutated
+documents; that an empty document decodes to the declared defaults and the
+defaults are valid; that every field has documentation (a warning); and the
+migration chain.
+
+- **It lives in `StoicSchema`, and asserts nothing.** `report(seed:cases:)`
+  returns a `SchemaSuiteReport` (a tally per check, the first findings of each
+  with the seed that reproduces them and a shrunk document); `run` throws
+  `SchemaSuiteFailure` if any check failed. A throw fails a Swift Testing or
+  XCTest test and prints every finding, and the library apps ship never links
+  a test framework.
+- **The Swift Testing glue is a separate tiny target, `StoicSchemaTesting`**
+  (`expectSchemaSuite(_:seed:cases:)`, which records each finding as an issue
+  at the caller's line, warnings as warnings). It is not in `StoicTesting`
+  because that would make every user of virtual clocks link the schema layer.
+- **The differential validator moved into the library** as
+  `JSONSchemaValidator` (public, deliberately small, only the keywords the
+  exporter writes), because the suite needs it. Rules a JSON Schema cannot
+  state are skipped _by name_ in the agreement check: precision loss and
+  overflow of a `Double`, and lengths counted in graphemes or bytes.
+- **Failures are shrunk** where the property is about a value (round trip),
+  so the report shows the smallest document that still fails.
+- **A transform with no examples** makes the generator guess, so the suite
+  says so (a warning) and skips samples the conversion refuses, counting them
+  as `skipped`.
+
 ### The migration chain check
 
 `schema.migrationChainCheck(cases:seed:)` returns a `MigrationChainReport`.

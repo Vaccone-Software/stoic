@@ -5,11 +5,11 @@ import Testing
 
 /// The decoder and the exported JSON Schema must agree on what is valid.
 /// The decoder is checked against a separate, small validator (see
-/// `MiniJSONSchema`) on generated valid documents and on documents with one
+/// `JSONSchemaValidator`) on generated valid documents and on documents with one
 /// minimal violation each.
 @Suite("Decoder and export agree")
 struct DifferentialTests {
-    private let validator = MiniJSONSchema(Settings.schema.jsonSchema())
+    private let validator = JSONSchemaValidator(Settings.schema.jsonSchema())
 
     @Test func generatedValidDocumentsAreAcceptedByBoth() {
         for seed in 0..<UInt64(300) {
