@@ -2,7 +2,7 @@
 
 > Robustness primitives for Swift apps (Swift 6.4, Apple platforms 27+): deadlines, retry, scopes, structured concurrency helpers, state machines, supervision, service graphs, structured errors, strict JSON and schema validation, and test tooling. Plain async functions over Swift concurrency; typed errors pass through.
 
-Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation), `StoicMacros` (`@Schema`, `@Refined`; package trait `Macros`).
+Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation), `StoicHTTP` (HTTP client), `StoicMacros` (`@Schema`, `@Refined`; package trait `Macros`).
 
 ## Time
 - `withTimeout(_ duration:) { … }` / `withDeadline(_ deadline:) { … }`: cooperative; operation runs as a child task inheriting the caller's actor; result must be Sendable; error passes through. `Deadline.current` narrows, never widens.
@@ -59,6 +59,11 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 
 ## Settings (StoicSettings)
 - `SettingsStore.open(at:schema:)`: `value` (Observable), `try update { $0.x = … }` (validated against the schema, written atomically, then published; throws `.invalid(issues)`, `.newerFormat`, `.storage`), `issues` (what the load repaired/migrated), `source` (`.file`, `.previousGeneration`, `.defaults(.missing/.unusable)`, `.newerFormat`). Never fails because of file contents; a newer app's file is read-only.
+
+## HTTP (StoicHTTP)
+- `HTTPClient(base:policy:transport:headers:)`: `try await api.send(.get("/users/42"), decoding: User.schema)`, `api.send(.post("/orders", json: v), idempotencyKey: key)` → `HTTPResponse`. Per host, in order: caller's deadline, retry, breaker, bulkhead, attempt timeout, transport. Only GET/HEAD/OPTIONS/PUT/DELETE, or POST/PATCH with an `IdempotencyKey` (sent as `Idempotency-Key`, same on every attempt), are retried; `Retry-After` honoured, capped, never past the deadline; identical GETs in flight share one request.
+- `HTTPPolicy.standard` (10 s attempt, 3 attempts, 8 in flight per host, 10 MB), `HTTPError` (`.status`, `.transport`, `.timedOut(attempt:)`, `.responseTooLarge`, `.decoding(ValidationFailure)`, `.rejected(Rejection)`; each says `attempts`); cancellation is `CancellationError`.
+- Tests: `ScriptedTransport().on(.get("/x"), respond: [.status(503), .json("{}")])` (also `.failure(code)`, `.hang`, `.oversized(n)`, `.after(delay)` on the ambient clock); records `requests` with headers. `URLSessionTransport` is the real one.
 
 ## Observability
 - `Ambient.instrumentation` (default OSLog), `Event` (stable names in `EventCatalog`), `RecordingInstrumentation`.

@@ -121,6 +121,7 @@ API shaped like plain Swift, and ships its own guidance (design/14).
 | -------------- | ------------------------------------------------------------------------------- | ------------------------------- |
 | `Stoic`        | Every runtime primitive                                                         | stdlib, `Synchronization`       |
 | `StoicTesting` | Virtual clock, seeded randomness, fault injection, model tests                  | `Stoic`, Swift Testing          |
+| `StoicHTTP`    | Resilient HTTP client: per-host retry, breaker and bulkhead, idempotency keys, bounded and schema-decoded responses, coalescing; scripted transport for tests | `Stoic`, `StoicSchema`, `StoicApple`, Foundation |
 | `StoicMacros`  | `@Schema`, `@Refined` (built, behind the `Macros` trait); `@StateMachine`, `@Services` planned | `StoicSchema`, swift-syntax |
 | `StoicLint`    | Build-tool plugin that fails the build on unsafe patterns                       | swift-syntax (host tool only)   |
 | Traits         | `OSLog`, `Logging`, `Metrics`, `Tracing`, `ServiceLifecycle`, `AppKit`, `UIKit` | the named package, when enabled |
@@ -268,6 +269,7 @@ incident review is the wrong default.
 | 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry, `LaunchGuard` |
 | 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot, flight recorder |
 | 18  | [Settings](design/18-settings.md)                                 | `Codable` + `Data.write`, settings lost to crashes and old builds | Built: `StoicSettings`                     |
+| 19  | [HTTP](design/19-http.md)                                         | hand-rolled retry loops around `URLSession`, a `POST` charged twice | Built: `StoicHTTP`                         |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical
@@ -291,11 +293,12 @@ review, tests for every failure-mode row, small commits.
    started inside them (`scope.abandonedWork`); a release declared
    `ifWorkAbandoned: .quarantine` is leaked deliberately rather than closed
    under a call that may still be using it (design/01, 04).
-5. **A resilient HTTP layer (`StoicHTTP`).** Per-host pipelines (timeout,
+5. **A resilient HTTP layer (`StoicHTTP`, built: design/19).** Per-host pipelines (timeout,
    retry honouring `Retry-After`, breaker, bulkhead), idempotency keys on
    unsafe methods, responses decoded through schemas with every issue
    reported, request coalescing, and the outbox for work that must survive
-   a relaunch. The network is where most app failures start.
+   a relaunch (the client is built; the outbox composition is not). The
+   network is where most app failures start.
 6. **Tracing.** swift-distributed-tracing as a trait: retries, deadlines
    and breaker decisions as span events and attributes.
 7. **Executable failure-mode tables and golden traces** — built: a row no

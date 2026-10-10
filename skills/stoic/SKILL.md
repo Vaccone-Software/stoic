@@ -23,6 +23,7 @@ repository root lists every entry point.
 | startup/teardown lists in the app delegate | `ServiceGraph` |
 | hand-written config validation | `@Schema struct` (trait `Macros`); `StoicSchema`'s `Schema.object` without it |
 | `try?` / `catch { print(error) }` | handle it, or `withContext("…") { … }` |
+| `URLSession` calls with hand-rolled retry, timeout or decoding | `HTTPClient` (`StoicHTTP`): network calls go through it; `POST` needs an `IdempotencyKey`; tests use `ScriptedTransport` |
 
 ## Rules
 
