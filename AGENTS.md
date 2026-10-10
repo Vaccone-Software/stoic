@@ -62,7 +62,8 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
 
 ## Working on Stoic
 
-- **Build and test:** `swift build` and `swift test`. Warnings are errors.
+- **Check everything:** `scripts/check.sh` (build, tests, lint tests, self-lint;
+  `--stress` adds 100 repetitions of every suite). Warnings are errors.
   Stress a suite with
   `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`;
   every concurrency test must survive it.
