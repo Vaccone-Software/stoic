@@ -267,6 +267,14 @@ incident review is the wrong default.
 | 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | In progress: `StoicStore`                  |
 | 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry; crash-loop marker planned |
 | 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot; flight recorder planned |
+| 10  | [Resilience policies](design/10-resilience-policies.md)           | nothing between the app and a failing dependency          | In progress                                |
+| 11  | [Observability](design/11-observability.md)                       | silent decisions                                          | Built; adapters planned                    |
+| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built; simulation planned                  |
+| 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | In progress                                |
+| 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | README, AGENTS.md; skill and llms.txt next |
+| 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | Built: `StoicStore`                        |
+| 16  | System conditions (planned)                                       | ignoring memory pressure, thermal state, background expiry| Planned                                    |
+| 17  | Diagnostics (planned)                                             | "it hung once, no idea why"                               | Planned                                    |
 
 **Planned domains, in brief.**
 

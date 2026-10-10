@@ -84,7 +84,7 @@ has no forks, so its body runs inline with any captures and a typed error.
 succeeds, and runs only if the saga ends in failure or cancellation:
 newest first, shielded, time-bounded, each one even if an earlier one
 failed. Compensations live in memory; effects that must be undone across a
-crash need a durable journal (design/15, planned).
+crash need a durable journal (design/15, `StoicStore`).
 
 **Typestate.** For a single resource with states to move through, use a
 `~Copyable` type with `consuming` transitions; a scope then guarantees
