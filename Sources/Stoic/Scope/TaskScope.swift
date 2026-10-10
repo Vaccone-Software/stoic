@@ -111,6 +111,9 @@ final class TaskScopeState: Sendable {
         var nextID: UInt64 = 0
         var failures: [any Error] = []
         var closed = false
+        // A fork failed before the body task was handed over: the body is
+        // cancelled the moment it arrives, or it would run on, uncancelled.
+        var cancelBodyOnArrival = false
     }
 
     private let state = Mutex(State())
@@ -124,12 +127,25 @@ final class TaskScopeState: Sendable {
     }
 
     func setBody<R>(_ task: Task<R, Never>) {
-        state.withLock { $0.bodyCancel = { task.cancel() } }
+        let cancelNow = state.withLock { state -> Bool in
+            state.bodyCancel = { task.cancel() }
+            return state.cancelBodyOnArrival
+        }
+        // A fork failed (and recorded `siblingFailed`) in the window between
+        // the body task starting and this call.
+        if cancelNow { task.cancel() }
     }
 
     func fork(label: String, _ work: @escaping @Sendable () async throws -> Void) {
+        // A closed scope never starts the work: not even to cancel it at once.
+        let open = state.withLock { !$0.closed }
+        guard open else { rejectFork(label: label); return }
         let forkCause = CancellationCauseBox(parent: cause)
+        // The task waits at this gate until it is registered, so a fork that
+        // loses the race with `close()` never runs a line of its work.
+        let registered = OnceCell<Bool>()
         let task = TaskLedger.task(.fork, label: label) {
+            guard await registered.value else { return }
             do {
                 try await CancellationCauseBox.$current.withValue(forkCause) {
                     try await work()
@@ -144,31 +160,41 @@ final class TaskScopeState: Sendable {
             state.nextID += 1
             return true
         }
+        registered.resolve(accepted)
         if !accepted {
-            // Forked after the body ended (from work the body left behind):
-            // a scope never adopts work it cannot wait for.
             task.cancel()
-            Ambient.record(Event("scope.fork_after_exit", level: .error, label: self.label, fields: [
-                .init("fork", .string(label), privacy: .public),
-            ]))
+            rejectFork(label: label)
         }
+    }
+
+    /// Forked after the body ended (from work the body left behind): a scope
+    /// never adopts work it cannot wait for.
+    private func rejectFork(label: String) {
+        Ambient.record(Event("scope.fork_after_exit", level: .error, label: self.label, fields: [
+            .init("fork", .string(label), privacy: .public),
+        ]))
     }
 
     private func failed(_ error: any Error, label: String) {
         // A fork cancelled by the scope itself is not a failure.
         let scopeCancelled = cause.cause != nil
         if error is CancellationError, scopeCancelled { return }
-        let bodyCancel = state.withLock { state -> (@Sendable () -> Void)? in
+        let (isFirst, bodyCancel) = state.withLock { state -> (Bool, (@Sendable () -> Void)?) in
             state.failures.append(error)
-            return state.failures.count == 1 ? state.bodyCancel : nil
+            guard state.failures.count == 1 else { return (false, nil) }
+            // The body may not exist yet; if so, `setBody` cancels it.
+            if state.bodyCancel == nil { state.cancelBodyOnArrival = true }
+            return (true, state.bodyCancel)
         }
+        // Before the body can be cancelled (here or in `setBody`), so it
+        // always sees why.
+        if isFirst { cause.record(.siblingFailed) }
         Ambient.record(Event("scope.child_failed", level: .error, label: self.label, fields: [
             .init("fork", .string(label), privacy: .public),
             .init("error", .error(error)),
         ]))
-        if let bodyCancel {
-            cause.record(.siblingFailed)
-            bodyCancel()
+        if isFirst {
+            bodyCancel?()
             cancelForks(cause: .siblingFailed)
         }
     }
