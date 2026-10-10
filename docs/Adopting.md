@@ -73,6 +73,11 @@ swiftSettings: [
    `GracefulTermination` from `applicationShouldTerminate`.
 7. **Config validation** → `StoicSchema`: one declaration per type. With the `Macros` trait the declaration is the type itself (`@Schema struct Settings { … }`); without it, `Schema.object`.
 8. **`try?` and stringified errors** → handle them, or `withContext`.
+9. **Settings written with `Data.write`** → `SettingsStore.open(at:schema:)`:
+   validated updates, crash-safe writes, migrations, and an older build that
+   cannot destroy what a newer one saved.
+10. **Handles closed under a wedged call** → when a scope's work may be
+    abandoned, declare the handle's release `ifWorkAbandoned: .quarantine`.
 
 ## 6. Make tests deterministic
 
@@ -80,6 +85,23 @@ Wrap time-sensitive tests in `withTestAmbient(clock: TestClock())`, drive
 time with `waitForSleepers(count:)` and `advance(by:)`, inject failures with
 `FaultInjector`, and end with `#expect(await stoicTasksStillRunning().isEmpty)`
 so leaked work fails the test by name.
+
+For anything concurrent — a cache, a sync engine, shared state across tasks
+— add a simulation test. It explores hundreds of interleavings and fault
+timings deterministically, and a failure names the seed that replays it:
+
+```swift
+@Test func syncSurvivesEveryInterleaving() async throws {
+    try await simulate(seeds: 0..<500) { sim in
+        let engine = SyncEngine(store: FakeStore())
+        try await engine.syncAll()
+        try #require(engine.pending.isEmpty)   // #require: it must throw to fail the seed
+    }
+}
+```
+
+Where the *path* matters as much as the result, pin the decisions with a
+golden trace: `expectTrace(events, """…""")`.
 
 ## 7. Watch the decisions
 
@@ -97,3 +119,15 @@ try await withAmbient({
 
 `Diagnostics.snapshot()` then gives a bug report the last decisions Stoic
 made, every Stoic task still running, and any abandoned work.
+
+To know what the *previous* run was doing when it died, add a flight
+recorder, and check it at launch:
+
+```swift
+let recorder = try FlightRecorder(path: supportDirectory + "/flight.rec")
+if let last = recorder.previousRun, !last.endedCleanly {
+    report("previous run ended abruptly", last.events.suffix(50))
+}
+// …add `recorder` to the CompositeInstrumentation above, and on the way out:
+recorder.markCleanExit()
+```

@@ -133,6 +133,20 @@ func retriesThroughAnOutage() async throws {
 }
 ```
 
+Concurrent logic gets a deterministic simulation: one thread, a seed that
+picks every interleaving and fault timing, virtual time, and a failing seed
+that replays exactly.
+
+```swift
+@Test func cacheNeverServesAStaleValue() async throws {
+    try await simulate(seeds: 0..<500) { sim in
+        let cache = TokenCache(refresh: { try await Ambient.sleep(for: .seconds(1)); return .fresh })
+        async let a = cache.token(); async let b = cache.token()
+        try #require(try await [a, b].allSatisfy { $0 == .fresh })
+    }
+}
+```
+
 ## Products
 
 | Product        | What                                                      | Depends on                      |
