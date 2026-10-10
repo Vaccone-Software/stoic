@@ -78,7 +78,9 @@ against the schema (a value the schema would never have decoded is refused
 with every issue, and nothing changes), writes it sparsely — only what
 differs from the defaults, plus the carried keys — atomically and durably, and only then publishes
 it. A failed write leaves the value and the file as they were. Updates are
-serialised; observers see each committed value.
+serialised; observers see each committed value. `reload()` takes the same
+lock for its read *and* its publication, so an update can never commit in the
+gap and then be overwritten in memory by the older value the reload read.
 
 **Permissions and secrets.** The file is created `0600` (owner read and
 write), whatever the schema holds, and every later write gives its
@@ -117,6 +119,7 @@ comments — say so in the UI that offers both.
 | the write fails (disk full, read-only volume) | `update` throws `.storage`; value and file unchanged                          |
 | two updates race                              | Serialised; each sees the other's result                                      |
 | the file is created or replaced                | Created `0600`; a replacement keeps the mode the file had; secret fields are in it in plain text |
+| a reload races an update                      | Serialised with it end to end; the update is never lost from memory or disk   |
 | the settings file is a symbolic link          | The target is replaced atomically, beside itself; the link stays a link       |
 | the document has keys the schema does not declare | Written back unchanged on every save (top level and nested objects); dropped only with `unknownKeys: .drop` |
 

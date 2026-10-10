@@ -3,6 +3,7 @@ import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
+import Foundation
 import Observation
 import Stoic
 import StoicJSON
@@ -374,5 +375,55 @@ struct SettingsStoreTests {
         let stored = try #require(try AtomicFile(fileSystem: disk, options: .init(envelope: format == .appOwned)).read(target))
         #expect(String(decoding: stored.bytes, as: UTF8.self).contains("900"), "the target holds the new value")
         #expect(try disk.list(directory: "/d") == ["prefs.json"])
+    }
+
+    // MARK: Reload and update
+
+    /// Runs `body` on another thread and waits for it, but only briefly: a
+    /// body that cannot finish because it is waiting for a lock the caller
+    /// holds is the *correct* outcome for the code under test.
+    static func runConcurrently(_ body: @escaping @Sendable () throws -> Void, waitingUpTo seconds: Double = 0.25) -> Thread {
+        let thread = Thread { try? body() }
+        thread.start()
+        let deadline = Date().addingTimeInterval(seconds)
+        while !thread.isFinished, Date() < deadline { Thread.sleep(forTimeInterval: 0.002) }
+        return thread
+    }
+
+    @Test(.failureMode("design/18", "a reload races an update"))
+    func anUpdateThatLandsDuringAReloadIsNotOverwrittenByItsStaleRead() throws {
+        let disk = try Self.disk()
+        let settings = try Self.open(disk)
+        try settings.update { $0.speed = 650 }
+
+        // Hold the reload exactly between reading the file (speed 650) and
+        // publishing what it read, and let an update run there.
+        let updater = Mutex<Thread?>(nil)
+        settings.betweenReloadAndPublish.withLock {
+            $0 = { updater.withLock { $0 = Self.runConcurrently { try settings.update { $0.speed = 700 } } } }
+        }
+        try settings.reload()
+        settings.betweenReloadAndPublish.withLock { $0 = nil }
+
+        // However the two were ordered, the update was not lost: what is
+        // published is what is on disk, and it is the update's.
+        while updater.withLock({ $0 })?.isFinished == false { Thread.sleep(forTimeInterval: 0.002) }
+        #expect(settings.value.speed == 700)
+        #expect(try Self.open(disk).value.speed == 700)
+    }
+
+    @Test func reloadingWhileUpdatingNeverLeavesTheStoreBehindTheFile() async throws {
+        let disk = try Self.disk()
+        let settings = try Self.open(disk)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { for _ in 0..<300 { try settings.update { $0.speed += 1 } } }
+            group.addTask { for _ in 0..<300 { try settings.reload() } }
+            group.addTask { for _ in 0..<300 { try settings.reload() } }
+            try await group.waitForAll()
+        }
+        #expect(settings.value.speed == 900)
+        try settings.reload()
+        #expect(settings.value.speed == 900)
+        #expect(try Self.open(disk).value.speed == 900)
     }
 }

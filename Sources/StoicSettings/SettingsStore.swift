@@ -119,6 +119,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     // holding `current`'s lock across the write, so reads never wait on I/O.
     private let writing = Mutex(())
     private let registrar = ObservationRegistrar()
+    /// A test seam: run between a reload's read of the file and its
+    /// publication, to put another writer exactly there.
+    let betweenReloadAndPublish = Mutex<(@Sendable () -> Void)?>(nil)
 
     /// Opens the settings at `path`. Never fails because of what is in the
     /// file; only when the file system itself fails.
@@ -234,15 +237,21 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
 
     /// Reads the file again, for one edited outside the app. Changes are
     /// published like an update's.
+    ///
+    /// The read and the publication happen under the same lock as an update's
+    /// write and publication. Were the lock released between them, an update
+    /// could commit in the gap and the older value read before it would then
+    /// be published over it: an acknowledged update, lost from memory.
     public func reload() throws(StoreError) {
-        let loaded = try writing.withLock { _ throws(StoreError) -> Loaded in
+        try writing.withLock { _ throws(StoreError) in
             guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
                 preconditionFailure("unreachable: checked when the store opened")
             }
-            return try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
+            let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
+            Self.report(loaded, path: path)
+            betweenReloadAndPublish.withLock { $0 }?()
+            publish(Current(value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys)))
         }
-        Self.report(loaded, path: path)
-        publish(Current(value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys)))
     }
 
     // MARK: Internals
