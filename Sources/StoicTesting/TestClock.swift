@@ -1,5 +1,7 @@
+internal import Dispatch
 public import Stoic
 internal import Synchronization
+public import Testing
 
 /// A clock that moves only when a test moves it.
 ///
@@ -10,7 +12,7 @@ internal import Synchronization
 ///
 /// Waking a sleeper schedules its task; it does not run it to its next
 /// suspension. When a test needs to know that woken work has gone back to
-/// sleep, it waits for that explicitly with ``waitForSleepers(count:)``,
+/// sleep, it waits for that explicitly with ``waitForSleepers(count:timeout:sourceLocation:)``,
 /// which is exact, rather than relying on yields, which are not.
 public final class TestClock: Clock, Sendable {
     public typealias Duration = Swift.Duration
@@ -43,16 +45,30 @@ public final class TestClock: Clock, Sendable {
         public var description: String { "+\(offset)" }
     }
 
+    private enum SleepOutcome { case wake, cancel, sleep }
+
     private struct Sleeper {
         let id: UInt64
         let deadline: Swift.Duration
         let continuation: CheckedContinuation<Void, any Error>
     }
 
+    /// What a `waitForSleepers` call is waiting for.
+    private enum Target {
+        /// At least this many asleep right now.
+        case asleep(Int)
+        /// `totalSleeps` has reached this.
+        case totalSleeps(Int)
+    }
+
+    private enum WaitResult {
+        case satisfied, timedOut, cancelled
+    }
+
     private struct CountWaiter {
         let id: UInt64
-        let count: Int
-        let continuation: CheckedContinuation<Void, Never>
+        let target: Target
+        let continuation: CheckedContinuation<WaitResult, Never>
     }
 
     private struct State {
@@ -109,16 +125,38 @@ public final class TestClock: Clock, Sendable {
             return due.sorted { $0.id < $1.id }
         }
 
-        // Waiters whose count is now met, removed from the list.
-        mutating func takeSatisfiedCountWaiters() -> [CheckedContinuation<Void, Never>] {
-            let ready = countWaiters.filter { $0.count <= sleepers.count }
-            countWaiters.removeAll { $0.count <= sleepers.count }
-            return ready.map(\.continuation)
+        func isMet(_ target: Target) -> Bool {
+            switch target {
+            case .asleep(let count): sleepers.count >= count
+            case .totalSleeps(let total): totalSleeps >= total
+            }
+        }
+
+        // Waiters whose target is now met, removed from the list.
+        mutating func takeSatisfiedCountWaiters() -> [CheckedContinuation<WaitResult, Never>] {
+            var ready: [CheckedContinuation<WaitResult, Never>] = []
+            var waiting: [CountWaiter] = []
+            for waiter in countWaiters {
+                if isMet(waiter.target) { ready.append(waiter.continuation) } else { waiting.append(waiter) }
+            }
+            if !ready.isEmpty { countWaiters = waiting }
+            return ready
         }
     }
 
     private let state = Mutex(State())
     private let erasure = Mutex<AnyClock?>(nil)
+    // Told, after the fact, of every call to `sleep`: how a simulation learns
+    // that something outside it has gone to sleep on its clock.
+    private let observer = Mutex<(@Sendable () -> Void)?>(nil)
+
+    /// Calls `handler` after every call to `sleep(until:)`, once it has
+    /// registered (or returned at once, or been cancelled), on the calling
+    /// thread. A simulation's driver uses it to learn that a task it does
+    /// not drive has gone to sleep on its clock, instead of timing out.
+    func observeSleeps(_ handler: (@Sendable () -> Void)?) {
+        observer.withLock { $0 = handler }
+    }
 
     public init() {}
 
@@ -165,20 +203,22 @@ public final class TestClock: Clock, Sendable {
         }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                enum Outcome { case wake, cancel, sleep([CheckedContinuation<Void, Never>]) }
-                let outcome = state.withLock { state -> Outcome in
+                let (outcome, waiters) = state.withLock { state -> (SleepOutcome, [CheckedContinuation<WaitResult, Never>]) in
                     state.totalSleeps += 1
                     state.arriving.remove(id)
-                    if state.cancelledBeforeSleeping.remove(id) != nil { return .cancel }
-                    if deadline.offset <= state.now { return .wake }
+                    if state.cancelledBeforeSleeping.remove(id) != nil { return (.cancel, state.takeSatisfiedCountWaiters()) }
+                    if deadline.offset <= state.now { return (.wake, state.takeSatisfiedCountWaiters()) }
                     state.add(Sleeper(id: id, deadline: deadline.offset, continuation: continuation))
-                    return .sleep(state.takeSatisfiedCountWaiters())
+                    return (.sleep, state.takeSatisfiedCountWaiters())
                 }
                 switch outcome {
                 case .wake: continuation.resume()
                 case .cancel: continuation.resume(throwing: CancellationError())
-                case .sleep(let waiters): waiters.forEach { $0.resume() }
+                case .sleep: break
                 }
+                waiters.forEach { $0.resume(returning: .satisfied) }
+                // Last, so a driver woken by it finds the sleeper registered.
+                observer.withLock { $0 }?()
             }
         } onCancel: {
             let sleeper = state.withLock { state -> Sleeper? in
@@ -201,7 +241,7 @@ public final class TestClock: Clock, Sendable {
     /// earlier deadline gets a chance to run, and may go back to sleep at a
     /// deadline that also falls within the advance. Yielding is best effort;
     /// tests that depend on woken work having settled should follow up with
-    /// ``waitForSleepers(count:)``.
+    /// ``waitForSleepers(count:timeout:sourceLocation:)``.
     public func advance(by duration: Swift.Duration) async {
         await advance(to: now.advanced(by: duration))
     }
@@ -263,29 +303,134 @@ public final class TestClock: Clock, Sendable {
         return true
     }
 
-    /// Suspends until at least `count` tasks are asleep on this clock, or
-    /// until the waiting task is cancelled — so a test that waits for a
-    /// sleeper that never comes ends with its time limit instead of hanging.
-    public func waitForSleepers(count: Int = 1) async {
+    /// Suspends until at least `count` tasks are asleep on this clock *right
+    /// now*, then returns.
+    ///
+    /// "At least, now" is the whole meaning, and it is a trap after an
+    /// ``advance(by:)``: a task that has been woken and not yet gone back to
+    /// sleep is not counted, but a different sleeper that was never woken is,
+    /// so `waitForSleepers(count: 1)` can return at once for a sleeper that is
+    /// not the one the test means. To wait for a sleep that starts after a
+    /// point in the test, use ``waitForSleepers(newerThan:count:timeout:sourceLocation:)``.
+    ///
+    /// It never waits forever. A sleeper that never comes is a test that is
+    /// wrong (the code under test is not using this clock, or has already
+    /// finished) and the cheap way to find out is a message, not a time limit
+    /// a minute later: after `timeout` of *real* time, or when the waiting
+    /// task is cancelled, it records an issue that prints the clock's state —
+    /// the time, every sleeper's deadline, and how many were asked for — and
+    /// returns.
+    ///
+    /// - Parameters:
+    ///   - count: How many sleepers must be asleep at once.
+    ///   - timeout: How long to wait, in real time; `nil` waits until the
+    ///     task is cancelled.
+    ///   - sourceLocation: Where an issue is reported.
+    public func waitForSleepers(
+        count: Int = 1,
+        timeout: Swift.Duration? = .seconds(5),
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        await wait(
+            for: .asleep(count), timeout: timeout, sourceLocation: sourceLocation,
+            asked: "waitForSleepers(count: \(count))", needs: "at least \(count) asleep at once"
+        )
+    }
+
+    /// Suspends until at least `count` sleeps have *started* since
+    /// ``totalSleeps`` read `sleeps`, however long each lasts.
+    ///
+    /// For the sleep that follows an ``advance(by:)``: a retrying task wakes,
+    /// fails, and sleeps again, and the test has to know that the second
+    /// sleep is the one it is about to advance past, not the first, still
+    /// counted a moment ago. Take the mark before advancing.
+    ///
+    ///     let mark = clock.totalSleeps
+    ///     await clock.advance(by: .seconds(30))        // wakes the first backoff
+    ///     await clock.waitForSleepers(newerThan: mark)  // the second has begun
+    ///
+    /// Reports a timeout or cancellation as ``waitForSleepers(count:timeout:sourceLocation:)``
+    /// does.
+    public func waitForSleepers(
+        newerThan sleeps: Int,
+        count: Int = 1,
+        timeout: Swift.Duration? = .seconds(5),
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        await wait(
+            for: .totalSleeps(sleeps + count), timeout: timeout, sourceLocation: sourceLocation,
+            asked: "waitForSleepers(newerThan: \(sleeps), count: \(count))", needs: "at least \(count) sleep(s) to have started since the mark of \(sleeps)"
+        )
+    }
+
+    /// The clock's state in words, for a failure message: the time, every
+    /// sleeper's deadline and how long until it, and the number of sleeps so far.
+    public var summary: String {
+        state.withLock { state in
+            let sleepers = state.sleepers.values.sorted { ($0.deadline, $0.id) < ($1.deadline, $1.id) }
+            var text = "TestClock now +\(state.now), \(sleepers.count) asleep"
+            if !sleepers.isEmpty {
+                text += ": " + sleepers.map { "wakes at +\($0.deadline) (in \($0.deadline - state.now))" }.joined(separator: "; ")
+            }
+            return text + "; \(state.totalSleeps) sleep(s) begun in all"
+        }
+    }
+
+    private func wait(
+        for target: Target, timeout: Swift.Duration?, sourceLocation: SourceLocation, asked: String, needs: String
+    ) async {
         let id = state.withLock { state -> UInt64 in
             defer { state.nextID += 1 }
             return state.nextID
         }
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                let satisfied = state.withLock { state -> Bool in
-                    if state.sleepers.count >= count || Task.isCancelled { return true }
-                    state.countWaiters.append(CountWaiter(id: id, count: count, continuation: continuation))
-                    return false
+        let timer = timeout.map { timeout in
+            DispatchWorkItem { [self] in
+                let waiter = state.withLock { state -> CountWaiter? in
+                    guard let index = state.countWaiters.firstIndex(where: { $0.id == id }) else { return nil }
+                    return state.countWaiters.remove(at: index)
                 }
-                if satisfied { continuation.resume() }
+                waiter?.continuation.resume(returning: .timedOut)
+            }
+        }
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<WaitResult, Never>) in
+                let immediate = state.withLock { state -> WaitResult? in
+                    if state.isMet(target) { return .satisfied }
+                    if Task.isCancelled { return .cancelled }
+                    state.countWaiters.append(CountWaiter(id: id, target: target, continuation: continuation))
+                    return nil
+                }
+                if let immediate {
+                    continuation.resume(returning: immediate)
+                } else if let timer, let timeout {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + timeout.dispatchInterval, execute: timer)
+                }
             }
         } onCancel: {
             let waiter = state.withLock { state -> CountWaiter? in
                 guard let index = state.countWaiters.firstIndex(where: { $0.id == id }) else { return nil }
                 return state.countWaiters.remove(at: index)
             }
-            waiter?.continuation.resume()
+            waiter?.continuation.resume(returning: .cancelled)
+        }
+        timer?.cancel()
+        switch result {
+        case .satisfied:
+            return
+        case .timedOut, .cancelled:
+            let why = result == .timedOut
+                ? "gave up after \(timeout.map { "\($0)" } ?? "its timeout") of real time"
+                : "was cancelled while waiting"
+            Issue.record(
+                """
+                \(asked) \(why); it needs \(needs). \(summary).
+                Either the code under test is not sleeping on this clock (it must take it from Ambient, or as a clock: parameter), \
+                it has already finished or been woken (an earlier advance), or the sleeper is on another clock. \
+                waitForSleepers(count:) counts sleepers asleep now; after an advance that wakes tasks, take `let mark = clock.totalSleeps` first \
+                and wait with waitForSleepers(newerThan: mark).
+                """,
+                sourceLocation: sourceLocation
+            )
         }
     }
 
@@ -346,5 +491,15 @@ private struct DeadlineHeap {
 
     private func precedes(_ a: (deadline: Swift.Duration, id: UInt64), _ b: (deadline: Swift.Duration, id: UInt64)) -> Bool {
         a.deadline != b.deadline ? a.deadline < b.deadline : a.id < b.id
+    }
+}
+
+extension Swift.Duration {
+    /// This duration as a Dispatch interval, capped at a day so a huge
+    /// timeout cannot overflow.
+    fileprivate var dispatchInterval: DispatchTimeInterval {
+        let (seconds, attoseconds) = components
+        let nanoseconds = Int(min(max(seconds, 0), 86_400)) * 1_000_000_000 + Int(max(attoseconds, 0) / 1_000_000_000)
+        return .nanoseconds(nanoseconds)
     }
 }
