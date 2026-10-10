@@ -261,7 +261,7 @@ incident review is the wrong default.
 | 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                       | Built                                      |
 | 10  | [Resilience policies](design/10-resilience-policies.md)           | nothing between the app and a failing dependency          | Built                                      |
 | 11  | [Observability](design/11-observability.md)                       | silent decisions                                          | Built, with swift-log and swift-metrics adapters |
-| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built: task ledger, random walks, deterministic simulation; buggify planned |
+| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built: task ledger, random walks, deterministic simulation with fault points |
 | 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | Built: `StoicLint` plugin with a baseline  |
 | 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | Built: README, AGENTS.md, llms.txt, skill  |
 | 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | Built: `StoicStore`                        |
@@ -279,10 +279,9 @@ review, tests for every failure-mode row, small commits.
    `AtomicFile`, migrated on read, validated on write, observable, with the
    last good file kept and a corrupt one quarantined. Settings are the most
    common persistent state in an app and the most commonly lost.
-2. **Buggify and smarter simulation.** Seeded fault points inside the
-   primitives (a send delayed, a permit granted last, a finalizer slow, a
-   write torn), PCT-style schedules for deep bugs, and shrinking a failing
-   seed to the fewest preemptions (design/12).
+2. **Smarter simulation.** Fault points are built; next, PCT-style
+   schedules for deep bugs, faults in the simulated file system, and
+   shrinking a failing seed to the fewest preemptions (design/12).
 3. **Macros.** `@Schema` (in progress); `@StateMachine`, whose transition
    table becomes a compile-time-checked declaration with exhaustiveness; and
    `@Services`, which checks a service graph's dependencies at compile time

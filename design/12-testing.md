@@ -67,6 +67,20 @@ paths) and the Stoic tasks still running when the body returned — almost
 always a leak. After a failure the body is cancelled and its cleanup still
 runs simulated, bounded.
 
+**Fault points (buggify).** Scheduling explores orderings; it cannot make a
+finalizer slow or a retry attempt late. So Stoic's primitives carry named
+fault points where timing decides the path — `semaphore.arriving`,
+`singleflight.arriving`, `channel.send`, `slot.deliver`, `scope.finalizer`,
+`statemachine.work`, `service.start`, `supervisor.child`, `retry.attempt`.
+Under simulation (`faults: .standard`) each site is switched on for a
+quarter of runs, chosen by the seed, and fires a quarter of the times it is
+reached: a few yields, or up to a second of virtual time. `faultsFired`
+says which fired. Outside a simulation a fault point is one relaxed atomic
+load. The test that proves it: a scope whose finalizer has a 100 ms
+timeout passes 200 seeds without faults and fails within 200 with them,
+reproducibly — the finalizer was slow to start and was abandoned, so the
+resource was still open after the scope returned.
+
 **Limits, stated rather than hidden.** The main actor and actors with their
 own executors run where they always do; so do `Task {}` started by app code
 (start it from a Stoic primitive, or with `Task(executorPreference:
@@ -108,10 +122,9 @@ reported with the stuck state work by name; a livelock hits the time limit.
   registered with its label and owner; a test's teardown asserts nothing is
   left running, no sleeper is pending, no scope is open and no work is
   abandoned — leaks become test failures that name their owner.
-- **Buggify.** Named fault points in every primitive, enabled only under
-  simulation and chosen by the seed (FoundationDB's `BUGGIFY`): a send
-  delayed, a permit granted last, a finalizer slow, a file write torn — the
-  rare paths exercised on every run instead of never.
+- **More fault points.** Store writes torn or failing under simulation
+  (the simulated file system already can), and a policy that targets the
+  sites a failing seed hit, to shrink it.
 - **Smarter scheduling.** Uniform choice finds shallow bugs fast; PCT-style
   priority schedules find deep ones with known probability. And shrinking:
   replay a failing seed with fewer preemptions until the minimal ordering

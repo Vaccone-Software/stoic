@@ -44,10 +44,11 @@ internal import Synchronization
 public func simulate<R: Sendable>(
     seed: UInt64? = nil,
     limits: SimulationLimits = .standard,
+    faults: SimulatedFaults = .standard,
     _ body: @escaping @Sendable (SimulationContext) async throws -> R
 ) async throws(SimulationFailure) -> Simulated<R> {
     let seed = seed ?? StoicTest.current?.seed ?? 0
-    let simulation = Simulation(seed: seed, limits: limits, body: body)
+    let simulation = Simulation(seed: seed, limits: limits, faults: faults, body: body)
     let outcome = await withTaskCancellationHandler {
         await withCheckedContinuation { (continuation: CheckedContinuation<Simulation<R>.Outcome, Never>) in
             // The driver blocks a thread for the whole run, by design: it is
@@ -73,15 +74,16 @@ public func simulate<R: Sendable>(
 public func simulate(
     seeds: some Sequence<UInt64>,
     limits: SimulationLimits = .standard,
+    faults: SimulatedFaults = .standard,
     _ body: @escaping @Sendable (SimulationContext) async throws -> Void
 ) async throws(SimulationFailure) {
     for seed in seeds {
         do {
-            _ = try await simulate(seed: seed, limits: limits, body)
+            _ = try await simulate(seed: seed, limits: limits, faults: faults, body)
         } catch {
             var failure = error
             do {
-                _ = try await simulate(seed: seed, limits: limits, body)
+                _ = try await simulate(seed: seed, limits: limits, faults: faults, body)
                 failure.reproduced = false
             } catch let again {
                 failure.reproduced = again.steps == failure.steps && again.kind.name == failure.kind.name
@@ -89,6 +91,35 @@ public func simulate(
             throw failure
         }
     }
+}
+
+/// How often Stoic's fault points perturb a simulated run (FoundationDB's
+/// `BUGGIFY`).
+///
+/// Each fault point compiled into a primitive — a semaphore waiter about to
+/// queue, a channel send, superseded work about to deliver, a finalizer
+/// starting, a retry attempt, a service starting — is switched on for a run
+/// with probability `siteProbability`, decided by the seed the first time
+/// the run reaches it. A switched-on site fires with probability
+/// `fireProbability` each time it is reached: half the time it yields a few
+/// scheduling turns, half the time it sleeps up to `maxDelay` of virtual
+/// time. Rare timing becomes routine, and a failing seed still replays.
+public struct SimulatedFaults: Sendable, Hashable {
+    public var siteProbability: Double
+    public var fireProbability: Double
+    public var maxDelay: Duration
+
+    public init(siteProbability: Double = 0.25, fireProbability: Double = 0.25, maxDelay: Duration = .seconds(1)) {
+        self.siteProbability = siteProbability
+        self.fireProbability = fireProbability
+        self.maxDelay = maxDelay
+    }
+
+    /// A quarter of the sites, a quarter of the time, up to a second.
+    public static let standard = SimulatedFaults()
+
+    /// No perturbation: only the scheduler's choices.
+    public static let none = SimulatedFaults(siteProbability: 0, fireProbability: 0, maxDelay: .zero)
 }
 
 /// What a simulated body is given.
@@ -137,6 +168,8 @@ public struct Simulated<Value: Sendable>: Sendable {
     public let fingerprint: UInt64
     /// Stoic tasks still running when the body returned — usually a leak.
     public let leftover: [TaskLedger.Entry]
+    /// How many times each fault point fired, by site.
+    public let faultsFired: [String: Int]
 }
 
 /// A simulation that went wrong, and the seed that makes it go wrong again.
@@ -206,6 +239,7 @@ final class Simulation<R: Sendable>: Sendable {
 
     private let seed: UInt64
     private let limits: SimulationLimits
+    private let faults: SeededFaults
     private let body: @Sendable (SimulationContext) async throws -> R
     private let executor: SimulationExecutor
     private let clock = TestClock()
@@ -213,9 +247,10 @@ final class Simulation<R: Sendable>: Sendable {
     private let result = Mutex<Result<R, any Error>?>(nil)
     private let cancelRequested = Atomic<Bool>(false)
 
-    init(seed: UInt64, limits: SimulationLimits, body: @escaping @Sendable (SimulationContext) async throws -> R) {
+    init(seed: UInt64, limits: SimulationLimits, faults: SimulatedFaults, body: @escaping @Sendable (SimulationContext) async throws -> R) {
         self.seed = seed
         self.limits = limits
+        self.faults = SeededFaults(seed: seed, settings: faults)
         self.body = body
         self.executor = SimulationExecutor(seed: seed)
     }
@@ -227,7 +262,10 @@ final class Simulation<R: Sendable>: Sendable {
 
     /// Runs the simulation to its end on the calling thread.
     func drive() -> Outcome {
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
         let tag = LedgerTags.next()
+        let faults = faults
         let context = SimulationContext(seed: seed, clock: clock, events: events)
         let body = body
         let erased = clock.erased
@@ -242,6 +280,7 @@ final class Simulation<R: Sendable>: Sendable {
                 ambient.budgets = RetryBudgets()
                 ambient.ledgerTag = tag
                 ambient.taskExecutor = executor
+                ambient.faultPolicy = faults
             }) {
                 do {
                     return .success(try await body(context))
@@ -303,12 +342,59 @@ final class Simulation<R: Sendable>: Sendable {
         case .success(let value)?:
             return .success(Simulated(
                 value: value, seed: seed, steps: steps, elapsed: elapsed,
-                fingerprint: fingerprint.value, leftover: TaskLedger.entries(tag: tag)
+                fingerprint: fingerprint.value, leftover: TaskLedger.entries(tag: tag),
+                faultsFired: faults.fired
             ))
         case .failure(let error)?:
             return .failure(SimulationFailure(kind: .threw(error), seed: seed, steps: steps, elapsed: elapsed))
         case nil:
             return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed))
+        }
+    }
+}
+
+/// The fault policy of one run: which sites are on, and when they fire,
+/// all from the seed.
+final class SeededFaults: FaultPolicy {
+    private struct State {
+        var random: SplitMix
+        var enabled: [String: Bool] = [:]
+        var fired: [String: Int] = [:]
+    }
+
+    private let settings: SimulatedFaults
+    private let state: Mutex<State>
+
+    init(seed: UInt64, settings: SimulatedFaults) {
+        self.settings = settings
+        // Its own stream, so faults do not shift the scheduler's choices.
+        state = Mutex(State(random: SplitMix(seed: seed ^ 0xB066_1F1E_D00D_F00D)))
+    }
+
+    var fired: [String: Int] {
+        state.withLock { $0.fired }
+    }
+
+    func action(at site: String) -> FaultAction {
+        let settings = settings
+        return state.withLock { state in
+            func chance(_ probability: Double) -> Bool {
+                Double(state.random.next() >> 11) / Double(1 << 53) < probability
+            }
+            let on: Bool
+            if let decided = state.enabled[site] {
+                on = decided
+            } else {
+                on = chance(settings.siteProbability)
+                state.enabled[site] = on
+            }
+            guard on, chance(settings.fireProbability) else { return .proceed }
+            state.fired[site, default: 0] += 1
+            if state.random.next() & 1 == 0 {
+                return .yield(Int(1 + state.random.next() % 4))
+            }
+            let limit = max(1, settings.maxDelay.components.seconds * 1000 + settings.maxDelay.components.attoseconds / 1_000_000_000_000_000)
+            return .delay(.milliseconds(1 + Int64(state.random.next() % UInt64(limit))))
         }
     }
 }

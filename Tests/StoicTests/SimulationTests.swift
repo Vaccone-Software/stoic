@@ -149,6 +149,49 @@ struct SimulationTests {
         _ = run.value
     }
 
+    // MARK: Fault points
+
+    struct StillOpen: Error {}
+
+    /// Assumes a resource is closed once its scope has returned — true unless
+    /// its finalizer overruns its timeout and is abandoned, which happens only
+    /// when the finalizer is slow to start: a rare path, in real runs.
+    static func closesBeforeTheScopeReturns(_ sim: SimulationContext) async throws {
+        let open = Mutex(true)
+        await withScope { scope in
+            scope.onExit(label: "close", timeout: .milliseconds(100)) { _ in open.withLock { $0 = false } }
+        }
+        if open.withLock({ $0 }) { throw StillOpen() }
+    }
+
+    @Test func faultPointsFindWhatSchedulingAloneCannot() async throws {
+        // Scheduling alone never makes the finalizer slow.
+        try await simulate(seeds: 0..<200, faults: .none, Self.closesBeforeTheScopeReturns)
+        // Fault points do, and the seed replays it.
+        let failure = await #expect(throws: SimulationFailure.self) {
+            try await simulate(seeds: 0..<200, Self.closesBeforeTheScopeReturns)
+        }
+        #expect(failure?.reproduced == true)
+    }
+
+    @Test func faultsReplayWithTheSeedAndAreCounted() async throws {
+        var fired: [String: Int] = [:]
+        for seed in 0..<30 as Range<UInt64> {
+            let first = try await simulate(seed: seed, Self.scenario)
+            let again = try await simulate(seed: seed, Self.scenario)
+            #expect(first.fingerprint == again.fingerprint, "seed \(seed)")
+            #expect(first.faultsFired == again.faultsFired, "seed \(seed)")
+            fired.merge(first.faultsFired, uniquingKeysWith: +)
+        }
+        #expect(fired.keys.contains("retry.attempt"))
+        #expect(fired.keys.contains("semaphore.arriving"))
+    }
+
+    @Test func noFaultsMeansNoneFire() async throws {
+        let run = try await simulate(seed: 5, faults: .none, Self.scenario)
+        #expect(run.faultsFired.isEmpty)
+    }
+
     @Test(.stoic(seed: 11)) func theTraitsSeedIsTheDefault() async throws {
         let run = try await simulate { sim in sim.seed }
         #expect(run.value == 11)
