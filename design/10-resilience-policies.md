@@ -63,8 +63,13 @@ public protocol Policy: Sendable {
 public final class CircuitBreaker: Policy {
     public enum State: Sendable, Hashable { case closed, open, halfOpen }
     public enum Window: Sendable, Hashable { case calls(Int), time(Duration) }
-    public struct OpenDuration: Sendable, Hashable {       // static fixed(_:), exponential(initial:factor:maximum:jitter:)
+    public struct OpenDuration: Sendable, Hashable {
         public var initial, maximum: Duration; public var factor, jitter: Double; public var resetAfter: Duration
+        public static func fixed(_: Duration, jitter: Double = 0.2) -> OpenDuration
+        public static func exponential(initial: Duration = .seconds(30), factor: Double = 2,
+                                       maximum: Duration = .seconds(300), jitter: Double = 0.2,
+                                       resetAfter: Duration? = nil) -> OpenDuration     // resetAfter defaults to maximum
+        public static let standard: OpenDuration
     }
     public struct Configuration: Sendable {
         public var window: Window                     // default .time(.seconds(60))
@@ -80,6 +85,7 @@ public final class CircuitBreaker: Policy {
     public struct Snapshot: Sendable { state, calls, failures, slowCalls, failureRate, slowCallRate, trips, retryAfter }
 
     public init(label: String, _ configuration: Configuration = .init(), clock: AnyClock? = nil)
+    // (call-site `fileID`/`line` are captured too: they key the jitter stream.)
     public let label: String
     public var state: State { get }
     public var snapshot: Snapshot { get }
@@ -113,7 +119,8 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
 
 public struct Retrying: Policy {                      // design/02's retry, as a pipeline stage
     public init(_ schedule: BoundedSchedule, budget: RetryBudget = .perCallSite,
-                classify: RetryClassifier<any Error> = .standard, label: String? = nil)
+                classify: RetryClassifier<any Error> = .standard,
+                nesting: RetryNesting = .singleAttempt, label: String? = nil)
 }
 
 public struct Pipeline: Policy {                      // outermost stage first
@@ -228,6 +235,13 @@ integers (parts per million), never with floating-point division, and a
 threshold must be in (0, 1]. A call is _slow_ when it took longer than
 `slowCallDuration` on the breaker's clock; a slow call that also failed counts
 in both rates. For a count-based window, `minimumCalls` must not exceed `N`.
+
+**Probes are stricter.** A probe that is _slow_ (longer than
+`slowCallDuration`) counts as a failed probe (`probe_slow`): a dependency that
+still cannot answer in time has not recovered. The `halfOpenProbes` permits are
+for the whole episode, not per moment: a probe that succeeds does not hand its
+permit on, and one that ends without a verdict (cancelled, a defect, refused by
+an inner policy) returns it.
 
 **What counts.** A completed call has one of three verdicts:
 
@@ -416,15 +430,22 @@ sees through `PolicyError`. The budget is per call site of `Retrying(…)`.
 
 ## Events
 
-Breaker: `breaker.opened` (trigger, calls, failures, slow_calls, open_for,
-trips), `breaker.half_open`, `breaker.closed` (reason), `breaker.rejected`
-(state, retry_after), `breaker.recorded` (outcome, slow, state; debug),
-`breaker.ignored` (reason), `breaker.defect`.
-Limiter: `ratelimiter.rejected` (reason, permits, retry_after),
+Breaker: `breaker.opened` (trigger: `failure_rate`, `slow_calls`,
+`probe_failed`, `probe_slow`, `probe_timeout` or `forced`; calls, failures,
+slow_calls, trips, and open_for unless forced), `breaker.half_open` (probes),
+`breaker.closed` (reason: `probes_succeeded`, `forced` or `reset`),
+`breaker.reset`, `breaker.rejected` (state and retry_after, or reason when the
+task was cancelled or late; debug), `breaker.recorded` (outcome, slow, state;
+debug), `breaker.ignored` (reason: `cancelled`, `rejection` or `stale`; debug),
+`breaker.defect` (error level).
+Limiter: `ratelimiter.rejected` (reason: `would_exceed_deadline`, `queue_full`,
+`cancelled`, `deadline_exceeded`; permits; retry_after when known),
 `ratelimiter.oversized`, `ratelimiter.waited` (permits, waited; debug).
-Bulkhead: `bulkhead.rejected` (reason, active, queued).
+Bulkhead: `bulkhead.rejected` (reason: `bulkhead_full`, `cancelled`,
+`deadline_exceeded`; capacity; waiting when full).
 Hedge: `hedge.started` (attempt, elapsed), `hedge.won` (attempt, started,
-latency), `hedge.budget_exhausted`, `hedge.deadline_skip`, `hedge.all_failed`.
+latency; only when a hedge was started), `hedge.budget_exhausted`,
+`hedge.deadline_skip`, `hedge.all_failed`.
 Every event carries the policy's label. Rejections are events, never errors
 the caller has to log themselves.
 
@@ -446,9 +467,13 @@ the caller has to log themselves.
   exceed `burst + rate × t`, and with enough demand they equal it exactly.
 - Bulkhead: concurrency never exceeds the limit under 300 contending tasks;
   the queue limit is exact; random cancellations never leak a slot.
-- Hedge: slow first attempt, winner returned, loser cancelled and awaited
-  (checked by a flag set after the loser's cancellation handler _and_ its
-  cleanup), budget exhaustion, all-fail, no hedge after a fast failure.
+- Hedge: slow first attempt, winner returned, loser cancelled with cause
+  `.superseded` and awaited (an attempt log shows nothing running at return, and
+  a loser that ignores cancellation delays the return), budget exhaustion
+  (including a budget of one across two calls), all-fail, no hedge after a
+  fast failure, and a model over random timelines: for random durations and
+  outcomes the winner, the first failure, the number of attempts started and
+  "nothing running at return" must match a reference simulation.
 - Pipeline: flattening for every stage kind, stage order, and the HTTP stack
   of the API example end to end on virtual time.
 - Stress: each concurrency suite under
