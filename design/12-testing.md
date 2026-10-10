@@ -33,7 +33,7 @@ and replays any of them on demand.
 try await simulate(seeds: 0..<500) { sim in
     let engine = SyncEngine(store: FakeStore())
     try await engine.syncAll()
-    #expect(engine.pending.isEmpty)
+    try #require(engine.pending.isEmpty)   // #require: a failing #expect does not stop the seed
 }
 // simulation with seed 137 threw after 412 steps, 31.5 seconds of virtual
 // time: … Reproduces: simulate(seed: 137)
@@ -80,6 +80,19 @@ load. The test that proves it: a scope whose finalizer has a 100 ms
 timeout passes 200 seeds without faults and fails within 200 with them,
 reproducibly — the finalizer was slow to start and was abandoned, so the
 resource was still open after the scope returned.
+
+**Reviewed.** An adversarial review found, and the tests now pin: the body
+did not inherit the caller's task-locals (it is now started in the
+caller's context); a perpetually runnable task left behind turned a
+finished body into a step-limit failure (the body's end now ends the run);
+virtual time raced ahead of work handed to Dispatch (time now stands still
+while `abandoningAfter` work is outstanding, until it proves wedged); and
+primitives cancelled sets of tasks in dictionary order, which changes with
+each process's hash seed, so a seed did not replay across processes (they
+now go in key order, and the fingerprint includes each job's arrival
+number, so a different path cannot hide behind the same fingerprint).
+Failures inside the body must throw: use `#require`, or throw — a failing
+`#expect` is recorded but does not fail the seed.
 
 **Limits, stated rather than hidden.** The main actor and actors with their
 own executors run where they always do; so do `Task {}` started by app code

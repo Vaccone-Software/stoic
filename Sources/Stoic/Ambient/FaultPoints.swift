@@ -60,3 +60,24 @@ package enum FaultPoint {
         }
     }
 }
+
+/// Work a primitive has handed to something a simulation does not drive —
+/// `abandoningAfter`'s operation on a Dispatch queue — and is waiting for.
+/// A simulation does not move virtual time while any is outstanding:
+/// otherwise a timer would fire "before" work that, in real time, was
+/// already almost done.
+package enum ExternalWork {
+    private static let outstanding = Atomic<Int>(0)
+
+    package static func begin() {
+        outstanding.wrappingAdd(1, ordering: .relaxed)
+    }
+
+    package static func end() {
+        outstanding.wrappingSubtract(1, ordering: .relaxed)
+    }
+
+    package static var isOutstanding: Bool {
+        outstanding.load(ordering: .relaxed) > 0
+    }
+}

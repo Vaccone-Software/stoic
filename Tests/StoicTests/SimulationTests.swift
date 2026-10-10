@@ -1,3 +1,4 @@
+import Darwin
 @testable import Stoic
 import StoicTesting
 import Synchronization
@@ -147,6 +148,69 @@ struct SimulationTests {
         }
         #expect(run.leftover.contains { $0.label == "left on.humming" })
         _ = run.value
+    }
+
+    // MARK: Review regressions
+
+    @TaskLocal static var probe = "default"
+
+    @Test func theBodyInheritsTheCallersTaskLocals() async throws {
+        let run = try await Self.$probe.withValue("set by the test") {
+            try await simulate(seed: 0) { _ in Self.probe }
+        }
+        #expect(run.value == "set by the test")
+    }
+
+    @Test func aBodyThatReturnsEndsTheRunWhateverItLeftRunning() async throws {
+        let run = try await simulate(seed: 0, limits: .init(steps: 10_000)) { _ in
+            Task(executorPreference: Ambient.current.taskExecutor) {
+                while !Task.isCancelled { await Task.yield() }   // runnable forever
+            }
+            return 42
+        }
+        #expect(run.value == 42)
+    }
+
+    @Test func virtualTimeWaitsForWorkHandedOutside() async throws {
+        // 10 ms of real blocking work under a 5 s (virtual) timeout: the
+        // timeout must not fire before work that is nearly done in real time.
+        for seed in 0..<10 as Range<UInt64> {
+            let run = try await simulate(seed: seed) { _ in
+                try await abandoningAfter(.seconds(5), label: "sim.outside.\(seed)") { () throws(Never) -> Int in
+                    usleep(10_000)   // stoic:allow(blocking-in-async): models blocking work, on a Dispatch thread
+                    return 1
+                }
+            }
+            #expect(run.value == 1)
+        }
+    }
+
+    @Test func primitivesReplayInKeyOrder() async throws {
+        // Supersede, cancel and resume many waiters at once: their order
+        // comes from dictionaries, which must not leak into the schedule.
+        @Sendable func scenario(_ sim: SimulationContext) async throws -> [Int] {
+            let slot = TaskSlot<Int, Never>(label: "replay")
+            let delivered = SendableBox<[Int]>([])
+            for value in 0..<8 {
+                slot.run { await Task.yield(); return value } deliver: { result in
+                    delivered.mutate { $0.append(result.get()) }
+                }
+            }
+            await slot.cancelAndWait()
+            let flights = SingleFlight<Int, Int, Never>(label: "replay")
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<8 {
+                    group.addTask { _ = try? await flights.run(1) { await Task.yield(); return 1 } }
+                }
+            }
+            return delivered.value
+        }
+        let first = try await simulate(seed: 9, scenario)
+        for _ in 0..<5 {
+            let again = try await simulate(seed: 9, scenario)
+            #expect(again.fingerprint == first.fingerprint)
+            #expect(again.value == first.value)
+        }
     }
 
     // MARK: Fault points

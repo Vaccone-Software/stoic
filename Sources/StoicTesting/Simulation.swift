@@ -9,7 +9,7 @@ internal import Synchronization
 ///         try await simulate(seeds: 0..<500) { sim in
 ///             let engine = SyncEngine(store: FakeStore())
 ///             try await engine.syncAll()
-///             #expect(engine.pending.isEmpty)
+///             try #require(engine.pending.isEmpty)   // #require: a failing #expect does not stop the seed
 ///         }
 ///     }
 ///
@@ -49,12 +49,16 @@ public func simulate<R: Sendable>(
 ) async throws(SimulationFailure) -> Simulated<R> {
     let seed = seed ?? StoicTest.current?.seed ?? 0
     let simulation = Simulation(seed: seed, limits: limits, faults: faults, body: body)
+    // Started here, not on the driver's thread, so the body inherits the
+    // caller's task-locals (the running test, its traits). Its first job
+    // waits in the executor's queue until the driver runs it.
+    let task = simulation.start()
     let outcome = await withTaskCancellationHandler {
         await withCheckedContinuation { (continuation: CheckedContinuation<Simulation<R>.Outcome, Never>) in
             // The driver blocks a thread for the whole run, by design: it is
             // the one thread the simulation runs on. Never a cooperative one.
             DispatchQueue(label: "stoic.simulation.\(seed)").async {
-                continuation.resume(returning: simulation.drive())
+                continuation.resume(returning: simulation.drive(task))
             }
         }
     } onCancel: {
@@ -70,7 +74,9 @@ public func simulate<R: Sendable>(
 /// that seed again to confirm it reproduces.
 ///
 /// - Throws: The first ``SimulationFailure``; its ``SimulationFailure/reproduced``
-///   says whether the second run failed the same way, at the same step.
+///   says whether the second run failed the same way, at the same step,
+///   along the same path. A body that keeps state between runs (captured
+///   from outside it) can make that `false` on its own.
 public func simulate(
     seeds: some Sequence<UInt64>,
     limits: SimulationLimits = .standard,
@@ -82,11 +88,14 @@ public func simulate(
             _ = try await simulate(seed: seed, limits: limits, faults: faults, body)
         } catch {
             var failure = error
+            // A cancelled exploration is over; there is nothing to reproduce.
+            if case .cancelled = failure.kind { throw failure }
             do {
                 _ = try await simulate(seed: seed, limits: limits, faults: faults, body)
                 failure.reproduced = false
             } catch let again {
-                failure.reproduced = again.steps == failure.steps && again.kind.name == failure.kind.name
+                failure.reproduced = again.kind.name == failure.kind.name
+                    && again.steps == failure.steps && again.fingerprint == failure.fingerprint
             }
             throw failure
         }
@@ -205,6 +214,8 @@ public struct SimulationFailure: Error, CustomStringConvertible {
     public let steps: Int
     /// Virtual time at that point.
     public let elapsed: Duration
+    /// The path the run took up to the failure (see ``Simulated/fingerprint``).
+    public let fingerprint: UInt64
     /// Whether running the seed again failed the same way at the same step,
     /// when ``simulate(seeds:limits:_:)`` checked; `nil` when not checked.
     public internal(set) var reproduced: Bool?
@@ -214,9 +225,8 @@ public struct SimulationFailure: Error, CustomStringConvertible {
         switch kind {
         case .threw(let error): text += ": \(error)"
         case .stalled(let tasks):
-            text += tasks.isEmpty
-                ? " (no Stoic task running: the wait is on something outside the simulation)"
-                : "; still running: " + tasks.map(\.description).joined(separator: ", ")
+            text += ": nothing could run and nothing was asleep — a deadlock, or a wait on something the simulation does not drive (the main actor, Dispatch, real I/O)"
+            if !tasks.isEmpty { text += "; Stoic tasks still running: " + tasks.map(\.description).joined(separator: ", ") }
         default: break
         }
         switch reproduced {
@@ -245,6 +255,7 @@ final class Simulation<R: Sendable>: Sendable {
     private let clock = TestClock()
     private let events = RecordingInstrumentation()
     private let result = Mutex<Result<R, any Error>?>(nil)
+    private let tag = LedgerTags.next()
     private let cancelRequested = Atomic<Bool>(false)
 
     init(seed: UInt64, limits: SimulationLimits, faults: SimulatedFaults, body: @escaping @Sendable (SimulationContext) async throws -> R) {
@@ -261,17 +272,17 @@ final class Simulation<R: Sendable>: Sendable {
     }
 
     /// Runs the simulation to its end on the calling thread.
-    func drive() -> Outcome {
-        FaultPoint.install()
-        defer { FaultPoint.uninstall() }
-        let tag = LedgerTags.next()
+    /// Starts the body on the simulation's executor. Call from the caller's
+    /// context, then ``drive(_:)``.
+    func start() -> Task<Void, Never> {
         let faults = faults
         let context = SimulationContext(seed: seed, clock: clock, events: events)
         let body = body
         let erased = clock.erased
         let executor = executor
         let seed = seed
-        let task = Task(executorPreference: executor) {
+        let tag = tag
+        return Task(executorPreference: executor) {
             let outcome: Result<R, any Error> = await withAmbient({ ambient in
                 ambient.clock = erased
                 ambient.livenessClock = erased
@@ -290,7 +301,14 @@ final class Simulation<R: Sendable>: Sendable {
             }
             self.result.withLock { $0 = outcome }
         }
+    }
 
+    /// Runs the simulation to its end on the calling thread.
+    func drive(_ task: Task<Void, Never>) -> Outcome {
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let faults = faults
+        let tag = tag
         let start = clock.now
         var steps = 0
         var fingerprint = Fingerprint()
@@ -299,6 +317,7 @@ final class Simulation<R: Sendable>: Sendable {
         // to unwind, so its cleanup runs simulated too.
         var windDownSteps = 0
         var windDownEnds: TestClock.Instant?
+        var outsideIsWedged = false
 
         func fail(_ kind: SimulationFailure.Kind) {
             guard failure == nil else { return }
@@ -309,9 +328,12 @@ final class Simulation<R: Sendable>: Sendable {
 
         while true {
             if failure == nil, cancelRequested.load(ordering: .relaxed) { fail(.cancelled) }
-            if let (job, runnable, index) = executor.takeNext() {
+            // The body's end is the run's end, even if something it left
+            // behind could run forever: that is `leftover`, not a step limit.
+            if self.result.withLock({ $0 != nil }) { break }
+            if let (job, arrival, runnable) = executor.takeNext() {
                 fingerprint.mix(UInt64(runnable))
-                fingerprint.mix(UInt64(index))
+                fingerprint.mix(arrival)
                 executor.run(job)
                 steps += 1
                 if failure != nil {
@@ -322,8 +344,17 @@ final class Simulation<R: Sendable>: Sendable {
                 }
                 continue
             }
-            if self.result.withLock({ $0 != nil }) { break }
             if let windDownEnds, clock.now >= windDownEnds { break }
+            // Time stands still while work handed outside is outstanding:
+            // it would be done by now in real time.
+            // Once a wait for it has timed out, it is wedged, not slow: stop
+            // waiting for it before every timer.
+            if !ExternalWork.isOutstanding {
+                outsideIsWedged = false
+            } else if !outsideIsWedged {
+                if executor.waitForArrival(within: limits.stall) { continue }
+                outsideIsWedged = true
+            }
             if let now = clock.fireNextDeadline() {
                 fingerprint.mix(UInt64(truncatingIfNeeded: start.duration(to: now).attoseconds))
                 if start.duration(to: now) > limits.virtualTime { fail(.virtualTimeLimit) }
@@ -336,7 +367,7 @@ final class Simulation<R: Sendable>: Sendable {
 
         let elapsed = start.duration(to: clock.now)
         if let failure {
-            return .failure(SimulationFailure(kind: failure, seed: seed, steps: steps, elapsed: elapsed))
+            return .failure(SimulationFailure(kind: failure, seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
         }
         switch self.result.withLock({ $0 }) {
         case .success(let value)?:
@@ -346,9 +377,9 @@ final class Simulation<R: Sendable>: Sendable {
                 faultsFired: faults.fired
             ))
         case .failure(let error)?:
-            return .failure(SimulationFailure(kind: .threw(error), seed: seed, steps: steps, elapsed: elapsed))
+            return .failure(SimulationFailure(kind: .threw(error), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
         case nil:
-            return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed))
+            return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
         }
     }
 }
@@ -403,7 +434,8 @@ final class SeededFaults: FaultPolicy {
 /// time, choosing the next from a seed.
 final class SimulationExecutor: TaskExecutor {
     private struct State {
-        var jobs: [UnownedJob] = []
+        var jobs: [(job: UnownedJob, arrival: UInt64)] = []
+        var arrivals: UInt64 = 0
         var random: SplitMix
     }
 
@@ -418,18 +450,25 @@ final class SimulationExecutor: TaskExecutor {
 
     func enqueue(_ job: consuming ExecutorJob) {
         let job = UnownedJob(job)
-        state.withLock { $0.jobs.append(job) }
+        state.withLock { state in
+            state.arrivals += 1
+            state.jobs.append((job, state.arrivals))
+        }
         arrival.signal()
     }
 
     /// Removes a job chosen by the seed among all runnable ones. Also returns
-    /// how many were runnable and which was chosen, for the fingerprint.
-    func takeNext() -> (UnownedJob, Int, Int)? {
+    /// its arrival number and how many were runnable, for the fingerprint:
+    /// the arrival number tells two runs apart that chose the same index
+    /// from queues in different orders.
+    func takeNext() -> (UnownedJob, UInt64, Int)? {
         state.withLock { state in
             guard !state.jobs.isEmpty else { return nil }
             let count = state.jobs.count
             let index = Int(state.random.next() % UInt64(count))
-            return (state.jobs.remove(at: index), count, index)
+            state.jobs.swapAt(index, count - 1)
+            let (job, arrival) = state.jobs.removeLast()
+            return (job, arrival, count)
         }
     }
 
@@ -442,7 +481,8 @@ final class SimulationExecutor: TaskExecutor {
     /// Waits up to `limit` of real time for a job to arrive.
     func waitForArrival(within limit: Duration) -> Bool {
         let (seconds, attoseconds) = limit.components
-        let nanoseconds = Int(clamping: seconds.multipliedReportingOverflow(by: 1_000_000_000).partialValue + attoseconds / 1_000_000_000)
+        // Capped at a day: a larger wait would overflow the dispatch time.
+        let nanoseconds = Int(min(max(seconds, 0), 86_400)) * 1_000_000_000 + Int(attoseconds / 1_000_000_000)
         return arrival.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success
     }
 
