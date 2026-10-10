@@ -1,0 +1,52 @@
+import Stoic
+import StoicTesting
+import Testing
+
+@Suite("Testing tools")
+struct TestingToolsTests {
+    enum APIError: Error, Equatable { case offline }
+
+    @Test func aFaultScriptDrivesARetry() async throws {
+        let api = FaultInjector<APIError>.failing(2, with: .offline)
+        let value = try await withTestAmbient(clock: ImmediateClock()) {
+            try await retry(.fixed(.seconds(1)).attempts(5)) { _ throws(APIError) -> Int in
+                try await api.run { () throws(APIError) -> Int in 42 }
+            }
+        }
+        #expect(value == 42)
+        #expect(api.callCount == 3)
+    }
+
+    @Test func latencyUsesTheAmbientClock() async throws {
+        let clock = ImmediateClock()
+        let api = FaultInjector<APIError>([.latency(.seconds(7))])
+        try await withTestAmbient(clock: clock) {
+            try await api.run { () throws(APIError) in }
+        }
+        #expect(clock.sleeps == [.seconds(7)])
+    }
+
+    @Test func aHangIgnoringCancellationOutlivesItsTimeout() async throws {
+        let clock = TestClock()
+        let gate = TestGate()
+        let api = FaultInjector<CancellationError>([.hangIgnoringCancellation(gate)])
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) { try await api.run { () throws(CancellationError) in "late" } }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(1))
+        for _ in 0..<50 { await Task.yield() }
+        #expect(!gate.isOpen)
+        gate.open()
+        #expect(try await task.value == "late", "cooperative timeouts wait for uncooperative work")
+    }
+
+    @Test(.stoic(seed: 7))
+    func theTraitInstallsASeedAndRecordsEvents() async throws {
+        #expect(Ambient.current.random == .seeded(7))
+        _ = try? await retry(.fixed(.zero).attempts(2), clock: ImmediateClock().erased) { _ throws(APIError) -> Int in throw .offline }
+        #expect(StoicTest.events.names.contains("retry.exhausted"))
+    }
+}
