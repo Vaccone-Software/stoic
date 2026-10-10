@@ -47,6 +47,10 @@ public struct Ambient: Sendable {
     /// among them, run where they always do.
     public var taskExecutor: (any TaskExecutor)?
 
+    /// What Stoic's fault points do (``FaultPolicy``). `nil`, the default,
+    /// means nothing: set only by simulations.
+    public var faultPolicy: (any FaultPolicy)?
+
     public init(
         clock: AnyClock = .continuous,
         livenessClock: AnyClock = .suspending,

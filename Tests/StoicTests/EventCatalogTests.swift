@@ -17,7 +17,9 @@ struct EventCatalogTests {
         let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
         while let file = enumerator?.nextObject() as? URL {
             guard file.pathExtension == "swift", file.lastPathComponent != "EventCatalog.swift" else { continue }
+            // Fault point sites are named like events but are not events.
             let text = try String(contentsOf: file, encoding: .utf8)
+                .replacing(#/FaultPoint\.hit\("[^"]*"\)/#, with: "")
             for match in text.matches(of: pattern) {
                 if let name = match.output[1].substring { names.insert(String(name)) }
             }

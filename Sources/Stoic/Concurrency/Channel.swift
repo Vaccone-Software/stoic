@@ -117,6 +117,7 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
     ///   `.deadlineExceeded` if the wait for space ended first. A rejected
     ///   element was not sent.
     public nonisolated(nonsending) func send(_ element: Element) async throws(Rejection) {
+        await FaultPoint.hit("channel.send")
         let next = state.withLock { state -> SendStep in
             if state.finished { return .reject(Rejection(.closed, label: label)) }
             if !state.receivers.isEmpty {

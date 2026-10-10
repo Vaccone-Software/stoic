@@ -77,6 +77,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
             state.arriving[state.nextID] = .some(nil)
             return state.nextID
         }
+        await FaultPoint.hit("singleflight.arriving")
         let deadline = Deadline.current
         let outcome: Outcome = await withTaskGroup(of: Void.self) { group in
             if let deadline {

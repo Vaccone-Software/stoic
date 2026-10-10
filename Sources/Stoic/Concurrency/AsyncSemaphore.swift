@@ -180,6 +180,9 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
             }
         }
 
+        // Between deciding to wait and queueing: where a cancellation or a
+        // deadline must find the waiter in `arriving`.
+        await FaultPoint.hit("semaphore.arriving")
         let deadline = Deadline.current
         if let deadline, deadline.hasPassed {
             return Rejection(.deadlineExceeded, label: label)

@@ -167,6 +167,8 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
             let result = await CancellationCauseBox.$current.withValue(cause) {
                 await slot.runResult()
             }
+            // Between finishing and delivering: where newer work may arrive.
+            await FaultPoint.hit("slot.deliver")
             TaskSlot.complete(isolation: isolation, slot: self, generation: generation, label: label, result: result, deliver: deliver)
         }
         let isCurrent = state.withLock { state -> Bool in

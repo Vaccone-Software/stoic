@@ -247,6 +247,7 @@ public nonisolated(nonsending) func retry<R, Failure: Error>(
         schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
         label: label, fileID: fileID, line: line
     ) { attempt in
+        await FaultPoint.hit("retry.attempt")
         let context = RetryContext()
         defer { context.end() }
         let result: Result<R, Failure> = await RetryContext.$active.withValue(context) {

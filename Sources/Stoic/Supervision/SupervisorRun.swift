@@ -210,6 +210,7 @@ struct SupervisorRun {
                 try await withAmbient({ $0 = ambient }) {
                     try await Deadline.$stored.withValue(nil) {
                         try await CancellationCauseBox.$current.withValue(cause) {
+                            await FaultPoint.hit("supervisor.child")
                             try await child.run(heartbeat)
                         }
                     }

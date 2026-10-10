@@ -205,7 +205,9 @@ public struct ServiceGraph: Sendable {
                     group.addTask {
                         do {
                             let value = try await withTimeout(service.startTimeout, label: "\(label).\(key).start") {
-                                try await service.start(visible)
+                                // Starts finish in an order the graph must not depend on.
+                                await FaultPoint.hit("service.start")
+                                return try await service.start(visible)
                             }
                             return (key, value)
                         } catch {

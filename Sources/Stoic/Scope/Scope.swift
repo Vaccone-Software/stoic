@@ -258,6 +258,9 @@ final class ScopeState: Sendable {
         let ledgerLabel = "scope finalizer \(finalizer.label)"
         let id = ledger.admit(label: ledgerLabel)
         let task = Task<(any Error)?, Never>.stoic {
+            // A finalizer that is slow to start exercises the slow and
+            // abandoned paths.
+            await FaultPoint.hit("scope.finalizer")
             let failure: (any Error)?
             do {
                 try await finalizer.run(exit)

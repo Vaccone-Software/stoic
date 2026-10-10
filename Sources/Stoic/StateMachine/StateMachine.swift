@@ -294,7 +294,11 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             // State work belongs to the state, not to whoever sent the event
             // that entered it: it does not inherit the sender's deadline.
             await Deadline.$stored.withValue(nil) {
-                await CancellationCauseBox.$current.withValue(cause) { await work(sender) }
+                await CancellationCauseBox.$current.withValue(cause) {
+                    // Late-starting work meets events from a later visit.
+                    await FaultPoint.hit("statemachine.work")
+                    await work(sender)
+                }
             }
         }
         return Task.stoic {
