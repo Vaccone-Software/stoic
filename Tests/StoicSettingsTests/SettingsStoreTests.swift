@@ -5,6 +5,7 @@ import Glibc
 #endif
 import Observation
 import Stoic
+import StoicJSON
 import StoicSchema
 @testable import StoicSettings
 import StoicStore
@@ -22,6 +23,30 @@ struct Prefs: Sendable, Equatable {
     ) {
         Field("speed", \.speed, .int(.range(100...4000)), doc: "Pixels per second.")
         Field("name", \.name, .string(.length(1...40)), doc: "A name.")
+    }
+}
+
+extension JSONValue {
+    /// The member of an object, for reading a settings file back in a test.
+    subscript(key: String) -> JSONValue? { object?[key] }
+}
+
+/// Settings with a nested object, for keys an older build does not know.
+struct NestedPrefs: Sendable, Equatable {
+    struct Editor: Sendable, Equatable {
+        var font = 12
+    }
+
+    var speed = 600
+    var editor = Editor()
+
+    static let editorSchema = Schema.object(Editor.self, default: Editor()) {
+        Field("font", \.font, .int(.range(6...72)))
+    }
+
+    static let schema = Schema.object(NestedPrefs.self, default: NestedPrefs(), version: 2) {
+        Field("speed", \.speed, .int(.range(100...4000)))
+        Field("editor", \.editor, NestedPrefs.editorSchema)
     }
 }
 
@@ -208,5 +233,86 @@ struct SettingsStoreTests {
             }
         }
         #expect(images > 10)
+    }
+
+    // MARK: Keys an older build does not know
+
+    /// The text of the settings file as the store left it, whichever format.
+    static func onDisk(_ disk: SimulatedFileSystem, format: SettingsStore<Prefs>.Format = .appOwned) throws -> JSONValue {
+        let stored = try #require(try AtomicFile(fileSystem: disk, options: .init(envelope: format == .appOwned, keepPrevious: true)).read(path))
+        return try JSONParser(options: .jsonc).parseValue(stored.bytes)
+    }
+
+    @Test(.failureMode("design/18", "the document has keys the schema does not declare"),
+          arguments: [SettingsStore<Prefs>.Format.appOwned, .handEdited])
+    func anUpdateKeepsTheKeysANewerBuildAdded(format: SettingsStore<Prefs>.Format) throws {
+        let disk = try Self.disk()
+        try Self.place(#"{"version": 2, "speed": 500, "addedByNewerBuild": {"deep": [1, 2, {"x": null}]}, "flag": true}"#, on: disk, format: format)
+        let settings = try Self.open(disk, format: format)
+        try settings.update { $0.speed = 700 }
+        let document = try Self.onDisk(disk, format: format)
+        #expect(document == (try JSONParser().parseValue(#"{"version": 2, "speed": 700, "addedByNewerBuild": {"deep": [1, 2, {"x": null}]}, "flag": true}"#)))
+        // And they survive any number of further updates and a relaunch.
+        try settings.update { $0.name = "later" }
+        let reopened = try Self.open(disk, format: format)
+        #expect(reopened.value == Prefs(speed: 700, name: "later"))
+        try reopened.update { $0.speed = 800 }
+        #expect(try Self.onDisk(disk, format: format)["addedByNewerBuild"] != nil)
+        #expect(try Self.onDisk(disk, format: format)["flag"] == .bool(true))
+    }
+
+    @Test func theKeysAreKeptThroughTheWriteBackOfARepair() throws {
+        let disk = try Self.disk()
+        try Self.place(#"{"version": 2, "speed": 99999, "addedByNewerBuild": 1}"#, on: disk, format: .appOwned)
+        _ = try Self.open(disk)   // repairs speed and writes the repair back
+        let document = try Self.onDisk(disk)
+        #expect(document["addedByNewerBuild"] == .number(JSONNumber(1)))
+        #expect(document["speed"] == nil, "the repaired field is back to its default, which sparse output omits")
+    }
+
+    @Test func anAppThatAsksToDropUnknownKeysDropsThem() throws {
+        let disk = try Self.disk()
+        try Self.place(#"{"version": 2, "speed": 500, "addedByNewerBuild": 1}"#, on: disk, format: .appOwned)
+        let settings = try SettingsStore.open(at: Self.path, schema: Prefs.schema, unknownKeys: .drop, fileSystem: disk)
+        try settings.update { $0.speed = 700 }
+        #expect(try Self.onDisk(disk)["addedByNewerBuild"] == nil)
+    }
+
+    @Test func aMigratedDocumentDoesNotCarryTheKeysItMigratedAway() throws {
+        let disk = try Self.disk()
+        try Self.place(#"{"version": 1, "scroll_speed": 1200, "legacy": true}"#, on: disk, format: .appOwned)
+        let settings = try Self.open(disk)
+        try settings.update { $0.name = "after" }
+        let document = try Self.onDisk(disk)
+        #expect(document["scroll_speed"] == nil)
+        #expect(document["legacy"] == nil, "a version-1 key the version-2 schema does not know is legacy, not a newer build's")
+        #expect(document["speed"] == .number(JSONNumber(1200)))
+    }
+
+    @Test func unknownKeysInANestedObjectAreKeptToo() throws {
+        let disk = try Self.disk()
+        let path = "/d/nested.json"
+        try AtomicFile(fileSystem: disk).write(
+            Array(#"{"version": 2, "speed": 500, "editor": {"font": 20, "ligatures": "on"}, "extra": 1}"#.utf8), to: path)
+        let settings = try SettingsStore.open(at: path, schema: NestedPrefs.schema, fileSystem: disk)
+        try settings.update { $0.editor.font = 14 }
+        try settings.update { $0.speed = 900 }
+        let stored = try #require(try AtomicFile(fileSystem: disk).read(path))
+        let document = try JSONParser().parseValue(stored.bytes)
+        #expect(document["editor"]?["ligatures"] == .string("on"))
+        #expect(document["editor"]?["font"] == .number(JSONNumber(14)))
+        #expect(document["extra"] == .number(JSONNumber(1)))
+    }
+
+    @Test func nestedUnknownKeysSurviveWhenTheNestedObjectGoesBackToDefaults() throws {
+        let disk = try Self.disk()
+        let path = "/d/nested.json"
+        try AtomicFile(fileSystem: disk).write(
+            Array(#"{"version": 2, "editor": {"font": 20, "ligatures": "on"}}"#.utf8), to: path)
+        let settings = try SettingsStore.open(at: path, schema: NestedPrefs.schema, fileSystem: disk)
+        try settings.update { $0.editor.font = 12 }   // sparse output would omit the whole object
+        let document = try JSONParser().parseValue(try #require(try AtomicFile(fileSystem: disk).read(path)).bytes)
+        #expect(document["editor"]?["ligatures"] == .string("on"))
+        #expect(document["editor"]?["font"] == nil)
     }
 }

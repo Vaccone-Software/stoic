@@ -27,6 +27,9 @@ internal import Synchronization
 /// - **A newer format is never touched.** A document from a newer app
 ///   version opens read-only (``Source/newerFormat(version:)``), and
 ///   ``update(_:)`` refuses, so launching an older build cannot destroy it.
+/// - **Keys the schema does not declare are kept.** A field a newer build
+///   added survives an older build's save, at the top level and in nested
+///   objects (``UnknownKeysOnSave``).
 /// - **Updates are validated, durable, then visible.** The changed value is
 ///   checked against the schema, written atomically (only what differs from
 ///   the defaults), and published only once it is on disk. Updates are
@@ -81,15 +84,34 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         }
     }
 
+    /// What the store does with keys in the file that the schema does not
+    /// declare (a field a newer build added, a key another tool keeps there)
+    /// when it next writes.
+    public enum UnknownKeysOnSave: Sendable, Hashable {
+        /// Write them back unchanged, so an older build never destroys what
+        /// a newer one saved. The default. Top-level keys and the keys of
+        /// objects nested in declared fields are kept; unknown keys inside
+        /// arrays, dictionaries and unions are not (design/18).
+        case keep
+        /// Write only what the schema declares: for an app whose file
+        /// should not accumulate keys it will never read.
+        case drop
+    }
+
     private struct Current {
         var value: Value
         var issues: [Issue]
         var source: Source
+        /// The document the value was read from (or last wrote), whose
+        /// undeclared keys the next write carries. `nil` when there is
+        /// nothing to carry.
+        var document: JSONValue?
     }
 
     public let path: String
     public let schema: Schema<Value>
     public let format: Format
+    public let unknownKeys: UnknownKeysOnSave
     private let file: AtomicFile
     private let decodeOptions: DecodeOptions
     private let current: Mutex<Current>
@@ -106,23 +128,29 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///   - schema: The settings' declaration. Must have defaults (an object
     ///     schema with `default:`), which are used for anything missing.
     ///   - format: Who owns the file.
+    ///   - unknownKeys: Whether a write keeps the keys the schema does not
+    ///     declare. Kept by default.
     ///   - fileSystem: Where the file lives; a simulated one in tests.
     public static func open(
         at path: String,
         schema: Schema<Value>,
         format: Format = .appOwned,
+        unknownKeys: UnknownKeysOnSave = .keep,
         fileSystem: any FileSystem = PosixFileSystem()
     ) throws(StoreError) -> SettingsStore {
-        try SettingsStore(path: path, schema: schema, format: format, fileSystem: fileSystem)
+        try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem)
     }
 
-    private init(path: String, schema: Schema<Value>, format: Format, fileSystem: any FileSystem) throws(StoreError) {
+    private init(
+        path: String, schema: Schema<Value>, format: Format, unknownKeys: UnknownKeysOnSave, fileSystem: any FileSystem
+    ) throws(StoreError) {
         guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
             preconditionFailure("SettingsStore \(path): the schema must decode an empty object, so every setting needs a default")
         }
         self.path = path
         self.schema = schema
         self.format = format
+        self.unknownKeys = unknownKeys
         self.decodeOptions = format == .handEdited ? .lenient : DecodeOptions(mode: .lenient)
         self.file = AtomicFile(
             fileSystem: fileSystem,
@@ -130,7 +158,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         )
 
         let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
-        current = Mutex(Current(value: loaded.value, issues: loaded.issues, source: loaded.source))
+        current = Mutex(Current(value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys)))
         Self.report(loaded, path: path)
 
         // Migrated or repaired, an app-owned file is brought up to date now:
@@ -138,7 +166,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         if format == .appOwned, loaded.source == .file || loaded.source == .previousGeneration,
            loaded.issues.contains(where: { $0.code == .migrated || $0.severity == .repaired }) {
             do throws(StoreError) {
-                try write(loaded.value)
+                try write(loaded.value, carrying: Self.carried(loaded, unknownKeys))
             } catch {
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("load"), privacy: .public),
@@ -177,7 +205,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     @discardableResult
     public func update(_ change: (inout Value) throws -> Void) throws -> Value {
         try writing.withLock { _ throws -> Value in
-            let (old, source) = current.withLock { ($0.value, $0.source) }
+            let (old, source, document) = current.withLock { ($0.value, $0.source, $0.document) }
             if case .newerFormat = source { throw UpdateError.newerFormat }
             var new = old
             try change(&new)
@@ -189,15 +217,16 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
                 ]))
                 throw UpdateError.invalid(problems)
             }
+            let written: JSONValue
             do throws(StoreError) {
-                try write(new)
+                written = try write(new, carrying: document)
             } catch {
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
                 ]))
                 throw UpdateError.storage(error)
             }
-            publish(Current(value: new, issues: [], source: .file))
+            publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? written : nil))
             Ambient.record(Event("settings.saved", level: .debug, label: path))
             return new
         }
@@ -213,7 +242,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             return try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
         }
         Self.report(loaded, path: path)
-        publish(Current(value: loaded.value, issues: loaded.issues, source: loaded.source))
+        publish(Current(value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys)))
     }
 
     // MARK: Internals
@@ -222,12 +251,28 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         let value: Value
         let issues: [Issue]
         let source: Source
+        /// The parsed file the value came from, if there was one and its
+        /// keys can be carried (see `carried`).
+        let document: JSONValue?
     }
 
-    private func write(_ value: Value) throws(StoreError) {
-        let json = schema.encode(value, style: .sparse(includeSecrets: true))
+    /// The document whose undeclared keys a write should carry. A migrated
+    /// document carries none: what the schema does not declare there is
+    /// what the migration left behind, not something a newer build added.
+    private static func carried(_ loaded: Loaded, _ unknownKeys: UnknownKeysOnSave) -> JSONValue? {
+        guard unknownKeys == .keep, !loaded.issues.contains(where: { $0.code == .migrated }) else { return nil }
+        return loaded.document
+    }
+
+    /// Writes `value`, with the keys of `document` that the schema does not
+    /// declare put back. Returns what was written.
+    @discardableResult
+    private func write(_ value: Value, carrying document: JSONValue?) throws(StoreError) -> JSONValue {
+        var json = schema.encode(value, style: .sparse(includeSecrets: true))
+        if let document { json = UnknownKeys.carrying(document, into: json, node: schema.node) }
         let bytes = json.encoded(style: format == .handEdited ? .pretty() : .canonical)
         try file.write(bytes, to: path)
+        return json
     }
 
     private func publish(_ next: Current) {
@@ -259,22 +304,25 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
                 schema.decodeReporting(bytes, options: options).value != nil || isNewer(bytes)
             }
         } catch where error.kind == .corrupt {
-            return Loaded(value: defaults, issues: [], source: .defaults(.unusable))
+            return Loaded(value: defaults, issues: [], source: .defaults(.unusable), document: nil)
         }
         guard let contents else {
-            return Loaded(value: defaults, issues: [], source: .defaults(.missing))
+            return Loaded(value: defaults, issues: [], source: .defaults(.missing), document: nil)
         }
         let decoded = schema.decodeReporting(contents.bytes, options: options)
         if let value = decoded.value {
             // A newer document the schema could read (its unknown keys
             // preserved) is still the newer app's: read-only.
             if let newer = decoded.issues.first(where: { $0.code == .versionTooNew }) {
-                return Loaded(value: value, issues: decoded.issues, source: .newerFormat(version: newer.foundVersion))
+                return Loaded(value: value, issues: decoded.issues, source: .newerFormat(version: newer.foundVersion), document: nil)
             }
-            return Loaded(value: value, issues: decoded.issues, source: contents.source == .current ? .file : .previousGeneration)
+            let document = try? JSONParser(options: options.parse).parseValue(contents.bytes)
+            return Loaded(
+                value: value, issues: decoded.issues,
+                source: contents.source == .current ? .file : .previousGeneration, document: document)
         }
         let newer = decoded.errors.first { $0.code == .versionTooNew }
-        return Loaded(value: defaults, issues: decoded.issues, source: .newerFormat(version: newer?.foundVersion))
+        return Loaded(value: defaults, issues: decoded.issues, source: .newerFormat(version: newer?.foundVersion), document: nil)
     }
 
     private static func report(_ loaded: Loaded, path: String) {
