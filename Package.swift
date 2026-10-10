@@ -31,6 +31,7 @@ let package = Package(
         .library(name: "Stoic", targets: ["Stoic"]),
         .library(name: "StoicTesting", targets: ["StoicTesting"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
+        .library(name: "StoicSchema", targets: ["StoicSchema"]),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
@@ -46,6 +47,11 @@ let package = Package(
         // alone, so a schema can be checked anywhere Swift runs.
         .target(name: "StoicJSON", swiftSettings: strict),
         .testTarget(name: "StoicJSONTests", dependencies: ["StoicJSON"], swiftSettings: strict),
+        // One declaration per type that decodes, encodes, validates and
+        // documents it (design/06). Foundation-free, and it depends on
+        // StoicJSON alone, so a schema runs anywhere Swift does.
+        .target(name: "StoicSchema", dependencies: ["StoicJSON"], swiftSettings: strict),
+        .testTarget(name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
         .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
     ]
 )
