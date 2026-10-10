@@ -1,5 +1,8 @@
 # Stoic
 
+[![CI](https://github.com/Vaccone-Software/stoic/actions/workflows/ci.yml/badge.svg)](https://github.com/Vaccone-Software/stoic/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Robustness primitives for Swift apps.
 
 Stoic gives an app the guarantees that make long-lived, asynchronous
@@ -17,8 +20,10 @@ never retried), and stays composed under the conditions that break
 hand-written code: cancellation, timeouts, hung dependencies, slow cleanup,
 and the machine going to sleep in the middle of it all.
 
-> **Status:** pre-release. The API will change before 1.0. Requires Swift
-> 6.4 and macOS, iOS, tvOS, watchOS or visionOS 27.
+> **Status:** pre-release (0.x). The API will change before 1.0, and no
+> primitive has yet met the last bar in DESIGN.md: surviving a release in a
+> shipping app. Requires Swift 6.4 and macOS, iOS, tvOS, watchOS or
+> visionOS 27.
 
 ## A tour
 
