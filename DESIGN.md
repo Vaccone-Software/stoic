@@ -265,7 +265,7 @@ incident review is the wrong default.
 | 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | Built: `StoicLint` plugin with a baseline  |
 | 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | Built: README, AGENTS.md, llms.txt, skill  |
 | 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | Built: `StoicStore`                        |
-| 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry; crash-loop marker planned |
+| 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry, `LaunchGuard` |
 | 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot; flight recorder planned |
 
 **Planned domains, in brief.**
@@ -352,7 +352,7 @@ write wrongly by hand.
 | **M6**    | `ServiceGraph`, `Supervisor`; lifecycle bridges                                                                        | Done         |
 | **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | Done         |
 | **M8**    | `StoicLint` build plugin with a ratchet baseline                                                                       | Done         |
-| **M9**    | Persistence, system conditions, diagnostics                                                                            | Done; crash-loop marker and flight recorder planned |
+| **M9**    | Persistence, system conditions, diagnostics                                                                            | Done; flight recorder planned |
 | **1.0**   | API freeze after every primitive has shipped in a real app; SSWG incubation application                               | —            |
 
 ## Decisions on record
