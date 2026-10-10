@@ -183,23 +183,101 @@ final class AsyncGate: Sendable {
 
 @Suite("Expiring work")
 struct ExpiringWorkTests {
-    @Test func expiryIsReportedAsTheSystemTakingTimeBack() async {
-        let expiring = ExpiringWork()
-        let observed = SendableBox<CancellationCause?>(nil)
-        let started = AsyncGate()
-        let task = Task {
-            try await expiring.run {
+    /// Runs `expiring.run` in a task whose work records why it stopped.
+    static func blockedRun(
+        _ expiring: ExpiringWork,
+        within limit: Duration? = nil,
+        observed: SendableBox<CancellationCause?>,
+        started: AsyncGate
+    ) -> Task<Void, any Error> {
+        Task {
+            try await expiring.run(within: limit) {
                 started.open()
-                do { try await Task.sleep(for: .seconds(60)) } catch {
+                do { try await Task.sleep(for: .seconds(3600)) } catch {
                     observed.mutate { $0 = CancellationCause.current }
                     throw error
                 }
             }
         }
+    }
+
+    @Test func expiryCancelsTheWorkAndSaysWhy() async {
+        let expiring = ExpiringWork()
+        let observed = SendableBox<CancellationCause?>(nil)
+        let started = AsyncGate()
+        let task = Self.blockedRun(expiring, observed: observed, started: started)
         await started.wait()
-        expiring.expire()
-        task.cancel()
-        _ = try? await task.value
+        expiring.expire()   // no task.cancel(): expiry alone must reach the work
+        await #expect(throws: CancellationError.self) { try await task.value }
         #expect(observed.value == .systemExpiring)
+    }
+
+    @Test func cancellingTheCallerReachesTheWork() async {
+        let expiring = ExpiringWork()
+        let observed = SendableBox<CancellationCause?>(nil)
+        let started = AsyncGate()
+        let task = Self.blockedRun(expiring, observed: observed, started: started)
+        await started.wait()
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(observed.value == .userRequested)
+        #expect(!expiring.isExpired)
+    }
+
+    @Test func theGrantedTimeIsTheWorksDeadline() async {
+        let clock = TestClock()
+        let observed = SendableBox<CancellationCause?>(nil)
+        let sawDeadline = SendableBox(false)
+        await withTestAmbient(clock: clock) {
+            let expiring = ExpiringWork()
+            let task = Task {
+                try await expiring.run(within: .seconds(30)) {
+                    sawDeadline.mutate { $0 = Deadline.current != nil }
+                    do { try await clock.sleep(for: .seconds(3600)) } catch {
+                        observed.mutate { $0 = CancellationCause.current }
+                        throw error
+                    }
+                }
+            }
+            await clock.waitForSleepers(count: 2)   // the work, and its deadline
+            await clock.advance(by: .seconds(30))
+            await #expect(throws: (any Error).self) { try await task.value }
+        }
+        #expect(sawDeadline.value)
+        #expect(observed.value == .deadline)
+    }
+
+    @Test func expiryIsFinal() async {
+        let expiring = ExpiringWork()
+        expiring.expire()
+        let ran = SendableBox(false)
+        await #expect(throws: CancellationError.self) {
+            try await expiring.run { ran.mutate { $0 = true } }
+        }
+        #expect(!ran.value)
+    }
+
+    @Test func runsDoNotShareACause() async throws {
+        // One run cancelled by its caller must not make a later run's
+        // unrelated cancellation read differently, nor the reverse.
+        let expiring = ExpiringWork()
+        for _ in 0..<2 {
+            let observed = SendableBox<CancellationCause?>(nil)
+            let started = AsyncGate()
+            let task = Self.blockedRun(expiring, observed: observed, started: started)
+            await started.wait()
+            task.cancel()
+            _ = await task.result
+            #expect(observed.value == .userRequested)
+        }
+    }
+
+    @Test(arguments: [
+        (Double.greatestFiniteMagnitude, nil),   // UIKit, in the foreground
+        (.infinity, nil), (.nan, nil), (0, nil), (-1, nil), (3601, nil),
+        (29.5, Duration.milliseconds(29_500)), (3600, .seconds(3600)),
+    ] as [(Double, Duration?)])
+    func hostSecondsBecomeALimitOnlyWhenTheyAreOne(seconds: Double, limit: Duration?) {
+        #expect(ExpiringWork.limit(fromSecondsRemaining: seconds) == limit)
     }
 }

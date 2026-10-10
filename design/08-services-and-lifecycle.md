@@ -66,7 +66,7 @@ its `stopTimeout`, all within `exitBudget`, failures reported, and a hung
 stop abandoned so the next one still runs. The `Exit` passed to each stop
 says whether the app is ending normally.
 
-## App lifecycle bridges (planned, `StoicAppKit` / `StoicUIKit`)
+## App lifecycle bridges (`StoicAppKit` / `StoicUIKit`)
 
 `applicationWillTerminate` is synchronous; async teardown run from it is
 cut off when the process exits. The correct macOS pattern is to return
@@ -76,6 +76,22 @@ passes, so a hung service can never stop the app from quitting. On iOS the
 equivalent is a background task whose expiration handler cancels the
 shutdown scope with cause `systemExpiring`. Both bridges are small, and live
 in integration products so the core stays free of UI frameworks.
+
+Built: `GracefulTermination` (AppKit) and `BackgroundWork.run(named:)`
+(UIKit). The iOS bridge is a thin shell over `ExpiringWork`, in the core so
+it is tested on every platform: the work runs under a deadline of the time
+granted, is cancelled by expiry (cause `systemExpiring`), by that deadline
+and by its caller, and each run has its own cause. Expiry is final. Three
+rules came from review:
+
+- UIKit reports `backgroundTimeRemaining` as `Double.greatestFiniteMagnitude`
+  in the foreground. It is finite, and converting it to a duration traps, so
+  only a grant of up to an hour is treated as one.
+- Awaiting an unstructured task's value does not cancel it when the awaiting
+  task is cancelled. The bridge passes cancellation on explicitly.
+- The system requires the background task ended before the expiration
+  handler returns. The handler ends it at once, without waiting for the
+  work to unwind; the normal exit path ends it otherwise, exactly once.
 
 ## Failure modes
 
