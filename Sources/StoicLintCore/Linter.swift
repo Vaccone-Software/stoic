@@ -49,7 +49,13 @@ public struct Linter: Sendable {
     /// Every rule, as a factory over the shared reporter. One visitor per
     /// rule keeps each rule's state (the async-context stack, say) out of
     /// the others, at the price of one cheap tree walk apiece.
-    static let rules: [@Sendable (Reporter) -> RuleVisitor] = []
+    static let rules: [@Sendable (Reporter) -> RuleVisitor] = [
+        { UncheckedSendableRule(reporter: $0) },
+        { NonisolatedUnsafeRule(reporter: $0) },
+        { TaskDetachedRule(reporter: $0) },
+        { SleepForTimeoutRule(reporter: $0) },
+        { UnboundedStreamRule(reporter: $0) },
+    ]
 }
 
 /// The base of every rule: a syntax visitor that reports through a shared
