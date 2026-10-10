@@ -20,7 +20,3 @@ public final class ExpiringWork: Sendable {
         cause.record(.systemExpiring)
     }
 }
-
-extension CancellationCauseBox {
-    static func forBackgroundWork() -> ExpiringWork { ExpiringWork() }
-}

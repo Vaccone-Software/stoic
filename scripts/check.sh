@@ -23,6 +23,12 @@ swift test --traits Lint --filter StoicLintCoreTests
 step "self-lint"
 swift run --traits Lint stoic-lint Sources Plugins Package.swift
 
+step "iOS: every library builds for iOS (UIKit paths compile only there)"
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicApple StoicUIKit; do
+    xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
+        -derivedDataPath .build/ios build
+done
+
 if [ "${1:-}" = "--stress" ]; then
     step "stress: every suite, up to 100 repetitions"
     swift test --maximum-repetitions 100 --repeat-until fail

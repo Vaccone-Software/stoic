@@ -1,6 +1,6 @@
 #if canImport(UIKit) && !os(watchOS)
-public import Stoic
-public import UIKit
+internal import Stoic
+internal import UIKit
 
 /// Runs work that should finish even if the user leaves the app — saving a
 /// draft, flushing an outbox — within the time the system grants.
@@ -30,14 +30,14 @@ public enum BackgroundWork {
         _ work: @escaping @Sendable () async throws -> R
     ) async throws -> R {
         let application = UIApplication.shared
-        let expiry = CancellationCauseBox.forBackgroundWork()
+        let expiry = ExpiringWork()
         let task = Task { try await expiry.run(work) }
         let identifier = application.beginBackgroundTask(withName: name) {
             expiry.expire()
             task.cancel()
         }
         defer {
-            if identifier != .invalid { application.endBackgroundTask(identifier) }
+            if identifier != UIBackgroundTaskIdentifier.invalid { application.endBackgroundTask(identifier) }
         }
         let remaining = application.backgroundTimeRemaining
         if remaining.isFinite, remaining > 0 {
