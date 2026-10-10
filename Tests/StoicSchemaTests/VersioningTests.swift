@@ -493,3 +493,92 @@ struct PreserveUnknownKeysTests {
         }
     }
 }
+
+@Suite("Migration chain check")
+struct MigrationChainCheckTests {
+    struct Doc: Sendable, Equatable {
+        var size = 10
+        var label = "x"
+    }
+
+    private func schema(_ migrations: [Migration], version: Int = 2) -> Schema<Doc> {
+        Schema.object(Doc.self, default: Doc(), unknownKeys: .reject, version: version, migrations: migrations) {
+            Field("size", \.size, .int(.range(1...100)), doc: "How big.")
+            Field("label", \.label, .string(.length(1...8)), doc: "A name.")
+        }
+    }
+
+    @Test func aSoundHistoryPassesOnEveryStep() {
+        let report = Prefs.schema.migrationChainCheck()
+        #expect(report.isClean, "\(report)")
+        #expect(report.steps.map(\.from) == [1, 2, 3])
+        #expect(report.steps.allSatisfy { $0.documentsChecked == 30 && $0.unchecked == nil })
+        #expect(report.untested.isEmpty)
+        #expect(report.problems.isEmpty)
+    }
+
+    @Test func theSameSeedChecksTheSameDocuments() {
+        let a = Prefs.schema.migrationChainCheck(cases: 5, seed: 3)
+        let b = Prefs.schema.migrationChainCheck(cases: 5, seed: 3)
+        #expect(a.description == b.description)
+        #expect(a.steps.allSatisfy { $0.documentsChecked == 5 })
+    }
+
+    @Test func aStepThatWritesAnInvalidValueIsCaught() {
+        // The old document had no size; the migration pins one the schema refuses.
+        let report = schema([.from(1, to: 2, .pinDefault("size", 9999))]).migrationChainCheck()
+        #expect(!report.isClean)
+        #expect(report.steps[0].failures.count == 30)
+        #expect(report.steps[0].failures[0].issues.contains { $0.code == .outOfRange })
+        #expect(report.description.contains("old document"))
+    }
+
+    @Test func aRenameOfAFieldTheSchemaDoesNotHaveIsCaught() {
+        let report = schema([.from(1, to: 2, .rename("sz", to: "sizee"))]).migrationChainCheck()
+        #expect(!report.isClean)
+        #expect(report.steps[0].failures.first?.summary.contains("`sizee`") == true)
+    }
+
+    @Test func aMoveToTheWrongPlaceLeavesAnUnknownKeyAndIsCaught() {
+        let report = schema([.from(1, to: 2, .move("size_here", to: "inner.size"))]).migrationChainCheck()
+        #expect(!report.isClean)
+    }
+
+    @Test func anOperationWithNoInverseIsReportedAsUntestedNotPassed() {
+        let opaque = Migration.Operation.custom(id: "opaque", apply: { (_: inout JSONValue) in })
+        let report = schema([.from(1, to: 2, opaque)]).migrationChainCheck()
+        #expect(report.isClean)
+        #expect(report.untested.count == 1)
+        #expect(report.untested[0].unchecked?.contains("no inverse") == true)
+        #expect(report.steps[0].documentsChecked == 0)
+    }
+
+    @Test func aMappingThatMergesValuesCannotBeInverted() {
+        let report = schema([.from(1, to: 2, .mapEnum("label", ["a": "x", "b": "x"]))]).migrationChainCheck()
+        #expect(report.untested.count == 1)
+    }
+
+    @Test func aDeleteWithoutAnExampleIsAGapNotAFailure() {
+        let report = schema([.from(1, to: 2, .delete("old"))]).migrationChainCheck()
+        #expect(report.isClean)
+        #expect(report.steps[0].gaps.count == 1)
+        #expect(report.steps[0].gaps[0].contains("old"))
+        let covered = schema([.from(1, to: 2, .delete("old", example: 5))]).migrationChainCheck()
+        // The old document now has `old`, which the migration removes.
+        #expect(covered.isClean)
+        #expect(covered.steps[0].gaps.isEmpty)
+    }
+
+    @Test func aSchemaWithoutVersionsHasNothingToCheck() {
+        let report = Settings.schema.migrationChainCheck()
+        #expect(report.steps.isEmpty)
+        #expect(report.problems.count == 1)
+        #expect(!report.isClean)
+    }
+
+    @Test func aHistoryWithOnlyTheCurrentVersionHasNoSteps() {
+        let report = schema([]).migrationChainCheck()
+        #expect(report.steps.isEmpty)
+        #expect(report.isClean)
+    }
+}

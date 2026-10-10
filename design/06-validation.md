@@ -353,6 +353,26 @@ the order it was built:
   under today's schema; a second test fails when the history grows without a
   capsule entry. See `PrefsCapsule` in `VersionedFixtures.swift`.
 
+### The migration chain check
+
+`schema.migrationChainCheck(cases:seed:)` returns a `MigrationChainReport`.
+The old schemas are gone (that is the point of migrating JSON), so it does
+not generate old documents from them. It generates valid _current_ documents,
+runs the history **backwards** (the inverse of a rename is the rename back; of
+a move, the move back; of `pinDefault` and `setIfAbsent`, a delete, so the old
+document omits the field and the pin must supply it; of a `mapEnum`, the
+reversed mapping if it is injective; of a `delete`, restoring its `example`;
+of a `custom`, its `inverse`), and decodes the result with the full schema:
+every old document must come out valid, with one `migrated` notice per step.
+A step is _untested_, not passed, if something after it has no inverse, and a
+`delete` with no example is reported as a gap. It also fails a step whose
+rename or move writes a path no generated document of the next version has,
+since such a step names a field the schema does not have and nothing in the
+backwards documents would reveal it.
+
+The check is the complement of the time capsule: the capsule proves the files
+that exist; the chain proves the ones that could.
+
 ### Reading order
 
 Issues decoded from text are returned, and printed by `ValidationFailure`,
