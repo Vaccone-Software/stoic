@@ -69,6 +69,7 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "604.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.16.0"),
         .package(url: "https://github.com/apple/swift-metrics", from: "2.12.0"),
+        .library(name: "StoicStore", targets: ["StoicStore"]),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
@@ -144,5 +145,10 @@ let package = Package(
             dependencies: ["StoicLintCore"] + swiftSyntax,
             swiftSettings: strict + [lintDefine]
         ),
+        // Persistence (design/15): atomic file writes, a crash-consistent
+        // journal and an outbox, over a FileSystem protocol that a simulated
+        // file system can replace to test every crash point. Foundation-free.
+        .target(name: "StoicStore", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicStoreTests", dependencies: ["StoicStore", "StoicTesting"], swiftSettings: strict),
     ]
 )

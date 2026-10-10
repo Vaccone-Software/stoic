@@ -69,6 +69,7 @@ public enum EventCatalog {
         Entry(name: "statemachine.invalid", level: .error, meaning: "An event arrived in a state that declares it invalid."),
         Entry(name: "statemachine.stale_event", level: .info, meaning: "An event from an earlier visit to a state was dropped."),
         Entry(name: "statemachine.transition", level: .debug, meaning: "A state machine changed state."),
+        Entry(name: "store.fullsync_unavailable", level: .notice, meaning: "F_FULLFSYNC is unsupported on this volume; durability fell back to fsync."),
         Entry(name: "supervisor.child_abandoned", level: .error, meaning: "A child ignored its stop and was abandoned after its shutdown timeout."),
         Entry(name: "supervisor.child_exited", level: .info, meaning: "A supervised child stopped, normally or with an error (warning)."),
         Entry(name: "supervisor.child_hung", level: .error, meaning: "A supervised child stopped beating and was treated as hung."),

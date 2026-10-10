@@ -1,0 +1,281 @@
+internal import Stoic
+internal import Synchronization
+
+#if canImport(Darwin)
+internal import Darwin
+#elseif canImport(Glibc)
+internal import Glibc
+#else
+#error("StoicStore needs Darwin or Glibc")
+#endif
+
+/// The real file system, over POSIX.
+///
+/// `fullSync` is `F_FULLFSYNC` on Apple platforms. Plain `fsync` there
+/// returns once the data reaches the *drive*, which may hold it in a volatile
+/// cache; only `F_FULLFSYNC` asks the drive to flush. Where the call is
+/// unsupported (`ENOTSUP`, `EINVAL`, `ENOTTY`: some network and FUSE volumes)
+/// it falls back to `fsync` and reports `store.fullsync_unavailable` once.
+/// On Glibc, `fsync` already means a flush.
+///
+/// Calls restart on `EINTR`. A short write is continued until the whole
+/// buffer is down or the system reports why not.
+public final class PosixFileSystem: FileSystem {
+    private let reportedFallback = Atomic<Bool>(false)
+
+    public init() {}
+
+    public func open(_ path: String, mode: OpenMode) throws(StoreError) -> OpenFile {
+        var flags: Int32 = O_CLOEXEC
+        switch mode {
+        case .read: flags |= O_RDONLY
+        case .readWrite: flags |= O_RDWR
+        case .createExclusive: flags |= O_RDWR | O_CREAT | O_EXCL
+        case .readWriteCreate: flags |= O_RDWR | O_CREAT
+        }
+        while true {
+            let descriptor = CSys.openFile(path, flags: flags, permissions: 0o644)
+            if descriptor >= 0 { return OpenFile(rawValue: descriptor) }
+            if errno != EINTR { throw StoreError(errno: errno, operation: "open", path: path) }
+        }
+    }
+
+    public func read(_ file: OpenFile, at offset: Int, count: Int) throws(StoreError) -> [UInt8] {
+        guard offset >= 0, count >= 0 else {
+            throw StoreError(kind: .invalidArgument, operation: "read", detail: "negative offset or count")
+        }
+        var result: [UInt8] = []
+        result.reserveCapacity(count)
+        while result.count < count {
+            let (chunk, failure) = CSys.readAt(file.rawValue, count: count - result.count, offset: offset + result.count)
+            if let failure {
+                if failure == EINTR { continue }
+                throw StoreError(errno: failure, operation: "read")
+            }
+            if chunk.isEmpty { break } // end of file
+            result.append(contentsOf: chunk)
+        }
+        return result
+    }
+
+    public func write(_ file: OpenFile, _ bytes: [UInt8], at offset: Int) throws(StoreError) {
+        guard offset >= 0 else {
+            throw StoreError(kind: .invalidArgument, operation: "write", detail: "negative offset")
+        }
+        var written = 0
+        while written < bytes.count {
+            let (count, failure) = CSys.writeAt(file.rawValue, bytes, from: written, offset: offset + written)
+            if let failure {
+                if failure == EINTR { continue }
+                throw StoreError(errno: failure, operation: "write")
+            }
+            if count == 0 { throw StoreError(errno: ENOSPC, operation: "write") } // no progress: treat as full
+            written += count
+        }
+    }
+
+    public func size(of file: OpenFile) throws(StoreError) -> Int {
+        let (size, failure) = CSys.fileSize(file.rawValue)
+        if let failure { throw StoreError(errno: failure, operation: "fstat") }
+        return size
+    }
+
+    public func truncate(_ file: OpenFile, to size: Int) throws(StoreError) {
+        while CSys.truncateFile(file.rawValue, to: size) != 0 {
+            if errno != EINTR { throw StoreError(errno: errno, operation: "ftruncate") }
+        }
+    }
+
+    public func fullSync(_ file: OpenFile) throws(StoreError) {
+        #if canImport(Darwin)
+        while CSys.fullFsync(file.rawValue) != 0 {
+            let failure = errno
+            if failure == EINTR { continue }
+            guard failure == ENOTSUP || failure == EINVAL || failure == ENOTTY else {
+                throw StoreError(errno: failure, operation: "fcntl(F_FULLFSYNC)")
+            }
+            if !reportedFallback.exchange(true, ordering: .relaxed) {
+                Ambient.current.instrumentation.record(Event(
+                    "store.fullsync_unavailable", level: .notice,
+                    fields: [.init("errno", .int(Int(failure)))]
+                ))
+            }
+            try plainSync(file)
+            return
+        }
+        #else
+        try plainSync(file)
+        #endif
+    }
+
+    private func plainSync(_ file: OpenFile) throws(StoreError) {
+        while CSys.fsyncFile(file.rawValue) != 0 {
+            if errno != EINTR { throw StoreError(errno: errno, operation: "fsync") }
+        }
+    }
+
+    public func close(_ file: OpenFile) throws(StoreError) {
+        // Not restarted on EINTR: after an interrupted close the descriptor
+        // state is unspecified, and closing again could close a descriptor
+        // another thread has since been given.
+        if CSys.closeFile(file.rawValue) != 0, errno != EINTR {
+            throw StoreError(errno: errno, operation: "close")
+        }
+    }
+
+    public func syncDirectory(_ directory: String) throws(StoreError) {
+        let descriptor = try open(directory, mode: .read)
+        do throws(StoreError) {
+            try fullSync(descriptor)
+        } catch {
+            do throws(StoreError) {
+                try close(descriptor)
+            } catch {
+                // Reporting the sync failure; the close adds nothing.
+            }
+            throw error
+        }
+        try close(descriptor)
+    }
+
+    public func rename(from source: String, to destination: String) throws(StoreError) {
+        if CSys.renamePath(source, to: destination) != 0 {
+            throw StoreError(errno: errno, operation: "rename", path: source)
+        }
+    }
+
+    public func remove(_ path: String) throws(StoreError) {
+        if CSys.unlinkPath(path) != 0 {
+            throw StoreError(errno: errno, operation: "unlink", path: path)
+        }
+    }
+
+    public func list(directory: String) throws(StoreError) -> [String] {
+        let (names, failure) = CSys.listDirectory(directory)
+        if let failure { throw StoreError(errno: failure, operation: "readdir", path: directory) }
+        return names.sorted()
+    }
+
+    public func exists(_ path: String) throws(StoreError) -> Bool {
+        if CSys.accessPath(path) == 0 { return true }
+        if errno == ENOENT || errno == ENOTDIR { return false }
+        throw StoreError(errno: errno, operation: "access", path: path)
+    }
+
+    public func freeSpace(at directory: String) throws(StoreError) -> UInt64 {
+        let (available, failure) = CSys.availableBytes(directory)
+        if let failure { throw StoreError(errno: failure, operation: "statvfs", path: directory) }
+        return available
+    }
+
+    public func createDirectory(_ path: String) throws(StoreError) {
+        var prefix = path.hasPrefix("/") ? "/" : ""
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+            prefix = prefix.isEmpty || prefix == "/" ? prefix + component : prefix + "/" + component
+            if CSys.makeDirectory(prefix, permissions: 0o755) != 0, errno != EEXIST {
+                throw StoreError(errno: errno, operation: "mkdir", path: prefix)
+            }
+        }
+    }
+}
+
+/// Every raw system call this module makes.
+///
+/// Strict memory safety makes any call that passes a pointer an `unsafe`
+/// expression. POSIX takes pointers for paths and buffers, and Swift's
+/// `String` and `Array` bridge to them only through unsafe APIs, so the calls
+/// are gathered here, each wrapped once in `unsafe` with its reason beside it:
+/// the pointer is derived from a Swift value that is alive for the whole call,
+/// the length passed is that value's count, and nothing retains the pointer
+/// after the call returns. Callers read `errno` immediately after a failing
+/// call, before anything else can overwrite it.
+private enum CSys {
+    static func openFile(_ path: String, flags: Int32, permissions: mode_t) -> Int32 {
+        // The path's C string lives for the call; open copies it.
+        unsafe open(path, flags, permissions)
+    }
+
+    static func readAt(_ descriptor: Int32, count: Int, offset: Int) -> (bytes: [UInt8], failure: Int32?) {
+        var buffer = [UInt8](repeating: 0, count: count)
+        let result = buffer.withUnsafeMutableBytes { raw in
+            // pread writes at most raw.count bytes into raw's storage.
+            unsafe pread(descriptor, raw.baseAddress, raw.count, off_t(offset))
+        }
+        if result < 0 { return ([], errno) }
+        buffer.removeSubrange(result...)
+        return (buffer, nil)
+    }
+
+    static func writeAt(_ descriptor: Int32, _ bytes: [UInt8], from start: Int, offset: Int) -> (count: Int, failure: Int32?) {
+        let result = bytes.withUnsafeBytes { raw in
+            // pwrite reads at most raw.count - start bytes from raw's storage.
+            unsafe pwrite(descriptor, raw.baseAddress.map { unsafe $0 + start }, raw.count - start, off_t(offset))
+        }
+        return result < 0 ? (0, errno) : (result, nil)
+    }
+
+    static func fileSize(_ descriptor: Int32) -> (size: Int, failure: Int32?) {
+        var info = stat()
+        // fstat fills the struct whose address is passed; it lives for the call.
+        if unsafe fstat(descriptor, &info) != 0 { return (0, errno) }
+        return (Int(info.st_size), nil)
+    }
+
+    static func truncateFile(_ descriptor: Int32, to size: Int) -> Int32 {
+        ftruncate(descriptor, off_t(size))
+    }
+
+    #if canImport(Darwin)
+    static func fullFsync(_ descriptor: Int32) -> Int32 {
+        fcntl(descriptor, F_FULLFSYNC)
+    }
+    #endif
+
+    static func fsyncFile(_ descriptor: Int32) -> Int32 {
+        fsync(descriptor)
+    }
+
+    static func closeFile(_ descriptor: Int32) -> Int32 {
+        close(descriptor)
+    }
+
+    static func renamePath(_ source: String, to destination: String) -> Int32 {
+        // Both C strings live for the call; rename copies them.
+        unsafe rename(source, destination)
+    }
+
+    static func unlinkPath(_ path: String) -> Int32 {
+        unsafe unlink(path)
+    }
+
+    static func accessPath(_ path: String) -> Int32 {
+        unsafe access(path, F_OK)
+    }
+
+    static func makeDirectory(_ path: String, permissions: mode_t) -> Int32 {
+        unsafe mkdir(path, permissions)
+    }
+
+    static func availableBytes(_ path: String) -> (bytes: UInt64, failure: Int32?) {
+        var info = statvfs()
+        // statvfs fills the struct whose address is passed; it lives for the call.
+        if unsafe statvfs(path, &info) != 0 { return (0, errno) }
+        return (UInt64(info.f_bavail) * UInt64(info.f_frsize), nil)
+    }
+
+    static func listDirectory(_ path: String) -> (names: [String], failure: Int32?) {
+        guard let directory = unsafe opendir(path) else { return ([], errno) }
+        defer { unsafe _ = closedir(directory) }
+        var names: [String] = []
+        // readdir returns a pointer into the DIR's own buffer, valid until the
+        // next readdir or closedir on this DIR; each name is copied into a
+        // String before the next call, and d_name is NUL-terminated.
+        while let entry = unsafe readdir(directory) {
+            let name = unsafe withUnsafePointer(to: &entry.pointee.d_name) { tuple in
+                unsafe tuple.withMemoryRebound(to: CChar.self, capacity: 1) { unsafe String(cString: $0) }
+            }
+            if name != "." && name != ".." { names.append(name) }
+        }
+        return (names, nil)
+    }
+}
