@@ -8,3 +8,5 @@ xcuserdata/
 Package.resolved
 /Examples/*/.build
 /Examples/*/Package.resolved
+/Benchmarks/.build
+/Benchmarks/Package.resolved
