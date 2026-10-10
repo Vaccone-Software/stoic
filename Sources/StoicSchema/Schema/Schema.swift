@@ -123,7 +123,9 @@ public struct Schema<Value: Sendable>: Sendable {
     }
 
     /// Every way `value` falls outside the schema, found by encoding it and
-    /// decoding the result strictly. Empty if it is valid.
+    /// decoding the result strictly. Empty if it is valid. Only errors are
+    /// returned: a deprecated field that holds a value is a notice to the
+    /// person editing a file, not a fault in the value.
     ///
     /// Swift values are not checked as they are mutated, so a settings
     /// struct edited in place can hold a speed the schema would never have
@@ -134,7 +136,7 @@ public struct Schema<Value: Sendable>: Sendable {
         // A value that cannot be written is encoded as null, which the
         // decode would then report a second time; keep the first report.
         let unwritable = Set(state.problems.map(\.path))
-        return state.problems + decode(json, options: .strict).issues.filter { !unwritable.contains($0.path) }
+        return state.problems + decode(json, options: .strict).errors.filter { !unwritable.contains($0.path) }
     }
 }
 
