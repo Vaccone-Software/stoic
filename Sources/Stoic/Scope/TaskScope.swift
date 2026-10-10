@@ -26,7 +26,7 @@ public struct TaskScope: ~Copyable {
         tasks.fork(label: label, work)
     }
 
-    /// Acquires a resource, released after every fork has stopped. See ``Scope/acquire(label:shielded:timeout:_:release:)``.
+    /// Acquires a resource, released after every fork has stopped. See ``Scope/acquire(label:shielded:timeout:ifWorkAbandoned:_:release:)``.
     public func acquire<R: Sendable, Failure: Error>(
         label: String = #function,
         shielded: Bool = false,
