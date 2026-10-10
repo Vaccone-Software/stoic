@@ -268,30 +268,42 @@ incident review is the wrong default.
 | 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry, `LaunchGuard` |
 | 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot, flight recorder |
 
-**Planned domains, in brief.**
+**The plan from here.** Every domain above is built; what follows is
+ordered by how much hand-written fragility each removes from a typical
+app, and each lands the way the others did: a contract in `design/`, a
+review, tests for every failure-mode row, small commits.
 
-- **Persistence (`StoicStore`).** Atomic file writes done right on Apple
-  platforms (temporary file, `F_FULLFSYNC` — plain `fsync` does not flush
-  the drive cache — rename, directory sync, checksum envelope, previous
-  generation kept, corrupt files quarantined), a crash-consistent
-  append-only journal with torn-tail detection, and an outbox for
-  at-least-once delivery with idempotency keys. All behind a `FileSystem`
-  protocol so tests can replay every prefix and reordering of the syscalls a
-  write makes and check that recovery always finds the old file or the new
-  one — crash-consistency testing no Swift library ships.
-- **System conditions.** Memory pressure, thermal state, low-power mode,
-  network constraints and app activity as an observable value in the
-  ambient context, so policies adapt: schedules slow down when the device
-  is hot, bulkheads shrink under memory pressure, hedging pauses on low
-  power. Background-task expiry becomes a deadline that existing primitives
-  already honour. A crash-loop marker counts unclean launches and enters a
-  safe mode — skipping optional services, quarantining the last config or
-  migration — after too many.
-- **Diagnostics.** A bounded ring of recent events, a crash-surviving
-  variant on a memory-mapped file so the next launch can say what the app
-  was deciding when it died, and a ledger of every Stoic-owned task (label,
-  owner, age, what it waits on) that can be dumped on demand — the
-  goroutine dump Swift lacks — and asserted empty at the end of every test.
+1. **Settings that cannot corrupt (`StoicSettings`).** The composition the
+   pieces were built for: a schema-declared settings value, persisted with
+   `AtomicFile`, migrated on read, validated on write, observable, with the
+   last good file kept and a corrupt one quarantined. Settings are the most
+   common persistent state in an app and the most commonly lost.
+2. **Buggify and smarter simulation.** Seeded fault points inside the
+   primitives (a send delayed, a permit granted last, a finalizer slow, a
+   write torn), PCT-style schedules for deep bugs, and shrinking a failing
+   seed to the fewest preemptions (design/12).
+3. **Macros.** `@Schema` (in progress); `@StateMachine`, whose transition
+   table becomes a compile-time-checked declaration with exhaustiveness; and
+   `@Services`, which checks a service graph's dependencies at compile time
+   (design/06, 07, 08).
+4. **Abandonment meets scopes.** Scopes count abandoned work started inside
+   them and pass the count to finalizers (`Exit.abandoned`); a resource can
+   declare its release `.quarantine` — leak it deliberately rather than
+   close it under a zombie (design/01, 04).
+5. **A resilient HTTP layer (`StoicHTTP`).** Per-host pipelines (timeout,
+   retry honouring `Retry-After`, breaker, bulkhead), idempotency keys on
+   unsafe methods, responses decoded through schemas with every issue
+   reported, request coalescing, and the outbox for work that must survive
+   a relaunch. The network is where most app failures start.
+6. **Tracing.** swift-distributed-tracing as a trait: retries, deadlines
+   and breaker decisions as span events and attributes.
+7. **Executable failure-mode tables and golden traces.** The tables in
+   `design/` as data that generates documentation and test skeletons, with
+   a row without a test failing the build; assertions on the sequence of
+   decisions a scenario makes (design/11, 12).
+8. **A platform error catalog.** Every common `URLError`, `POSIXError`,
+   `CocoaError` and `NSOSStatusErrorDomain` code classified for retry, with
+   its meaning in words (design/05).
 
 ## Quality bar
 
