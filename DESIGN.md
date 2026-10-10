@@ -257,16 +257,16 @@ incident review is the wrong default.
 | 05  | [Errors and reports](design/05-errors.md)                         | `try?`, errors flattened to strings                       | Built; platform catalog planned            |
 | 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times      | Phase 1 built; phase 2 in progress         |
 | 07  | [State machines](design/07-state-machines.md)                     | phase booleans, stale-callback guards                     | Built; macro planned                       |
-| 08  | [Services and app lifecycle](design/08-services-and-lifecycle.md) | `applicationWillTerminate` teardown lists                 | Graph built; AppKit/UIKit bridges planned  |
+| 08  | [Services and app lifecycle](design/08-services-and-lifecycle.md) | `applicationWillTerminate` teardown lists                 | Built, with AppKit and UIKit bridges       |
 | 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                       | Built                                      |
-| 10  | [Resilience policies](design/10-resilience-policies.md)           | nothing between the app and a failing dependency          | In progress                                |
-| 11  | [Observability](design/11-observability.md)                       | silent decisions                                          | Built; adapters planned                    |
-| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built; simulation planned                  |
-| 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | In progress                                |
-| 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | README, AGENTS.md; skill and llms.txt next |
-| 15  | Persistence (planned)                                             | `Data.write` without fsync, configs corrupted by crashes  | Planned: `StoicStore`                      |
-| 16  | System conditions (planned)                                       | ignoring memory pressure, thermal state, background expiry| Planned                                    |
-| 17  | Diagnostics (planned)                                             | "it hung once, no idea why"                               | Planned                                    |
+| 10  | [Resilience policies](design/10-resilience-policies.md)           | nothing between the app and a failing dependency          | Built                                      |
+| 11  | [Observability](design/11-observability.md)                       | silent decisions                                          | Built, with swift-log and swift-metrics adapters |
+| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built, with task ledger and random walks; simulation planned |
+| 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | Built: `StoicLint` plugin with a baseline  |
+| 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | Built: README, AGENTS.md, llms.txt, skill  |
+| 15  | [Persistence](design/15-persistence.md)                           | `Data.write` without fsync, configs corrupted by crashes  | In progress: `StoicStore`                  |
+| 16  | System conditions                                                 | ignoring memory pressure, thermal state, background expiry| Built: conditions, `DeviceConditions`, UIKit expiry; crash-loop marker planned |
+| 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot; flight recorder planned |
 
 **Planned domains, in brief.**
 
@@ -349,10 +349,10 @@ write wrongly by hand.
 | **M4**    | `StoicJSON`, `StoicSchema` phase 1                                                                                     | Done         |
 | **M4.2**  | Schema phase 2: unions, transforms, migrations, generators, SchemaSuite, Codable bridge; then `@Schema`                | In progress  |
 | **M5**    | `StateMachine`, `StateGraph`                                                                                           | Done         |
-| **M6**    | `ServiceGraph`, `Supervisor`; lifecycle bridges                                                                        | Bridges next |
-| **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | In progress  |
-| **M8**    | `StoicLint` build plugin with a ratchet baseline                                                                       | In progress  |
-| **M9**    | Persistence, system conditions, diagnostics                                                                            | Planned      |
+| **M6**    | `ServiceGraph`, `Supervisor`; lifecycle bridges                                                                        | Done         |
+| **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | Done         |
+| **M8**    | `StoicLint` build plugin with a ratchet baseline                                                                       | Done         |
+| **M9**    | Persistence, system conditions, diagnostics                                                                            | Conditions and diagnostics done; persistence in progress |
 | **1.0**   | API freeze after every primitive has shipped in a real app; SSWG incubation application                               | —            |
 
 ## Decisions on record

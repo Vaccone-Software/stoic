@@ -96,7 +96,19 @@ let graph = try ServiceGraph(label: "app") {
 try await graph.run { services in try await AppModel(sync: services[sync]).run() }
 ```
 
-And more: `race`, `mapConcurrent`, `SingleFlight`, `AsyncSemaphore`,
+**Resilience policies** compose into one pipeline with one flat error:
+
+```swift
+let api = Pipeline(
+    Retrying(.exponential(base: .milliseconds(200)).attempts(3)),
+    CircuitBreaker(label: "api"),
+    RateLimiter(rate: 50, per: .seconds(1), burst: 100, label: "api"),
+    Bulkhead(maxConcurrent: 8, queueLimit: 16, label: "api")
+)
+let response = try await api.execute { try await client.send(request) }
+```
+
+And more: `race`, `hedge`, `mapConcurrent`, `SingleFlight`, `AsyncSemaphore`,
 `AsyncMutex`, a bounded `Channel` with explicit overflow policies, `Saga`,
 `Report` errors with context chains, `Secret`, `IdempotencyKey`, and
 `StoicJSON`, a strict JSON parser that is the foundation of the validation
@@ -128,6 +140,11 @@ func retriesThroughAnOutage() async throws {
 | `Stoic`        | Every runtime primitive                                   | stdlib, `Synchronization`, `os` |
 | `StoicTesting` | Test clocks, fault injection, recorded events, test trait | `Stoic`, Swift Testing          |
 | `StoicJSON`    | Strict JSON: duplicate keys, exact numbers, positions     | stdlib                          |
+| `StoicSchema`  | Validation: one declaration drives decode, encode, defaults, every error, JSON Schema | `StoicJSON` |
+| `StoicApple`   | Platform errors that classify themselves for retry; HTTP status semantics; device conditions | `Stoic`, Foundation |
+| `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
+| `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |
+| `StoicObservability` | Events to swift-log and swift-metrics                 | behind the `Logging` / `Metrics` traits |
 | `StoicLint`    | Build-tool plugin: unsafe patterns fail the build         | swift-syntax, behind the `Lint` trait |
 
 `StoicLint` is opt in, so apps that do not use it never fetch swift-syntax:
@@ -141,8 +158,8 @@ plugins: [.plugin(name: "StoicLint", package: "stoic")]
 See [design/13](design/13-build-enforcement.md) for the rules, the
 `// stoic:allow(rule): reason` suppression and the baseline ratchet.
 
-Coming: `StoicSchema` (validation), resilience policies (circuit breaker,
-rate limiter, bulkhead, hedging), and lifecycle bridges for AppKit and UIKit.
+Coming: schema migrations, generators and a self-testing suite; `@Schema`;
+crash-consistent persistence (`StoicStore`).
 
 ## Design
 
