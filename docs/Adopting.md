@@ -71,7 +71,7 @@ swiftSettings: [
 5. **Watchdog timers and restart loops** → `Supervisor` with heartbeats.
 6. **Startup and shutdown lists** → `ServiceGraph`, and on macOS
    `GracefulTermination` from `applicationShouldTerminate`.
-7. **Config validation** → `StoicSchema`: one declaration per type.
+7. **Config validation** → `StoicSchema`: one declaration per type. With the `Macros` trait the declaration is the type itself (`@Schema struct Settings { … }`); without it, `Schema.object`.
 8. **`try?` and stringified errors** → handle them, or `withContext`.
 
 ## 6. Make tests deterministic

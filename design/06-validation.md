@@ -177,9 +177,11 @@ cannot be produced.
 
 `@Schema` on a struct with defaults emits form (a) from the stored
 properties, their default values, attribute constraints (`@Range`,
-`@Length`, `@Secret`, `@Key`) and doc comments; `@Refined` emits a named
-refinement. The macros live in a separate `StoicMacros` product and only
-call the public runtime. A `Codable` bridge lets a schema-backed type sit
+`@Length`, `@Secret`, `@Key`) and doc comments; on an enumeration it emits
+the enumeration or, when cases carry values, the tagged union with the two
+closures per case; `@Refined` emits a named refinement. The macros live in a
+separate `StoicMacros` product, behind the `Macros` trait, and only call the
+public runtime (see "As built: Layer 4"). A `Codable` bridge lets a schema-backed type sit
 inside `Codable` code: its `init(from:)` decodes the subtree through the
 schema and throws one `DecodingError` listing every issue.
 
@@ -283,8 +285,8 @@ the order it was built:
   with payloads. Each `Case` names its tag, its payload schema, how to build
   the enumeration from a payload (the case's own name, which is a function)
   and how to take a payload back out (a closure returning `nil` for every
-  other case). Swift has no case paths, so each case says it twice; a macro
-  will write the pair. A case without a payload is
+  other case). Swift has no case paths, so each case says it twice; the
+  `@Schema` macro writes the pair. A case without a payload is
   `Case("point", Shape.point) { if case .point = $0 { true } else { false } }`.
 - **Flat or keyed.** An object payload is written flat, beside the
   discriminator (`{"type": "circle", "radius": 5}`), which is how wire
@@ -509,6 +511,238 @@ A missing key sorts with the object that lacks it.
 - **Not generated:** duplicate keys (the JSON layer refuses them before a
   schema exists), a depth bomb (the parser's limit), and violations of
   `custom` constraints (opaque).
+
+## As built: Layer 4 (StoicMacros)
+
+`@Schema` and `@Refined` are implemented in the `StoicMacros` product, which
+needs the `Macros` package trait. The rule of the layer is kept: **a macro
+expansion is calls to the public StoicSchema API and nothing else.** There
+is no runtime support type, no hidden protocol, no generated code a person
+could not have written. The test target proves it by declaring types with the
+macros, declaring the same schemas by hand, and requiring the two to be
+indistinguishable (same node tree, same JSON Schema, same verdict, value and
+issues on every generated and mutated document, same bytes from every
+encoding style); `SchemaSuite` then runs on the macro's schemas.
+
+### The product and the trait
+
+- **`Macros` is a package trait**, arranged exactly as `Lint` is: the
+  swift-syntax dependency stays declared, its products are conditioned on the
+  trait, and the sources of `StoicMacrosPlugin` (the compiler plugin) compile
+  to a stub without `STOIC_MACROS`. A consumer that does not enable the trait
+  never fetches swift-syntax (checked with a scratch package and an empty
+  SwiftPM cache: no checkout, no `Package.resolved`, nothing in the cache but
+  manifests). `import StoicMacros` without the trait is an empty module, and
+  `@Schema` is then an unknown attribute, which is the honest answer.
+- **Three targets.** `StoicMacrosPlugin` (`.macro`, swift-syntax, host
+  only), `StoicMacros` (the attribute declarations; depends on `StoicSchema`
+  and the plugin) and two test targets: `StoicMacrosTests` (expansion text and
+  diagnostics, with swift-syntax's generic macro test support recording into
+  Swift Testing) and `StoicMacrosUsageTests` (behaviour).
+- **The consumer imports `StoicSchema` and `StoicMacros`** and nothing else
+  for the generated code. The expansion names the library through module
+  selectors (`StoicSchema::Schema`, `StoicSchema::Field`), so a type of the
+  consumer's own called `Schema` or `Field` cannot change what it means.
+  `Secret<T>` fields name `Secret`, which the consumer's own property type
+  already needs. A `public` type needs `public import StoicSchema`, as any
+  public API built on it does; the macro does not re-export.
+- **Names.** The attributes are named for what they say, and several are
+  also the names of types (`Range` in the standard library, `Unit` in
+  Foundation, `Secret` in Stoic, `Schema` and `Refined` in StoicSchema).
+  Macros and types are looked up apart in attribute position, so
+  `@Range(1...5) var r: Range<Int>` works in one file with Foundation
+  imported; `NamingTests` is the proof.
+
+### `@Schema` on a struct
+
+```swift
+/// Application settings.
+@Schema
+struct Settings {
+    /// Pixels per second.
+    @Range(200...4000) @Unit("px/s") var scrollSpeed: Double = 1200
+    var theme: Theme = .system
+    @Key("api_token") @Secret @Length(...128) var apiToken: String = ""
+    @Length(1...253) @Count(0...8) @Unique var hosts: [String] = []
+    var network = Network()
+    @Aliases("legacy") @Deprecated("Use `theme`.") var legacyMode = false
+    @Ignored var cache: [String: Int] = [:]
+}
+```
+
+expands to `static let schema = Schema.object(Settings.self, default:
+Settings(), doc: …) { Field(…) … }`, one `Field` per stored property in
+declaration order, and `extension Settings: Schematic {}` (added only if the
+type does not conform already), so `Settings.schema` is what other schemas
+write when they hold a `Settings`.
+
+- **Form (a) only.** The default instance is `Settings()`, so every property
+  needs a default (an optional `var` has one), and a type that declares
+  initialisers must declare `init()`. The macro does not read defaults to
+  copy them (the instance is the single source of every default, which is the
+  point of form (a)); it reads them to check them, below. Form (b), for types
+  without defaults, is not emitted (see open problems).
+- **Types are read as written.** The macro sees syntax. `Bool`, `Int`,
+  `Int64`, `UInt64`, `Double`, `String`, `JSONValue` and the other fixed-width
+  integers (`.integer(Int32.self)`) are the library's primitives; `[T]` and
+  `[String: T]` are `.array(of:)` and `.dictionary(of:)`; `T?` is
+  `.optional` (`@Nullable` adds `nullable: true`); `Secret<T>` is a
+  `.transform` over `T`'s schema that reads and reveals, and makes the field
+  secret; any other name, including a typealias such as `Port` and a generic
+  such as `Refined<IntRange<1, 9>>`, is `Name.schema`, and the compiler says
+  if it has none. The type's own name, anywhere inside a collection or an
+  optional, is `.lazy { Name.schema }`, so a recursive type works. A type with
+  no schema that the macro can recognise (`Set`, `Date`, `URL`, `UUID`,
+  `Float`, a tuple, a function, an existential, a dictionary with non-`String`
+  keys) is refused by name, with what to use instead.
+- **A property without a type annotation** is typed from a literal default
+  (`1` is `Int`, `1.5` is `Double`, a string, a boolean) or from a
+  `Name(…)` initialiser call; anything else is refused ("write the type").
+- **Doc comments** are the fields' `doc:`, and the type's is the object's
+  `doc:`. Lines of a paragraph are joined by a space; a blank `///` line
+  starts a new paragraph.
+- **`@Schema`'s arguments** are copied to `Schema.object` unread:
+  `name`, `unknownKeys`, `version`, `versionKey`, `missingVersion`,
+  `migrations`. `@PreserveUnknownKeys` marks the `JSONObject` property that
+  becomes `preservingUnknownKeysIn:` and is not a field.
+- **Access.** `public` and `package` types get a `public`/`package` `schema`,
+  because the conformance needs a witness as visible as the type.
+
+### Constraint attributes
+
+| Attribute | Is | Applies to |
+| --- | --- | --- |
+| `@Range(200...4000)` | `.range(…)` | numbers |
+| `@GreaterThan(0)`, `@LessThan(1)` | `.greaterThan`, `.lessThan` | numbers |
+| `@MultipleOf(5)` | `.multipleOf` | numbers |
+| `@Length(1...64, unit:)` | `.length(…, unit:)` | strings |
+| `@Pattern("^[a-z]+$")` | `.pattern` | strings |
+| `@Count(0...8)` | `.count` | the outermost array or dictionary |
+| `@Unique` | `.unique` | the outermost array |
+
+Each is written beside its property, in the order written. **Scalar
+constraints reach the innermost value** through optionals, arrays,
+dictionaries and secrets (`@Length(1...253) var hosts: [String]` bounds each
+host; `@Count(0...8)` bounds the list), because that is the only reading that
+lets both be said with one attribute each. A constraint cannot reach inside a
+named type the macro cannot see (a typealias, a struct); that is an error that
+says to put it in the type's own schema.
+
+The other markers: `@Key("wire")`, `@Secret`, `@Unit("px/s")`,
+`@Aliases("a", "b")`, `@Deprecated("why")`, `@Nullable`, `@Ignored` (the
+property stays in the default instance and out of the schema),
+`@PreserveUnknownKeys`. All of them are peer macros that expand to nothing:
+`@Schema` reads them from the syntax of the members it is given, and each one
+used outside a `@Schema` type is an error, not silence.
+
+### `@Schema` on an enumeration
+
+- **A `String` or `Int` raw type** gives `Schema.enumeration(T.self)`, and
+  the `CaseIterable` conformance it needs if the enumeration lacks it (the
+  extension macro adds only what is missing).
+- **Cases that carry values** give `Schema.union(T.self, discriminator:)`,
+  with the pair of closures per case that phase 2 had each case say by hand: `Case("circle", Circle.schema, Shape.circle) { if case
+  .circle(let payload) = $0 { payload } else { nil } }`. A case with no
+  values is `Case("point", Shape.point) { if case .point = $0 { true } else
+  { false } }`. One associated value, labelled or not, is the payload; its
+  schema is the type's (written `Schema<T>.…` so the compiler has a type to
+  infer from). Several labelled values are an object of their own, read with
+  the form (b) reader over a labelled tuple, `Shape.rect(width: 3, height: 4)`
+  being `{"type": "rect", "width": 3, "height": 4}`. `@Key("pt")` on a case
+  renames its tag. `@Schema(discriminator:, valueKey:, name:)` are passed on.
+- **Constraints on payloads** have nowhere to be written (Swift has no
+  attributes on associated values), so a payload's constraints live in its
+  type's schema.
+- A plain enumeration with neither raw type nor values is refused, with a
+  fix-it that adds `: String`.
+
+### `@Refined`
+
+`@Refined(Double.self, .range(0.1...10), .finite) enum ScrollSpeedRule {}`
+adds `typealias Base`, `static var constraints` and the `Refinement`
+conformance. The constraints are the library's own `Constraint` values, copied
+unchanged; they are checked with the same code as the attributes (does each fit
+the base, is a range empty, do they contradict), but, as in a refinement, they
+are about the base value itself: a number constraint does not reach inside
+`[Int].self`. The value type stays `Refined<ScrollSpeedRule>`.
+
+### Diagnostics
+
+A macro that finds an error reports it at the node that is wrong, with a
+fix-it where one is safe, and expands to nothing (no `schema`, no
+conformance), so the person sees the cause and not a cascade of "type has no
+member `schema`". Every diagnostic has a test with its line and column.
+
+| Where | Mistake |
+| --- | --- |
+| the type | not a struct or enum; generic; an enum with no cases; already declares `schema`; initialisers but no `init()` |
+| a property | no default (fix-it adds `0`, `""`, `false`, `[]`, `[:]`); a `let` (fix-it: `var`); type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
+| use of markers | any marker on a static or computed property, on an `@Ignored` property, or outside a `@Schema` type; the same marker twice (fix-it removes the second); `@Key("")`; a non-literal key, alias or deprecation message |
+| keys | a key or alias used twice (the runtime precondition, moved to compile time); an alias equal to its own key; the version key used by a field |
+| constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
+| nullable and secret | `@Nullable` on a non-optional (fix-it removes); `@Secret` on a `Secret<T>` (warning) |
+| arguments | `discriminator:` or `valueKey:` on a struct, `unknownKeys:` or `version:` on an enum (fix-it removes); `migrations:`, `versionKey:` or `missingVersion:` without `version:`; a version below 1; `unknownKeys:` together with `@PreserveUnknownKeys`; `.preserve` with no preserving property; a preserving property that is not a `JSONObject`, or a second one |
+| an enum | no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
+| `@Refined` | on anything but an enum or struct; no base type or constraints; a base that is not `T.self`; a constraint that does not fit the base, an empty range, contradictions |
+
+A non-literal default is *not* an error: the default instance carries it, and
+the macro checks only what it can see (a literal number against `@Range`, a
+literal string against `@Length`, a literal array against `@Count` and
+`@Unique`). What it cannot see, `SchemaSuite` checks ("the defaults are
+valid").
+
+### Decisions
+
+- **Sugar means the tests compare against hand-written schemas**, not against
+  expected text alone. The expansion text is also tested, for review.
+- **`Secret<T>` is a transform**, not a new schema in StoicSchema, because
+  StoicSchema does not depend on Stoic and `Secret` lives there.
+- **Self-reference is lazy, other references are direct.** A `.lazy` payload
+  of a union counts as "not an object" (phase 2), which would change the wire
+  shape of every nested payload, so only the type's own name is lazy.
+- **Checks are literal arithmetic.** The macro evaluates integer, floating
+  point, string, array and dictionary literals and range expressions, and
+  passes everything else through, so `@Range(Self.limits)` is legal and
+  unchecked until the schema is built.
+
+### Cost
+
+On 40 structs of 8 fields each (320 fields, constraints on half of them),
+building the module with the macros and with the same schemas written by hand
+took the same time within noise (3.2–4.2 s against 2.9–4.9 s per debug build
+of the target, including the link), so expansion is about ten milliseconds per
+type. The one-time cost is building the plugin: a fresh consumer package
+(StoicJSON, StoicSchema, StoicMacros, the plugin, and swift-syntax's prebuilt
+macro support, 0.7 s to download) built in 7 s. Without the prebuilt (an older
+toolchain, a locked-down machine) SwiftPM builds swift-syntax from source,
+which takes minutes; that is the price of the trait and the reason it is a
+trait.
+
+### Open problems
+
+- **Form (b) is not emitted.** A struct without defaults needs the reader
+  over the memberwise initialiser; the macro refuses it instead. The
+  generated `build { v in T(a: v[a], …) }` is mechanical, but the memberwise
+  initialiser's labels and access level are not visible from the declaration
+  when it is not written out.
+- **Mutual recursion** (`A` holds `[B]`, `B` holds `A?`) is not detected;
+  both `static let`s then wait for each other and trap on first use. Only a
+  type's own name is made lazy. A `@Recursive` marker that wraps a field in
+  `.lazy` is the likely fix.
+- **Type aliases and other opaque names** are `Name.schema`. A constraint on
+  one is refused rather than guessed.
+- **Documentation of enumeration cases** is not exported: `Schema.enumeration`
+  has nowhere to put it (union cases do take `doc:`).
+- **A union's recursive payload is keyed** under the value key (`.lazy` is not
+  an object), which differs from its non-recursive siblings' flat form; this
+  is phase 2's rule showing through.
+- **A non-literal constraint argument is unchecked** at compile time and traps
+  (the library's own precondition) when the schema is first built.
+- **Property wrappers, `lazy` properties and observed macros** such as
+  `@Observable` are not understood; a macro that rewrites stored properties
+  before `@Schema` sees them is outside what it reads.
+- **Linux and Windows** are outside the platform floor, as for the rest of
+  Stoic; the plugin itself has no platform dependency.
 
 ## Non-goals
 

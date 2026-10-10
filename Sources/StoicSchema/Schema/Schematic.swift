@@ -1,10 +1,10 @@
 /// A type that knows its own schema.
 ///
-/// This is how a refined type finds its base's schema, and how a macro (a
-/// later layer) will refer to the schema of a stored property whose type it
-/// can see only as a name: it writes `T.schema` and lets the compiler
-/// resolve it. The built-in types conform; a type with a schema declared
-/// by hand conforms in one line:
+/// This is how a refined type finds its base's schema, and how `@Schema`
+/// (StoicMacros) refers to the schema of a stored property whose type it can
+/// see only as a name: it writes `T.schema` and lets the compiler resolve it.
+/// The built-in types conform, and so does a type `@Schema` declares; a type
+/// with a schema declared by hand conforms in one line:
 ///
 ///     extension Settings: Schematic { static var schema: Schema<Settings> { Settings.schema } }
 public protocol Schematic: Sendable {

@@ -22,6 +22,7 @@ Short on purpose: each rule is one you can check.
 | a teardown list in `applicationWillTerminate`             | `ServiceGraph`                                        |
 | `try?`, or `catch { print(error) }`                       | handle it, or `withContext("what I was doing") { … }` |
 | a token in a `String` property                            | `Secret<String>`                                      |
+| ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`     |
 
 ### Rules
 
@@ -70,6 +71,11 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
 - **Lint:** `swift run --traits Lint stoic-lint Sources Plugins Package.swift`
   must stay clean; the lint tests are `swift test --traits Lint --filter
 StoicLintCoreTests`. Without the `Lint` trait, swift-syntax is never fetched.
+- **Macros:** `swift test --traits Macros --filter StoicMacros` runs the
+  expansion tests and the usage tests (macro schema against the same schema
+  written by hand). The `Macros` trait is the only other way swift-syntax is
+  fetched. A new diagnostic needs a test with its line and column; a new
+  attribute needs a case in the hand-written comparison (`design/06`).
 - **Contracts first.** Each primitive has a contract in `design/`. Change the
   contract and the code together; a failure-mode table row without a test
   is a gap.

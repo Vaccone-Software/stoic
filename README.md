@@ -148,6 +148,7 @@ func retriesThroughAnOutage() async throws {
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
 | `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |
 | `StoicObservability` | Events to swift-log and swift-metrics                 | behind the `Logging` / `Metrics` traits |
+| `StoicMacros`  | `@Schema` writes a type's schema from its declaration; `@Refined` a named refinement | `StoicSchema`, swift-syntax, behind the `Macros` trait |
 | `StoicLint`    | Build-tool plugin: unsafe patterns fail the build         | swift-syntax, behind the `Lint` trait |
 
 `StoicLint` is opt in, so apps that do not use it never fetch swift-syntax:
@@ -161,7 +162,38 @@ plugins: [.plugin(name: "StoicLint", package: "stoic")]
 See [design/13](design/13-build-enforcement.md) for the rules, the
 `// stoic:allow(rule): reason` suppression and the baseline ratchet.
 
-Coming: `@Schema`, a macro that writes a type's schema from its declaration.
+`StoicMacros` is opt in too, for the same reason. It makes the declaration of a
+schema the declaration of the type:
+
+```swift
+.package(url: "https://github.com/…/stoic", from: "0.1.0", traits: ["Macros"]),
+// …and on a target:
+dependencies: [.product(name: "StoicSchema", package: "stoic"), .product(name: "StoicMacros", package: "stoic")]
+```
+
+```swift
+import StoicMacros
+import StoicSchema
+
+/// Application settings.
+@Schema
+struct Settings {
+    /// Pixels per second.
+    @Range(200...4000) @Unit("px/s") var scrollSpeed: Double = 1200
+    var theme: Theme = .system
+    @Key("api_token") @Secret var apiToken: String = ""
+    @Length(1...253) @Count(0...8) @Unique var hosts: [String] = []
+}
+
+try Settings.schema.decode(text)   // every issue, with its line and column
+```
+
+The macro only writes calls to the `StoicSchema` API you could write by hand
+(`Schema.object(…) { Field(…) }`), the same schema with the same behaviour;
+without the trait, write that. Mistakes are compile errors at the line that is
+wrong: a property with no default, a `@Length` on an `Int`, a default that
+breaks its own `@Range`, a key used twice. See
+[design/06](design/06-validation.md#as-built-layer-4-stoicmacros).
 
 ## Design
 

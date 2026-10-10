@@ -2,7 +2,7 @@
 
 > Robustness primitives for Swift apps (Swift 6.4, Apple platforms 27+): deadlines, retry, scopes, structured concurrency helpers, state machines, supervision, service graphs, structured errors, strict JSON and schema validation, and test tooling. Plain async functions over Swift concurrency; typed errors pass through.
 
-Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation).
+Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation), `StoicMacros` (`@Schema`, `@Refined`; package trait `Macros`).
 
 ## Time
 - `withTimeout(_ duration:) { … }` / `withDeadline(_ deadline:) { … }`: cooperative; operation runs as a child task inheriting the caller's actor; result must be Sendable; error passes through. `Deadline.current` narrows, never widens.
@@ -47,6 +47,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 ## Validation
 - `StoicJSON`: `JSONDocument(parsing:options:)` (duplicate keys rejected, exact numbers, positions, limits), `JSONValue`, `JSONPath`.
 - `StoicSchema`: `Schema.object(T.self, default: T()) { Field("key", \.prop, .double(.range(0...10)), doc:, unit:, aliases:, secret:) }`; `.decode(text)` throws `ValidationFailure` with every issue (path, line:col, did-you-mean); `.decodeReporting(text, options: .lenient)`; `.encode(v, style: .sparse)`; `.jsonSchema()`; `Refined<R>`, `IntRange<lo, hi>`.
+- `StoicMacros` (trait `Macros`; `import StoicMacros` and `StoicSchema`): `@Schema struct Settings { @Range(200...4000) @Unit("px/s") var speed: Double = 1200; @Key("api_token") @Secret var token = ""; @Length(1...253) @Count(0...8) @Unique var hosts: [String] = [] }` writes `Settings.schema` (every property needs a default; doc comments become `doc:`); constraint attributes `@Range @GreaterThan @LessThan @MultipleOf @Length @Pattern @Count @Unique`, markers `@Key @Secret @Unit @Aliases @Deprecated @Nullable @Ignored @PreserveUnknownKeys`; `@Schema(version:migrations:unknownKeys:name:)` as for `Schema.object`. On an enum: `String`/`Int` raw type is `Schema.enumeration`, cases with values are `Schema.union` (`@Schema(discriminator: "type")`, `@Key("tag")` per case). `@Refined(Double.self, .range(0.1...10)) enum Rule {}` is a `Refinement`. Without the trait write `Schema.object` by hand.
 
 ## Persistence (StoicStore)
 - `AtomicFile(options: .init(keepPrevious: true)).write(bytes, to: path)` (temp, F_FULLFSYNC, rename, directory sync; checksum envelope); `.read(path, validate:)` falls back to `.previous`, quarantines corrupt files.

@@ -23,7 +23,7 @@ internal import StoicJSON
 /// enumeration from a payload (usually the case's own name, which is a
 /// function) and how to take a payload back out (a closure that returns
 /// `nil` for every other case). The pair is the price of not needing a
-/// macro; the macro layer will write it.
+/// macro; `@Schema` (StoicMacros) writes it.
 public struct Case<Root: Sendable>: Sendable {
     let tag: String
     let doc: String?

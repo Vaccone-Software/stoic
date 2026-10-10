@@ -21,7 +21,7 @@ repository root lists every entry point.
 | unbounded task group over a large collection | `mapConcurrent(_:limit:)` |
 | `while true { do {…} catch { sleep } }` keeping work alive | `Supervisor` |
 | startup/teardown lists in the app delegate | `ServiceGraph` |
-| hand-written config validation | `StoicSchema` `Schema.object` |
+| hand-written config validation | `@Schema struct` (trait `Macros`); `StoicSchema`'s `Schema.object` without it |
 | `try?` / `catch { print(error) }` | handle it, or `withContext("…") { … }` |
 
 ## Rules
@@ -34,6 +34,49 @@ repository root lists every entry point.
 6. Release resources in finalizers; commit in the body.
 7. No `@unchecked Sendable`, `nonisolated(unsafe)` or `try!` without a written reason.
 8. Tests: `TestClock` + `waitForSleepers(count:)` + `advance(by:)`; `ImmediateClock` only to record delays; `FaultInjector` for failures; `@Test(.stoic(seed:))` for isolation. No real sleeps. For concurrent logic (caches, sync engines, anything with shared state across tasks), add a `simulate(seeds: 0..<500) { sim in … }` test: it explores interleavings deterministically and a failure names the seed that replays it.
+
+## Declaring a schema
+
+With the `Macros` trait (`.package(url: …, traits: ["Macros"])`, products
+`StoicSchema` and `StoicMacros`), the macro is the default way to declare a
+schema: put `@Schema` on the type and its constraints on its properties.
+
+```swift
+import StoicMacros
+import StoicSchema
+
+/// Application settings.
+@Schema
+struct Settings {
+    /// Pixels per second.
+    @Range(200...4000) @Unit("px/s") var scrollSpeed: Double = 1200
+    var theme: Theme = .system                       // Theme: an enum with @Schema, or Schematic by hand
+    @Key("api_token") @Secret var apiToken: String = ""
+    @Length(1...253) @Count(0...8) @Unique var hosts: [String] = []
+}
+
+@Schema enum Theme: String { case light, dark, system }       // string enumeration
+@Schema(discriminator: "type") enum Shape {                   // tagged union
+    case circle(radius: Double)
+    case rect(width: Double, height: Double)
+    @Key("pt") case point
+}
+```
+
+- Every property needs a default (the schema's default instance is `Settings()`);
+  a type with initialisers needs `init()`. Write the type of a property that has
+  no literal default.
+- `@Range @GreaterThan @LessThan @MultipleOf @Length @Pattern` constrain the
+  innermost value (`[String]` with `@Length` bounds each element); `@Count` and
+  `@Unique` the collection. `@Key @Secret @Unit @Aliases @Deprecated @Nullable
+  @Ignored @PreserveUnknownKeys` are the other markers. `@Refined(Int.self,
+  .range(1...65_535)) enum PortRule {}` declares a refinement.
+- `@Schema(version: 2, migrations: […], unknownKeys: .reject)` takes what
+  `Schema.object` takes. Other schemas refer to the type as `Settings.schema`.
+- The macro only writes `Schema.object { Field(…) }`, `Schema.enumeration` and
+  `Schema.union`. Without the trait, write those by hand: the behaviour is the
+  same. Mistakes are compile errors at the offending line (read them).
+- Test it like any schema: `expectSchemaSuite(Settings.schema, seed: 1)`.
 
 ## Compiler gotchas
 

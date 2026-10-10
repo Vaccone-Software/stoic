@@ -121,7 +121,7 @@ API shaped like plain Swift, and ships its own guidance (design/14).
 | -------------- | ------------------------------------------------------------------------------- | ------------------------------- |
 | `Stoic`        | Every runtime primitive                                                         | stdlib, `Synchronization`       |
 | `StoicTesting` | Virtual clock, seeded randomness, fault injection, model tests                  | `Stoic`, Swift Testing          |
-| `StoicMacros`  | `@Schema`, `@StateMachine`, `@Services` (compile-time checking)                 | `Stoic`, swift-syntax           |
+| `StoicMacros`  | `@Schema`, `@Refined` (built, behind the `Macros` trait); `@StateMachine`, `@Services` planned | `StoicSchema`, swift-syntax |
 | `StoicLint`    | Build-tool plugin that fails the build on unsafe patterns                       | swift-syntax (host tool only)   |
 | Traits         | `OSLog`, `Logging`, `Metrics`, `Tracing`, `ServiceLifecycle`, `AppKit`, `UIKit` | the named package, when enabled |
 
@@ -255,7 +255,7 @@ incident review is the wrong default.
 | 03  | [Structured concurrency](design/03-concurrency.md)                | generation counters, semaphores, unbounded streams        | Built                                      |
 | 04  | [Scopes and resources](design/04-scopes-and-resources.md)         | `defer`/`deinit` cleanup, manual teardown order           | Built                                      |
 | 05  | [Errors and reports](design/05-errors.md)                         | `try?`, errors flattened to strings                       | Built; platform catalog planned            |
-| 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times      | Built: phases 1 and 2; `@Schema` in progress |
+| 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times      | Built, with `@Schema` behind the `Macros` trait |
 | 07  | [State machines](design/07-state-machines.md)                     | phase booleans, stale-callback guards                     | Built; macro planned                       |
 | 08  | [Services and app lifecycle](design/08-services-and-lifecycle.md) | `applicationWillTerminate` teardown lists                 | Built, with AppKit and UIKit bridges       |
 | 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                       | Built                                      |
@@ -282,7 +282,7 @@ review, tests for every failure-mode row, small commits.
 2. **Smarter simulation.** Fault points are built; next, PCT-style
    schedules for deep bugs, faults in the simulated file system, and
    shrinking a failing seed to the fewest preemptions (design/12).
-3. **Macros.** `@Schema` (in progress); `@StateMachine`, whose transition
+3. **Macros.** `@Schema` is built; next, `@StateMachine`, whose transition
    table becomes a compile-time-checked declaration with exhaustiveness; and
    `@Services`, which checks a service graph's dependencies at compile time
    (design/06, 07, 08).
@@ -359,7 +359,8 @@ write wrongly by hand.
 | **M2**    | Scopes, `Resource`, `Saga`, `TaskScope`; `TaskSlot`, `race`, `mapConcurrent`, semaphores, `SingleFlight`, `Channel`   | Done         |
 | **M3**    | `Report`, `Defect`, the event catalog; `Secret`, `IdempotencyKey`                                                     | Done         |
 | **M4**    | `StoicJSON`, `StoicSchema` phase 1                                                                                     | Done         |
-| **M4.2**  | Schema phase 2: unions, transforms, migrations, generators, SchemaSuite, Codable bridge; then `@Schema`                | Done; `@Schema` in progress |
+| **M4.2**  | Schema phase 2: unions, transforms, migrations, generators, SchemaSuite, Codable bridge                                | Done         |
+| **M4.3**  | `StoicMacros`: `@Schema` and `@Refined`, behind the `Macros` trait                                                     | Done         |
 | **M5**    | `StateMachine`, `StateGraph`                                                                                           | Done         |
 | **M6**    | `ServiceGraph`, `Supervisor`; lifecycle bridges                                                                        | Done         |
 | **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | Done         |
