@@ -84,17 +84,16 @@ public struct HTTPRetry: Sendable {
         }
     }
 
-    /// Parses a `Retry-After` header: a number of seconds, or an HTTP date.
+    /// Parses a `Retry-After` header: a number of seconds, or an HTTP date in
+    /// any of the three formats RFC 9110 §5.6.7 requires a recipient to accept
+    /// (IMF-fixdate, obsolete RFC 850, and asctime). A date in the past is a
+    /// delay of zero; anything else unparseable is `nil`.
     public static func retryAfterDelay(_ header: String?, now: Date = Date()) -> Duration? {
         guard let header = header?.trimmingCharacters(in: .whitespaces), !header.isEmpty else { return nil }
         if let seconds = Int(header), seconds >= 0 {
             return .seconds(seconds)
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "GMT")
-        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-        guard let date = formatter.date(from: header) else { return nil }
+        guard let date = HTTPDate.parse(header, now: now) else { return nil }
         let interval = max(0, date.timeIntervalSince(now))
         return .milliseconds(Int64((interval * 1000).rounded()))
     }
