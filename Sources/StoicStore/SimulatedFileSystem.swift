@@ -125,7 +125,7 @@ public final class SimulatedFileSystem: FileSystem {
     /// legally produce, use ``crashImages(afterOperation:samples:seed:)``.
     public func crash() {
         state.withLock { state in
-            state = State(restoring: state.imageWithNothingPending(), like: state)
+            state = State(restoring: state.imageWithNothingPending(), modes: state.durableModes(), like: state)
         }
     }
 
@@ -246,6 +246,17 @@ public final class SimulatedFileSystem: FileSystem {
         }
     }
 
+    public func permissions(of path: String) throws(StoreError) -> UInt16? {
+        state.withLock { state in state.live[path].map { state.inodes[$0]!.mode } }
+    }
+
+    public func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) {
+        try state.withLock { (state) throws(StoreError) in
+            let ino = try state.inode(for: file)
+            state.inodes[ino]!.mode = permissions & 0o7777
+        }
+    }
+
     public func createDirectory(_ path: String) throws(StoreError) {
         state.withLock { state in
             var prefix = ""
@@ -265,6 +276,10 @@ extension SimulatedFileSystem {
         var current: [UInt8] = []
         var pending: [Pending] = []
         var name: String
+        /// The permission bits. Modelled as durable the moment they are set:
+        /// the store only sets them on a file it is about to rename into
+        /// place, so what a crash could do to a pending `chmod` never matters.
+        var mode: UInt16 = 0o644
     }
 
     enum Pending: Sendable {
@@ -347,22 +362,22 @@ extension SimulatedFileSystem {
         }
 
         /// A state restored from a crash image's files.
-        init(restoring files: [String: [UInt8]], directories: Set<String>, like other: State) {
+        init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], directories: Set<String>, like other: State) {
             capacity = other.capacity
             recordsHistory = other.recordsHistory
             self.directories = directories
             for path in files.keys.sorted() {
                 let inode = nextInode
                 nextInode += 1
-                inodes[inode] = Inode(durable: files[path]!, current: files[path]!, name: path)
+                inodes[inode] = Inode(durable: files[path]!, current: files[path]!, name: path, mode: modes[path] ?? 0o644)
                 live[path] = inode
                 durableNames[path] = inode
             }
             if recordsHistory { history = [withoutHistory()] }
         }
 
-        init(restoring files: [String: [UInt8]], like other: State) {
-            self.init(restoring: files, directories: other.directories, like: other)
+        init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], like other: State) {
+            self.init(restoring: files, modes: modes, directories: other.directories, like: other)
         }
 
         func withoutHistoryReset() -> State {
@@ -394,6 +409,10 @@ extension SimulatedFileSystem {
         }
 
         /// The files that would exist if nothing pending survived.
+        func durableModes() -> [String: UInt16] {
+            durableNames.mapValues { inodes[$0]!.mode }
+        }
+
         func imageWithNothingPending() -> [String: [UInt8]] {
             durableNames.mapValues { inodes[$0]!.durable }
         }

@@ -90,6 +90,26 @@ public protocol FileSystem: Sendable {
 
     /// Creates `path` and any missing parents; succeeds if it exists.
     func createDirectory(_ path: String) throws(StoreError)
+
+    /// The permission bits (`0o600`, `0o644`, …) of the file at `path`,
+    /// following a symbolic link; `nil` if there is no such file.
+    ///
+    /// ``AtomicFile`` uses this to give a replacement the permissions of the
+    /// file it replaces. The default returns `nil` ("not known"), which makes
+    /// a replacement take the mode for new files; a file system that has
+    /// permissions must implement it.
+    func permissions(of path: String) throws(StoreError) -> UInt16?
+
+    /// Sets the permission bits of an open file (`fchmod`). Not durable until
+    /// ``fullSync(_:)``. The default does nothing, for a file system with no
+    /// permissions to set.
+    func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError)
+}
+
+extension FileSystem {
+    public func permissions(of path: String) throws(StoreError) -> UInt16? { nil }
+
+    public func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) {}
 }
 
 extension FileSystem {

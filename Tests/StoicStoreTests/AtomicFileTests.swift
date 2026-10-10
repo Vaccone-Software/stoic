@@ -162,6 +162,45 @@ struct AtomicFileTests {
             #expect(events.names == ["store.temp_removed"])
         }
     }
+
+    // MARK: Permissions
+
+    func chmod(_ path: String, to mode: UInt16) throws {
+        let file = try fs.open(path, mode: .readWrite)
+        try fs.setPermissions(file, to: mode)
+        try fs.close(file)
+    }
+
+    @Test(arguments: [UInt16(0o600), UInt16(0o640), UInt16(0o664), UInt16(0o400)])
+    func aReplacementKeepsThePermissionsOfTheFileItReplaces(mode: UInt16) throws {
+        let dir = try TempDirectory()
+        let file = AtomicFile(options: .init(keepPrevious: true))
+        try file.write(bytes("first"), to: dir.file("s"))
+        try chmod(dir.file("s"), to: mode)
+        try file.write(bytes("second"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == mode)
+        try file.write(bytes("third"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == mode, "and again, now that a previous generation is demoted")
+        #expect(try fs.permissions(of: dir.file("s.previous")) == mode)
+    }
+
+    @Test func aNewFileTakesTheRequestedMode() throws {
+        let dir = try TempDirectory()
+        // The process umask can only remove bits, so ask for something it
+        // cannot be expected to strip: owner read and write.
+        try AtomicFile(options: .init(newFileMode: 0o600)).write(bytes("secret"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == 0o600)
+        try AtomicFile(options: .init(newFileMode: 0o640)).write(bytes("shared"), to: dir.file("t"))
+        #expect(try fs.permissions(of: dir.file("t")) == 0o640, "the mode is set exactly, not through the umask")
+    }
+
+    @Test func theRequestedModeDoesNotOverrideAnExistingFilesMode() throws {
+        let dir = try TempDirectory()
+        try AtomicFile().write(bytes("first"), to: dir.file("s"))
+        try chmod(dir.file("s"), to: 0o640)
+        try AtomicFile(options: .init(newFileMode: 0o600)).write(bytes("second"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == 0o640)
+    }
 }
 
 @Suite("AtomicFile failures")

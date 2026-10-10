@@ -157,6 +157,38 @@ struct AtomicFileCrashTests {
         #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 
+    /// A private file must never look more open than it was, at any crash
+    /// point: not the replacement, not the previous generation.
+    @Test(arguments: [true, false])
+    func aReplacementIsNeverMoreOpenThanTheFileItReplaces(existing: Bool) async throws {
+        let options = AtomicFile.Options(keepPrevious: true, newFileMode: 0o600)
+        let report = try await exploreCrashes(
+            "AtomicFile.write permissions existing=\(existing)",
+            setup: { disk in
+                try disk.createDirectory("/d")
+                if existing {
+                    try AtomicFile(fileSystem: disk, options: options).write(Self.old, to: Self.path)
+                    let file = try disk.open(Self.path, mode: .readWrite)
+                    try disk.setPermissions(file, to: 0o640)
+                    try disk.close(file)
+                }
+            },
+            operation: { disk in
+                try AtomicFile(fileSystem: disk, options: options).write(Self.new, to: Self.path)
+                try AtomicFile(fileSystem: disk, options: options).write(Self.large, to: Self.path)
+            },
+            check: { disk, _ in
+                let expected: UInt16 = existing ? 0o640 : 0o600
+                for name in ["", ".previous"] {
+                    let mode = try disk.permissions(of: Self.path + name)
+                    if let mode, mode != expected { return "\(Self.path + name) has mode \(String(mode, radix: 8)), expected \(String(expected, radix: 8))" }
+                }
+                return nil
+            }
+        )
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
+    }
+
     // MARK: The harness must be able to fail
 
     static func exploreBroken(_ defect: BrokenAtomicWrite) async throws -> CrashReport {

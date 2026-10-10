@@ -80,6 +80,19 @@ differs from the defaults, plus the carried keys — atomically and durably, and
 it. A failed write leaves the value and the file as they were. Updates are
 serialised; observers see each committed value.
 
+**Permissions and secrets.** The file is created `0600` (owner read and
+write), whatever the schema holds, and every later write gives its
+replacement the mode the file already has: an owner who loosened it, or
+tightened it, keeps what they chose, and a file written by an earlier release
+at `0644` stays `0644` until the app or the owner changes it. A secret field
+(`secret: true`) is *not* left out of the file: the store writes it in plain
+text, because a settings file that forgot a credential on every save would be
+no settings file. What protects it is the mode, the app's sandbox, and the
+volume's own encryption. That is not a place for a long-lived credential:
+keep passwords, API tokens and refresh tokens in the Keychain, and put only
+the account's name in settings. (The store does not integrate Keychain
+storage.)
+
 **Formats.** `.appOwned` (default): checksum envelope, write-back of
 migrations and repairs. `.handEdited`: plain JSON with comments allowed,
 nothing written back on load, and `update` rewrites the file without its
@@ -98,6 +111,7 @@ comments — say so in the UI that offers both.
 | an update produces an invalid value           | Refused with every issue; value and file unchanged                            |
 | the write fails (disk full, read-only volume) | `update` throws `.storage`; value and file unchanged                          |
 | two updates race                              | Serialised; each sees the other's result                                      |
+| the file is created or replaced                | Created `0600`; a replacement keeps the mode the file had; secret fields are in it in plain text |
 | the document has keys the schema does not declare | Written back unchanged on every save (top level and nested objects); dropped only with `unknownKeys: .drop` |
 
 ## Events

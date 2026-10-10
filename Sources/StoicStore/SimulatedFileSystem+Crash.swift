@@ -24,12 +24,12 @@ extension SimulatedFileSystem {
             var images: [CrashImage] = []
 
             func add(dirMask: [Bool], picks: [Int: DataChoice], description: String) {
-                let files = resolve(dirMask: dirMask, picks: picks)
+                let (files, modes) = resolve(dirMask: dirMask, picks: picks)
                 guard seen.insert(files).inserted else { return }
                 images.append(CrashImage(
                     operationCount: operationCount,
                     description: description,
-                    fileSystem: SimulatedFileSystem(restoring: files, like: state)
+                    fileSystem: SimulatedFileSystem(restoring: files, modes: modes, like: state)
                 ))
             }
 
@@ -89,17 +89,20 @@ extension SimulatedFileSystem {
         }
 
         /// The files visible after applying the chosen directory operations
-        /// to the durable names and the chosen contents to each file.
-        func resolve(dirMask: [Bool], picks: [Int: DataChoice]) -> [String: [UInt8]] {
+        /// to the durable names and the chosen contents to each file, with
+        /// each file's permission bits.
+        func resolve(dirMask: [Bool], picks: [Int: DataChoice]) -> (files: [String: [UInt8]], modes: [String: UInt16]) {
             var names = state.durableNames
             for (operation, keep) in zip(state.pendingDirOps, dirMask) where keep {
                 operation.apply(to: &names)
             }
             var files: [String: [UInt8]] = [:]
+            var modes: [String: UInt16] = [:]
             for (path, ino) in names {
                 files[path] = picks[ino]?.content ?? state.inodes[ino]!.durable
+                modes[path] = state.inodes[ino]!.mode
             }
-            return files
+            return (files, modes)
         }
 
         /// Every directory-operation subset when there are few operations;
@@ -195,14 +198,14 @@ extension SimulatedFileSystem {
     }
 
     /// A file system holding exactly `files`, all of it durable.
-    convenience init(restoring files: [String: [UInt8]], like other: State) {
+    convenience init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], like other: State) {
         self.init(capacity: other.capacity, recordsHistory: other.recordsHistory)
-        restore(files, directories: other.directories)
+        restore(files, modes: modes, directories: other.directories)
     }
 
-    func restore(_ files: [String: [UInt8]], directories: Set<String>) {
+    func restore(_ files: [String: [UInt8]], modes: [String: UInt16] = [:], directories: Set<String>) {
         state.withLock { state in
-            state = State(restoring: files, directories: directories, like: state)
+            state = State(restoring: files, modes: modes, directories: directories, like: state)
         }
     }
 }

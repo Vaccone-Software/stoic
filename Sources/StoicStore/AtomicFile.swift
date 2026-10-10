@@ -9,7 +9,8 @@ internal import Stoic
 /// whole sequence:
 ///
 /// 1. check there is room (so a full disk is refused before anything is touched);
-/// 2. write the new bytes to `<path>.tmp` (wrapped in a checksum envelope);
+/// 2. write the new bytes to `<path>.tmp` (wrapped in a checksum envelope),
+///    with the permissions of the file being replaced;
 /// 3. `fullSync` the temporary file;
 /// 4. if a previous generation is kept, demote the current file to
 ///    `<path>.previous` (only if it is itself intact);
@@ -34,6 +35,11 @@ internal import Stoic
 ///
 /// ## Contract
 ///
+/// - **Permissions.** A replacement has the permission bits of the file it
+///   replaces, so a file made private stays private (a write that made a new
+///   file every time would hand it the default mode, usually `0o644`). A file
+///   that does not exist yet is created with ``Options/newFileMode``. The
+///   bits are set before any data is written.
 /// - **One writer per path.** Concurrent writers to the same path race on
 ///   the temporary name. Cross-process locking is out of scope.
 /// - **Cancellation and threads.** Calls are synchronous and blocking, and
@@ -59,11 +65,20 @@ public struct AtomicFile: Sendable {
         /// are removed.
         public var quarantineLimit: Int
 
-        public init(envelope: Bool = true, keepPrevious: Bool = false, checksFreeSpace: Bool = true, quarantineLimit: Int = 8) {
+        /// The permission bits of a file this write *creates*: `0o600` for
+        /// anything private. A file that already exists keeps the bits it
+        /// has, whatever this says (see ``AtomicFile``).
+        public var newFileMode: UInt16
+
+        public init(
+            envelope: Bool = true, keepPrevious: Bool = false, checksFreeSpace: Bool = true, quarantineLimit: Int = 8,
+            newFileMode: UInt16 = 0o644
+        ) {
             self.envelope = envelope
             self.keepPrevious = keepPrevious
             self.checksFreeSpace = checksFreeSpace
             self.quarantineLimit = quarantineLimit
+            self.newFileMode = newFileMode
         }
     }
 
@@ -116,8 +131,14 @@ public struct AtomicFile: Sendable {
         }
 
         do throws(StoreError) {
+            // The replacement is as private as what it replaces; a new file
+            // gets the mode the caller asked for. Set before a byte is
+            // written, so a secret is never in a file more open than it
+            // should be, even for an instant.
+            let mode = try fileSystem.permissions(of: path) ?? options.newFileMode
             let file = try fileSystem.open(temporary, mode: .createExclusive)
             do throws(StoreError) {
+                try fileSystem.setPermissions(file, to: mode)
                 try fileSystem.write(file, image, at: 0)
                 try fileSystem.fullSync(file)
             } catch {

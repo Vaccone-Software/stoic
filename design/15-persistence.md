@@ -68,7 +68,7 @@ type, `StoreError`.
 
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSystem`                     | The 14 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, and `open` in four modes. |
+| `FileSystem`                     | The 16 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, and `open` in four modes. |
 | `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine.                                                                                                   |
@@ -117,6 +117,14 @@ type, `StoreError`.
   subset of the pending directory operations.
 
 ### Atomic file
+
+Permissions: the temporary is created, then given the permission bits of the
+file it will replace (`fchmod`, before a byte is written), so a write never
+widens a private file; a path with no file yet gets `Options.newFileMode`
+(default `0o644`; the settings store asks for `0o600`). The previous
+generation is the old inode renamed, so it keeps its bits. A `FileSystem` that
+does not implement `permissions(of:)` reports "unknown" and every file gets
+the new-file mode. The journal's own files are still opened `0o644`.
 
 Write: preflight free space (`.diskFull` before touching anything) → remove a
 stale `.tmp` → create `.tmp` exclusively, write `envelope(bytes)`, `fullSync`

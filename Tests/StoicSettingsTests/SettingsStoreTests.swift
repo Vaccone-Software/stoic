@@ -50,6 +50,17 @@ struct NestedPrefs: Sendable, Equatable {
     }
 }
 
+/// Settings that hold a credential.
+struct AccountPrefs: Sendable, Equatable {
+    var user = "anon"
+    var token = ""
+
+    static let schema = Schema.object(AccountPrefs.self, default: AccountPrefs()) {
+        Field("user", \.user, .string())
+        Field("token", \.token, .string(), secret: true)
+    }
+}
+
 @Suite("Settings store")
 struct SettingsStoreTests {
     static let path = "/d/prefs.json"
@@ -314,5 +325,32 @@ struct SettingsStoreTests {
         let document = try JSONParser().parseValue(try #require(try AtomicFile(fileSystem: disk).read(path)).bytes)
         #expect(document["editor"]?["ligatures"] == .string("on"))
         #expect(document["editor"]?["font"] == nil)
+    }
+
+    // MARK: Permissions
+
+    @Test(.failureMode("design/18", "the file is created or replaced"))
+    func theFileIsCreatedReadableByItsOwnerAlone() throws {
+        let disk = try Self.disk()
+        let settings = try SettingsStore.open(at: "/d/account.json", schema: AccountPrefs.schema, fileSystem: disk)
+        try settings.update { $0.token = "hunter2" }
+        #expect(try disk.permissions(of: "/d/account.json") == 0o600)
+        // The secret is in the file, in plain text: the mode and the app's
+        // sandbox are what protect it (design/18).
+        #expect(String(decoding: disk.contents(of: "/d/account.json") ?? [], as: UTF8.self).contains("hunter2"))
+        try settings.update { $0.user = "someone" }
+        #expect(try disk.permissions(of: "/d/account.json") == 0o600)
+        #expect(try disk.permissions(of: "/d/account.json.previous") == 0o600)
+    }
+
+    @Test(arguments: [SettingsStore<Prefs>.Format.appOwned, .handEdited])
+    func anUpdateKeepsTheModeTheFileAlreadyHas(format: SettingsStore<Prefs>.Format) throws {
+        let disk = try Self.disk()
+        try Self.place(#"{"version": 2, "speed": 500}"#, on: disk, format: format)
+        let file = try disk.open(Self.path, mode: .readWrite)
+        try disk.setPermissions(file, to: 0o640)
+        try disk.close(file)
+        try Self.open(disk, format: format).update { $0.speed = 700 }
+        #expect(try disk.permissions(of: Self.path) == 0o640)
     }
 }

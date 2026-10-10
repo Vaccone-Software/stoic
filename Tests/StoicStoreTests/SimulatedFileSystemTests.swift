@@ -171,4 +171,23 @@ struct SimulatedFileSystemTests {
         #expect(error?.kind == .ioFailure)
         try disk.fullSync(a)   // the fault was used up
     }
+
+    @Test func permissionBitsFollowTheFileThroughRenamesAndCrashes() throws {
+        let disk = try makeDisk()
+        let file = try disk.open("/d/a", mode: .createExclusive)
+        #expect(try disk.permissions(of: "/d/a") == 0o644)
+        try disk.setPermissions(file, to: 0o600)
+        try disk.write(file, bytes("secret"), at: 0)
+        try disk.fullSync(file)
+        try disk.close(file)
+        try disk.rename(from: "/d/a", to: "/d/b")
+        try disk.syncDirectory("/d")
+        #expect(try disk.permissions(of: "/d/a") == nil)
+        #expect(try disk.permissions(of: "/d/b") == 0o600)
+        for image in disk.crashImages(afterOperation: disk.operationCount) {
+            #expect(try image.fileSystem.permissions(of: "/d/b") == 0o600 || image.fileSystem.contents(of: "/d/b") == nil)
+        }
+        disk.crash()
+        #expect(try disk.permissions(of: "/d/b") == 0o600)
+    }
 }

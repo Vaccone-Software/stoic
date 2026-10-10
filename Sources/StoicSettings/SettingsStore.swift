@@ -154,7 +154,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         self.decodeOptions = format == .handEdited ? .lenient : DecodeOptions(mode: .lenient)
         self.file = AtomicFile(
             fileSystem: fileSystem,
-            options: .init(envelope: format == .appOwned, keepPrevious: true)
+            options: .init(envelope: format == .appOwned, keepPrevious: true, newFileMode: 0o600)
         )
 
         let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
