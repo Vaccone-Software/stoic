@@ -10,6 +10,7 @@ import Stoic
 ///     try await withTestAmbient(clock: clock, seed: 42, events: events) {
 ///         try await subjectUnderTest()
 ///     }
+@discardableResult
 public nonisolated(nonsending) func withTestAmbient<C: Clock<Duration>, R, Failure: Error>(
     clock: C,
     seed: UInt64 = 0,

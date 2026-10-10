@@ -54,6 +54,7 @@ public struct Ambient: Sendable {
 ///     try await withAmbient({ $0.clock = AnyClock(testClock); $0.random = .seeded(7) }) {
 ///         try await syncEverything()
 ///     }
+@discardableResult
 public nonisolated(nonsending) func withAmbient<R, Failure: Error>(
     _ transform: (inout Ambient) -> Void,
     operation: nonisolated(nonsending) () async throws(Failure) -> R

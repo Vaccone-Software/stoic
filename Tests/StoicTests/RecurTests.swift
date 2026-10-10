@@ -9,12 +9,13 @@ struct RecurTests {
     @Test func runsAtOnceThenOnTheSchedule() async {
         let clock = ImmediateClock()
         let runs = SendableBox(0)
-        await withTestAmbient(clock: clock) {
+        let outcome = await withTestAmbient(clock: clock) {
             await recur(Schedule.fixed(.seconds(60)).attempts(4)) { _ in
                 runs.mutate { $0 += 1 }
                 return .continue
             }
         }
+        #expect(outcome == .scheduleEnded)
         #expect(runs.value == 4)
         #expect(clock.sleeps == [.seconds(60), .seconds(60), .seconds(60)])
     }
@@ -59,7 +60,7 @@ struct RecurTests {
         await clock.advance(by: .seconds(30))
         await clock.waitForSleepers(count: 1)
         task.cancel()
-        await task.value
+        #expect(await task.value == .cancelled)
         #expect(runs.value == 2)
     }
 }
