@@ -95,7 +95,7 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
         outcome.resolve(.some(result))
     }
 
-    let timer = Task {
+    let timer = Task.stoic {
         do {
             try await deadline.clock.sleep(until: deadline.instant, tolerance: nil)
             outcome.resolve(nil)

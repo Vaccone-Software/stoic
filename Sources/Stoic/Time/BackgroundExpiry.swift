@@ -57,7 +57,7 @@ public final class ExpiringWork: Sendable {
         // recorded cause is what the work sees when the caller is cancelled.
         if isExpired { throw CancellationError() }
         let cause = CancellationCauseBox(parent: CancellationCauseBox.current)
-        let task = Task {
+        let task = Task.stoic {
             try await CancellationCauseBox.$current.withValue(cause) {
                 if let limit {
                     try await withTimeout(limit, label: label) { try await work() }

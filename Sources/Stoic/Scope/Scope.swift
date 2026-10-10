@@ -281,8 +281,8 @@ enum TaskWait<T: Sendable>: Sendable {
 /// cell; the watcher lives exactly as long as the task it watches.
 func waitForTask<T: Sendable>(_ task: Task<T, Never>, within limit: Duration, clock: AnyClock) async -> TaskWait<T> {
     let outcome = OnceCell<TaskWait<T>>()
-    Task { outcome.resolve(.finished(await task.value)) }
-    let timer = Task {
+    Task.stoic { outcome.resolve(.finished(await task.value)) }
+    let timer = Task.stoic {
         do {
             try await clock.sleep(until: clock.now.advanced(by: limit), tolerance: nil)
             outcome.resolve(.timedOut)

@@ -107,7 +107,7 @@ public final class LaunchGuard: Sendable {
     /// clock. Returns the task, which an app may cancel if it starts to fail.
     @discardableResult
     public func markStable(after duration: Duration) -> Task<Void, Never> {
-        Task {
+        Task.stoic {
             do {
                 try await Ambient.sleep(for: duration)
                 try self.markStable()

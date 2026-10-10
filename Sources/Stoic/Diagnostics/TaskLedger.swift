@@ -60,7 +60,7 @@ public enum TaskLedger {
             state.entries[state.nextID] = entry
             return state.nextID
         }
-        return Task {
+        return Task.stoic {
             defer { _ = state.withLock { $0.entries.removeValue(forKey: id) } }
             return await operation()
         }

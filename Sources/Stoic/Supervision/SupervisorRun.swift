@@ -177,7 +177,7 @@ struct SupervisorRun {
         slots[index].pendingRestart = affected
         let generation = slots[index].generation
         let clock = clock
-        slots[index].restartTimer = Task {
+        slots[index].restartTimer = Task.stoic {
             do {
                 try await clock.sleep(until: due, tolerance: nil)
             } catch {
@@ -226,7 +226,7 @@ struct SupervisorRun {
             // monitor's own scheduling delays neither stretch the grace
             // period nor accumulate across intervals.
             let graceEnds = clock.now.advanced(by: policy.grace)
-            slots[index].monitor = Task {
+            slots[index].monitor = Task.stoic {
                 do {
                     try await clock.sleep(until: graceEnds, tolerance: nil)
                     var last = heartbeat.count

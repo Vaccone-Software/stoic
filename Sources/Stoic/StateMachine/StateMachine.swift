@@ -297,7 +297,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 await CancellationCauseBox.$current.withValue(cause) { await work(sender) }
             }
         }
-        return Task {
+        return Task.stoic {
             await withTaskCancellationHandler {
                 await task.value
             } onCancel: {

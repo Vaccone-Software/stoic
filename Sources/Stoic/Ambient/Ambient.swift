@@ -36,6 +36,17 @@ public struct Ambient: Sendable {
     /// whether everything *it* started has finished. Set by test tooling.
     public var ledgerTag: UInt64?
 
+    /// Where the tasks Stoic starts itself prefer to run — state work,
+    /// timers, supervised children, superseding work, abandoned-work
+    /// watchers. `nil`, the default, is the global concurrent executor.
+    ///
+    /// Structured child tasks already inherit their parent's preference;
+    /// unstructured tasks do not, so Stoic passes this on when it starts
+    /// one. A deterministic simulation sets it to run every Stoic task on its
+    /// seeded executor. Actors with their own executors, the main actor
+    /// among them, run where they always do.
+    public var taskExecutor: (any TaskExecutor)?
+
     public init(
         clock: AnyClock = .continuous,
         livenessClock: AnyClock = .suspending,
