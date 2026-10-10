@@ -297,10 +297,10 @@ review, tests for every failure-mode row, small commits.
    a relaunch. The network is where most app failures start.
 6. **Tracing.** swift-distributed-tracing as a trait: retries, deadlines
    and breaker decisions as span events and attributes.
-7. **Executable failure-mode tables and golden traces.** The tables in
-   `design/` as data that generates documentation and test skeletons, with
-   a row without a test failing the build; assertions on the sequence of
-   decisions a scenario makes (design/11, 12).
+7. **Executable failure-mode tables and golden traces** — built: a row no
+   test claims fails the suite (with a shrinking baseline), and
+   `expectTrace` asserts the decisions a scenario made (design/11, 12).
+   Next: prove every row in the baseline.
 8. **A platform error catalog.** Every common `URLError`, `POSIXError`,
    `CocoaError` and `NSOSStatusErrorDomain` code classified for retry, with
    its meaning in words (design/05).

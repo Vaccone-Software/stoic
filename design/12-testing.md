@@ -19,6 +19,23 @@ controllable.
 | `StateGraph.explore`                  | Exhaustive exploration of a state machine's transitions.                                                                                             |
 | `simulate(seed:)`, `simulate(seeds:)` | Deterministic simulation: every interleaving decided by a seed, virtual time, deadlocks and livelocks reported, a failing seed replayed exactly.       |
 
+## Failure-mode coverage
+
+Every contract's "What happens if…" table is a list of promises, and a
+promise without a test is a defect. A test names the row it proves —
+`@Test(.failureMode("design/09", "a child stops beating"))` — and
+`FailureModeCoverageTests` parses every table in `design/` on every run:
+
+- a row no test claims fails the suite, unless it is listed in
+  `design/failure-modes.baseline`;
+- a baseline row that a test now claims fails the suite until it is removed,
+  so the baseline only shrinks;
+- a claim naming a row that no longer exists — rewritten, misspelt — fails,
+  so a contract cannot drift away from its tests.
+
+`STOIC_WRITE_FAILURE_BASELINE=1 swift test --filter FailureModeCoverage`
+rewrites the baseline from the current state.
+
 ## Deterministic simulation
 
 FoundationDB tested its database for years in a simulator before trusting
@@ -142,9 +159,5 @@ reported with the stuck state work by name; a livelock hits the time limit.
   priority schedules find deep ones with known probability. And shrinking:
   replay a failing seed with fewer preemptions until the minimal ordering
   remains.
-- **Executable failure-mode tables.** The tables in `design/` as data that
-  generates the documentation, test skeletons and a coverage gate: a row
-  without a test fails the build.
-- **Golden traces.** Asserting the sequence of events a scenario produces.
-- **Model-based state-machine testing.** Random event sequences against an
-  invariant, shrunk to the shortest failing sequence.
+- **Generated test skeletons** from the failure-mode tables, for a new
+  contract.

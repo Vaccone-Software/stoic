@@ -78,7 +78,10 @@ StoicLintCoreTests`. Without the `Lint` trait, swift-syntax is never fetched.
   attribute needs a case in the hand-written comparison (`design/06`).
 - **Contracts first.** Each primitive has a contract in `design/`. Change the
   contract and the code together; a failure-mode table row without a test
-  is a gap.
+  is a gap. Mark the test that proves a row with `@Test(.failureMode("design/NN",
+  "the row's first column"))`: `FailureModeCoverageTests` fails on a row no
+  test claims (unless it is in `design/failure-modes.baseline`, which may
+  only shrink) and on a claim whose row no longer exists.
 - **Events are API.** A new event goes in `EventCatalog`; the catalog test
   fails otherwise. Never rename one.
 - **House style:** prose doc comments that explain _why_; typed errors
