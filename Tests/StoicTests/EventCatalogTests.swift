@@ -9,13 +9,19 @@ struct EventCatalogTests {
         let sources = URL(filePath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Sources")
-        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|ratelimiter|store|launch)\.[a-z_]+)""#)
+        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|ratelimiter|store|launch|settings)\.[a-z_]+)""#)
+        // Any literal handed straight to `Event(`, whatever its prefix, so a
+        // new domain's events cannot slip past the list above.
+        let constructed = try Regex(#"Event\(\s*"([a-z]+\.[a-z_]+)""#)
         var names: Set<String> = []
         let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
         while let file = enumerator?.nextObject() as? URL {
             guard file.pathExtension == "swift", file.lastPathComponent != "EventCatalog.swift" else { continue }
             let text = try String(contentsOf: file, encoding: .utf8)
             for match in text.matches(of: pattern) {
+                if let name = match.output[1].substring { names.insert(String(name)) }
+            }
+            for match in text.matches(of: constructed) {
                 if let name = match.output[1].substring { names.insert(String(name)) }
             }
         }
