@@ -1,0 +1,40 @@
+// swift-tools-version: 6.4
+import PackageDescription
+
+// The settings every Stoic target is held to. A warning is an error here:
+// a library that asks apps to be strict cannot ship code that is not.
+// SwiftPM strips these from a package built as a dependency (SE-0480), so
+// they bind Stoic's own sources only; apps opt in through their own
+// manifest, and the lint plugin (design/13) carries the rest.
+let strict: [SwiftSetting] = [
+    .treatAllWarnings(as: .error),
+    .strictMemorySafety(),
+    .enableUpcomingFeature("ExistentialAny"),
+    .enableUpcomingFeature("InternalImportsByDefault"),
+    .enableUpcomingFeature("MemberImportVisibility"),
+    .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+    .enableUpcomingFeature("InferIsolatedConformances"),
+]
+
+let package = Package(
+    name: "stoic",
+    // Swift 6.4's runtime (cancellation shields, async defer) ships with the
+    // 27 releases. Nothing older is supported, so nothing older is emulated.
+    platforms: [
+        .macOS(.v27),
+        .iOS(.v27),
+        .tvOS(.v27),
+        .watchOS(.v27),
+        .visionOS(.v27),
+    ],
+    products: [
+        .library(name: "Stoic", targets: ["Stoic"]),
+    ],
+    // The core depends on the standard library and Synchronization alone.
+    // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
+    // ServiceLifecycle) and the macro and lint products arrive as traits
+    // and separate targets as their milestones land (DESIGN.md, Roadmap).
+    targets: [
+        .target(name: "Stoic", swiftSettings: strict),
+    ]
+)
