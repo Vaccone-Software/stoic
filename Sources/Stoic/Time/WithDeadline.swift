@@ -31,6 +31,22 @@ public nonisolated(nonsending) func withDeadline<R: Sendable, Failure: Error>(
     line: UInt = #line,
     @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
 ) async throws(Failure) -> R {
+    try await runWithDeadline(deadline, tolerance: tolerance, label: label, fileID: fileID, line: line, operation: operation)
+        .result.get()
+}
+
+/// The engine of ``withDeadline(_:tolerance:label:fileID:line:operation:)``,
+/// reporting whether the deadline expired as well as the outcome, for
+/// primitives (such as a retry's per-attempt timeout) that treat an expired
+/// attempt differently from a failed one.
+nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
+    _ deadline: Deadline,
+    tolerance: Duration?,
+    label: String?,
+    fileID: String,
+    line: UInt,
+    @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
+) async -> DeadlineOutcome<R, Failure> {
     let effective = deadline.narrowedByCurrent
     let started = effective.clock.now
     let cause = CancellationCauseBox()
@@ -87,7 +103,7 @@ public nonisolated(nonsending) func withDeadline<R: Sendable, Failure: Error>(
             .init("outcome", .string(outcome.result.isSuccess ? "returned" : "threw"), privacy: .public),
         ], fileID: fileID, line: line))
     }
-    return try outcome.result.get()
+    return outcome
 }
 
 /// Runs `operation` with a timeout: a deadline `duration` from now.
@@ -119,7 +135,7 @@ private enum DeadlineChild<R: Sendable, Failure: Error>: Sendable {
     case timerCancelled
 }
 
-private struct DeadlineOutcome<R: Sendable, Failure: Error>: Sendable {
+struct DeadlineOutcome<R: Sendable, Failure: Error>: Sendable {
     let result: Result<R, Failure>
     let expired: Bool
 }

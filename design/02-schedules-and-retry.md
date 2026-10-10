@@ -23,120 +23,116 @@ outage into a bigger one.
 ## API
 
 ```swift
-public struct Schedule: Sendable, CustomStringConvertible {
-    // Bases
-    public static func fixed(_ delay: Duration) -> Schedule
-    public static func exponential(base: Duration, factor: Double = 2) -> Schedule
-    public static func fibonacci(base: Duration) -> Schedule
-    public static func delays(_ delays: [Duration]) -> Schedule   // e.g. [10 s, 60 s, 300 s]
-    public static let immediate: Schedule
-
-    // Bounds (every schedule passed to retry must have at least one; see "Bounded")
-    public func upTo(attempts: Int) -> Schedule
-    public func upTo(elapsed: Duration) -> Schedule
-    public func capped(at maximum: Duration) -> Schedule
-
-    // Shape
-    public func jittered(_ jitter: Jitter = .full) -> Schedule    // .full, .equal, .decorrelated, .none
-    public func union(_ other: Schedule) -> Schedule              // continue if either; shorter delay
-    public func intersection(_ other: Schedule) -> Schedule       // continue if both; longer delay
-    public func andThen(_ next: Schedule) -> Schedule
-    public func resetting(after quiet: Duration) -> Schedule      // for long-lived recur/supervision
-
-    // Pure stepping, exposed for tests and tooling
-    public func makeIterator(random: RandomSource) -> Iterator
+public struct Schedule: Sendable, Hashable {          // data: an inspectable tree, not closures
+    public static func fixed(_:) / linear(_:) / exponential(base:factor:) / fibonacci(_:)
+    public static func decorrelated(base:cap:)
+    public static func delays(_ delays: [Duration]) -> BoundedSchedule
+    public func capped(at:) / jittered(_:) / upTo(elapsed:) / union(_:) / intersection(_:) / andThen(_:)
+    public func attempts(_ count: Int) -> BoundedSchedule      // the only way to bound a schedule
+    public func maximalDelays(limit:) -> [Duration]
 }
 
-public struct Attempt: Sendable { public let number: Int; public let elapsed: Duration }
-
-public enum RetryDecision: Sendable {
-    case retry                    // let the schedule decide the delay
-    case retry(after: Duration)   // server said Retry-After; still capped and deadline-checked
-    case stop                     // permanent: rethrow now
+public struct BoundedSchedule: Sendable, Hashable {   // what retry accepts
+    public var maximumAttempts: Int
+    public var maximumTotalDelay: Duration
+    public func worstCase(attemptTimeout: Duration) -> Duration
 }
 
+public enum RetryDecision { case retry, retryAfter(Duration), stop }
 public protocol Retryable: Error { var retryDecision: RetryDecision { get } }
+public struct RetryClassifier<Failure: Error> { static var standard, transientOnly, never; init(_:) }
+public enum RetryNesting { case singleAttempt, allow }
+public struct RetryBudget { static let perCallSite, unlimited; static func named(_:); init(ratio:reservePerSecond:reserveCapacity:) }
 
+// Inline: runs on the caller's actor, may capture anything.
 public nonisolated(nonsending) func retry<R, Failure: Error>(
-    _ schedule: Schedule,
-    budget: RetryBudget? = nil,
-    when classify: (Failure, Attempt) -> RetryDecision = defaultClassification,
-    operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
+    _ schedule: BoundedSchedule, budget: RetryBudget = .perCallSite,
+    classify: RetryClassifier<Failure> = .standard, nesting: RetryNesting = .singleAttempt,
+    label: String? = nil, operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
 ) async throws(Failure) -> R
 
-public nonisolated(nonsending) func recur<Failure: Error>(
-    _ schedule: Schedule,
-    operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> RecurDecision
-) async throws(Failure)
-
-public final class RetryBudget: Sendable {
-    public init(ratio: Double = 0.1, minimumPerSecond: Double = 1, window: Duration = .seconds(10))
-}
+// Each attempt bounded by its own timeout; runs as a child task, inheriting the caller's actor.
+public nonisolated(nonsending) func retry<R: Sendable, Failure: Error>(
+    _ schedule: BoundedSchedule, attemptTimeout: Duration, …,
+    @_inheritActorContext operation: @escaping @Sendable @isolated(any) (Attempt) async throws(Failure) -> R
+) async throws(Failure) -> R
 ```
 
-A call site with its whole budget stated once:
+A call site with its whole budget stated once, and the outer watchdog
+derived from it rather than written down separately:
 
 ```swift
-let start = Schedule.fixed(.milliseconds(650)).upTo(attempts: 2)
-try await withTimeout(start.worstCase(attemptTimeout: .seconds(2.5))) {
-    try await retry(start) { _ in try await microphone.start() }
+let start = Schedule.fixed(.milliseconds(650)).attempts(2)
+try await withTimeout(start.worstCase(attemptTimeout: .milliseconds(2500))) {
+    try await retry(start, attemptTimeout: .milliseconds(2500)) { _ in try await microphone.start() }
 }
 ```
-
-`worstCase(attemptTimeout:)` derives the outer watchdog from the schedule, so
-the numbers that drifted apart in three places cannot drift at all.
 
 ## Semantics
 
-**Order of checks per failed attempt.** (1) The error is `CancellationError`
-or the task is cancelled → rethrow, never retry. (2) The error is a `Defect`
-→ rethrow. (3) Classification says `.stop` → rethrow. (4) The schedule says
-stop → rethrow. (5) The budget refuses → rethrow, `retry.budget_exhausted`.
-(6) `now + delay` is at or past `Deadline.current` (or leaves less than the
-last attempt's duration) → rethrow, `retry.deadline_skip`. (7) Sleep on the
-ambient clock — cancellable — then attempt again. Always the last error is
-rethrown, unwrapped.
+**Bounded by type.** `retry` takes a `BoundedSchedule`, and the only ways to
+make one are `attempts(_:)` and `delays(_:)`. An unbounded retry does not
+compile; there is no runtime cap that behaves differently in debug and
+release. `upTo(elapsed:)` is an extra stop condition, not a bound: a schedule
+with no delay and only an elapsed limit could spin.
 
-**Default classification.** `Retryable` errors decide for themselves.
-`Defect`s and cancellation stop. Everything else retries — the common
-expectation — because the schedule is always bounded and the budget, when
-present, caps the blast radius. Teams that want "retry only what is known to
-be transient" pass `when: .onlyRetryable`.
+**Schedules are data.** A schedule is a tree of nodes interpreted by a
+stepper, so it prints, compares, reports its worst case, and steps the same
+way in a test as in production. Full and equal jitter only ever shorten a
+delay, so a cap holds whichever order `capped` and `jittered` are written
+in. `capped(at:)` directly after a base replaces the base's default cap
+(exponential and Fibonacci default to five minutes).
 
-**Bounded.** A schedule with neither an attempt nor an elapsed bound is
-rejected by `retry` at runtime with a precondition (debug) and capped at 10
-attempts with an error event (release); the lint rule `stoic.unbounded-retry`
-catches the literal case at build time. `recur` may be unbounded — polling
-forever is legitimate — but only inside a scope or supervisor that can stop
-it (lint: `stoic.unowned-recur`).
+**Order of checks after a failed attempt.** (1) The task running the retry
+was cancelled → rethrow; a cancelled *attempt* (its own timeout fired) is not
+a cancelled retry. (2) Nested inside another retry's attempt with
+`.singleAttempt` → rethrow, `retry.nested`. (3) The classifier says stop (a
+`Defect` always does) → rethrow. (4) The schedule is exhausted → rethrow.
+(5) The next attempt could not finish before `Deadline.current`, assuming it
+takes as long as the last → rethrow, `retry.deadline_skip`. (6) The budget has
+no token → rethrow, `retry.budget_exhausted`. Otherwise sleep (cancellable)
+and try again. The error is always the last attempt's, unwrapped; cancelled
+during the backoff, retry rethrows that last real failure.
 
-**Arithmetic.** Delays saturate instead of overflowing: `Duration`
-multiplication traps on overflow, and an exponential schedule at attempt 80
-would. All schedule math is done in saturating integer nanoseconds and
-clamped to `capped(at:)` (default cap: 5 minutes for exponential bases).
+**Default classification.** `.standard` lets `Retryable` errors decide,
+stops on defects, `DecodingError` and `EncodingError` (the same bytes fail
+the same way), and on rejections retrying cannot help (an exhausted budget,
+a shutdown, a wedged label), honours a rejection's `retryAfter`, treats a
+timed-out attempt as transient, and retries anything else. Review argued for
+"transient only" as the default; the counterweight is that every other
+safety net is on by default — the schedule is bounded by type, the budget is
+per call site, nested retries collapse — so an unknown error costs a few
+bounded attempts, not an outage. `.transientOnly` is one word away.
 
-**Jitter.** Full jitter (`random(0...delay)`) is the default, per AWS.
-Decorrelated jitter (`min(cap, random(base...previous × 3))`) is offered for
-long tails. Jitter never yields a negative or above-cap delay, and draws
-from a per-call-site random stream (DESIGN.md, Ambient) so a seed reproduces
-it under any interleaving.
+**Nesting.** A task-local marks a running attempt. A `retry` started inside
+one makes a single attempt by default (`retry.nested`), enforcing AWS's
+"retry at one layer" at runtime instead of documenting it. `.allow` opts out
+for layers that retry different dependencies.
 
-**Retry-After.** `.retry(after:)` overrides the schedule's delay for that
-attempt but not its bounds: capped, budget-checked and deadline-checked.
+**Budgets.** On by default, one per call site. Each first attempt deposits
+`ratio` (0.2) earned tokens; a reserve refills at `reservePerSecond` (1) up to
+`reserveCapacity` (10) so a quiet app can still retry; each retry spends one.
+Under a full outage, retries add at most 20% load plus one per second per
+call site. Named budgets (`.named("api.example.com")`) share one bucket
+across call sites hitting one dependency. Earned tokens are capped so a long
+success streak cannot bank a burst for the next outage.
 
-**Budgets.** A token bucket per dependency, shared by every `retry` aimed at
-it. Each first attempt deposits `ratio` tokens; each retry withdraws one; a
-floor of `minimumPerSecond` keeps low-traffic paths retryable. Under a full
-outage at most `ratio` extra load is added, however many callers retry. The
-budget is a `Mutex`-guarded struct: no actor hop on the hot path.
+**Arithmetic.** Delays saturate instead of trapping (`Duration`
+multiplication traps on overflow), so an exponential at attempt 300 is just
+its cap.
 
-**Hedging is not retry.** Starting a second attempt before the first fails
-lives in design/03 and draws from the same budget.
+**Jitter and seeds.** Full jitter is opt-in per schedule (`.jittered()`).
+Randomness comes from the ambient source, one stream per call site, so a seed
+reproduces a run's delays; in production the source is the system generator
+and concurrent callers draw independently.
 
-**Recur.** `recur` runs an operation on a schedule after _success_ (polling, a periodic update check): the decision type lets the operation stop
-(`.done`), continue, or ask for a sooner check (`.again(after:)`). Failures
-propagate unless the caller wraps the body in `retry`. `resetting(after:)`
-lets a long-lived loop start its backoff over after a quiet period.
+**Retry-After.** `.retryAfter(d)` replaces the schedule's delay for that
+retry but not its bound, its budget or the deadline, and is capped at five
+minutes.
+
+**Recur.** `recur` (next) runs an operation on a schedule after *success*
+— polling, periodic refresh — and may be unbounded, but only inside a scope
+or supervisor that can stop it.
 
 ## Failure modes
 
@@ -144,19 +140,22 @@ lets a long-lived loop start its backoff over after a quiet period.
 | -------------------------------------------------- | ------------------------------------------------------------------------------ |
 | the operation succeeds on attempt n                | Result returned; `retry.succeeded` with n (only when n > 1)                    |
 | every attempt fails                                | Last error rethrown; `retry.exhausted` with attempts and elapsed               |
-| the task is cancelled during the backoff sleep     | Sleep throws; `CancellationError` propagates; no further attempt               |
+| the task is cancelled during the backoff sleep     | The last attempt's error is rethrown (typed); no further attempt              |
 | the error is a `Defect`                            | Rethrown immediately; `retry.defect` at error level                            |
 | the budget is empty                                | Last error rethrown; `retry.budget_exhausted`                                  |
 | the next attempt cannot finish before the deadline | Last error rethrown without sleeping; `retry.deadline_skip`                    |
 | the server sends Retry-After longer than the cap   | The cap wins; `retry.after_capped`                                             |
-| the schedule is unbounded                          | Debug: precondition failure. Release: capped at 10 attempts, `retry.unbounded` |
-| two layers both retry the same dependency          | Not detectable at runtime; the shared budget bounds the multiplication         |
+| the schedule is unbounded                          | Does not compile: `retry` takes only a `BoundedSchedule`                       |
+| a retry runs inside another retry's attempt        | One attempt only, `retry.nested`, unless `nesting: .allow`                     |
+| an attempt's own timeout fires                     | Counted as transient and retried; `timed_out=true` on the event               |
+| the error is a `DecodingError`                     | Not retried (`.standard`): the same bytes fail the same way                   |
 
 ## Events
 
 `retry.attempt_failed` (attempt, error type, decision, next delay),
 `retry.succeeded`, `retry.exhausted`, `retry.budget_exhausted`,
-`retry.deadline_skip`, `retry.defect`, `retry.unbounded`, `retry.after_capped`.
+`retry.deadline_skip`, `retry.defect`, `retry.permanent`, `retry.nested`,
+`retry.after_capped`.
 
 ## Testing
 
