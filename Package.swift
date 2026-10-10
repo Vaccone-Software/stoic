@@ -47,8 +47,7 @@ let package = Package(
         .library(name: "StoicObservability", targets: ["StoicObservability"]),
         .library(name: "StoicJSON", targets: ["StoicJSON"]),
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
-        // The command the build-tool plugin runs (design/13). Needs the
-        // `Lint` trait: `.package(url: …, traits: ["Lint"])`.
+        .library(name: "StoicStore", targets: ["StoicStore"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -69,7 +68,6 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "604.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.16.0"),
         .package(url: "https://github.com/apple/swift-metrics", from: "2.12.0"),
-        .library(name: "StoicStore", targets: ["StoicStore"]),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,

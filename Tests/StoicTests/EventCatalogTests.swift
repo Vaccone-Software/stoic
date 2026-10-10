@@ -9,8 +9,7 @@ struct EventCatalogTests {
         let sources = URL(filePath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Sources")
-        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|ratelimiter)\.[a-z_]+)""#)
-        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|store)\.[a-z_]+)""#)
+        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|ratelimiter|store)\.[a-z_]+)""#)
         var names: Set<String> = []
         let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
         while let file = enumerator?.nextObject() as? URL {
