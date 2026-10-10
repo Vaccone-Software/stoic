@@ -57,6 +57,7 @@ public enum EventCatalog {
         Entry(name: "retry.nested", level: .notice, meaning: "A retry inside another retry's attempt made a single attempt."),
         Entry(name: "retry.permanent", level: .info, meaning: "A retry stopped because the failure was classified as permanent."),
         Entry(name: "retry.succeeded", level: .info, meaning: "An operation succeeded after at least one retry."),
+        Entry(name: "saga.compensation_failed", level: .error, meaning: "A saga's compensation threw; the remaining compensations still ran and the saga's error is unchanged."),
         Entry(name: "scope.child_failed", level: .error, meaning: "A task scope's fork failed; the body and the other forks were cancelled."),
         Entry(name: "scope.finalizer_abandoned", level: .error, meaning: "A finalizer overran its allowance and was abandoned."),
         Entry(name: "scope.finalizer_failed", level: .error, meaning: "A finalizer threw; the scope's outcome was unchanged."),

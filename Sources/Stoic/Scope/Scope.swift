@@ -170,6 +170,8 @@ struct Finalizer: Sendable {
     let label: String
     let timeout: Duration?
     let runsOn: RunsOn
+    /// What is reported when the finalizer throws: a saga names its own.
+    var failedEvent: EventName = "scope.finalizer_failed"
     let run: @Sendable (Exit) async throws -> Void
 }
 
@@ -273,7 +275,7 @@ final class ScopeState: Sendable {
         }
         switch await waitForTask(task, within: allowed, clock: clock) {
         case .finished(let error?):
-            report("scope.finalizer_failed", .error, [.init("error", .error(error))])
+            report(finalizer.failedEvent, .error, [.init("error", .error(error))])
         case .finished(nil):
             let took = start.duration(to: clock.now)
             if took > allowed.saturatingMultiplied(by: 0.5) {

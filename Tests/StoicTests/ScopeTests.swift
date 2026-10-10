@@ -236,14 +236,19 @@ struct ScopeTests {
 
     @Test func aFailingCompensationDoesNotStopTheOthers() async {
         let log = OrderLog()
+        let events = RecordingInstrumentation()
         await #expect(throws: Failure.boom) {
-            try await withSaga { (saga: borrowing Saga) throws(Failure) in
-                _ = try await saga.step({ () throws(Failure) -> Int in 1 }, compensate: { _ in log.append("undo 1") })
-                _ = try await saga.step({ () throws(Failure) -> Int in 2 }, compensate: { _ in throw CleanupFailed() })
-                throw .boom
+            try await withTestAmbient(clock: ContinuousClock(), events: events) {
+                try await withSaga { (saga: borrowing Saga) throws(Failure) in
+                    _ = try await saga.step({ () throws(Failure) -> Int in 1 }, compensate: { _ in log.append("undo 1") })
+                    _ = try await saga.step({ () throws(Failure) -> Int in 2 }, compensate: { _ in throw CleanupFailed() })
+                    throw .boom
+                }
             }
         }
         #expect(log.values == ["undo 1"])
+        #expect(events.names.contains("saga.compensation_failed"))
+        #expect(!events.names.contains("scope.finalizer_failed"))
     }
 
     // MARK: TaskScope

@@ -29,7 +29,7 @@ public struct Saga: ~Copyable {
         compensate: @escaping @Sendable (R) async throws -> Void
     ) async throws(Failure) -> R {
         let value = try await action()
-        state.register(Finalizer(label: label, timeout: timeout, runsOn: .failureOnly) { _ in
+        state.register(Finalizer(label: label, timeout: timeout, runsOn: .failureOnly, failedEvent: "saga.compensation_failed") { _ in
             try await compensate(value)
         })
         return value
@@ -38,9 +38,11 @@ public struct Saga: ~Copyable {
 
 /// Runs `body` as a saga. See ``Saga``.
 ///
-/// Compensation failures are reported (`saga.compensation_failed`, through
-/// the scope's `scope.finalizer_failed` event) and do not stop the remaining
-/// compensations; the body's error passes through unchanged.
+/// Compensation failures are reported (`saga.compensation_failed`, error
+/// level, naming the step) and do not stop the remaining compensations; the
+/// body's error passes through unchanged. A compensation that overruns its
+/// time is abandoned and reported as any finalizer is
+/// (`scope.finalizer_abandoned`).
 public nonisolated(nonsending) func withSaga<R, Failure: Error>(
     exitBudget: Duration = .seconds(30),
     stepTimeout: Duration = .seconds(10),
