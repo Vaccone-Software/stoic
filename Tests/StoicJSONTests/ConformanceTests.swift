@@ -64,7 +64,7 @@ let acceptCases: [Accept] = [
     Accept("object_whitespace", "{ \"a\" : 1 }", ["a": 1]),
     Accept("object_nested", #"{"a":{"b":{"c":[1,{"d":null}]}}}"#),
     Accept("object_empty_key", #"{"":1}"#, ["": 1]),
-    Accept("object_escaped_key", #"{"ab":1}"#, ["ab": 1]),
+    Accept("object_escaped_key", #"{"a\u0062":1}"#, ["ab": 1]),
     Accept("object_keys_equal_only_canonically", "{\"\u{E9}\":1,\"e\u{301}\":2}"),
     Accept("object_member_named_proto", #"{"__proto__":1,"constructor":2}"#),
     Accept("depth_exactly_64", deepArrays(64)),
@@ -98,12 +98,12 @@ let acceptCases: [Accept] = [
     // Strings
     Accept("string_empty", #""""#, ""),
     Accept("string_simple_escapes", #""\"\\\/\b\f\n\r\t""#, "\"\\/\u{8}\u{C}\n\r\t"),
-    Accept("string_unicode_escape", #""Aéé""#, "A\u{E9}\u{E9}"),
+    Accept("string_unicode_escape", #""\u0041\u00e9\u00E9""#, "A\u{E9}\u{E9}"),
     Accept("string_nul_escape", #""\u0000""#, "\u{0}"),
-    Accept("string_surrogate_pair", #""😀""#, "\u{1F600}"),
-    Accept("string_surrogate_pair_lowercase", #""😀""#, "\u{1F600}"),
-    Accept("string_max_scalar_escaped", #""􏿿""#, "\u{10FFFF}"),
-    Accept("string_two_pairs", #""😀😁""#, "\u{1F600}\u{1F601}"),
+    Accept("string_surrogate_pair", #""\uD83D\uDE00""#, "\u{1F600}"),
+    Accept("string_surrogate_pair_lowercase", #""\ud83d\ude00""#, "\u{1F600}"),
+    Accept("string_max_scalar_escaped", #""\uDBFF\uDFFF""#, "\u{10FFFF}"),
+    Accept("string_two_pairs", #""\uD83D\uDE00\uD83D\uDE01""#, "\u{1F600}\u{1F601}"),
     Accept("string_utf8_2byte", "\"\u{E9}\"", "\u{E9}"),
     Accept("string_utf8_3byte", "\"\u{20AC}\"", "\u{20AC}"),
     Accept("string_utf8_4byte", "\"\u{1F600}\"", "\u{1F600}"),
@@ -236,7 +236,7 @@ let rejectCases: [Reject] = [
     Reject("key_raw_newline", "{\"a\nb\":1}", .controlCharacter),
     Reject("string_lone_high_surrogate", #""\uD800""#, .loneSurrogate),
     Reject("string_lone_low_surrogate", #""\uDC00""#, .loneSurrogate),
-    Reject("string_high_then_plain_escape", #""\uD800A""#, .loneSurrogate),
+    Reject("string_high_then_plain_escape", #""\uD800\u0041""#, .loneSurrogate),
     Reject("string_high_then_character", #""\uD800x""#, .loneSurrogate),
     Reject("string_high_then_high", #""\uD800\uD800""#, .loneSurrogate),
     Reject("string_pair_in_wrong_order", #""\uDC00\uD800""#, .loneSurrogate),
@@ -291,7 +291,7 @@ let rejectCases: [Reject] = [
 
     // Duplicate keys, by default
     Reject("duplicate_key", #"{"a":1,"a":2}"#, .duplicateKey),
-    Reject("duplicate_key_via_escape", #"{"a":1,"a":2}"#, .duplicateKey),
+    Reject("duplicate_key_via_escape", #"{"a":1,"\u0061":2}"#, .duplicateKey),
     Reject("duplicate_key_nested", #"{"x":{"a":1,"b":2,"a":3}}"#, .duplicateKey),
     Reject("duplicate_key_non_adjacent", #"{"a":1,"b":2,"c":3,"a":4}"#, .duplicateKey),
     Reject("duplicate_empty_key", #"{"":1,"":2}"#, .duplicateKey),
@@ -356,7 +356,7 @@ struct ConformanceTests {
     }
 
     @Test func stringEscapesDecodeToTheRightScalars() throws {
-        let value = try #require(parse(#""𝄞""#).value)
+        let value = try #require(parse(#""\uD834\uDD1E""#).value)
         #expect(value.string?.unicodeScalars.map(\.value) == [0x1D11E])
     }
 

@@ -182,6 +182,8 @@ struct NumberParts: Hashable {
 
     /// Exponents beyond this are saturated; far past anything a `Double`
     /// holds, and small enough that adding a digit count cannot overflow.
+    /// Two out-of-range numbers whose exponents both saturate compare equal;
+    /// the parser rejects such numbers, so only hand-built ones can meet.
     private static let exponentCap = 1 << 40
 
     /// Reads a lexeme that matches the JSON number grammar.

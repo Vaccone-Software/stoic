@@ -213,11 +213,11 @@ struct OptionsTests {
         let options = JSONParseOptions(maxStringBytes: 4)
         #expect(parse("\"\u{1F600}\"", options).value != nil)  // 4 bytes
         #expect(parse("\"\u{1F600}a\"", options).error?.code == .stringLimit)
-        #expect(parse(#""😀""#, options).value != nil)  // escapes decode to 4 bytes
-        #expect(parse(#""éé""#, options).value != nil)  // 2 + 2
-        #expect(parse(#""ééa""#, options).error?.code == .stringLimit)
+        #expect(parse(#""\uD83D\uDE00""#, options).value != nil)  // escapes decode to 4 bytes
+        #expect(parse(#""\u00e9\u00e9""#, options).value != nil)  // 2 + 2
+        #expect(parse(#""\u00e9\u00e9a""#, options).error?.code == .stringLimit)
         // Six source bytes decode to one: the decoded size is what is limited.
-        #expect(parse(#""aaaa""#, options).value != nil)
+        #expect(parse(#""\u0061\u0061\u0061\u0061""#, options).value != nil)
     }
 
     @Test func maxStringBytesAppliesToKeys() {

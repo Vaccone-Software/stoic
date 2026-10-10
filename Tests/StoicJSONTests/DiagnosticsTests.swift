@@ -73,7 +73,7 @@ let locatedCases: [Located] = [
         "lone_surrogate_points_at_the_escape", #""\uD800""#,
         code: .loneSurrogate, offset: 1, line: 1, column: 2),
     Located(
-        "lone_surrogate_second_escape_blamed_on_first", #""ab\uD800A""#,
+        "lone_surrogate_second_escape_blamed_on_first", #""ab\uD800\u0041""#,
         code: .loneSurrogate, offset: 3, line: 1, column: 4),
     Located(
         "invalid_unicode_points_at_the_bad_digit", #""\u00G0""#,
