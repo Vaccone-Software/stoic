@@ -40,6 +40,9 @@ public indirect enum SchemaNode: Sendable {
     /// the conversion; the conversion itself is a closure, so exporters
     /// and generators treat it as opaque and rely on ``TransformNode/examples``.
     case transformed(TransformNode)
+    /// A value that is one of several shapes, told apart by the value of
+    /// one key: a Swift enumeration with payloads, on the wire.
+    case union(UnionNode)
     /// A schema named so it can refer to itself. `resolve` produces its
     /// node on demand: calling it while the tree is being built would
     /// recurse forever, so a consumer calls it once per name and refers to
@@ -54,7 +57,7 @@ public indirect enum SchemaNode: Sendable {
             constraints
         case .optional(let wrapped, _): wrapped.constraints
         case .transformed(let transform): transform.base.constraints
-        case .boolean, .enumeration, .integerEnumeration, .object, .lazy: []
+        case .boolean, .enumeration, .integerEnumeration, .object, .union, .lazy: []
         }
     }
 
@@ -73,7 +76,7 @@ public indirect enum SchemaNode: Sendable {
         case .transformed(var transform):
             transform.base = transform.base.adding(extra)
             return .transformed(transform)
-        case .boolean, .enumeration, .integerEnumeration, .object, .lazy: return self
+        case .boolean, .enumeration, .integerEnumeration, .object, .union, .lazy: return self
         }
     }
 
@@ -90,6 +93,7 @@ public indirect enum SchemaNode: Sendable {
         case .integerEnumeration(_, let cases): "one of " + cases.map { String($0.value) }.joined(separator: ", ")
         case .dictionary, .object: "an object"
         case .transformed(let transform): transform.description
+        case .union(let union): union.expectation
         case .optional(let wrapped, _): wrapped.expectation
         case .json: "any JSON value"
         case .lazy(let name, _): "a \(name)"
@@ -131,6 +135,54 @@ public struct TransformNode: Sendable {
         self.name = name
         self.description = description
         self.examples = examples
+    }
+}
+
+/// A tagged union's shape.
+public struct UnionNode: Sendable {
+    /// The Swift type's name, for `title` in the export and in messages.
+    public var name: String
+    public var doc: String?
+    /// The key whose value names the case: `type`.
+    public var discriminator: String
+    /// The key under which a payload that is not an object is written.
+    public var valueKey: String
+    public var cases: [UnionCaseNode]
+
+    public init(
+        name: String, doc: String? = nil, discriminator: String, valueKey: String, cases: [UnionCaseNode]
+    ) {
+        self.name = name
+        self.doc = doc
+        self.discriminator = discriminator
+        self.valueKey = valueKey
+        self.cases = cases
+    }
+
+    /// The tags, in declaration order.
+    public var tags: [String] { cases.map(\.tag) }
+
+    var tagExpectation: String { "one of " + tags.map { "\"\($0)\"" }.joined(separator: ", ") }
+
+    var expectation: String { "an object whose \"\(discriminator)\" is \(tagExpectation)" }
+}
+
+/// One alternative of a ``UnionNode``.
+public struct UnionCaseNode: Sendable {
+    /// The discriminator's value for this case.
+    public var tag: String
+    public var doc: String?
+    /// The payload's schema.
+    public var node: SchemaNode
+    /// Whether the payload (an object) is written beside the discriminator,
+    /// rather than under the union's value key.
+    public var isFlat: Bool
+
+    public init(tag: String, doc: String? = nil, node: SchemaNode, isFlat: Bool) {
+        self.tag = tag
+        self.doc = doc
+        self.node = node
+        self.isFlat = isFlat
     }
 }
 

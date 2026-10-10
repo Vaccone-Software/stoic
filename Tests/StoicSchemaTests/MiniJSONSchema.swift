@@ -35,6 +35,10 @@ struct MiniJSONSchema {
         if let branches = schema["anyOf"]?.array {
             guard branches.contains(where: { accepts(instance, against: $0) }) else { return false }
         }
+        if let branches = schema["oneOf"]?.array {
+            // Exactly one branch: the discriminator makes that decidable.
+            guard branches.filter({ accepts(instance, against: $0) }).count == 1 else { return false }
+        }
         if let type = schema["type"]?.string, !matches(type: type, instance) { return false }
         if let allowed = schema["enum"]?.array, !allowed.contains(instance) { return false }
         if let constant = schema["const"], constant != instance { return false }

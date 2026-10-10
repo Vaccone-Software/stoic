@@ -277,6 +277,34 @@ the order it was built:
   (`SchemaNode.integerEnumeration`, with the Swift case names kept for
   documentation): `type: integer`, `enum: [...]`, `x-stoic-enum-names`.
 
+### Tagged unions
+
+- **`Schema.union(discriminator:) { Case(…) … }`** declares an enumeration
+  with payloads. Each `Case` names its tag, its payload schema, how to build
+  the enumeration from a payload (the case's own name, which is a function)
+  and how to take a payload back out (a closure returning `nil` for every
+  other case). Swift has no case paths, so each case says it twice; a macro
+  will write the pair. A case without a payload is
+  `Case("point", Shape.point) { if case .point = $0 { true } else { false } }`.
+- **Flat or keyed.** An object payload is written flat, beside the
+  discriminator (`{"type": "circle", "radius": 5}`), which is how wire
+  formats look and what `oneOf` + `const` validates. Any other payload is
+  written under a value key (`{"type": "label", "value": "Hello"}`). A
+  `lazy` payload counts as not an object, since looking inside would
+  recurse while the schema is built.
+- **Decoding** reads the discriminator first, because until it is known
+  nothing else can be: not an object is `type_mismatch`; absent is
+  `missing_key` at `$.type`; a non-string is `type_mismatch` there; an
+  unknown tag is `not_one_of` there with the tags listed and the nearest
+  suggested. The payload then decodes as any schema does, accumulating, and
+  sees the object without its discriminator, so a payload that rejects
+  unknown keys does not reject `type`.
+- **Export** is `oneOf` with one branch per case, each pinning the
+  discriminator with `const` and requiring it, plus `x-stoic-discriminator`.
+- **Declaration errors trap**: a tag twice, a flat payload that declares the
+  discriminator itself, a value key equal to the discriminator. A value that
+  is none of the declared cases is found by `validate(_:)`.
+
 ## Non-goals
 
 Formats other than JSON in the first version (property lists and YAML can

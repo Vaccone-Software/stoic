@@ -140,6 +140,9 @@ struct JSONSchemaExporter {
         case .object(let object):
             out = export(object, location: location)
 
+        case .union(let union):
+            out = export(union, location: location)
+
         case .lazy(let name, let resolve):
             if !started.contains(name) {
                 started.insert(name)
@@ -177,6 +180,45 @@ struct JSONSchemaExporter {
         out["properties"] = .object(properties)
         if !required.isEmpty { out["required"] = .array(required) }
         if object.unknownKeys == .reject { out["additionalProperties"] = false }
+        return out
+    }
+
+    /// A union is `oneOf` its cases, and each case pins the discriminator
+    /// with a `const`, so exactly one branch can match a document. A flat
+    /// case is its payload's object schema with the discriminator added as
+    /// a required property; any other payload goes under the value key.
+    private mutating func export(_ union: UnionNode, location: String) -> JSONObject {
+        var out = JSONObject()
+        out["title"] = .string(union.name)
+        if let doc = union.doc { out["description"] = .string(doc) }
+        var branches: [JSONValue] = []
+        for entry in union.cases {
+            var branch: JSONObject
+            let tag = JSONValue.object(["type": "string", "const": .string(entry.tag)])
+            if entry.isFlat, case .object(let payload) = entry.node {
+                branch = export(payload, location: location)
+                var properties = JSONObject()
+                properties[union.discriminator] = tag
+                for member in branch["properties"]?.object ?? JSONObject() { properties[member.key] = member.value }
+                branch["properties"] = .object(properties)
+                branch["required"] = .array(
+                    [.string(union.discriminator)] + (branch["required"]?.array ?? []))
+            } else {
+                branch = JSONObject()
+                branch["type"] = "object"
+                var properties = JSONObject()
+                properties[union.discriminator] = tag
+                properties[union.valueKey] = .object(export(entry.node, location: location + "." + union.valueKey))
+                branch["properties"] = .object(properties)
+                branch["required"] = .array([.string(union.discriminator), .string(union.valueKey)])
+                branch["additionalProperties"] = false
+            }
+            branch["title"] = .string(entry.tag)
+            if let doc = entry.doc { branch["description"] = .string(doc) }
+            branches.append(.object(branch))
+        }
+        out["oneOf"] = .array(branches)
+        out["x-stoic-discriminator"] = .string(union.discriminator)
         return out
     }
 
