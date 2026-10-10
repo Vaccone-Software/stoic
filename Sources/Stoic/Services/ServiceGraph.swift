@@ -209,13 +209,38 @@ public struct ServiceGraph: Sendable {
                             }
                             return (key, value)
                         } catch {
+                            // Cancellation passes through as itself; a start
+                            // cut short by its own timeout is a deadline
+                            // rejection, not a mysterious CancellationError.
+                            if error is CancellationError {
+                                if Task.isCancelled { throw error }
+                                throw ServiceGraphError.startFailed(
+                                    service: key,
+                                    underlying: Rejection(.deadlineExceeded, label: "\(label).\(key).start")
+                                )
+                            }
                             throw ServiceGraphError.startFailed(service: key, underlying: error)
                         }
                     }
                 }
             }
             launchReady()
-            while let (key, value) = try await group.next() {
+            // After the first failure the other starts are cancelled, but a
+            // start may complete anyway; it is drained and registered for
+            // its stop like any other, so nothing that started is leaked.
+            var firstFailure: (any Error)?
+            while true {
+                let next: (AnyServiceKey, any Sendable)?
+                do {
+                    next = try await group.next()
+                } catch {
+                    if firstFailure == nil {
+                        firstFailure = error
+                        group.cancelAll()
+                    }
+                    continue
+                }
+                guard let (key, value) = next else { break }
                 started[key] = value
                 pending.remove(key)
                 running.remove(key)
@@ -229,7 +254,15 @@ public struct ServiceGraph: Sendable {
                 Ambient.record(Event("service.started", level: .debug, label: label, fields: [
                     .init("service", .string(key.name), privacy: .public),
                 ]))
-                launchReady()
+                if firstFailure == nil { launchReady() }
+            }
+            if let firstFailure {
+                // A failure caused by the caller's own cancellation is
+                // reported as cancellation, unwrapped.
+                if Task.isCancelled, case ServiceGraphError.startFailed(_, let underlying) = firstFailure, underlying is CancellationError {
+                    throw CancellationError()
+                }
+                throw firstFailure
             }
         }
         return started

@@ -143,3 +143,72 @@ struct ServiceGraphTests {
         #expect(log.values == ["stop true"])
     }
 }
+
+@Suite("ServiceGraph: review fixes")
+struct ServiceGraphReviewTests {
+    struct Boom: Error {}
+    static let slow = ServiceKey<Int>("slow")
+    static let failing = ServiceKey<Int>("failing")
+
+    @Test func aServiceThatFinishesStartingAfterASiblingFailsIsStillStopped() async {
+        let log = OrderLog()
+        let graph = try! ServiceGraph(label: "app") {
+            Provide(Self.slow) { _ in
+                await TestGate.opened(after: .milliseconds(30))   // ignores cancellation
+                log.append("slow started")
+                return 1
+            } stop: { _, _ in log.append("slow stopped") }
+            Provide(Self.failing) { _ -> Int in throw Boom() }
+        }
+        await #expect(throws: ServiceGraphError.self) { try await graph.run { _ in } }
+        #expect(log.values == ["slow started", "slow stopped"], "previously: started and never stopped")
+    }
+
+    @Test func cancellingTheCallerIsReportedAsCancellation() async {
+        let graph = try! ServiceGraph(label: "app") {
+            Provide(Self.slow) { _ in
+                try await Task.sleep(for: .seconds(60))
+                return 1
+            }
+        }
+        let task = Task { try await graph.run { _ in } }
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test func aStartTimeoutIsADeadlineRejection() async {
+        let clock = TestClock()
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                let graph = try ServiceGraph(label: "app") {
+                    Provide(Self.slow, startTimeout: .seconds(5)) { _ in
+                        try await Ambient.sleep(for: .seconds(60))
+                        return 1
+                    }
+                }
+                try await graph.run { _ in }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(5))
+        do {
+            try await task.value
+            Issue.record("expected a start failure")
+        } catch let ServiceGraphError.startFailed(service, underlying) {
+            #expect(service.name == "slow")
+            #expect((underlying as? Rejection)?.reason == .deadlineExceeded)
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
+    }
+}
+
+extension TestGate {
+    /// Waits `duration` of real time, ignoring cancellation.
+    static func opened(after duration: Duration) async {
+        let gate = TestGate()
+        Task { try? await Task.sleep(for: duration); gate.open() }
+        await gate.wait()
+    }
+}
