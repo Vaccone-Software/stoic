@@ -50,7 +50,7 @@ struct RaceAndMapTests {
 
     @Test func raceAcceptsAnArrayOfRacers() async throws {
         let racers = (0..<5).map { index in
-            Racer<Int, Failure> {
+            Racer<Int, Failure> { () throws(Failure) -> Int in
                 if index < 4 { throw .boom(index) }
                 return index
             }
