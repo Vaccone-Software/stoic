@@ -21,6 +21,8 @@ public struct CancellationCause: Hashable, Sendable, CustomStringConvertible {
     public static let userRequested = CancellationCause(rawValue: "user_requested")
     /// Newer work replaced it, as in a ``TaskSlot`` or a race that was won.
     public static let superseded = CancellationCause(rawValue: "superseded")
+    /// A sibling failed, and the group it belonged to stopped.
+    public static let siblingFailed = CancellationCause(rawValue: "sibling_failed")
     /// The scope that owned it ended.
     public static let scopeEnded = CancellationCause(rawValue: "scope_ended")
     /// The supervisor that owned it stopped it.
