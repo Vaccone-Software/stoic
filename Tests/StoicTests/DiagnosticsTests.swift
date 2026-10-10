@@ -23,4 +23,24 @@ struct DiagnosticsTests {
         #expect(!report.contains("hunter2"))
         #expect(Diagnostics.snapshot(includePrivate: true).contains("hunter2"))
     }
+
+    @Test func aSnapshotOfTheRingAgreesWithItselfWhileEventsArrive() async {
+        let ring = EventRing(capacity: 64)
+        let recording = Task {
+            for index in 0..<4_000 {
+                ring.record(Event("test.busy", fields: [.init("index", .int(index))]))
+                if index % 64 == 0 { await Task.yield() }
+            }
+        }
+        var snapshots = 0
+        while !recording.isCancelled, ring.totalRecorded < 4_000 {
+            let (events, total) = ring.consistentSnapshot()
+            // A full ring holds exactly `capacity` events; until then, all of them.
+            #expect(events.count == min(ring.capacity, total), "\(events.count) events retained of \(total) recorded")
+            snapshots += 1
+            await Task.yield()
+        }
+        await recording.value
+        #expect(snapshots > 0)
+    }
 }

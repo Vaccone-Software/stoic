@@ -53,6 +53,17 @@ public final class EventRing: Instrumentation, Sendable {
         state.withLock { $0.total }
     }
 
+    /// The retained events and the running total, read under one lock, so
+    /// the pair always agrees: reading `events` and `totalRecorded` one
+    /// after the other can straddle a `record` and report a ring with more
+    /// events than were ever recorded.
+    func consistentSnapshot() -> (events: [Event], total: Int) {
+        state.withLock { state in
+            let ordered = state.slots[state.next...] + state.slots[..<state.next]
+            return (ordered.compactMap { $0 }, state.total)
+        }
+    }
+
     /// The process-wide ring, created by ``Diagnostics/install(capacity:)``.
     static let shared = Mutex<EventRing?>(nil)
 }
@@ -80,8 +91,9 @@ public enum Diagnostics {
         var lines: [String] = []
         let ring = EventRing.shared.withLock { $0 }
         if let ring {
-            lines.append("Recent events (\(ring.events.count) of \(ring.totalRecorded) recorded):")
-            for event in ring.events {
+            let (events, total) = ring.consistentSnapshot()
+            lines.append("Recent events (\(events.count) of \(total) recorded):")
+            for event in events {
                 lines.append("  " + render(event, includePrivate: includePrivate))
             }
         } else {
