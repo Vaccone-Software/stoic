@@ -49,3 +49,8 @@ extension Collection where Element == SchemaIssue {
 func at(_ keys: String...) -> JSONPath {
     JSONPath(keys.map { .key($0) })
 }
+
+/// Records a test failure without a return value, so it can end a `guard`.
+func fail(_ message: String, sourceLocation: Testing.SourceLocation = #_sourceLocation) {
+    Testing.Issue.record(Comment(rawValue: message), sourceLocation: sourceLocation)
+}
