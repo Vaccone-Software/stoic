@@ -175,7 +175,7 @@ final class TaskScopeState: Sendable {
 
     func cancelForks(cause reason: CancellationCause) {
         cause.record(reason)
-        let forks = state.withLock { Array($0.forks.values) }
+        let forks = state.withLock { $0.forks.valuesInKeyOrder }
         for fork in forks { fork.cancel() }
     }
 
@@ -183,7 +183,7 @@ final class TaskScopeState: Sendable {
     func close() async {
         let forks = state.withLock { state -> [Task<Void, Never>] in
             state.closed = true
-            return Array(state.forks.values)
+            return state.forks.valuesInKeyOrder
         }
         if !forks.isEmpty {
             cause.record(.scopeEnded)

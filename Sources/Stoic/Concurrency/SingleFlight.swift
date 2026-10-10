@@ -198,7 +198,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
             guard let flight = state.flights[key], flight.id == flightID else { return [] }
             state.flights[key] = nil
             for waiterID in flight.waiters.keys { state.membership[waiterID] = nil }
-            return Array(flight.waiters.values)
+            return flight.waiters.valuesInKeyOrder
         }
         let outcome: Outcome = result.mapError { .failed($0) }
         for waiter in waiters { waiter.resume(returning: outcome) }

@@ -681,7 +681,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
                     return core.outbox
                 }
                 if batch.isEmpty { return }
-                let listeners = subscribers.withLock { Array($0.continuations.values) }
+                let listeners = subscribers.withLock { $0.continuations.valuesInKeyOrder }
                 for state in batch {
                     for listener in listeners { listener.yield(state) }
                 }

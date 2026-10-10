@@ -60,7 +60,7 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     }
 
     deinit {
-        let work = state.withLock { Array($0.unfinished.values) }
+        let work = state.withLock { $0.unfinished.valuesInKeyOrder }
         for item in work {
             item.cause.record(.scopeEnded)
             item.task.cancel()
@@ -109,7 +109,7 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     public func cancel() {
         let work = state.withLock { state -> [Work] in
             state.generation += 1
-            return Array(state.unfinished.values)
+            return state.unfinished.valuesInKeyOrder
         }
         for item in work {
             item.cause.record(.superseded)
@@ -120,7 +120,7 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     /// Cancels all work in the slot and waits for every piece to finish.
     public func cancelAndWait() async {
         cancel()
-        for task in state.withLock({ $0.unfinished.values.map(\.task) }) {
+        for task in state.withLock({ $0.unfinished.valuesInKeyOrder.map(\.task) }) {
             await task.value
         }
     }
@@ -137,7 +137,7 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
         // what exclusive work waits for.
         let (generation, superseded) = state.withLock { state -> (UInt64, [Work]) in
             state.generation += 1
-            return (state.generation, Array(state.unfinished.values))
+            return (state.generation, state.unfinished.valuesInKeyOrder)
         }
         for item in superseded {
             item.cause.record(.superseded)

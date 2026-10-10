@@ -94,7 +94,7 @@ public final class ExpiringWork: Sendable {
     public func expire() {
         let runs = state.withLock { state -> [Run] in
             state.expired = true
-            return Array(state.running.values)
+            return state.running.valuesInKeyOrder
         }
         for run in runs {
             run.cause.record(.systemExpiring)

@@ -129,7 +129,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     deinit {
         core.withLock { core in
             for task in core.stateWork { task.cancel() }
-            for observer in core.observers.values { observer.finish() }
+            for observer in core.observers.valuesInKeyOrder { observer.finish() }
         }
     }
 
@@ -261,7 +261,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         core.state = next
         core.history.append(record)
         if core.history.count > historyLimit { core.history.removeFirst(core.history.count - historyLimit) }
-        for observer in core.observers.values { observer.yield(next) }
+        for observer in core.observers.valuesInKeyOrder { observer.yield(next) }
 
         // Enter: start the new visit's work and its timer.
         let visit = core.visit
