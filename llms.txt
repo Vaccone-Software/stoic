@@ -1,0 +1,58 @@
+# Stoic
+
+> Robustness primitives for Swift apps (Swift 6.4, Apple platforms 27+): deadlines, retry, scopes, structured concurrency helpers, state machines, supervision, service graphs, structured errors, strict JSON and schema validation, and test tooling. Plain async functions over Swift concurrency; typed errors pass through.
+
+Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation).
+
+## Time
+- `withTimeout(_ duration:) { … }` / `withDeadline(_ deadline:) { … }`: cooperative; operation runs as a child task inheriting the caller's actor; result must be Sendable; error passes through. `Deadline.current` narrows, never widens.
+- `abandoningAfter(_ duration:, label:, limit:) { syncWork() }`: for uncancellable blocking work; runs on Dispatch; throws `PolicyError.rejected(.deadlineExceeded)`; caps abandoned work per label.
+- `CancellationCause.current`: `.deadline`, `.userRequested`, `.superseded`, `.siblingFailed`, `.scopeEnded`, `.supervisorStopped`, `.stateExited`.
+- `Ambient.sleep(for:)`: sleep on the ambient (injectable) clock.
+
+## Retry
+- `retry(.exponential(base: .milliseconds(200)).attempts(5)) { attempt in … }`: schedule must be bounded (`.attempts(n)`); budget per call site on by default; nested retries make one attempt; never past the deadline; rethrows the last error.
+- `retry(_:attemptTimeout:) { … }`: each attempt bounded; timed-out attempts are retried.
+- `Schedule`: `.fixed`, `.linear`, `.exponential` (jittered, capped 5 min by default), `.fibonacci`, `.decorrelated`, `.delays([…])`; `.capped(at:)`, `.jittered()`, `.unjittered()`, `.upTo(elapsed:)`, `.union`, `.intersection`, `.andThen`, `.attempts(n)` → `BoundedSchedule` (`maximumAttempts`, `worstCase(attemptTimeout:)`).
+- `Retryable` (errors classify themselves: `.retry`, `.retryAfter(d)`, `.stop`), `RetryClassifier.standard/.transientOnly/.never`, `RetryBudget.perCallSite/.named(_)/.unlimited`, `RetryNesting.singleAttempt/.allow`.
+- `recur(_ schedule:) { attempt in .continue / .continueAfter(d) / .stop }` → `RecurOutcome`.
+
+## Concurrency
+- `TaskSlot<S, F>(label:)`: `.run { … } deliver: { result in … }` (only newest delivers, on caller's actor), `.runExclusively`, `.cancel()`.
+- `race(a, b[, c, d])` or `race([Racer { … }])`: first success; losers cancelled and awaited.
+- `mapConcurrent(items, limit: n) { … }`, `mapConcurrentResults`.
+- `AsyncSemaphore(permits:label:).withPermit { … }`, `AsyncMutex(label:).withLock { … }`: FIFO, cancellation/deadline aware; throw `PolicyError`.
+- `SingleFlight<K, V, F>(label:).run(key) { … }`: shared execution, refcounted cancellation.
+- `Channel<T>(capacity:, overflow: .suspend/.dropOldest/.dropNewest/.reject, label:)`: bounded; `send`, `trySend`, `receive`, `finish`, `for await`.
+
+## Scopes
+- `withScope { scope in let r = try await scope.acquire { … } release: { r, exit in … } }`: LIFO release on success/failure/cancel; shielded; bounded by `exitBudget`/`finalizerTimeout`.
+- `Resource(label:acquire:release:)`, `scope.onExit { exit in … }`.
+- `withTaskScope { scope in scope.fork(label:) { … } }`: forks cancelled/awaited before release; a failing fork cancels the body; throws `ConcurrentFailure`.
+- `withSaga { saga in try await saga.step { … } compensate: { … } }`.
+
+## Errors
+- `withContext("doing X") { … }`, `error.context("…")` → `Report` (root, frames, suppressed, `first(T.self)`); cancellation never wrapped.
+- `Defect` (never retried), `PolicyError<F>` (`.rejected(Rejection)` / `.failed(F)`), `Rejection.Reason` (`.deadlineExceeded`, `.cancelled`, `.closed`, `.full`, `.abandonmentLimit`, …), `ConcurrentFailure<F>`.
+- `Secret<T>` (`reveal()`), `IdempotencyKey.random()` (create outside retry).
+
+## State machines
+- `StateMachine<S, E>(initial:label:) { state, event in .to(next, timeout:) / .stay / .ignore / .invalid("why") }`; `.send(e)`; `.whileIn(state, label:) { sender in … }` (cancelled on exit; stale events dropped); `.states()`.
+- `StateGraph.explore(from:events:transition:)`: `.states`, `.invalid`, `.unreachable(of:)`, `.deadEnds`, `.mermaid`.
+
+## Supervision and services
+- `Supervisor(label:, strategy: .oneForOne/.oneForAll/.restForOne, intensity:, backoff:) { Child("x", restart: .permanent/.transient/.temporary, heartbeat: .init(interval:)) { heartbeat in … } }`; `try await supervisor.run()`; throws `SupervisorEscalation`.
+- `ServiceGraph(label:) { Provide(key, needs: [other.any]) { services in … } stop: { value, exit in … } }`; `try await graph.run { services in … }`; `ServiceKey<T>("name")`.
+
+## Validation
+- `StoicJSON`: `JSONDocument(parsing:options:)` (duplicate keys rejected, exact numbers, positions, limits), `JSONValue`, `JSONPath`.
+- `StoicSchema`: `Schema.object(T.self, default: T()) { Field("key", \.prop, .double(.range(0...10)), doc:, unit:, aliases:, secret:) }`; `.decode(text)` throws `ValidationFailure` with every issue (path, line:col, did-you-mean); `.decodeReporting(text, options: .lenient)`; `.encode(v, style: .sparse)`; `.jsonSchema()`; `Refined<R>`, `IntRange<lo, hi>`.
+
+## Observability
+- `Ambient.instrumentation` (default OSLog), `Event` (stable names in `EventCatalog`), `RecordingInstrumentation`.
+
+## Testing
+- `TestClock` (`advance(by:)`, `waitForSleepers(count:)`), `ImmediateClock` (records sleeps; not for timeouts), `withTestAmbient(clock:seed:events:)`, `@Test(.stoic(seed:))`, `FaultInjector`, `TestGate`.
+
+## Docs
+- [README.md](README.md), [AGENTS.md](AGENTS.md), [DESIGN.md](DESIGN.md), [design/](design/)
