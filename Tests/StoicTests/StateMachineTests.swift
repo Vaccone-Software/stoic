@@ -108,6 +108,42 @@ struct StateMachineTests {
         #expect(await iterator.next() == .listening)
     }
 
+    @Test func observersThatStopListeningAreForgotten() async {
+        let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: TestClock().erased, transition: Self.transitions)
+        for _ in 0..<100 {
+            var iterator: AsyncStream<Phase>.Iterator? = machine.states().makeAsyncIterator()
+            _ = await iterator?.next()
+            iterator = nil
+        }
+        let kept = machine.states()
+        #expect(await eventually { machine.observerCount == 1 }, "abandoned streams are removed; the live one stays")
+        _ = kept
+    }
+
+    @Test func aTimeoutCountsFromEntryNotFromWhenItsTimerFirstRuns() async {
+        let clock = TestClock()
+        let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: clock.erased, transition: Self.transitions)
+        machine.send(.start)
+        // No waiting for the timer to register: the clock moves at once.
+        await clock.advance(by: .seconds(13))
+        #expect(await eventually { machine.state == .failed })
+    }
+
+    @Test func stateWorkDoesNotInheritTheSendersDeadline() async {
+        let seen = SendableBox<Bool?>(nil)
+        let ran = AsyncGate()
+        let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: TestClock().erased, transition: Self.transitions)
+        machine.whileIn(.listening, label: "probe") { _ in
+            seen.mutate { $0 = Deadline.current != nil }
+            ran.open()
+        }
+        Deadline.$stored.withValue(.after(.milliseconds(50))) {
+            machine.send(.start)
+        }
+        await ran.wait()
+        #expect(seen.value == false, "state work belongs to the state, not to the sender")
+    }
+
     @Test func concurrentSendersAreSerialised() async {
         enum Counter: Sendable { case tick }
         let machine = StateMachine<Int, Counter>(initial: 0, label: "counter", historyLimit: 2_000, clock: TestClock().erased) { count, _ in

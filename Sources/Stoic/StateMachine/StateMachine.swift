@@ -102,7 +102,8 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         var history: [Record] = []
         var stateWork: [Task<Void, Never>] = []
         var activities: [Activity] = []
-        var observers: [AsyncStream<State>.Continuation] = []
+        var observers: [UInt64: AsyncStream<State>.Continuation] = [:]
+        var nextObserver: UInt64 = 0
     }
 
     private let transition: TransitionFunction
@@ -118,6 +119,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         transition: @escaping TransitionFunction
     ) {
         self.label = label
+        precondition(historyLimit >= 0, "StateMachine \(label): historyLimit must not be negative")
         self.historyLimit = historyLimit
         self.transition = transition
         self.clock = clock ?? Ambient.current.clock
@@ -127,7 +129,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     deinit {
         core.withLock { core in
             for task in core.stateWork { task.cancel() }
-            for observer in core.observers { observer.finish() }
+            for observer in core.observers.values { observer.finish() }
         }
     }
 
@@ -179,11 +181,23 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// every step it took to get there.
     public func states() -> AsyncStream<State> {
         let (stream, continuation) = AsyncStream<State>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        core.withLock { core in
+        let id = core.withLock { core -> UInt64 in
             continuation.yield(core.state)
-            core.observers.append(continuation)
+            defer { core.nextObserver += 1 }
+            core.observers[core.nextObserver] = continuation
+            return core.nextObserver
+        }
+        // An observer that stops listening is forgotten, so views that
+        // subscribe on every appearance cannot slow every transition down.
+        continuation.onTermination = { [weak self] _ in
+            self?.core.withLock { _ = $0.observers.removeValue(forKey: id) }
         }
         return stream
+    }
+
+    /// How many `states()` streams are still being listened to.
+    var observerCount: Int {
+        core.withLock { $0.observers.count }
     }
 
     // MARK: Internals
@@ -247,7 +261,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         core.state = next
         core.history.append(record)
         if core.history.count > historyLimit { core.history.removeFirst(core.history.count - historyLimit) }
-        for observer in core.observers { observer.yield(next) }
+        for observer in core.observers.values { observer.yield(next) }
 
         // Enter: start the new visit's work and its timer.
         let visit = core.visit
@@ -256,10 +270,13 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         }
         if let timeout {
             let clock = clock
+            // The timer's instant is fixed at entry, not when its task first
+            // runs: advancing a test clock right after a transition must fire it.
+            let fireAt = clock.now.advanced(by: timeout.after)
             let sender = makeSender(visit: visit)
             core.stateWork.append(TaskLedger.task(.stateTimeout, label: label) {
                 do {
-                    try await clock.sleep(until: clock.now.advanced(by: timeout.after), tolerance: nil)
+                    try await clock.sleep(until: fireAt, tolerance: nil)
                 } catch {
                     return
                 }
@@ -274,7 +291,11 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         let sender = makeSender(visit: visit)
         let work = activity.work
         let task = TaskLedger.task(.stateWork, label: "\(label).\(activity.label)") {
-            await CancellationCauseBox.$current.withValue(cause) { await work(sender) }
+            // State work belongs to the state, not to whoever sent the event
+            // that entered it: it does not inherit the sender's deadline.
+            await Deadline.$stored.withValue(nil) {
+                await CancellationCauseBox.$current.withValue(cause) { await work(sender) }
+            }
         }
         return Task {
             await withTaskCancellationHandler {
