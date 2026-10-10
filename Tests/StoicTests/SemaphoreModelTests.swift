@@ -63,12 +63,23 @@ struct SemaphoreModelTests {
 
         init(id: Int) { self.id = id }
 
+        let done = SendableBox(false)
+
+        /// What the task got. A task the model says is finished but the
+        /// semaphore never answered fails the test instead of hanging it.
         var outcome: Outcome {
-            get async { await task.value!.value }
+            get async {
+                if await !eventually(within: .seconds(5), { done.value }) {
+                    Issue.record("task \(id) was never answered")
+                    task.value?.cancel()
+                    gate.open()
+                }
+                return await task.value!.value
+            }
         }
     }
 
-    @Test(.stoic(seed: 101), arguments: Array(0..<8))
+    @Test(.stoic(seed: 101), .timeLimit(.minutes(1)), arguments: Array(0..<8))
     func randomOperationsMatchTheReferenceModel(round: Int) async {
         var generator = Ambient.current.random.generator(discriminator: UInt64(round))
         let capacity = Int.random(in: 1...4, using: &generator)
@@ -121,7 +132,8 @@ struct SemaphoreModelTests {
                     let limit = deadline.map { Deadline.after($0 - now, clock: clock.erased) }
                     client.task.mutate {
                         $0 = Task {
-                            await Deadline.$stored.withValue(limit) {
+                            defer { client.done.mutate { $0 = true } }
+                            return await Deadline.$stored.withValue(limit) {
                                 do throws(PolicyError<Never>) {
                                     try await semaphore.withPermit { () async -> Void in
                                         client.entered.mutate { $0 = true }
@@ -194,7 +206,7 @@ struct SemaphoreModelTests {
     /// No settling between operations: arrivals, cancellations, deadlines and
     /// the clock race each other as the scheduler pleases. What must hold
     /// regardless is the part of the contract that does not depend on order.
-    @Test(.stoic(seed: 202), arguments: Array(0..<6))
+    @Test(.stoic(seed: 202), .timeLimit(.minutes(1)), arguments: Array(0..<6))
     func chaosNeverExceedsCapacityNorLosesAWakeup(round: Int) async {
         var generator = Ambient.current.random.generator(discriminator: UInt64(round))
         let capacity = Int.random(in: 1...3, using: &generator)

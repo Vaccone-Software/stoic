@@ -30,7 +30,7 @@ struct TaskSlotPropertyTests {
         var trace: [String] = []
     }
 
-    @Test(.stoic(seed: 303), arguments: Array(0..<10))
+    @Test(.stoic(seed: 303), .timeLimit(.minutes(1)), arguments: Array(0..<10))
     func randomSequencesKeepTheSlotsPromises(round: Int) async {
         var generator = Ambient.current.random.generator(discriminator: UInt64(round))
         let slot = TaskSlot<Int, any Error>(label: "property-\(round)")
