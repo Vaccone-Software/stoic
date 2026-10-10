@@ -48,6 +48,13 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `StoicJSON`: `JSONDocument(parsing:options:)` (duplicate keys rejected, exact numbers, positions, limits), `JSONValue`, `JSONPath`.
 - `StoicSchema`: `Schema.object(T.self, default: T()) { Field("key", \.prop, .double(.range(0...10)), doc:, unit:, aliases:, secret:) }`; `.decode(text)` throws `ValidationFailure` with every issue (path, line:col, did-you-mean); `.decodeReporting(text, options: .lenient)`; `.encode(v, style: .sparse)`; `.jsonSchema()`; `Refined<R>`, `IntRange<lo, hi>`.
 
+## Persistence (StoicStore)
+- `AtomicFile(options: .init(keepPrevious: true)).write(bytes, to: path)` (temp, F_FULLFSYNC, rename, directory sync; checksum envelope); `.read(path, validate:)` falls back to `.previous`, quarantines corrupt files.
+- `Journal.open(at:)`: framed, checksummed append-only log; `append` durable on return; torn tails cut on open; `compact`.
+- `Outbox<Item>.open(at:codec:)`: `enqueue` (durable, assigns an `IdempotencyKey`), `deliverPending { entry in … }` under retry.
+- `LaunchGuard(path:).beginLaunch()` → `.normal` / `.safeMode(uncleanLaunches:)`; `markStable(after:)`, `markCleanExit()`.
+- `SimulatedFileSystem` + crash-image exploration for crash-consistency tests.
+
 ## Observability
 - `Ambient.instrumentation` (default OSLog), `Event` (stable names in `EventCatalog`), `RecordingInstrumentation`.
 
