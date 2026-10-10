@@ -4,7 +4,16 @@ import SwiftSyntaxMacros
 
 @main
 struct StoicMacrosPlugin: CompilerPlugin {
-    let providingMacros: [any Macro.Type] = []
+    let providingMacros: [any Macro.Type] = [
+        SchemaMacro.self,
+        KeyMacro.self,
+        SecretMacro.self,
+        UnitMacro.self,
+        AliasesMacro.self,
+        DeprecatedMacro.self,
+        NullableMacro.self,
+        IgnoredMacro.self,
+    ]
 }
 #else
 // Built without the Macros trait there is no swift-syntax to expand with.
