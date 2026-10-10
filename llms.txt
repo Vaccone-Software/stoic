@@ -18,7 +18,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `recur(_ schedule:) { attempt in .continue / .continueAfter(d) / .stop }` → `RecurOutcome`.
 
 ## Concurrency
-- `TaskSlot<S, F>(label:)`: `.run { … } deliver: { result in … }` (only newest delivers, on caller's actor), `.runExclusively`, `.cancel()`.
+- `TaskSlot<S, F>(label:)`: `.run { … } deliver: { @MainActor result in … }` (only newest delivers, on the caller's actor; annotate the closure to touch actor state), `.runExclusively`, `.cancel()`.
 - `race(a, b[, c, d])` or `race([Racer { … }])`: first success; losers cancelled and awaited.
 - `mapConcurrent(items, limit: n) { … }`, `mapConcurrentResults`.
 - `AsyncSemaphore(permits:label:).withPermit { … }`, `AsyncMutex(label:).withLock { … }`: FIFO, cancellation/deadline aware; throw `PolicyError`.

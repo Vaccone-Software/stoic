@@ -121,3 +121,91 @@ struct TaskSlotTests {
         #expect(numbers == numbers.sorted())
     }
 }
+
+@Suite("TaskSlot: review fixes")
+struct TaskSlotReviewTests {
+    /// Work that ignores cancellation and records how many copies run at once.
+    final class Microphone: Sendable {
+        let live = SendableBox((now: 0, peak: 0))
+        func use(until gate: TestGate) async {
+            live.mutate { $0.now += 1; $0.peak = max($0.peak, $0.now) }
+            await gate.wait()
+            live.mutate { $0.now -= 1 }
+        }
+    }
+
+    @Test func exclusiveWorkWaitsForEveryEarlierPiece() async {
+        let slot = TaskSlot<Void, Never>(label: "mic")
+        let microphone = Microphone()
+        let first = TestGate(), second = TestGate()
+        slot.run { await microphone.use(until: first) } deliver: { _ in }
+        await eventually { microphone.live.value.now == 1 }
+        slot.run { await microphone.use(until: second) } deliver: { _ in }   // supersedes, overlapping on purpose
+        await eventually { microphone.live.value.now == 2 }
+        let done = TestGate()
+        slot.runExclusively {
+            await microphone.use(until: TestGate.alreadyOpen)
+        } deliver: { _ in done.open() }
+        second.open()
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(microphone.live.value.now == 1, "the first work is still running; exclusive work must not start")
+        first.open()
+        await done.wait()
+        #expect(microphone.live.value.peak == 2, "previously 3: exclusive work overlapped the first")
+    }
+
+    @Test func exclusiveWorkWaitsForCancelledWork() async {
+        let slot = TaskSlot<Void, Never>(label: "mic")
+        let microphone = Microphone()
+        let first = TestGate()
+        slot.run { await microphone.use(until: first) } deliver: { _ in }
+        await eventually { microphone.live.value.now == 1 }
+        slot.cancel()
+        let done = TestGate()
+        slot.runExclusively { await microphone.use(until: TestGate.alreadyOpen) } deliver: { _ in done.open() }
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(microphone.live.value.peak == 1)
+        first.open()
+        await done.wait()
+        #expect(microphone.live.value.peak == 1, "previously overlapped: cancel() forgot the cancelled work")
+    }
+
+    @Test func concurrentRunsLeaveNothingUncancelled() async {
+        let slot = TaskSlot<Void, Never>(label: "busy")
+        await withTaskGroup { group in
+            for _ in 0..<200 {
+                group.addTask {
+                    slot.run {
+                        while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(1)) }
+                    } deliver: { _ in }
+                }
+            }
+        }
+        await slot.cancelAndWait()
+        #expect(slot.unfinishedCount == 0, "previously most tasks were never registered and ran forever")
+    }
+
+    @MainActor final class SearchModel {
+        let search = TaskSlot<[String], Never>(label: "search")
+        var hits: [String] = []
+        func queryChanged(_ query: String) {
+            // The documented example: deliver touches main-actor state.
+            search.run { [query] } deliver: { @MainActor result in self.hits = result.get() }
+        }
+    }
+
+    @Test @MainActor func theDocumentedMainActorExampleCompilesAndDelivers() async {
+        let model = SearchModel()
+        model.queryChanged("swift")
+        await eventually { model.hits == ["swift"] }
+        #expect(model.hits == ["swift"])
+    }
+}
+
+extension TestGate {
+    static let alreadyOpen: TestGate = {
+        let gate = TestGate()
+        gate.open()
+        return gate
+    }()
+}

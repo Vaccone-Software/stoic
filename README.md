@@ -57,7 +57,7 @@ try await withScope { scope in
 **TaskSlot** replaces generation counters: only the newest work delivers.
 
 ```swift
-search.run { try await api.search(query) } deliver: { self.results = (try? $0.get()) ?? [] }
+search.run { try await api.search(query) } deliver: { @MainActor in self.results = (try? $0.get()) ?? [] }
 ```
 
 **State machines** make work belong to a state, and explore their own

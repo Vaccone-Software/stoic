@@ -15,7 +15,7 @@ internal import Synchronization
 ///         func queryChanged(_ query: String) {
 ///             search.run {
 ///                 try await api.search(query)
-///             } deliver: { result in
+///             } deliver: { @MainActor result in
 ///                 self.hits = (try? result.get()) ?? []
 ///             }
 ///         }
@@ -30,24 +30,27 @@ internal import Synchronization
 /// ``run(isolation:_:deliver:)`` starts the new work at once, while the old
 /// may still be winding down. When the two must never overlap — both use the
 /// microphone, say — use ``runExclusively(isolation:_:deliver:)``, which
-/// waits for the old work to finish first.
+/// waits for *every* earlier piece of work, superseded or cancelled, to
+/// finish first.
+///
+/// `deliver` runs on the caller's actor. To touch that actor's state in it,
+/// say so in the closure — `{ @MainActor result in … }`, as above — since
+/// Swift does not infer a closure parameter's isolation from the call site.
 public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     /// Names the slot in events.
     public let label: String
 
-    private struct Current {
-        let generation: UInt64
+    private struct Work {
         let task: Task<Void, Never>
         let cause: CancellationCauseBox
     }
 
     private struct State {
         var generation: UInt64 = 0
-        var current: Current?
-        // The newest generation whose task has finished: a task can finish
-        // before `start` records it as current, and must not then be
-        // recorded as running.
-        var finished: UInt64 = 0
+        // Every piece of work that has not finished, current or superseded.
+        // Kept until it ends, so exclusive work can wait for all of it and
+        // cancellation can reach all of it.
+        var unfinished: [UInt64: Work] = [:]
     }
 
     private let state = Mutex(State())
@@ -57,14 +60,21 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     }
 
     deinit {
-        let current = state.withLock { $0.current }
-        current?.cause.record(.scopeEnded)
-        current?.task.cancel()
+        let work = state.withLock { Array($0.unfinished.values) }
+        for item in work {
+            item.cause.record(.scopeEnded)
+            item.task.cancel()
+        }
     }
 
-    /// Whether work is in the slot and has not finished.
+    /// Whether the newest work is running.
     public var isRunning: Bool {
-        state.withLock { $0.current != nil }
+        state.withLock { $0.unfinished[$0.generation] != nil }
+    }
+
+    /// How many pieces of work have not finished, superseded ones included.
+    public var unfinishedCount: Int {
+        state.withLock { $0.unfinished.count }
     }
 
     /// Supersedes any current work and starts `operation` at once.
@@ -79,13 +89,11 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
         @_inheritActorContext _ operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
         deliver: sending @escaping (Result<Success, Failure>) -> Void
     ) {
-        let (generation, previous) = supersede()
-        start(generation: generation, waitingFor: nil, isolation: isolation, operation: operation, deliver: deliver)
-        _ = previous
+        start(exclusive: false, isolation: isolation, operation: operation, deliver: deliver)
     }
 
-    /// Supersedes any current work, waits for it to finish, then starts
-    /// `operation`, so the two never overlap.
+    /// Supersedes any current work, waits for every earlier piece of work to
+    /// finish, then starts `operation`, so no two ever overlap.
     ///
     /// If yet newer work arrives while waiting, this work is superseded
     /// before it starts and never runs.
@@ -94,63 +102,63 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
         @_inheritActorContext _ operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
         deliver: sending @escaping (Result<Success, Failure>) -> Void
     ) {
-        let (generation, previous) = supersede()
-        start(generation: generation, waitingFor: previous, isolation: isolation, operation: operation, deliver: deliver)
+        start(exclusive: true, isolation: isolation, operation: operation, deliver: deliver)
     }
 
-    /// Cancels the current work, if any. Its result will not be delivered.
+    /// Cancels all work in the slot. No result will be delivered.
     public func cancel() {
-        let current = state.withLock { state -> Current? in
+        let work = state.withLock { state -> [Work] in
             state.generation += 1
-            defer { state.current = nil }
-            return state.current
+            return Array(state.unfinished.values)
         }
-        current?.cause.record(.superseded)
-        current?.task.cancel()
+        for item in work {
+            item.cause.record(.superseded)
+            item.task.cancel()
+        }
     }
 
-    /// Cancels the current work and waits for it to finish.
+    /// Cancels all work in the slot and waits for every piece to finish.
     public func cancelAndWait() async {
-        let current = state.withLock { state -> Current? in
-            state.generation += 1
-            defer { state.current = nil }
-            return state.current
+        cancel()
+        for task in state.withLock({ $0.unfinished.values.map(\.task) }) {
+            await task.value
         }
-        current?.cause.record(.superseded)
-        current?.task.cancel()
-        await current?.task.value
     }
 
     // MARK: Internals
 
-    private func supersede() -> (UInt64, Task<Void, Never>?) {
-        let (generation, previous) = state.withLock { state -> (UInt64, Current?) in
-            state.generation += 1
-            return (state.generation, state.current)
-        }
-        if let previous {
-            previous.cause.record(.superseded)
-            previous.task.cancel()
-            Ambient.record(Event("slot.superseded", level: .debug, label: label))
-        }
-        return (generation, previous?.task)
-    }
-
     private func start(
-        generation: UInt64,
-        waitingFor previous: Task<Void, Never>?,
+        exclusive: Bool,
         isolation: isolated (any Actor)?,
         operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
         deliver: sending @escaping (Result<Success, Failure>) -> Void
     ) {
+        // Supersede: everything already in the slot is cancelled, and is
+        // what exclusive work waits for.
+        let (generation, superseded) = state.withLock { state -> (UInt64, [Work]) in
+            state.generation += 1
+            return (state.generation, Array(state.unfinished.values))
+        }
+        for item in superseded {
+            item.cause.record(.superseded)
+            item.task.cancel()
+        }
+        if !superseded.isEmpty {
+            Ambient.record(level: .debug) { Event("slot.superseded", level: .debug, label: self.label) }
+        }
+        let earlier = superseded.map(\.task)
+
         let cause = CancellationCauseBox(parent: nil)
         let slot = OperationSlot(operation)
         let label = label
-        // The task holds the slot weakly: a slot whose owner has gone away
-        // cancels its work in `deinit` and delivers nothing.
+        // The task waits on this gate until it is registered, so work that
+        // is superseded before registration never runs at all — and every
+        // task that does run is registered, so nothing escapes cancellation.
+        let registered = OnceCell<Bool>()
         let task = TaskLedger.task(.slot, label: label) { [weak self] in
-            if let previous {
-                await previous.value
+            guard await registered.value else { return }
+            if exclusive {
+                for task in earlier { await task.value }
                 guard self?.isCurrent(generation) == true, !Task.isCancelled else {
                     self?.finish(generation)
                     return
@@ -161,11 +169,13 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
             }
             TaskSlot.complete(isolation: isolation, slot: self, generation: generation, label: label, result: result, deliver: deliver)
         }
-        state.withLock { state in
-            if state.generation == generation, state.finished < generation {
-                state.current = Current(generation: generation, task: task, cause: cause)
-            }
+        let isCurrent = state.withLock { state -> Bool in
+            guard state.generation == generation else { return false }
+            state.unfinished[generation] = Work(task: task, cause: cause)
+            return true
         }
+        if !isCurrent { task.cancel() }
+        registered.resolve(isCurrent)
     }
 
     /// Delivers on the caller's actor. The check and the delivery happen
@@ -192,11 +202,6 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     }
 
     private func finish(_ generation: UInt64) {
-        state.withLock { state in
-            state.finished = max(state.finished, generation)
-            if state.current?.generation == generation {
-                state.current = nil
-            }
-        }
+        state.withLock { _ = $0.unfinished.removeValue(forKey: generation) }
     }
 }
