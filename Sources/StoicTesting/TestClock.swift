@@ -58,13 +58,56 @@ public final class TestClock: Clock, Sendable {
     private struct State {
         var now: Swift.Duration = .zero
         var nextID: UInt64 = 0
-        var sleepers: [Sleeper] = []
+        // By id, with a heap of (deadline, id) beside it: the earliest is
+        // found in O(log n), not by scanning every sleeper. A cancelled
+        // sleeper leaves its heap entry behind until it surfaces (or the
+        // heap is rebuilt); the dictionary is the truth.
+        var sleepers: [UInt64: Sleeper] = [:]
+        var deadlines = DeadlineHeap()
         // Sleepers with an id that have not registered yet, and those of
         // them whose cancellation arrived first.
         var arriving: Set<UInt64> = []
         var cancelledBeforeSleeping: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
         var totalSleeps = 0
+
+        mutating func add(_ sleeper: Sleeper) {
+            sleepers[sleeper.id] = sleeper
+            deadlines.push(deadline: sleeper.deadline, id: sleeper.id)
+        }
+
+        mutating func remove(id: UInt64) -> Sleeper? {
+            let removed = sleepers.removeValue(forKey: id)
+            // Cancelled sleepers leave heap entries; rebuild before they
+            // outnumber the live ones.
+            if removed != nil, deadlines.count > 2 * sleepers.count + 64 {
+                deadlines = DeadlineHeap(sleepers.values.map { ($0.deadline, $0.id) })
+            }
+            return removed
+        }
+
+        /// The earliest deadline of a live sleeper.
+        mutating func earliestDeadline() -> Swift.Duration? {
+            while let top = deadlines.top {
+                if sleepers[top.id] != nil { return top.deadline }
+                deadlines.pop()
+            }
+            return nil
+        }
+
+        /// Removes the sleepers whose deadline is the earliest, if it is not
+        /// after `limit`, in the order they went to sleep, and moves `now` to
+        /// it. Empty when nothing is due.
+        mutating func takeEarliest(upTo limit: Swift.Duration) -> [Sleeper] {
+            guard let earliest = earliestDeadline(), earliest <= limit else { return [] }
+            now = max(now, earliest)
+            var due: [Sleeper] = []
+            while let top = deadlines.top, top.deadline == earliest {
+                deadlines.pop()
+                if let sleeper = sleepers.removeValue(forKey: top.id) { due.append(sleeper) }
+            }
+            return due.sorted { $0.id < $1.id }
+        }
 
         // Waiters whose count is now met, removed from the list.
         mutating func takeSatisfiedCountWaiters() -> [CheckedContinuation<Void, Never>] {
@@ -110,7 +153,7 @@ public final class TestClock: Clock, Sendable {
 
     /// The deadlines of every current sleeper, earliest first.
     public var pendingDeadlines: [Instant] {
-        state.withLock { $0.sleepers.map { Instant(offset: $0.deadline) }.sorted() }
+        state.withLock { $0.sleepers.values.map { Instant(offset: $0.deadline) }.sorted() }
     }
 
     public func sleep(until deadline: Instant, tolerance: Swift.Duration? = nil) async throws {
@@ -128,7 +171,7 @@ public final class TestClock: Clock, Sendable {
                     state.arriving.remove(id)
                     if state.cancelledBeforeSleeping.remove(id) != nil { return .cancel }
                     if deadline.offset <= state.now { return .wake }
-                    state.sleepers.append(Sleeper(id: id, deadline: deadline.offset, continuation: continuation))
+                    state.add(Sleeper(id: id, deadline: deadline.offset, continuation: continuation))
                     return .sleep(state.takeSatisfiedCountWaiters())
                 }
                 switch outcome {
@@ -139,8 +182,8 @@ public final class TestClock: Clock, Sendable {
             }
         } onCancel: {
             let sleeper = state.withLock { state -> Sleeper? in
-                if let index = state.sleepers.firstIndex(where: { $0.id == id }) {
-                    return state.sleepers.remove(at: index)
+                if let sleeper = state.remove(id: id) {
+                    return sleeper
                 }
                 if state.arriving.contains(id) {
                     state.cancelledBeforeSleeping.insert(id)
@@ -167,14 +210,9 @@ public final class TestClock: Clock, Sendable {
     public func advance(to instant: Instant) async {
         while true {
             let due = state.withLock { state -> [Sleeper] in
-                guard let earliest = state.sleepers.map(\.deadline).min(), earliest <= instant.offset else {
-                    state.now = max(state.now, instant.offset)
-                    return []
-                }
-                state.now = max(state.now, earliest)
-                let due = state.sleepers.filter { $0.deadline <= earliest }
-                state.sleepers.removeAll { $0.deadline <= earliest }
-                return due.sorted { $0.id < $1.id }
+                let due = state.takeEarliest(upTo: instant.offset)
+                if due.isEmpty { state.now = max(state.now, instant.offset) }
+                return due
             }
             if due.isEmpty { break }
             for sleeper in due { sleeper.continuation.resume() }
@@ -189,15 +227,30 @@ public final class TestClock: Clock, Sendable {
     /// - Returns: The new time, or `nil` if nothing is asleep.
     func fireNextDeadline() -> Instant? {
         let (now, due) = state.withLock { state -> (Swift.Duration, [Sleeper]) in
-            guard let earliest = state.sleepers.map(\.deadline).min() else { return (state.now, []) }
-            state.now = max(state.now, earliest)
-            let due = state.sleepers.filter { $0.deadline <= earliest }
-            state.sleepers.removeAll { $0.deadline <= earliest }
-            return (state.now, due.sorted { $0.id < $1.id })
+            guard let earliest = state.earliestDeadline() else { return (state.now, []) }
+            let due = state.takeEarliest(upTo: earliest)
+            return (state.now, due)
         }
         if due.isEmpty { return nil }
         for sleeper in due { sleeper.continuation.resume() }
         return Instant(offset: now)
+    }
+
+    /// Wakes every sleeper at once with `CancellationError`, whatever its
+    /// deadline, without moving time: for a simulation unwinding what a
+    /// finished run left asleep.
+    ///
+    /// - Returns: How many were woken.
+    @discardableResult
+    func cancelAllSleepers() -> Int {
+        let all = state.withLock { state -> [Sleeper] in
+            let all = state.sleepers.values.sorted { $0.id < $1.id }
+            state.sleepers = [:]
+            state.deadlines = DeadlineHeap()
+            return all
+        }
+        for sleeper in all { sleeper.continuation.resume(throwing: CancellationError()) }
+        return all.count
     }
 
     /// Advances to the earliest pending deadline, if there is one.
@@ -238,5 +291,60 @@ public final class TestClock: Clock, Sendable {
 
     private func yieldRepeatedly() async {
         for _ in 0..<64 { await Task.yield() }
+    }
+}
+
+/// A binary min-heap of (deadline, id), ordered by deadline and then by the
+/// order the sleepers went to sleep.
+private struct DeadlineHeap {
+    private var items: [(deadline: Swift.Duration, id: UInt64)] = []
+
+    init() {}
+
+    init(_ entries: [(Swift.Duration, UInt64)]) {
+        items = entries.map { (deadline: $0.0, id: $0.1) }
+        var index = items.count / 2 - 1
+        while index >= 0 {
+            siftDown(index)
+            index -= 1
+        }
+    }
+
+    var count: Int { items.count }
+    var top: (deadline: Swift.Duration, id: UInt64)? { items.first }
+
+    mutating func push(deadline: Swift.Duration, id: UInt64) {
+        items.append((deadline, id))
+        var child = items.count - 1
+        while child > 0 {
+            let parent = (child - 1) / 2
+            guard precedes(items[child], items[parent]) else { break }
+            items.swapAt(child, parent)
+            child = parent
+        }
+    }
+
+    mutating func pop() {
+        guard !items.isEmpty else { return }
+        items.swapAt(0, items.count - 1)
+        items.removeLast()
+        siftDown(0)
+    }
+
+    private mutating func siftDown(_ start: Int) {
+        var parent = start
+        while true {
+            let left = 2 * parent + 1, right = left + 1
+            var smallest = parent
+            if left < items.count, precedes(items[left], items[smallest]) { smallest = left }
+            if right < items.count, precedes(items[right], items[smallest]) { smallest = right }
+            if smallest == parent { return }
+            items.swapAt(parent, smallest)
+            parent = smallest
+        }
+    }
+
+    private func precedes(_ a: (deadline: Swift.Duration, id: UInt64), _ b: (deadline: Swift.Duration, id: UInt64)) -> Bool {
+        a.deadline != b.deadline ? a.deadline < b.deadline : a.id < b.id
     }
 }
