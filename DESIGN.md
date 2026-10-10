@@ -92,8 +92,8 @@ API shaped like plain Swift, and ships its own guidance (design/14).
    Stoic's lasting value is what the standard library is unlikely to absorb:
    budgets, schedules, breakers, supervisors, scopes, schemas, test tooling.
 
-10. **Small core, opt-in edges.** The core depends on the standard library
-    and `Synchronization` only. Macros, lint, logging, metrics, tracing and
+10. **Small core, opt-in edges.** The core depends on the standard library,
+    `Synchronization`, and `os` for its default log sink only. Macros, lint, logging, metrics, tracing and
     ServiceLifecycle are separate products or traits.
 
 ## Architecture
@@ -161,8 +161,9 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
 ) async throws(E) -> R
 ```
 
-- Every primitive accepts an explicit `clock:` (and where relevant
-  `random:`) that overrides the ambient value for that call.
+- Time-based primitives accept an explicit `clock:` that overrides the
+  ambient clock for that call. Randomness is always ambient: one seed for a
+  whole test is what makes a run reproducible.
 - **Two clocks, on purpose.** Operation deadlines and retry delays use a
   continuous clock: if the Mac sleeps through a deadline, the deadline has
   passed. Liveness checks (watchdogs, heartbeats) use a suspending clock: a
@@ -171,12 +172,18 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
   restarts the app turns into a crash loop.
 - **Deterministic randomness under concurrency.** A shared seeded generator
   is not deterministic once two tasks draw from it in an order the scheduler
-  picks. Stoic derives a child stream per call site and attempt
-  (`seed ⊕ hash(fileID, line, attempt)`), so a seed reproduces the same
-  jitter regardless of interleaving.
+  picks. Stoic derives a stream per call site (a stable FNV hash of seed,
+  file and line, never `Hasher`), so a seed reproduces the same jitter
+  regardless of interleaving. The cost: under one seed, concurrent callers
+  at the same site draw the same jitter. Production uses the system
+  generator, where every draw is independent; a test that studies herd
+  behaviour runs each caller under its own seed.
 - `AnyClock` erases any `Clock<Duration>`; its instants are durations from
   the clock's origin, so a deadline can be stored and compared without
-  generics leaking into every signature.
+  generics leaking into every signature. Every sleep is clamped to a
+  century: "wait forever" means "wait for cancellation", never a trap.
+- Retry budgets live in the ambient context too (`Ambient.budgets`), so a
+  test's budgets start full and no other test can drain them.
 
 ### Errors
 

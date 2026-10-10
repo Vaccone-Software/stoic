@@ -159,8 +159,7 @@ duplicate types are deprecated with one minor version of overlap.
 
 ## Events
 
-`deadline.expired` (label, budget, overrun), `deadline.overrun` (still
-running after the deadline, cooperative), `abandoned.started`,
+`deadline.expired` (label, budget, overrun, outcome), `abandoned.started`,
 `abandoned.completed` (lateness), `abandoned.limit`.
 
 ## Testing
