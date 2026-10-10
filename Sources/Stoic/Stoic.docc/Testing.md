@@ -56,6 +56,8 @@ func retriesThroughAnOutage() async throws {
 | nothing can run and nothing is asleep        | It is reported as `stalled`, with the Stoic tasks still running          |
 | the scenario outlasts the virtual time limit | It is reported as `virtualTimeLimit`, a livelock                         |
 | a `#expect` fails inside `simulate`          | It is recorded but does not fail the seed; use `#require`                |
+| work escapes the simulation (an unstructured `Task {}`, Dispatch, a real sleep) or is left running | A test issue naming the cause and the fix, unless `allowEscapes: true`; `Simulated.report` has the counts |
+| `waitForSleepers` never gets its sleepers    | After `timeout` (5 s real time, or on cancellation) an issue prints the clock's state |
 | a test uses `ImmediateClock` for a timeout   | Every sleep returns at once; use it to record delays, never for timeouts |
 | a golden trace differs                       | The issue shows the first differing line and the whole actual trace      |
 

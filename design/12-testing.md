@@ -9,7 +9,7 @@ controllable.
 
 | Tool                                  | For                                                                                                                                                  |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TestClock`                           | Anything that races work against time. Moves only when the test moves it; `waitForSleepers(count:)` is the exact way to know woken work has settled. |
+| `TestClock`                           | Anything that races work against time. Moves only when the test moves it; `waitForSleepers(count:)` is the exact way to know woken work has settled, and it never hangs silently. |
 | `ImmediateClock`                      | Recording the delays a policy chose. Every sleep returns at once — so never for timeouts.                                                            |
 | `withTestAmbient(clock:seed:events:)` | One call that installs a clock, a seed, recorded events and fresh retry budgets.                                                                     |
 | `@Test(.stoic(seed:))`                | The same isolation as a Swift Testing trait, with `StoicTest.events`.                                                                                |
@@ -18,6 +18,26 @@ controllable.
 | `TestGate`                            | Sequencing steps, and modelling work that cannot be interrupted.                                                                                     |
 | `StateGraph.explore`                  | Exhaustive exploration of a state machine's transitions.                                                                                             |
 | `simulate(seed:)`, `simulate(seeds:)` | Deterministic simulation: every interleaving decided by a seed, virtual time, deadlocks and livelocks reported, a failing seed replayed exactly.       |
+
+## Waiting on a `TestClock`
+
+`waitForSleepers(count:)` suspends until *at least* `count` tasks are asleep
+on the clock *right now*. After an `advance` that wakes a task which then
+sleeps again (a retry's next, jittered delay), a sleeper that was never
+woken can satisfy the count while the one the test means has not slept yet.
+Take `let mark = clock.totalSleeps` before the advance and wait with
+`waitForSleepers(newerThan: mark)`, which counts sleeps *begun* since.
+
+A sleeper that never arrives — the code under test is not on this clock,
+or has finished, or an earlier advance already woke it — used to hang the
+test until its time limit, a minute later, with nothing printed, and a
+cancelled wait returned as if it were satisfied. Both now end the wait with
+an issue. `timeout:` (real time, 5 seconds by default; `nil` for none)
+bounds it, and the message prints the clock's state: the time, every
+sleeper's deadline and how long until it, the number of sleeps begun, and
+how many were asked for. `clock.summary` gives the same text for a test's
+own messages. Sleeps carry no labels, so a sleeper is known by its
+deadline.
 
 ## Failure-mode coverage
 
@@ -73,10 +93,21 @@ preference, so Stoic passes it on).
 - `stalled`: nothing runnable, nothing asleep, and nothing arrived from
   outside — a deadlock, or a wait on something the simulation does not
   drive. Lists the Stoic tasks still running, by label. When no job has ever
-  been enqueued from another thread and no `abandoningAfter` work is
-  outstanding, nothing outside is likely to take part, and the stall is
-  reported after `limits.quietStall` (50 ms) rather than `limits.stall`
-  (two seconds of real time, which a hop to a busy main actor may need).
+  been enqueued from another thread, nothing outside has gone to sleep on
+  the clock and no `abandoningAfter` work is outstanding, nothing outside
+  is likely to take part, and the stall is reported after `limits.quietStall`
+  (50 ms) rather than `limits.stall` (two seconds of real time, which a
+  hop to a busy main actor may need). Only silence counts toward that window:
+  a job arriving, or anything outside registering a sleeper on the
+  simulation's clock, wakes the driver and restarts it (an unstructured
+  `Task {}` that sleeps on the ambient clock used to be called stalled
+  every time, because its sleeper registered after the driver had looked
+  and nothing told it). Before the verdict, the driver also checks that the
+  cooperative thread pool answers a trivial task, so a busy machine that
+  has not yet started the app's task is not mistaken for a deadlock.
+  The verdict is real-time, and is therefore only as exact as the machine
+  is idle; code that stays inside the simulation never depends on it,
+  because nothing outside it exists to be waited for.
 - `virtualTimeLimit`: still going after `limits.virtualTime` — a livelock,
   such as a retry without a bound or a timer that re-arms itself.
 - `stepLimit`, `cancelled`.
@@ -85,7 +116,43 @@ A run that succeeds returns the value with its step count, virtual time,
 the schedule it followed, a fingerprint of every scheduling decision (equal
 fingerprints, equal paths) and the Stoic tasks still running when the body
 returned (`leftover`) — almost always a leak. After a failure the body is
-cancelled and its cleanup still runs simulated, bounded.
+cancelled and its cleanup still runs simulated, bounded. A failure prints
+its kind (`kind.name`, and `"\(kind)"` with the error or the stuck tasks).
+
+**Escapes are reported.** Work that leaves the simulation succeeds
+silently, and a green run over such work proves less than it looks: the
+seed no longer decides the outcome. So `Simulated.report` says what escaped:
+
+- `outsideJobs`: jobs queued onto the simulation's executor from a thread
+  other than the driver's (an unstructured `Task {}`, `Task.detached`,
+  Dispatch, a Foundation `Timer`, a real-clock sleep, the main actor
+  waking the body);
+- `outsideSleeps`: sleeps begun on the simulation's clock by such a thread
+  (an unstructured task sleeping on the ambient `TestClock`);
+- `leftover` and `stuck`, as above;
+- `isDeterministic`: no outside arrival, "as far as the simulator can
+  tell" — work that never touches the simulation at all (a `Task {}` the
+  body never waits for) cannot be seen;
+- `description`, which names the likely causes and the fix.
+
+`simulate(seed:)` and `simulate(seeds:)` record a Swift Testing issue when a
+run saw outside arrivals or ended with leftover work (`simulate(seeds:)`
+records one issue for the whole exploration: the first seed, and how many
+others). The fix is to stay inside — `Task(executorPreference:
+Ambient.current.taskExecutor) { … }` (Stoic's own `Task.stoic`),
+`Ambient.sleep(for:)` or a `clock:` parameter given `sim.clock`, a Stoic
+primitive for the lifecycle — or, when the escape is the point (a
+`Timer`-driven API, `abandoningAfter`, a hop to the main actor, a leak that
+a test pins on purpose), `allowEscapes: true`:
+
+```swift
+let run = try await simulate(seed: 7, allowEscapes: true) { _ in try await legacyTimerAPI() }
+#expect(!run.isDeterministic)   // and say so: this seed may not replay
+```
+
+`abandoningAfter` is on that list: its operation runs on a Dispatch queue,
+so its completion always arrives from outside. Virtual time stands still
+until it does, but the moment is not seeded.
 
 **Teardown.** When a run ends, success or failure, the simulation cancels
 the Stoic tasks of its ledger tag and everything asleep on its clock, and
@@ -194,7 +261,9 @@ own executors run where they always do; so do `Task {}` started by app code
 (start it from a Stoic primitive, or with `Task(executorPreference:
 Ambient.current.taskExecutor)`), Dispatch, real I/O and real clocks. Work
 arriving from there is waited for, but its timing is not seeded, so such a
-run may not replay exactly; the fingerprint says when it did not. A job
+run may not replay exactly; the fingerprint says when it did not, and the
+run's report (and a test issue, unless `allowEscapes: true`) says that it
+happened. A job
 that blocks its thread blocks the simulation.
 
 **Verified.** The same seed gives the same trace, step count, virtual time
