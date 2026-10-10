@@ -103,6 +103,7 @@ returned to the body and kept by the release closure).
 | the body throws                                   | Finalizers run with `.failure(error)`, error rethrown unchanged                        |
 | the task is cancelled mid-body                    | Finalizers run with `.cancelled`, shielded; `CancellationError` rethrown               |
 | a finalizer throws (logs) / fails                 | Reported at error level; remaining finalizers run; outcome unchanged                   |
+| work started in the scope was abandoned            | Releases marked `.quarantine` are skipped (leaked on purpose); `scope.release_quarantined` |
 | a finalizer hangs                                 | Abandoned after its timeout, listed in `AbandonedWork`; `scope.finalizer_abandoned`    |
 | the acquire throws                                | Nothing registered; error rethrown; earlier acquisitions are released                  |
 | a forked child throws                             | Body and siblings cancelled; after cleanup, `ConcurrentFailure` with every child error |
@@ -111,7 +112,7 @@ returned to the body and kept by the release closure).
 
 ## Events
 
-`scope.finalizer_failed`, `scope.finalizer_abandoned`, `scope.finalizer_slow`
+`scope.finalizer_failed`, `scope.finalizer_abandoned`, `scope.finalizer_slow`, `scope.release_quarantined`
 (over half its allowance), `scope.child_failed`, `scope.fork_after_exit`,
 `saga.compensation_failed` (a saga's compensation threw; the scope event is
 not also emitted), and `abandoned.completed` when an abandoned finalizer

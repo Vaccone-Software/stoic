@@ -24,6 +24,22 @@ public enum Exit: Sendable, CustomStringConvertible {
     }
 }
 
+/// What a scope does with a release when work started inside it was
+/// abandoned (``abandoningAfter(_:label:limit:clock:qos:fileID:line:operation:)``).
+///
+/// Abandoned work may still be using what the scope is about to release: a
+/// wedged call into an audio or accessibility framework still holding the
+/// handle a finalizer would close. Closing it under that call is a
+/// use-after-free in someone else's code.
+public enum IfWorkAbandoned: Sendable, Hashable {
+    /// Release as usual.
+    case release
+    /// Do not release: leak the resource deliberately, and report it
+    /// (`scope.release_quarantined`). For handles whose release is unsafe
+    /// while a call into them may still be running.
+    case quarantine
+}
+
 /// Things acquired for the lifetime of a scope, released when it ends.
 ///
 /// A `Scope` is handed to the body of ``withScope(exitBudget:finalizerTimeout:label:_:)``
@@ -48,12 +64,15 @@ public struct Scope: ~Copyable {
     ///   - shielded: Run `acquire` hidden from cancellation, so that a
     ///     cancellation arriving mid-acquire cannot leave it half done.
     ///   - timeout: How long `release` may take before it is abandoned.
+    ///   - ifWorkAbandoned: Whether to release it if work started in this
+    ///     scope was abandoned and may still be using it.
     ///   - acquire: Produces the resource.
     ///   - release: Releases it. Receives how the scope ended.
     public func acquire<R: Sendable, Failure: Error>(
         label: String = #function,
         shielded: Bool = false,
         timeout: Duration? = nil,
+        ifWorkAbandoned: IfWorkAbandoned = .release,
         _ acquire: nonisolated(nonsending) () async throws(Failure) -> R,
         release: @escaping @Sendable (R, Exit) async throws -> Void
     ) async throws(Failure) -> R {
@@ -63,13 +82,16 @@ public struct Scope: ~Copyable {
         } else {
             value = try await acquire()
         }
-        state.register(Finalizer(label: label, timeout: timeout, runsOn: .always) { exit in try await release(value, exit) })
+        var finalizer = Finalizer(label: label, timeout: timeout, runsOn: .always) { exit in try await release(value, exit) }
+        finalizer.ifWorkAbandoned = ifWorkAbandoned
+        state.register(finalizer)
         return value
     }
 
     /// Acquires a ``Resource``.
     public func acquire<R: Sendable, Failure: Error>(_ resource: Resource<R, Failure>) async throws(Failure) -> R {
         try await acquire(label: resource.label, shielded: resource.shielded, timeout: resource.timeout,
+                          ifWorkAbandoned: resource.ifWorkAbandoned,
                           { () async throws(Failure) -> R in try await resource.acquire() }, release: resource.release)
     }
 
@@ -77,9 +99,18 @@ public struct Scope: ~Copyable {
     public func onExit(
         label: String = #function,
         timeout: Duration? = nil,
+        ifWorkAbandoned: IfWorkAbandoned = .release,
         _ finalizer: @escaping @Sendable (Exit) async throws -> Void
     ) {
-        state.register(Finalizer(label: label, timeout: timeout, runsOn: .always, run: finalizer))
+        var entry = Finalizer(label: label, timeout: timeout, runsOn: .always, run: finalizer)
+        entry.ifWorkAbandoned = ifWorkAbandoned
+        state.register(entry)
+    }
+
+    /// How many operations started inside this scope (or a scope inside it)
+    /// have been abandoned so far.
+    public var abandonedWork: Int {
+        state.watch.count
     }
 }
 
@@ -95,6 +126,7 @@ public struct Resource<Value: Sendable, Failure: Error>: Sendable {
     public let label: String
     public let shielded: Bool
     public let timeout: Duration?
+    public let ifWorkAbandoned: IfWorkAbandoned
     let acquire: @Sendable () async throws(Failure) -> Value
     let release: @Sendable (Value, Exit) async throws -> Void
 
@@ -102,12 +134,14 @@ public struct Resource<Value: Sendable, Failure: Error>: Sendable {
         label: String,
         shielded: Bool = false,
         timeout: Duration? = nil,
+        ifWorkAbandoned: IfWorkAbandoned = .release,
         acquire: @escaping @Sendable () async throws(Failure) -> Value,
         release: @escaping @Sendable (Value, Exit) async throws -> Void
     ) {
         self.label = label
         self.shielded = shielded
         self.timeout = timeout
+        self.ifWorkAbandoned = ifWorkAbandoned
         self.acquire = acquire
         self.release = release
     }
@@ -152,11 +186,15 @@ public nonisolated(nonsending) func withScope<R, Failure: Error>(
 ) async throws(Failure) -> R {
     let state = ScopeState(label: label, exitBudget: exitBudget, finalizerTimeout: finalizerTimeout)
     let scope = Scope(state: state)
-    let result: Result<R, Failure>
-    do throws(Failure) {
-        result = .success(try await body(scope))
-    } catch {
-        result = .failure(error)
+    // Work abandoned anywhere inside the body is counted against this scope
+    // (and every scope around it), for finalizers that must not release
+    // what that work may still be using.
+    let result: Result<R, Failure> = await AbandonmentWatch.$current.withValue(state.watch) {
+        do throws(Failure) {
+            return .success(try await body(scope))
+        } catch {
+            return .failure(error)
+        }
     }
     await state.exit(result.exit)
     return try result.get()
@@ -172,6 +210,7 @@ struct Finalizer: Sendable {
     let runsOn: RunsOn
     /// What is reported when the finalizer throws: a saga names its own.
     var failedEvent: EventName = "scope.finalizer_failed"
+    var ifWorkAbandoned: IfWorkAbandoned = .release
     let run: @Sendable (Exit) async throws -> Void
 }
 
@@ -195,6 +234,9 @@ final class ScopeState: Sendable {
     }
 
     private let state = Mutex(State())
+
+    /// Counts work abandoned inside the scope.
+    let watch = AbandonmentWatch(parent: AbandonmentWatch.current)
 
     init(label: String?, exitBudget: Duration, finalizerTimeout: Duration) {
         self.label = label
@@ -229,6 +271,14 @@ final class ScopeState: Sendable {
             let start = clock.now
             for finalizer in finalizers {
                 if finalizer.runsOn == .failureOnly, !exit.isFailure { continue }
+                let abandoned = watch.count
+                if finalizer.ifWorkAbandoned == .quarantine, abandoned > 0 {
+                    ambient.instrumentation.record(Event("scope.release_quarantined", level: .warning, label: label, fields: [
+                        .init("finalizer", .string(finalizer.label), privacy: .public),
+                        .init("abandoned", .int(abandoned)),
+                    ]))
+                    continue
+                }
                 let remaining = exitBudget.saturatingSubtracting(start.duration(to: clock.now))
                 let wanted = finalizer.timeout ?? finalizerTimeout
                 let allowed = min(wanted, max(Self.exitDeadlineFloor, remaining))
@@ -332,4 +382,27 @@ func waitForTask<T: Sendable>(_ task: Task<T, Never>, within limit: Duration, cl
     let result = await outcome.value
     timer.cancel()
     return result
+}
+
+/// Counts work abandoned inside a scope, and in every scope around it.
+final class AbandonmentWatch: Sendable {
+    @TaskLocal static var current: AbandonmentWatch?
+
+    private let parent: AbandonmentWatch?
+    private let abandoned = Atomic<Int>(0)
+
+    init(parent: AbandonmentWatch?) {
+        self.parent = parent
+    }
+
+    var count: Int {
+        abandoned.load(ordering: .relaxed)
+    }
+
+    /// Records one abandoned operation here and in every enclosing scope:
+    /// work started in an inner scope may be using an outer scope's resources.
+    func record() {
+        abandoned.wrappingAdd(1, ordering: .relaxed)
+        parent?.record()
+    }
 }

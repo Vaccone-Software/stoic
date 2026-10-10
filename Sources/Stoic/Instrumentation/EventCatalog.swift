@@ -63,6 +63,7 @@ public enum EventCatalog {
         Entry(name: "scope.finalizer_failed", level: .error, meaning: "A finalizer threw; the scope's outcome was unchanged."),
         Entry(name: "scope.finalizer_slow", level: .notice, meaning: "A finalizer used more than half its allowance."),
         Entry(name: "scope.fork_after_exit", level: .error, meaning: "Work tried to fork into a task scope that had already ended."),
+        Entry(name: "scope.release_quarantined", level: .warning, meaning: "A release was skipped because work abandoned in its scope may still be using the resource; it was leaked on purpose."),
         Entry(name: "semaphore.reentrant", level: .error, meaning: "A task asked for a permit of a semaphore it already holds: a possible self-deadlock."),
         Entry(name: "semaphore.rejected", level: .info, meaning: "A semaphore waiter left without a permit: cancelled or past its deadline."),
         Entry(name: "service.started", level: .debug, meaning: "A service in a service graph finished starting."),

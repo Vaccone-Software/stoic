@@ -286,10 +286,10 @@ review, tests for every failure-mode row, small commits.
    table becomes a compile-time-checked declaration with exhaustiveness; and
    `@Services`, which checks a service graph's dependencies at compile time
    (design/06, 07, 08).
-4. **Abandonment meets scopes.** Scopes count abandoned work started inside
-   them and pass the count to finalizers (`Exit.abandoned`); a resource can
-   declare its release `.quarantine` — leak it deliberately rather than
-   close it under a zombie (design/01, 04).
+4. **Abandonment meets scopes** — built. Scopes count abandoned work
+   started inside them (`scope.abandonedWork`); a release declared
+   `ifWorkAbandoned: .quarantine` is leaked deliberately rather than closed
+   under a call that may still be using it (design/01, 04).
 5. **A resilient HTTP layer (`StoicHTTP`).** Per-host pipelines (timeout,
    retry honouring `Retry-After`, breaker, bulkhead), idempotency keys on
    unsafe methods, responses decoded through schemas with every issue

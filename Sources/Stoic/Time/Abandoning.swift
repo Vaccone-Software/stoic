@@ -122,6 +122,7 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
     // in the meantime, in which case its result simply goes unused.
     let reason: Rejection.Reason = Task.isCancelled ? cancellationReason() : .deadlineExceeded
     if ledger.abandon(id, deadline: deadline.instant, clock: deadline.clock) {
+        AbandonmentWatch.current?.record()
         instrumentation.record(Event("abandoned.started", level: .warning, label: label, fields: [
             .init("reason", .string(reason.rawValue), privacy: .public),
             .init("outstanding", .int(ledger.outstanding(label: label))),

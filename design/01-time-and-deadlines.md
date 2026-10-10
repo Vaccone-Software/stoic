@@ -138,8 +138,12 @@ design answers each:
 
 Abandoned work is listed in a process-wide ledger (label, age, call site)
 and appears in diagnostics until it finishes; a late finish is reported with
-its lateness. Built: `abandoningAfter(_:label:limit:clock:qos:operation:)`.
-The scope integration (`Exit.abandoned`, quarantined releases) is planned.
+its lateness. Built: `abandoningAfter(_:label:limit:clock:qos:operation:)`, and its scope
+integration: every scope counts work abandoned inside it (and inside scopes
+within it) — `scope.abandonedWork` — and a release declared
+`ifWorkAbandoned: .quarantine` is skipped and reported
+(`scope.release_quarantined`) when that count is not zero. The count is not
+a case of `Exit`, which would break every `switch` over it.
 
 **Clocks.** Deadlines use the ambient continuous clock: if the machine
 sleeps through a deadline, it has passed. A deadline remembers its clock;
