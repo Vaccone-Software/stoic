@@ -65,12 +65,36 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
     public nonisolated(nonsending) func withPermit<R, Failure: Error>(
         _ body: nonisolated(nonsending) () async throws(Failure) -> R
     ) async throws(PolicyError<Failure>) -> R {
+        try await withPermit(queueing: .unbounded, body)
+    }
+
+    /// How a caller that cannot have a permit at once is treated. A
+    /// semaphore queues without limit (bounded by cancellation and
+    /// deadlines); a bulkhead bounds the queue and says so in its own words.
+    struct Queueing: Sendable {
+        /// The most tasks allowed to wait; arrivals beyond it are refused.
+        var limit: Int?
+        /// The reason a refused arrival is given.
+        var fullReason: Rejection.Reason
+        /// The event reporting any refusal, whether full, cancelled or late.
+        var rejectedEvent: EventName
+
+        static let unbounded = Queueing(limit: nil, fullReason: .bulkheadFull, rejectedEvent: "semaphore.rejected")
+    }
+
+    /// `withPermit`, with the queue bounded as `queueing` says. The bound is
+    /// checked in the same critical section that decides to queue, so it
+    /// holds exactly however many tasks arrive at once.
+    nonisolated(nonsending) func withPermit<R, Failure: Error>(
+        queueing: Queueing,
+        _ body: nonisolated(nonsending) () async throws(Failure) -> R
+    ) async throws(PolicyError<Failure>) -> R {
         if HeldPermits.current.contains(ObjectIdentifier(self)) {
             Ambient.record(Event("semaphore.reentrant", level: .error, label: label, fields: [
                 .init("capacity", .int(capacity)),
             ]))
         }
-        if let rejection = await acquire() {
+        if let rejection = await acquire(queueing) {
             throw .rejected(rejection)
         }
         defer { release() }
@@ -89,20 +113,38 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
     }
 
     /// Waits for a permit. Returns `nil` once granted, or why the wait ended.
-    private nonisolated(nonsending) func acquire() async -> Rejection? {
+    private nonisolated(nonsending) func acquire(_ queueing: Queueing) async -> Rejection? {
         if Task.isCancelled {
             return Rejection(.cancelled, label: label)
         }
-        let id: UInt64? = state.withLock { state in
+        enum Admission { case granted, full(waiting: Int), wait(UInt64) }
+        let admission = state.withLock { state -> Admission in
             if state.available > 0, state.queue.isEmpty {
                 state.available -= 1
-                return nil
+                return .granted
+            }
+            let waiting = state.queue.count + state.arriving.count
+            if let limit = queueing.limit, waiting >= limit {
+                return .full(waiting: waiting)
             }
             defer { state.nextID += 1 }
             state.arriving.insert(state.nextID)
-            return state.nextID
+            return .wait(state.nextID)
         }
-        guard let id else { return nil }
+        let id: UInt64
+        switch admission {
+        case .granted:
+            return nil
+        case .full(let waiting):
+            Ambient.record(Event(queueing.rejectedEvent, level: .notice, label: label, fields: [
+                .init("reason", .string(queueing.fullReason.rawValue), privacy: .public),
+                .init("capacity", .int(capacity)),
+                .init("waiting", .int(waiting)),
+            ]))
+            return Rejection(queueing.fullReason, label: label)
+        case .wait(let ticket):
+            id = ticket
+        }
         defer {
             // Whatever ended the wait, this waiter is gone: forget it.
             state.withLock { state in
@@ -138,8 +180,9 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
                 outcome = Rejection(.deadlineExceeded, label: label)
             }
             if let outcome {
-                Ambient.record(Event("semaphore.rejected", level: .info, label: label, fields: [
+                Ambient.record(Event(queueing.rejectedEvent, level: .info, label: label, fields: [
                     .init("reason", .string(outcome.reason.rawValue), privacy: .public),
+                    .init("capacity", .int(capacity)),
                 ]))
             }
             return outcome
