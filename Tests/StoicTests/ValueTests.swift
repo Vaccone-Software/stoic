@@ -24,6 +24,31 @@ struct ValueTests {
         #expect(keys.allSatisfy { $0.rawValue.count == 32 && $0.rawValue.allSatisfy(\.isHexDigit) })
     }
 
+    /// Draws at one call site, as a test body would.
+    private static func drawKeys(seed: UInt64) async -> [IdempotencyKey] {
+        await withTestAmbient(clock: ImmediateClock(), seed: seed) {
+            (0..<3).map { _ in IdempotencyKey.random() }
+        }
+    }
+
+    @Test func seededKeysDoNotDependOnWhatOtherTestsDrew() async {
+        let alone = await Self.drawKeys(seed: 5)
+        // Other tests, other seeds, drawing keys in between.
+        _ = await Self.drawKeys(seed: 6)
+        _ = await Self.drawKeys(seed: 5)
+        #expect(await Self.drawKeys(seed: 5) == alone)
+        #expect(Set(alone).count == 3, "keys drawn at one site under one seed still differ")
+        #expect(await Self.drawKeys(seed: 6) != alone)
+    }
+
+    @Test func seededKeysAreReproducibleInParallel() async {
+        let runs = await withTaskGroup(of: [IdempotencyKey].self) { group in
+            for _ in 0..<8 { group.addTask { await Self.drawKeys(seed: 11) } }
+            return await group.reduce(into: []) { $0.append($1) }
+        }
+        #expect(Set(runs).count == 1)
+    }
+
     @Test func oneKeyServesEveryAttempt() async throws {
         let seen = SendableBox<[IdempotencyKey]>([])
         struct Lost: Error {}

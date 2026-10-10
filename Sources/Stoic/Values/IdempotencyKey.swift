@@ -1,5 +1,3 @@
-internal import Synchronization
-
 /// A key that lets a server recognise a retried request as the same request.
 ///
 /// Retrying a request that changes something — a payment, a message, an
@@ -25,11 +23,14 @@ public struct IdempotencyKey: Sendable, Hashable, CustomStringConvertible, Codab
     }
 
     /// A new 128-bit random key, as 32 lowercase hexadecimal digits, drawn
-    /// from the ambient random source. Keys are always distinct; under a
-    /// seed they are also reproducible when a test draws them in the same
-    /// order.
+    /// from the ambient random source. Keys drawn from one source are always
+    /// distinct. Under a seed they are also reproducible: the keys a test
+    /// draws depend on the seed, the call site and how many keys that test's
+    /// own source has drawn so far — never on other tests, the filter used
+    /// to run it, or what ran in parallel.
     public static func random(fileID: String = #fileID, line: UInt = #line) -> IdempotencyKey {
-        var generator = Ambient.current.random.generator(discriminator: IdempotencyKeyCounter.next(), fileID: fileID, line: line)
+        let source = Ambient.current.random
+        var generator = source.generator(discriminator: source.nextDraw(), fileID: fileID, line: line)
         let high = generator.next()
         let low = generator.next()
         return IdempotencyKey(rawValue: hex(high) + hex(low))
@@ -40,16 +41,5 @@ public struct IdempotencyKey: Sendable, Hashable, CustomStringConvertible, Codab
     private static func hex(_ value: UInt64) -> String {
         let digits = String(value, radix: 16)
         return String(repeating: "0", count: 16 - digits.count) + digits
-    }
-}
-
-
-/// Separates keys drawn at one call site under a seed: without it, a seeded
-/// test would draw the same "random" key every time it reached that line.
-enum IdempotencyKeyCounter {
-    private static let counter = Atomic<UInt64>(0)
-
-    static func next() -> UInt64 {
-        counter.wrappingAdd(1, ordering: .relaxed).newValue
     }
 }

@@ -1,3 +1,5 @@
+internal import Synchronization
+
 /// Where Stoic's randomness comes from: the system, or a seed.
 ///
 /// Jitter, hedging and sampling all draw from a `RandomSource`. In production
@@ -16,12 +18,36 @@ public struct RandomSource: Sendable, Hashable, CustomStringConvertible {
 
     private let kind: Kind
 
+    /// Counts the draws made through this source, for callers that need a
+    /// discriminator of their own (``IdempotencyKey/random(fileID:line:)``).
+    /// It belongs to the source, not to the process, so a seeded test starts
+    /// at zero however many keys other tests drew. Copies of a source share
+    /// it; two `seeded(_:)` calls do not.
+    private let draws = DrawCounter()
+
+    private init(kind: Kind) {
+        self.kind = kind
+    }
+
+    public static func == (lhs: RandomSource, rhs: RandomSource) -> Bool {
+        lhs.kind == rhs.kind
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(kind)
+    }
+
     /// The system's cryptographically secure generator.
     public static let system = RandomSource(kind: .system)
 
     /// A reproducible source: the same seed yields the same streams.
     public static func seeded(_ seed: UInt64) -> RandomSource {
         RandomSource(kind: .seeded(seed))
+    }
+
+    /// The next value of this source's own draw counter: 1, 2, 3, …
+    func nextDraw() -> UInt64 {
+        draws.next()
     }
 
     /// The seed, when the source is seeded.
@@ -60,6 +86,14 @@ public struct RandomSource: Sendable, Hashable, CustomStringConvertible {
         case .system: "system"
         case .seeded(let seed): "seeded(\(seed))"
         }
+    }
+}
+
+private final class DrawCounter: Sendable {
+    private let count = Atomic<UInt64>(0)
+
+    func next() -> UInt64 {
+        count.wrappingAdd(1, ordering: .relaxed).newValue
     }
 }
 
