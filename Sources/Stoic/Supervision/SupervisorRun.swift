@@ -51,6 +51,10 @@ struct SupervisorRun {
         for index in supervisor.children.indices {
             start(index, in: &slots, sink: sink)
         }
+        if supervisor.children.isEmpty {
+            finish(.stopped, level: .info, child: nil, error: nil)
+            return
+        }
 
         for await signal in signals {
             switch signal {
@@ -131,11 +135,23 @@ struct SupervisorRun {
             return SupervisorEscalation(supervisor: supervisor.label, child: child.label, lastError: error)
         }
 
-        let affected: [Int]
+        var affected: [Int]
         switch supervisor.strategy {
         case .oneForOne: affected = [index]
         case .oneForAll: affected = Array(supervisor.children.indices)
         case .restForOne: affected = Array(index..<supervisor.children.count)
+        }
+        // A sibling that finished for good (a transient child that returned,
+        // a temporary one) stays finished: restarting the group does not
+        // resurrect it.
+        affected.removeAll { $0 != index && slots[$0].finished && slots[$0].task == nil && slots[$0].restartTimer == nil }
+        // This decision supersedes any restart already pending for a member:
+        // otherwise an older timer would start members out of order, and a
+        // newer one would start them a second time.
+        for member in affected {
+            slots[member].restartTimer?.cancel()
+            slots[member].restartTimer = nil
+            slots[member].pendingRestart = []
         }
         // Stop the siblings that restart with it, newest first.
         for member in affected.reversed() where member != index && slots[member].task != nil {
@@ -147,7 +163,10 @@ struct SupervisorRun {
         if let started = slots[index].startedAt, started.duration(to: now) >= supervisor.resetAfter {
             slots[index].stepper = supervisor.backoff.makeStepper(random: ambient.random.generator())
         }
-        let scheduled = slots[index].stepper.next(elapsed: .zero) ?? .zero
+        // A backoff schedule that has ended means restarting should stop.
+        guard let scheduled = slots[index].stepper.next(elapsed: .zero) else {
+            return SupervisorEscalation(supervisor: supervisor.label, child: child.label, lastError: error)
+        }
         let delay = scheduled.saturatingMultiplied(by: ambient.conditions.current.backoffFactor)
         publish.yield(.restarting(child: child.label, after: delay))
         record("supervisor.child_restarting", .info, child: index, extra: [.init("delay", .duration(delay))])
@@ -169,6 +188,8 @@ struct SupervisorRun {
     // MARK: Children
 
     private func start(_ index: Int, in slots: inout [Slot], sink: AsyncStream<Signal>.Continuation) {
+        // Never two instances of one child: a running child is left alone.
+        guard slots[index].task == nil else { return }
         let child = supervisor.children[index]
         slots[index].generation += 1
         let generation = slots[index].generation

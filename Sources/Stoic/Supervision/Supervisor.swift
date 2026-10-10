@@ -97,23 +97,25 @@ public final class Supervisor: Sendable {
     }
 
     /// What the supervisor does, as it happens: starts, exits, restarts,
-    /// hangs, escalation. Newest 256 buffered.
+    /// hangs, escalation. Newest 256 buffered. The stream finishes when
+    /// ``run()`` ends.
     public var events: AsyncStream<SupervisorEvent> {
         eventStream
     }
 
     /// Runs the children until they are all done, the supervisor escalates,
-    /// or the calling task is cancelled.
+    /// or the calling task is cancelled. A supervisor runs once.
     ///
     /// - Throws: ``SupervisorEscalation`` when restarts exceed the intensity;
     ///   `CancellationError` when cancelled (after every child has stopped).
     public func run() async throws {
-        let alreadyRunning = running.withLock { running -> Bool in
+        let alreadyRan = running.withLock { running -> Bool in
             defer { running = true }
             return running
         }
-        precondition(!alreadyRunning, "Supervisor \(label) is already running")
-        defer { running.withLock { $0 = false } }
+        precondition(!alreadyRan, "Supervisor \(label) runs once; create a new one to run again")
+        // The event stream ends with the run, so `for await` over it ends too.
+        defer { eventContinuation.finish() }
         let run = SupervisorRun(supervisor: self, ambient: Ambient.current, publish: eventContinuation)
         try await run.execute()
     }

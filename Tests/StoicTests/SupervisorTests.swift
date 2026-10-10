@@ -203,3 +203,100 @@ struct SupervisorTests {
         stuck.open()
     }
 }
+
+@Suite("Supervisor: review fixes")
+struct SupervisorReviewTests {
+    struct Crash: Error {}
+
+    /// Counts live instances of each child, to catch duplicates.
+    final class Census: Sendable {
+        let state = SendableBox<(live: [String: Int], peak: [String: Int], runs: [String: Int])>(([:], [:], [:]))
+        func enter(_ name: String) {
+            state.mutate { s in
+                s.live[name, default: 0] += 1
+                s.runs[name, default: 0] += 1
+                s.peak[name] = max(s.peak[name] ?? 0, s.live[name]!)
+            }
+        }
+        func leave(_ name: String) { state.mutate { $0.live[name, default: 0] -= 1 } }
+    }
+
+    @Test func restForOneNeverRunsTwoInstancesOfAChild() async throws {
+        let census = Census()
+        let aCrashes = SendableBox(0)
+        func child(_ name: String, crashFirst: Bool, after delay: Duration) -> Child {
+            Child(name) { _ in
+                census.enter(name)
+                defer { census.leave(name) }
+                let run = census.state.value.runs[name] ?? 0
+                if crashFirst && run == 1 {
+                    try await Task.sleep(for: delay)
+                    if name == "A" { aCrashes.mutate { $0 += 1 } }
+                    throw Crash()
+                }
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+        let supervisor = Supervisor(label: "rest", strategy: .restForOne, intensity: .init(maxRestarts: 10, within: .seconds(60)), backoff: .fixed(.milliseconds(40))) {
+            child("A", crashFirst: true, after: .milliseconds(15))   // fails during B's restart delay
+            child("B", crashFirst: true, after: .milliseconds(1))
+            child("C", crashFirst: false, after: .zero)
+        }
+        let run = Task { try await supervisor.run() }
+        await eventually { (census.state.value.runs["C"] ?? 0) >= 2 && aCrashes.value >= 1 }
+        try await Task.sleep(for: .milliseconds(150))
+        let peak = census.state.value.peak
+        #expect(peak["B"] == 1 && peak["C"] == 1, "previously two instances of B and C ran at once: \(peak)")
+        run.cancel()
+        _ = try? await run.value
+        let live = census.state.value.live
+        #expect(live["B"] == 0 && live["C"] == 0, "no orphaned instances after the supervisor stops: \(live)")
+    }
+
+    @Test func aFinishedTransientChildIsNotResurrectedByAGroupRestart() async {
+        let runs = SendableBox<[String: Int]>([:])
+        let supervisor = Supervisor(label: "all", strategy: .oneForAll, intensity: .init(maxRestarts: 1, within: .seconds(60)), backoff: .immediate) {
+            Child("done", restart: .transient) { _ in runs.mutate { $0["done", default: 0] += 1 } }
+            Child("flaky", restart: .transient) { _ in
+                let count = runs.mutate { $0["flaky", default: 0] += 1; return $0["flaky"]! }
+                if count == 1 {
+                    try await Task.sleep(for: .milliseconds(20))
+                    throw Crash()
+                }
+            }
+        }
+        try? await supervisor.run()
+        #expect(runs.value["done"] == 1, "previously the finished transient child ran again")
+        #expect(runs.value["flaky"] == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func anEndedBackoffScheduleEscalates() async {
+        let restarts = SendableBox(0)
+        let supervisor = Supervisor(label: "bounded", intensity: .init(maxRestarts: .max, within: .seconds(60)), backoff: Schedule.delays([.milliseconds(1), .milliseconds(1)]).schedule) {
+            Child("crashy") { _ in
+                restarts.mutate { $0 += 1 }
+                throw Crash()
+            }
+        }
+        await #expect(throws: SupervisorEscalation.self) { try await supervisor.run() }
+        #expect(restarts.value == 3, "two scheduled delays, then the schedule ends and the supervisor gives up")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aSupervisorWithNoChildrenReturns() async throws {
+        let supervisor = Supervisor(label: "empty") {}
+        try await supervisor.run()
+    }
+
+    @Test(.timeLimit(.minutes(1))) func theEventStreamFinishesWithTheRun() async throws {
+        let supervisor = Supervisor(label: "once") {
+            Child("once", restart: .temporary) { _ in }
+        }
+        let collected = Task { () -> Int in
+            var count = 0
+            for await _ in supervisor.events { count += 1 }
+            return count
+        }
+        try await supervisor.run()
+        #expect(await collected.value >= 2)
+    }
+}

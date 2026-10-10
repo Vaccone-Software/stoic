@@ -60,9 +60,16 @@ crash (a trap) cannot be caught in-process; that level is the operating
 system restarting the process, and is configured there (launchd's
 `KeepAlive`, the app being relaunched).
 
+**Overlapping restarts.** A newer restart decision supersedes any restart
+already pending for the children it covers, and a child never runs two
+instances: so a second failure during a group's backoff cannot start members
+out of order or twice. A child that finished for good (a transient that
+returned, a temporary) stays finished when its group restarts.
+
 **Backoff.** Each child waits on the supervisor's schedule before
 restarting (jittered exponential by default, capped at 30 s); a child that
-ran for `resetAfter` without stopping starts its backoff over.
+ran for `resetAfter` without stopping starts its backoff over. A schedule
+that ends means restarting should stop: the supervisor escalates.
 
 **Heartbeats.** A child with a `HeartbeatPolicy` calls `beat()` while it
 makes progress. Silence for `misses` consecutive intervals (three by
