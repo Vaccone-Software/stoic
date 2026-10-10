@@ -206,3 +206,61 @@ struct SuggestionTests {
         #expect(Suggestions.nearest(to: "caf\u{E9}s", among: ["cafes"]) == ["cafes"])
     }
 }
+
+@Suite("Reading order")
+struct ReadingOrderTests {
+    /// Declared in the reverse of the order the file lists them in, which is
+    /// how a type is often declared.
+    struct Backwards: Sendable, Equatable {
+        var third = 3
+        var second = 2
+        var first = 1
+
+        static let schema = Schema.object(Backwards.self, default: Backwards()) {
+            Field("third", \.third, .int(.range(0...10)))
+            Field("second", \.second, .int(.range(0...10)))
+            Field("first", \.first, .int(.range(0...10)))
+        }
+    }
+
+    @Test func issuesFromTextFollowThePositionInTheFile() {
+        let text = "{\n  \"first\": 99,\n  \"second\": 98,\n  \"third\": 97\n}"
+        let result = Backwards.schema.decodeReporting(text)
+        #expect(result.issues.locations == ["$.first out_of_range", "$.second out_of_range", "$.third out_of_range"])
+        #expect(result.issues.map { $0.source?.start.line } == [2, 3, 4])
+    }
+
+    @Test func thePrintedReportReadsTopToBottom() {
+        let text = "{\"third\": 97, \"first\": 99,\n \"second\": 98}"
+        do throws(ValidationFailure) {
+            _ = try Backwards.schema.decode(text)
+            Issue.record("expected a failure")
+        } catch {
+            let lines = error.description.split(separator: "\n").map { $0.prefix(4) }
+            #expect(lines == ["1:11", "1:24", "2:12"])
+        }
+    }
+
+    @Test func positionsOnTheSameLineAreOrderedByColumn() {
+        let result = Backwards.schema.decodeReporting(#"{"second": 98, "third": 97, "first": 99}"#)
+        #expect(result.issues.map { $0.source?.start.column } == [12, 25, 38])
+    }
+
+    @Test func issuesWithTheSamePositionKeepTheOrderTheyWereFound() {
+        var issues = [
+            SchemaIssue(path: at("a"), code: .tooShort, source: nil), SchemaIssue(path: at("b"), code: .tooLong),
+        ]
+        #expect(issues.inReadingOrder().locations == ["$.a too_short", "$.b too_long"])
+        let start = SourceLocation(offset: 5, line: 1, column: 6)
+        let place = SourceRange(start: start, end: start)
+        issues[0].source = place
+        issues[1].source = place
+        #expect(issues.inReadingOrder().locations == ["$.a too_short", "$.b too_long"])
+    }
+
+    @Test func withoutTextTheOrderIsAsFound() {
+        let result = Backwards.schema.decode(json(#"{"first": 99, "second": 98, "third": 97}"#))
+        // Declaration order: the schema's, since there is no file to read.
+        #expect(result.issues.locations == ["$.third out_of_range", "$.second out_of_range", "$.first out_of_range"])
+    }
+}

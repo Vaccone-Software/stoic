@@ -314,7 +314,7 @@ struct CustomSchemaTests {
         #expect(result.issues.locations == ["$.range.low invalid_value"])
         #expect(result.issues[0].source?.start.column == 19)  // the text of `low`'s value
         #expect(holder.decodeReporting(#"{"range": {"high": "x"}}"#).issues.locations == [
-            "$.range.high type_mismatch", "$.range.low missing_key",
+            "$.range.low missing_key", "$.range.high type_mismatch",
         ])
         #expect(holder.decodeReporting(#"{"range": {"low": 1, "high": 2}}"#).value == Holder(range: Range(low: 1, high: 2)))
     }

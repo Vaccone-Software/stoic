@@ -72,6 +72,22 @@ public struct IssueCode: RawRepresentable, Hashable, Sendable, CustomStringConve
     /// reason is in the `message` parameter.
     public static let invalidValue = IssueCode(rawValue: "invalid_value")
 
+    // MARK: Versions
+
+    /// A document of a version newer than the schema's, which the schema
+    /// cannot read without losing what the newer release wrote. An error
+    /// unless the schema preserves unknown keys, when it is a warning and
+    /// the newer fields are carried along.
+    public static let versionTooNew = IssueCode(rawValue: "version_too_new")
+    /// A document of a version no migration reads: older than the oldest
+    /// the schema keeps a path from, or in a gap in the history.
+    public static let versionUnsupported = IssueCode(rawValue: "version_unsupported")
+    /// A document was migrated from an older version before it was read.
+    /// A warning, one per step, with `from` and `to` in the parameters.
+    public static let migrated = IssueCode(rawValue: "migrated")
+    /// A migration step could not be applied to this document.
+    public static let migrationFailed = IssueCode(rawValue: "migration_failed")
+
     // MARK: Input and declarations
 
     /// The input is not well-formed JSON. The parser's own code, message and

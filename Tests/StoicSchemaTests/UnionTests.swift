@@ -86,7 +86,7 @@ struct UnionDecodingTests {
         let result = decode(Shape.schema, #"{"type": "rect"}"#)
         #expect(result.issues.locations == ["$.width missing_key", "$.height missing_key"])
         let partial = decode(Shape.schema, #"{"type": "rect", "width": 0}"#)
-        #expect(partial.issues.locations == ["$.width out_of_range", "$.height missing_key"])
+        #expect(partial.issues.locations == ["$.height missing_key", "$.width out_of_range"])
     }
 
     @Test func aCaseWithoutAPayloadRejectsStrayKeys() {

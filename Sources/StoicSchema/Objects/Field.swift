@@ -31,6 +31,8 @@ func encodeObject<Root: Sendable>(
     _ value: Root,
     codecs: [FieldCodec<Root>],
     defaults: Root?,
+    versioning: Versioning? = nil,
+    preserved: (@Sendable (Root) -> JSONObject)? = nil,
     state: inout EncodeState
 ) -> JSONValue {
     var object = JSONObject()
@@ -46,6 +48,12 @@ func encodeObject<Root: Sendable>(
         if let encoded = codec.encode(value, &state) { object[codec.key] = encoded }
         state.pop()
     }
+    // Keys the schema did not understand when it read the document come
+    // back as they were, unless a field now claims the key.
+    if let preserved {
+        for member in preserved(value) where object[member.key] == nil { object[member.key] = member.value }
+    }
+    if let versioning { object = versioning.stamp(object) }
     return .object(object)
 }
 

@@ -161,6 +161,24 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let reason = parameters["message"]?.string ?? "is not valid"
             guard let expected else { return reason }
             return "\(reason), expected \(expected)"
+        case .versionTooNew:
+            let found = parameters["version"]?.number?.lexeme ?? "?"
+            let supported = parameters["supported"]?.number?.lexeme ?? "?"
+            let text = "version \(found) is newer than the newest this app reads, \(supported)"
+            return severity == .warning ? text + "; the fields it adds are kept but not understood" : text
+        case .versionUnsupported:
+            let found = parameters["version"]?.number?.lexeme ?? "?"
+            let oldest = parameters["oldest"]?.number?.lexeme ?? "?"
+            let current = parameters["current"]?.number?.lexeme ?? "?"
+            return "version \(found) cannot be migrated to version \(current); the oldest readable is \(oldest)"
+        case .migrated:
+            let from = parameters["from"]?.number?.lexeme ?? "?"
+            let to = parameters["to"]?.number?.lexeme ?? "?"
+            return "migrated from version \(from) to \(to)"
+        case .migrationFailed:
+            let from = parameters["from"]?.number?.lexeme ?? "?"
+            let to = parameters["to"]?.number?.lexeme ?? "?"
+            return "migrating from version \(from) to \(to) failed: \(parameters["message"]?.string ?? "unknown reason")"
         case .parseError:
             return "invalid JSON: \(parameters["message"]?.string ?? "malformed input")"
         default:
@@ -229,8 +247,31 @@ public struct ValidationFailure: Error, Sendable, Hashable, CustomStringConverti
         issues.filter { $0.severity == .error }
     }
 
-    /// One issue per line, each in the form of ``Issue/description``.
+    /// One issue per line, each in the form of ``Issue/description``, in
+    /// the order a person reads the file: top to bottom, left to right,
+    /// when the issues have positions; as found otherwise.
     public var description: String {
-        issues.map(\.description).joined(separator: "\n")
+        issues.inReadingOrder().map(\.description).joined(separator: "\n")
+    }
+}
+
+extension Array where Element == Issue {
+    /// The issues in the order a person reads the file: by position in the
+    /// text (line, then column) when they have one. The sort is stable, so
+    /// issues at the same position (several about one object) keep the
+    /// order the schema found them in, and issues with no position (a
+    /// document that was never text) are left as found, which follows the
+    /// schema's declaration order within an object and the elements' order
+    /// within an array. A schema declares its fields in the order that
+    /// suits the type, which is rarely the order a file lists them in, and
+    /// a report that jumps up and down the file is a report people stop
+    /// reading.
+    public func inReadingOrder() -> [Issue] {
+        guard contains(where: { $0.source != nil }) else { return self }
+        return enumerated().sorted { lhs, rhs in
+            let left = lhs.element.source?.start.offset ?? Int.max
+            let right = rhs.element.source?.start.offset ?? Int.max
+            return left != right ? left < right : lhs.offset < rhs.offset
+        }.map(\.element)
     }
 }

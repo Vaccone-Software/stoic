@@ -305,6 +305,66 @@ the order it was built:
   discriminator itself, a value key equal to the discriminator. A value that
   is none of the declared cases is found by `validate(_:)`.
 
+### Versions and migrations
+
+- **Declared on the object**, in both forms: `version: 4, migrations: […]`
+  (plus `versionKey:`, default `"version"`, and `missingVersion:`). The
+  version lives in a reserved key that is not a field (declaring a field
+  with that key traps), is removed before the fields see it, and is written
+  first on every encode, sparse included. The node records it as
+  `ObjectNode.versioning`.
+- **Migrations are `Migration.from(1, to: 2, ops…)`** over `JSONValue`, with
+  a closed set of operations as data: `rename`, `move`, `delete`,
+  `setIfAbsent`, `mapEnum`, `pinDefault` and `custom(id:)`. Paths are
+  dot-separated keys; a path that is not in the document is skipped; a
+  rename or move onto a taken key is a `migration_failed` error, never an
+  overwrite. `pinDefault` does what `setIfAbsent` does and says why: it
+  writes the old default into a document that omitted the field, so that a
+  release changing a default cannot flip what an old sparse file meant.
+- **Decoding** reads the version, applies the steps from it to the current
+  version one at a time, and records a `migrated` warning per step
+  (`from`, `to`, the operations in words) before validating the migrated
+  object, so errors are at the new paths. A version that is not a positive
+  integer is `type_mismatch`/`out_of_range`; one no step reads is
+  `version_unsupported`; a step that cannot be applied is `migration_failed`.
+  A document with no version key means the oldest version
+  (`.oldest`, the default, for a format that gained its key late),
+  the current one (`.current`, for hand-written files) or an error.
+- **Positions are coarse after a migration.** A migrated object has been
+  rewritten, so the text no longer shows what its issues are about: they
+  point at the whole object, not at a line that may now mean something else.
+  Documents that needed no migration keep exact positions.
+- **Newer documents.** A version above the schema's is `version_too_new`, an
+  error, unless the object preserves unknown keys: `unknownKeys: .preserve`
+  with `preservingUnknownKeysIn: \Type.extra` (form a) or
+  `f.unknownKeys(\.extra)` (form b) keeps every key the schema does not
+  declare in a `JSONObject` property and writes it back. The document is then
+  read best-effort with a `version_too_new` _warning_, the newer version
+  number is kept with the unknown keys, and encoding writes it back rather
+  than the schema's own: an old release never downgrades or truncates a
+  newer one's file. (A preserved typo is not noticed; prefer `.warn` for a
+  hand-edited file.)
+- **Export** states the current version (`const`), makes the key required
+  unless a missing key means current, and lists the history under
+  `x-stoic-version`. The document describes the current format only: a
+  validator rejects an old document that the decoder would migrate.
+- **Time capsule.** The pattern, in the test target, is a table of golden
+  documents, one per readable version, each with the value it meant, decoded
+  under today's schema; a second test fails when the history grows without a
+  capsule entry. See `PrefsCapsule` in `VersionedFixtures.swift`.
+
+### Reading order
+
+Issues decoded from text are returned, and printed by `ValidationFailure`,
+sorted by position in the file (line, then column; stable, so issues at one
+position keep the order they were found in). A schema declares fields in the
+order that suits the type, and a report that jumps up and down the file is
+one people stop reading. Issues without a position (a value that was never
+text) keep the order found, which is declaration order within an object and
+element order within an array; there is no better "path order" for them,
+since sorting paths alphabetically would be worse than the declaration.
+A missing key sorts with the object that lacks it.
+
 ## Non-goals
 
 Formats other than JSON in the first version (property lists and YAML can

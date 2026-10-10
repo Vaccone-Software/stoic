@@ -88,13 +88,13 @@ struct ObjectAccumulationTests {
             result.issues.locations == [
                 "$.scrollSpeed out_of_range",
                 "$.theme not_one_of",
-                "$.network.hosts[1] too_short",
-                "$.network.port out_of_range",
                 "$.maxHistory type_mismatch",
+                "$.network.port out_of_range",
+                "$.network.hosts[1] too_short",
                 "$.zoom out_of_range",
             ])
-        // Issues come in declaration order, depth first: the network's
-        // `hosts` and `port` come where `network` is declared.
+        // Issues come in reading order: `port` is written before `hosts`
+        // in the file, though `hosts` is declared first.
         #expect(result.errors.count == 6)
     }
 
@@ -197,11 +197,11 @@ struct UnknownKeyTests {
 
     @Test func nestedObjectsSuggestTheirOwnKeys() {
         let result = decode(#"{"network": {"prot": 80, "useTls": true}}"#)
-        // `useTls` differs from `useTLS` only in case: an alias, not unknown,
-        // and read first, while the fields are; the unknown key comes after.
-        #expect(result.issues.map(\.code) == [.deprecatedKey, .unknownKey])
-        #expect(result.issues[1].path.description == "$.network.prot")
-        #expect(result.issues[1].suggestions == ["port"])
+        // `useTls` differs from `useTLS` only in case: an alias, not unknown.
+        // Issues are in reading order, and `prot` comes first in the text.
+        #expect(result.issues.map(\.code) == [.unknownKey, .deprecatedKey])
+        #expect(result.issues[0].path.description == "$.network.prot")
+        #expect(result.issues[0].suggestions == ["port"])
     }
 
     @Test func rejectMakesItAnError() {
@@ -357,7 +357,7 @@ struct LenientRepairTests {
         #expect(result.issues.allSatisfy { $0.severity == .repaired })
         #expect(
             result.issues.map(\.path.description)
-                == ["$.scrollSpeed", "$.theme", "$.network.hosts[1]", "$.network.port"])
+                == ["$.scrollSpeed", "$.theme", "$.network.port", "$.network.hosts[1]"])
     }
 
     @Test func repairHappensAtTheInnermostFieldWithADefault() {

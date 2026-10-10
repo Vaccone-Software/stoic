@@ -106,8 +106,11 @@ public struct Schema<Value: Sendable>: Sendable {
         let value = decoder(json, &state)
         // The decoder's contract is "nil exactly when an error was recorded";
         // trust the count over the value if the two ever disagree.
-        guard state.errorCount == 0 else { return Decoded(value: nil, issues: state.issues) }
-        return Decoded(value: value, issues: state.issues)
+        // Text is reported in reading order, whatever order the schema
+        // declares its fields in.
+        let issues = state.issues.inReadingOrder()
+        guard state.errorCount == 0 else { return Decoded(value: nil, issues: issues) }
+        return Decoded(value: value, issues: issues)
     }
 
     // MARK: Encoding

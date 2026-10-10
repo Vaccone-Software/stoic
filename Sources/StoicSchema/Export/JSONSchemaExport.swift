@@ -163,6 +163,27 @@ struct JSONSchemaExporter {
         if let doc = object.doc { out["description"] = .string(doc) }
         var properties = JSONObject()
         var required: [JSONValue] = []
+        if let versioning = object.versioning {
+            // The wire format described is the current one; older documents
+            // are migrated before they are read, which is annotated, not
+            // expressible.
+            properties[versioning.key] = .object([
+                "type": "integer", "const": .number(JSONNumber(versioning.current)),
+                "description": "The version of this document's format.",
+            ])
+            if versioning.missing != .current { required.append(.string(versioning.key)) }
+            out["x-stoic-version"] = .object([
+                "key": .string(versioning.key), "current": .number(JSONNumber(versioning.current)),
+                "oldest": .number(JSONNumber(versioning.oldest)),
+                "migrations": .array(
+                    versioning.migrations.map { step in
+                        .object([
+                            "from": .number(JSONNumber(step.from)), "to": .number(JSONNumber(step.to)),
+                            "operations": .array(step.operations.map { .string($0.description) }),
+                        ])
+                    }),
+            ])
+        }
         for field in object.fields {
             var property = export(field.node, location: location + "." + field.key)
             if let doc = field.doc { property["description"] = .string(doc) }
@@ -180,6 +201,7 @@ struct JSONSchemaExporter {
         out["properties"] = .object(properties)
         if !required.isEmpty { out["required"] = .array(required) }
         if object.unknownKeys == .reject { out["additionalProperties"] = false }
+        if object.unknownKeys == .preserve { out["x-stoic-preserves-unknown"] = true }
         return out
     }
 

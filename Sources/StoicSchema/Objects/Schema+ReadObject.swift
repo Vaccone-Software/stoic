@@ -1,4 +1,4 @@
-internal import StoicJSON
+public import StoicJSON
 
 // Objects without a default instance (form (b)).
 //
@@ -66,6 +66,10 @@ public final class ObjectReader<Root: Sendable> {
     var succeeded = true
     var nodes: [FieldNode] = []
     var codecs: [FieldCodec<Root>] = []
+    /// What the object declared, for deciding which keys are unknown.
+    private var declared: [DeclaredKey] = []
+    /// Set by ``unknownKeys(_:)`` while describing.
+    var preserved: (@Sendable (Root) -> JSONObject)?
 
     /// A reader that records the declaration and decodes nothing.
     init() {
@@ -76,7 +80,8 @@ public final class ObjectReader<Root: Sendable> {
 
     /// A reader that decodes `object`. The state is a placeholder until the
     /// caller swaps the real one in.
-    init(object: JSONObject, known: Set<ExactKey>, options: DecodeOptions) {
+    init(object: JSONObject, known: Set<ExactKey>, declared: [DeclaredKey], options: DecodeOptions) {
+        self.declared = declared
         mode = .decoding
         state = DecodeState(options: options)
         scan = ObjectScan(object: object, known: known)
@@ -153,6 +158,25 @@ public final class ObjectReader<Root: Sendable> {
         }
     }
 
+    /// Reads the keys the object does not declare, so that the value keeps
+    /// them and writes them back: the object then never destroys what a
+    /// newer release, or another tool, put in the document. Declaring it
+    /// sets the object's policy to ``UnknownKeyPolicy/preserve``.
+    ///
+    ///     let extra = f.unknownKeys(\.extra)
+    ///     return f.build { v in Point(x: v[x], y: v[y], extra: v[extra]) }
+    ///
+    /// - Parameter keyPath: Where the value holds them, for encoding.
+    public func unknownKeys(_ keyPath: any KeyPath<Root, JSONObject> & Sendable) -> Slot<JSONObject> {
+        switch mode {
+        case .describing:
+            preserved = { $0[keyPath: keyPath] }
+            return Slot(value: nil)
+        case .decoding:
+            return Slot(value: scan.takePreserved(declared: declared))
+        }
+    }
+
     /// Declares how the value is made from the slots. It runs only if every
     /// field was read without error, and may itself throw a
     /// ``ValidationFailure`` for a rule that spans fields (its issues are
@@ -192,6 +216,10 @@ extension Schema {
         name: String? = nil,
         unknownKeys: UnknownKeyPolicy = .reject,
         doc: String? = nil,
+        version: Int? = nil,
+        versionKey: String = "version",
+        missingVersion: MissingVersion = .oldest,
+        migrations: [Migration] = [],
         declare: @escaping @Sendable (ObjectReader<Value>) -> Construction<Value>
     ) -> Schema<Value> {
         let name = name ?? String(describing: Value.self)
@@ -199,25 +227,39 @@ extension Schema {
         _ = declare(describer)
         let nodes = describer.nodes
         let codecs = describer.codecs
+        let preserved = describer.preserved
+        let policy: UnknownKeyPolicy = preserved == nil ? unknownKeys : .preserve
         let declared = nodes.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }
         checkDeclaredKeys(declared, in: name)
+        let versioning = makeVersioning(
+            version: version, key: versionKey, missing: missingVersion, migrations: migrations, declared: declared,
+            in: name)
         let known = Set(declared.flatMap { [ExactKey($0.key)] + $0.aliases.map(ExactKey.init) })
-        let node = ObjectNode(name: name, doc: doc, fields: nodes, unknownKeys: unknownKeys)
+        let node = ObjectNode(name: name, doc: doc, fields: nodes, unknownKeys: policy, versioning: versioning)
         return Schema(
             node: .object(node),
             decoder: { json, state in
-                guard case .object(let object) = json else {
+                guard case .object(var object) = json else {
                     state.typeMismatch(expected: "an object", found: json)
                     return nil
                 }
+                let outerRegion = state.migratedRegion
+                defer { state.migratedRegion = outerRegion }
+                if let versioning {
+                    guard let gate = versioning.gate(object, preservesUnknown: policy == .preserve, state: &state)
+                    else { return nil }
+                    object = gate.object
+                    if gate.migrated { state.migratedRegion = state.inputPath }
+                }
                 let errorsBefore = state.errorCount
-                let reader = ObjectReader<Value>(object: object, known: known, options: state.options)
+                let reader = ObjectReader<Value>(
+                    object: object, known: known, declared: declared, options: state.options)
                 // The reader works on the caller's state by holding it for the
                 // duration: swapping moves it, where assigning would copy the
                 // issue list at every nesting level.
                 swap(&reader.state, &state)
                 let construction = declare(reader)
-                reader.scan.finish(declared: declared, policy: unknownKeys, state: &reader.state)
+                reader.scan.finish(declared: declared, policy: policy, state: &reader.state)
                 swap(&reader.state, &state)
                 guard reader.succeeded, state.errorCount == errorsBefore else { return nil }
                 do throws(ValidationFailure) {
@@ -241,7 +283,7 @@ extension Schema {
                 }
             },
             encoder: { value, state in
-                encodeObject(value, codecs: codecs, defaults: nil, state: &state)
+                encodeObject(value, codecs: codecs, defaults: nil, versioning: versioning, preserved: preserved, state: &state)
             })
     }
 }

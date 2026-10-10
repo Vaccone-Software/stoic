@@ -46,8 +46,9 @@ public struct DecodeOptions: Sendable, Hashable {
 /// found either way.
 ///
 /// Decoding never stops at the first problem, so `issues` is the whole list
-/// for this input, in the order the schema found them (declaration order
-/// within an object).
+/// for this input. Decoded from text, it is in reading order (see
+/// ``Swift/Array/inReadingOrder()``); otherwise in the order the schema found
+/// them (declaration order within an object, element order within an array).
 public struct Decoded<Value: Sendable>: Sendable {
     /// The decoded value. `nil` if any issue is an error.
     public var value: Value?

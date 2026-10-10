@@ -231,12 +231,20 @@ public struct ObjectNode: Sendable {
     public var doc: String?
     public var fields: [FieldNode]
     public var unknownKeys: UnknownKeyPolicy
+    /// The object's version and the migrations that lead to it, if it is
+    /// versioned. A document's version lives in the reserved
+    /// ``Versioning/key``, which is not a field.
+    public var versioning: Versioning?
 
-    public init(name: String, doc: String? = nil, fields: [FieldNode], unknownKeys: UnknownKeyPolicy) {
+    public init(
+        name: String, doc: String? = nil, fields: [FieldNode], unknownKeys: UnknownKeyPolicy,
+        versioning: Versioning? = nil
+    ) {
         self.name = name
         self.doc = doc
         self.fields = fields
         self.unknownKeys = unknownKeys
+        self.versioning = versioning
     }
 }
 
@@ -251,6 +259,14 @@ public enum UnknownKeyPolicy: Sendable, Hashable {
     case warn
     /// Silence. For documents that other tools add their own keys to.
     case ignore
+    /// Not an error, not even a notice: the key is kept, in a property of
+    /// the Swift value that holds the keys the schema does not know, and
+    /// written back unchanged. For a document that a newer release of the
+    /// app, or another tool, also writes: an older release that drops
+    /// what it does not understand destroys the newer one's data on its
+    /// next save. A misspelt key is not noticed either, so prefer
+    /// ``warn`` for a file a person edits.
+    case preserve
 }
 
 /// One field of an object, as the tree records it.

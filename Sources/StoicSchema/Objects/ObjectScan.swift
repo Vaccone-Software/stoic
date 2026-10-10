@@ -103,6 +103,29 @@ struct ObjectScan {
         return KeyHit(value: member.value, spelling: member.key, isAlternateSpelling: true)
     }
 
+    /// Claims, and returns, the members that nothing in the schema accounts
+    /// for: neither a declared key, nor an alias, nor a respelling of
+    /// either. These are what ``UnknownKeyPolicy/preserve`` keeps.
+    ///
+    /// The answer does not depend on which fields have been read so far,
+    /// because it is decided by the declared names alone, so a reader may
+    /// ask at any point.
+    mutating func takePreserved(declared: [DeclaredKey]) -> JSONObject {
+        var owners: Set<String> = []
+        for declaration in declared {
+            owners.insert(Suggestions.normalized(declaration.key))
+            for alias in declaration.aliases { owners.insert(Suggestions.normalized(alias)) }
+        }
+        var kept = JSONObject()
+        for index in object.indices where !claimed.contains(index) {
+            let member = object[index]
+            guard !owners.contains(Suggestions.normalized(member.key)) else { continue }
+            claimed.insert(index)
+            kept[member.key] = member.value
+        }
+        return kept
+    }
+
     /// Accounts for the members no field claimed.
     ///
     /// - A member that is another spelling of a field that was already read
@@ -137,7 +160,7 @@ struct ObjectScan {
                 continue
             }
             switch policy {
-            case .ignore:
+            case .ignore, .preserve:
                 continue
             case .reject, .warn:
                 var suggestions: [String] = []

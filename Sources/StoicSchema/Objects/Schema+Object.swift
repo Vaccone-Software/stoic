@@ -1,4 +1,4 @@
-internal import StoicJSON
+public import StoicJSON
 
 extension Schema {
     /// An object whose every field has a default: configuration.
@@ -25,6 +25,20 @@ extension Schema {
     /// told that `scrol_speed` was ignored and `scrollSpeed` was probably
     /// meant. Choose `.reject` for a wire format.
     ///
+    /// **Versions.** `version:` makes the object a versioned document: its
+    /// version is written to the reserved `versionKey` on every encode, and a
+    /// document that states an older one is migrated, step by step through
+    /// `migrations`, before it is read. See ``Migration`` for the steps and
+    /// the guarantee they exist for, and ``Versioning`` for the rest. A field
+    /// may not use the reserved key.
+    ///
+    /// **Keeping what is not understood.** `preservingUnknownKeysIn` names a
+    /// property of type `JSONObject` that receives the keys the schema does
+    /// not declare and writes them back on encode: the object then never
+    /// destroys what a newer release put there. It sets the policy to
+    /// ``UnknownKeyPolicy/preserve`` and replaces `unknownKeys`. A document
+    /// newer than `version` is read (best effort) only by such an object.
+    ///
     /// A key or alias declared twice is a mistake in the schema and traps
     /// when the schema is first built, so it is found by the first test
     /// that touches the schema rather than by a user.
@@ -38,22 +52,41 @@ extension Schema {
         default defaultValue: Value,
         unknownKeys: UnknownKeyPolicy = .warn,
         doc: String? = nil,
+        version: Int? = nil,
+        versionKey: String = "version",
+        missingVersion: MissingVersion = .oldest,
+        migrations: [Migration] = [],
+        preservingUnknownKeysIn preserved: (any WritableKeyPath<Value, JSONObject> & Sendable)? = nil,
         @FieldsBuilder<Value> fields makeFields: () -> [Field<Value>]
     ) -> Schema<Value> {
         let name = name ?? String(describing: Value.self)
         let fields = makeFields()
         let declared = fields.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }
         checkDeclaredKeys(declared, in: name)
+        let versioning = makeVersioning(
+            version: version, key: versionKey, missing: missingVersion, migrations: migrations, declared: declared,
+            in: name)
         let known = Set(declared.flatMap { [ExactKey($0.key)] + $0.aliases.map(ExactKey.init) })
         let codecs = fields.map(\.codec)
+        let policy: UnknownKeyPolicy = preserved == nil ? unknownKeys : .preserve
+        let preservedReader = readPreserved(preserved)
         let node = ObjectNode(
-            name: name, doc: doc, fields: fields.map { $0.makeNode(defaultValue) }, unknownKeys: unknownKeys)
+            name: name, doc: doc, fields: fields.map { $0.makeNode(defaultValue) }, unknownKeys: policy,
+            versioning: versioning)
         return Schema(
             node: .object(node),
             decoder: { json, state in
-                guard case .object(let object) = json else {
+                guard case .object(var object) = json else {
                     state.typeMismatch(expected: "an object", found: json)
                     return nil
+                }
+                let outerRegion = state.migratedRegion
+                defer { state.migratedRegion = outerRegion }
+                if let versioning {
+                    guard let gate = versioning.gate(object, preservesUnknown: policy == .preserve, state: &state)
+                    else { return nil }
+                    object = gate.object
+                    if gate.migrated { state.migratedRegion = state.inputPath }
                 }
                 var scan = ObjectScan(object: object, known: known)
                 var result = defaultValue
@@ -61,11 +94,44 @@ extension Schema {
                 for field in fields {
                     _ = field.read(&result, defaultValue, &scan, &state)
                 }
-                scan.finish(declared: declared, policy: unknownKeys, state: &state)
+                if let preserved { result[keyPath: preserved] = scan.takePreserved(declared: declared) }
+                scan.finish(declared: declared, policy: policy, state: &state)
                 return state.errorCount == errorsBefore ? result : nil
             },
             encoder: { value, state in
-                encodeObject(value, codecs: codecs, defaults: defaultValue, state: &state)
+                encodeObject(
+                    value, codecs: codecs, defaults: defaultValue, versioning: versioning,
+                    preserved: preservedReader, state: &state)
             })
     }
+}
+
+/// The versioning an object declares, or `nil` if it declares none, after
+/// checking that nothing contradicts it.
+func makeVersioning(
+    version: Int?,
+    key: String,
+    missing: MissingVersion,
+    migrations: [Migration],
+    declared: [DeclaredKey],
+    in name: String
+) -> Versioning? {
+    guard let version else {
+        precondition(migrations.isEmpty, "\(name): migrations need a `version:` to lead to")
+        return nil
+    }
+    for declaration in declared {
+        precondition(
+            !([declaration.key] + declaration.aliases).contains { ExactKey($0) == ExactKey(key) },
+            "\(name): \"\(key)\" holds the document's version and cannot be a field")
+    }
+    return Versioning(current: version, key: key, missing: missing, migrations: migrations)
+}
+
+/// How an object reads back the unknown keys it preserved.
+private func readPreserved<Root: Sendable>(
+    _ keyPath: (any WritableKeyPath<Root, JSONObject> & Sendable)?
+) -> (@Sendable (Root) -> JSONObject)? {
+    guard let keyPath else { return nil }
+    return { root in root[keyPath: keyPath] }
 }

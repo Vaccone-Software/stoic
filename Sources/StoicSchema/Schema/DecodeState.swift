@@ -23,6 +23,12 @@ struct DecodeState {
     var errorCount = 0
     private var truncated = false
 
+    /// The input path of an object that was migrated, while it is being
+    /// decoded. A migration rewrites the object, so the text no longer
+    /// shows what the issues are about; they point at the whole object
+    /// instead of at a place that may now mean something else.
+    var migratedRegion: JSONPath?
+
     /// Above zero while inside a secret field.
     var secretDepth = 0
 
@@ -121,6 +127,7 @@ struct DecodeState {
     /// does.
     private func source(at path: JSONPath, target: Target) -> SourceRange? {
         guard let document else { return nil }
+        if let region = migratedRegion { return document.range(of: region) }
         var current = path
         if target == .key, let range = document.keyRange(of: current) { return range }
         while true {

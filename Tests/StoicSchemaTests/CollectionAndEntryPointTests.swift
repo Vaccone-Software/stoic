@@ -41,7 +41,7 @@ struct ArraySchemaTests {
     @Test func elementAndArrayProblemsAreAllReported() {
         let schema = Schema.array(of: .int(), .count(...2))
         let result = schema.decodeReporting(#"["a", 2, 3]"#)
-        #expect(result.issues.locations == ["$[0] type_mismatch", "$ too_many"])
+        #expect(result.issues.locations == ["$ too_many", "$[0] type_mismatch"])
     }
 
     @Test func countSugar() {
