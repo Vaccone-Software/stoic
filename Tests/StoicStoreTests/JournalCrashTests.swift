@@ -67,9 +67,9 @@ struct JournalCrashTests {
         try journal.close()
     }
 
-    @Test func eachAppendIsDurableBeforeItReturns() throws {
+    @Test func eachAppendIsDurableBeforeItReturns() async throws {
         let names = ["alpha", "bravo", "charlie", "delta", "echo"]
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "Journal.append x5",
             setup: Self.prepare,
             operation: { try Self.appendOneByOne(names, on: $0) },
@@ -81,9 +81,9 @@ struct JournalCrashTests {
         #expect(report.crashPoints >= 12)
     }
 
-    @Test func aBatchIsAllOrAPrefixAndDurableOnceItReturns() throws {
+    @Test func aBatchIsAllOrAPrefixAndDurableOnceItReturns() async throws {
         let batch = ["b1", "b2", "b3", "b4"]
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "Journal.append(batch:)",
             setup: { disk in
                 try Self.prepare(disk)
@@ -103,8 +103,8 @@ struct JournalCrashTests {
         #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 
-    @Test func aTornTailFromEarlierIsRepairedAtOpenEvenIfRepairIsInterrupted() throws {
-        let report = try exploreCrashes(
+    @Test func aTornTailFromEarlierIsRepairedAtOpenEvenIfRepairIsInterrupted() async throws {
+        let report = try await exploreCrashes(
             "Journal.open repairing a torn tail",
             setup: { disk in
                 try Self.prepare(disk)
@@ -130,10 +130,10 @@ struct JournalCrashTests {
         #expect(report.recoveryImages > 0)
     }
 
-    @Test func compactionIsCorrectAtEveryCrashPoint() throws {
+    @Test func compactionIsCorrectAtEveryCrashPoint() async throws {
         let before = ["a", "b", "c"]
         let after = ["d", "e"]
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "Journal.compact",
             setup: { disk in
                 try Self.prepare(disk)
@@ -159,8 +159,8 @@ struct JournalCrashTests {
         #expect(report.crashPoints >= 10)
     }
 
-    @Test func twoCompactionsInARowNeverLoseOrRepeatARecord() throws {
-        let report = try exploreCrashes(
+    @Test func twoCompactionsInARowNeverLoseOrRepeatARecord() async throws {
+        let report = try await exploreCrashes(
             "Journal.compact twice",
             setup: Self.prepare,
             operation: { disk in
@@ -183,9 +183,9 @@ struct JournalCrashTests {
 
     // MARK: The harness must be able to fail here too
 
-    @Test func aJournalThatDoesNotSyncItsDirectoryOnCreationLosesTheFirstRecords() throws {
+    @Test func aJournalThatDoesNotSyncItsDirectoryOnCreationLosesTheFirstRecords() async throws {
         // The same appends, but the journal file's name is never made durable.
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "journal without directory sync",
             setup: Self.prepare,
             operation: { disk in
@@ -207,8 +207,8 @@ struct JournalCrashTests {
         #expect(report.violations.allSatisfy { $0.message.contains("acknowledged") })
     }
 
-    @Test func aJournalThatAcknowledgesBeforeSyncingLosesRecords() throws {
-        let report = try exploreCrashes(
+    @Test func aJournalThatAcknowledgesBeforeSyncingLosesRecords() async throws {
+        let report = try await exploreCrashes(
             "journal acknowledging before fullSync",
             setup: { disk in
                 try Self.prepare(disk)

@@ -63,25 +63,25 @@ struct CrashContext {
 func exploreCrashes(
     _ name: String,
     samples: Int = 24,
-    setup: (SimulatedFileSystem) throws -> Void,
-    operation: (SimulatedFileSystem) throws -> Void,
-    recovery: ((SimulatedFileSystem) throws -> Void)? = nil,
-    check: (SimulatedFileSystem, CrashContext) throws -> String?
-) rethrows -> CrashReport {
+    setup: (SimulatedFileSystem) async throws -> Void,
+    operation: (SimulatedFileSystem) async throws -> Void,
+    recovery: ((SimulatedFileSystem) async throws -> Void)? = nil,
+    check: (SimulatedFileSystem, CrashContext) async throws -> String?
+) async rethrows -> CrashReport {
     let disk = SimulatedFileSystem()
-    try setup(disk)
+    try await setup(disk)
     disk.settle()
-    try operation(disk)
+    try await operation(disk)
 
     var report = CrashReport(name: name)
     report.operationCount = disk.operationCount
     let operations = disk.operations
     let checkpoints = disk.checkpoints
 
-    func verify(_ image: SimulatedFileSystem.CrashImage, point: Int, context: CrashContext, nested: Bool) {
+    func verify(_ image: SimulatedFileSystem.CrashImage, point: Int, context: CrashContext, nested: Bool) async {
         let outcome: String?
         do {
-            outcome = try check(image.fileSystem, context)
+            outcome = try await check(image.fileSystem, context)
         } catch {
             outcome = "check threw \(error)"
         }
@@ -103,16 +103,16 @@ func exploreCrashes(
             if let recovery {
                 let copy = image.fileSystem.fork()
                 copy.settle()
-                if (try? recovery(copy)) != nil, copy.operationCount > 0 {
+                if (try? await recovery(copy)) != nil, copy.operationCount > 0 {
                     for recoveryPoint in 0...copy.operationCount {
                         for nested in copy.crashImages(afterOperation: recoveryPoint, samples: 4, seed: UInt64(point * 1000 + recoveryPoint)) {
                             report.recoveryImages += 1
-                            verify(nested, point: point, context: context, nested: true)
+                            await verify(nested, point: point, context: context, nested: true)
                         }
                     }
                 }
             }
-            verify(image, point: point, context: context, nested: false)
+            await verify(image, point: point, context: context, nested: false)
         }
     }
     return report

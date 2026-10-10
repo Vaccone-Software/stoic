@@ -103,11 +103,11 @@ struct AtomicFileCrashTests {
     }
 
     @Test(arguments: variants)
-    func writeIsAtomicAndDurableAtEveryCrashPoint(variant: Variant) throws {
+    func writeIsAtomicAndDurableAtEveryCrashPoint(variant: Variant) async throws {
         let options = AtomicFile.Options(envelope: variant.envelope, keepPrevious: variant.keepPrevious)
         let old: [UInt8]? = variant.existing ? Self.old : nil
         let new = variant.large ? Self.large : Self.new
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "AtomicFile.write \(variant.testDescription)",
             samples: variant.large ? 8 : 24,
             setup: { try Self.prepare($0, existing: old, using: AtomicFile(fileSystem: $0, options: options)) },
@@ -134,9 +134,9 @@ struct AtomicFileCrashTests {
         #expect(report.images > report.crashPoints)
     }
 
-    @Test func twoWritesInARowKeepTheInvariantAcrossBoth() throws {
+    @Test func twoWritesInARowKeepTheInvariantAcrossBoth() async throws {
         let options = AtomicFile.Options(keepPrevious: true)
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "AtomicFile.write twice",
             setup: { try Self.prepare($0, existing: Self.old, using: AtomicFile(fileSystem: $0, options: options)) },
             operation: { disk in
@@ -159,8 +159,8 @@ struct AtomicFileCrashTests {
 
     // MARK: The harness must be able to fail
 
-    static func exploreBroken(_ defect: BrokenAtomicWrite) throws -> CrashReport {
-        try exploreCrashes(
+    static func exploreBroken(_ defect: BrokenAtomicWrite) async throws -> CrashReport {
+        try await exploreCrashes(
             "broken write: \(defect)",
             setup: { disk in
                 try disk.createDirectory("/d")
@@ -174,25 +174,25 @@ struct AtomicFileCrashTests {
         )
     }
 
-    @Test func theCorrectSequenceWithoutTheEnvelopePasses() throws {
-        let report = try Self.exploreBroken(.correct)
+    @Test func theCorrectSequenceWithoutTheEnvelopePasses() async throws {
+        let report = try await Self.exploreBroken(.correct)
         print(report)
         #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 
     @Test(arguments: [BrokenAtomicWrite.skipFullSync, .skipDirectorySync, .writeInPlace, .renameBeforeFullSync])
-    func aMissingStepFailsTheCrashCheck(defect: BrokenAtomicWrite) throws {
-        let report = try Self.exploreBroken(defect)
+    func aMissingStepFailsTheCrashCheck(defect: BrokenAtomicWrite) async throws {
+        let report = try await Self.exploreBroken(defect)
         print(report)
         for violation in report.violations.prefix(2) { print("  ", violation) }
         #expect(!report.violations.isEmpty, "the harness did not notice \(defect)")
     }
 
-    @Test func theEnvelopeAloneDoesNotRescueAMissingFullSync() throws {
+    @Test func theEnvelopeAloneDoesNotRescueAMissingFullSync() async throws {
         // Torn data is *detected* (and the previous generation returned), but
         // the write was acknowledged and then lost: still a violation.
         let options = AtomicFile.Options(keepPrevious: true)
-        let report = try exploreCrashes(
+        let report = try await exploreCrashes(
             "enveloped write without fullSync",
             setup: { try Self.prepare($0, existing: Self.old, using: AtomicFile(fileSystem: $0, options: options)) },
             operation: { disk in
