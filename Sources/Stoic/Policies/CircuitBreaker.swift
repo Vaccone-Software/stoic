@@ -420,8 +420,11 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
 
         let end = clock.now
         let verdict = judge(result, duration: start.duration(to: end), callerCancelled: Task.isCancelled)
+        // Building a debug event per call is most of a closed breaker's cost;
+        // skip it when nothing would record it.
+        let debug = Ambient.current.instrumentation.isEnabled(.debug)
         let completion = core.withLock { core -> [Change] in
-            complete(&core, ticket: ticket, verdict: verdict, now: end, random: random)
+            complete(&core, ticket: ticket, verdict: verdict, now: end, random: random, debug: debug)
         }
         finish(completion)
 
@@ -549,7 +552,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     }
 
     private func complete(
-        _ core: inout Core, ticket: Ticket, verdict: Verdict, now: AnyClock.Instant, random: RandomSource
+        _ core: inout Core, ticket: Ticket, verdict: Verdict, now: AnyClock.Instant, random: RandomSource, debug: Bool
     ) -> [Change] {
         guard ticket.generation == core.generation else {
             return [Change(name: "breaker.ignored", level: .debug, fields: [
@@ -567,35 +570,35 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             )]
 
         case .recorded(let failed, let slow):
-            let recorded = Change(name: "breaker.recorded", level: .debug, fields: [
+            let recorded: [Change] = debug ? [Change(name: "breaker.recorded", level: .debug, fields: [
                 .init("outcome", .string(failed ? "failure" : "success"), privacy: .public),
                 .init("slow", .bool(slow)),
                 .init("state", .string(core.phase.state.description), privacy: .public),
-            ])
+            ])] : []
 
             if ticket.probe != nil {
                 // A slow probe is as bad as a failed one: the dependency has
                 // not recovered if it still cannot answer in time.
                 if failed || slow {
-                    return [recorded] + trip(&core, now: now, trigger: failed ? "probe_failed" : "probe_slow", random: random)
+                    return recorded + trip(&core, now: now, trigger: failed ? "probe_failed" : "probe_slow", random: random)
                 }
                 core.successes += 1
                 if core.successes >= configuration.halfOpenProbes {
-                    return [recorded] + closeNow(&core, now: now, reason: "probes_succeeded")
+                    return recorded + closeNow(&core, now: now, reason: "probes_succeeded")
                 }
-                return [recorded]
+                return recorded
             }
 
             core.window.record(failed: failed, slow: slow, at: now)
             let totals = core.window.totals(at: now)
-            guard totals.calls >= configuration.minimumCalls else { return [recorded] }
+            guard totals.calls >= configuration.minimumCalls else { return recorded }
             if totals.failureRate(atLeast: failurePPM) {
-                return [recorded] + trip(&core, now: now, trigger: "failure_rate", random: random)
+                return recorded + trip(&core, now: now, trigger: "failure_rate", random: random)
             }
             if totals.slowCallRate(atLeast: slowPPM) {
-                return [recorded] + trip(&core, now: now, trigger: "slow_calls", random: random)
+                return recorded + trip(&core, now: now, trigger: "slow_calls", random: random)
             }
-            return [recorded]
+            return recorded
         }
     }
 

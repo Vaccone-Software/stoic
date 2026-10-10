@@ -320,7 +320,8 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     let clock = explicitClock ?? ambient.clock
     let storage = budget.resolved(fileID: fileID, line: line, registry: ambient.budgets)
     let nested = RetryContext.isInsideAttempt && nesting == .singleAttempt
-    var stepper = schedule.makeStepper(random: ambient.random.generator(fileID: fileID, line: line))
+    // Built on the first failure: most calls succeed at once and never need it.
+    var stepper: Schedule.Stepper?
     let start = clock.now
     var number = 1
 
@@ -368,7 +369,10 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             throw error
         }
         // 4. The schedule.
-        guard let scheduled = stepper.next(elapsed: start.duration(to: now)) else {
+        if stepper == nil {
+            stepper = schedule.makeStepper(random: ambient.random.generator(fileID: fileID, line: line))
+        }
+        guard let scheduled = stepper!.next(elapsed: start.duration(to: now)) else {
             report("retry.exhausted", common + [.init("elapsed", .duration(start.duration(to: now)))], level: .notice)
             throw error
         }

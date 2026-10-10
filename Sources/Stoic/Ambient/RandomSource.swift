@@ -109,12 +109,10 @@ struct StableHash {
 
     mutating func combine(_ integer: UInt64) {
         var remaining = integer
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(8)
         for _ in 0..<8 {
-            bytes.append(UInt8(truncatingIfNeeded: remaining))
+            value ^= remaining & 0xFF
+            value &*= 0x0000_0100_0000_01B3
             remaining >>= 8
         }
-        combine(bytes)
     }
 }

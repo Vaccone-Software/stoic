@@ -62,8 +62,8 @@ public struct RetryBudget: Sendable, CustomStringConvertible {
 
     func resolved(fileID: String, line: UInt, registry: RetryBudgets) -> BudgetStorage? {
         switch kind {
-        case .perCallSite: registry.storage(named: "\(fileID):\(line)")
-        case .named(let name): registry.storage(named: name)
+        case .perCallSite: registry.storage(for: .site(fileID, line))
+        case .named(let name): registry.storage(for: .name(name))
         case .unlimited: nil
         case .storage(let storage): storage
         }
@@ -93,8 +93,8 @@ public final class RetryBudgets: Sendable {
     static let limit = 4_096
 
     private struct State {
-        var budgets: [String: BudgetStorage] = [:]
-        var order: [String] = []
+        var budgets: [Key: BudgetStorage] = [:]
+        var order: [Key] = []
     }
 
     private let state = Mutex(State())
@@ -105,12 +105,19 @@ public final class RetryBudgets: Sendable {
         defaults = .init(ratio: ratio, reservePerSecond: reservePerSecond, reserveCapacity: reserveCapacity)
     }
 
-    func storage(named name: String) -> BudgetStorage {
+    /// A budget's identity: a name, or a call site. A structured key, so the
+    /// per-call-site default costs no string building on every retry.
+    enum Key: Hashable {
+        case name(String)
+        case site(String, UInt)
+    }
+
+    func storage(for key: Key) -> BudgetStorage {
         state.withLock { state in
-            if let existing = state.budgets[name] { return existing }
+            if let existing = state.budgets[key] { return existing }
             let created = BudgetStorage(settings: defaults)
-            state.budgets[name] = created
-            state.order.append(name)
+            state.budgets[key] = created
+            state.order.append(key)
             if state.order.count > Self.limit {
                 state.budgets[state.order.removeFirst()] = nil
             }

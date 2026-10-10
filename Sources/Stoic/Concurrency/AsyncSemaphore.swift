@@ -14,8 +14,9 @@ internal import Synchronization
 /// a missing release.
 ///
 /// A task that already holds a permit and asks for another from the same
-/// semaphore can deadlock itself once permits run out; Stoic reports that as
-/// a `semaphore.reentrant` event at error level the moment it happens.
+/// semaphore can deadlock itself once permits run out; in debug builds Stoic
+/// reports that as a `semaphore.reentrant` event at error level the moment
+/// it happens.
 public final class AsyncSemaphore: Sendable, CustomStringConvertible {
     /// Names the semaphore in events and diagnostics.
     public let label: String
@@ -89,15 +90,21 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
         queueing: Queueing,
         _ body: nonisolated(nonsending) () async throws(Failure) -> R
     ) async throws(PolicyError<Failure>) -> R {
+        #if DEBUG
+        // Reentrancy detection costs a task-local push per permit, so it is a
+        // development aid: debug builds report the self-deadlock in waiting;
+        // release builds skip the bookkeeping.
         if HeldPermits.current.contains(ObjectIdentifier(self)) {
             Ambient.record(Event("semaphore.reentrant", level: .error, label: label, fields: [
                 .init("capacity", .int(capacity)),
             ]))
         }
+        #endif
         if let rejection = await acquire(queueing) {
             throw .rejected(rejection)
         }
         defer { release() }
+        #if DEBUG
         let held = HeldPermits.current + [ObjectIdentifier(self)]
         let result: Result<R, Failure> = await HeldPermits.$current.withValue(held) {
             do throws(Failure) {
@@ -106,6 +113,14 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
                 return .failure(error)
             }
         }
+        #else
+        let result: Result<R, Failure>
+        do throws(Failure) {
+            result = .success(try await body())
+        } catch {
+            result = .failure(error)
+        }
+        #endif
         switch result {
         case .success(let value): return value
         case .failure(let failure): throw .failed(failure)

@@ -93,7 +93,17 @@ extension TaskLocal {
 extension Ambient {
     /// Records `event` with the current context's instrumentation.
     static func record(_ event: Event) {
-        current.instrumentation.record(event)
+        let instrumentation = current.instrumentation
+        guard instrumentation.isEnabled(event.level) else { return }
+        instrumentation.record(event)
+    }
+
+    /// Records the event `make` builds, building it only if its level is
+    /// enabled: for debug events on hot paths.
+    static func record(level: Event.Level, _ make: () -> Event) {
+        let instrumentation = current.instrumentation
+        guard instrumentation.isEnabled(level) else { return }
+        instrumentation.record(make())
     }
 }
 

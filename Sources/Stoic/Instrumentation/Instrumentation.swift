@@ -8,12 +8,22 @@ internal import os
 /// a primitive.
 public protocol Instrumentation: Sendable {
     func record(_ event: Event)
+
+    /// Whether events at `level` would be kept. Primitives on hot paths ask
+    /// before building a debug event, so a sink that drops them costs
+    /// nothing. Defaults to `true`.
+    func isEnabled(_ level: Event.Level) -> Bool
+}
+
+extension Instrumentation {
+    public func isEnabled(_ level: Event.Level) -> Bool { true }
 }
 
 /// Discards every event.
 public struct NoInstrumentation: Instrumentation {
     public init() {}
     public func record(_ event: Event) {}
+    public func isEnabled(_ level: Event.Level) -> Bool { false }
 }
 
 /// Writes events to the unified logging system, subsystem `stoic`.
@@ -28,6 +38,10 @@ public struct OSLogInstrumentation: Instrumentation {
     public init(subsystem: String = "stoic", category: String = "events", minimumLevel: Event.Level = .info) {
         self.logger = Logger(subsystem: subsystem, category: category)
         self.minimumLevel = minimumLevel
+    }
+
+    public func isEnabled(_ level: Event.Level) -> Bool {
+        level >= minimumLevel
     }
 
     public func record(_ event: Event) {
@@ -69,6 +83,10 @@ public struct CompositeInstrumentation: Instrumentation {
     }
 
     public func record(_ event: Event) {
-        for sink in sinks { sink.record(event) }
+        for sink in sinks where sink.isEnabled(event.level) { sink.record(event) }
+    }
+
+    public func isEnabled(_ level: Event.Level) -> Bool {
+        sinks.contains { $0.isEnabled(level) }
     }
 }

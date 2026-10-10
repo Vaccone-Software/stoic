@@ -70,7 +70,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// One recorded transition.
     public struct Record: Sendable, CustomStringConvertible {
         public let from: State
-        public let event: String
+        public let event: Event
         public let to: State
         public let at: AnyClock.Instant
 
@@ -216,11 +216,13 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 .init("reason", .string(reason), privacy: .public),
             ]))
         case .moved(let record):
-            Ambient.record(Stoic.Event("statemachine.transition", level: .debug, label: label, fields: [
-                .init("from", .string("\(record.from)"), privacy: .public),
-                .init("event", .string(record.event), privacy: .public),
-                .init("to", .string("\(record.to)"), privacy: .public),
-            ]))
+            Ambient.record(level: .debug) {
+                Stoic.Event("statemachine.transition", level: .debug, label: label, fields: [
+                    .init("from", .string("\(record.from)"), privacy: .public),
+                    .init("event", .string("\(record.event)"), privacy: .public),
+                    .init("to", .string("\(record.to)"), privacy: .public),
+                ])
+            }
         }
     }
 
@@ -228,7 +230,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         // Leave: everything the old visit started stops now.
         for task in core.stateWork { task.cancel() }
         core.stateWork.removeAll()
-        let record = Record(from: core.state, event: "\(event)", to: next, at: clock.now)
+        let record = Record(from: core.state, event: event, to: next, at: clock.now)
         core.visit += 1
         core.state = next
         core.history.append(record)
