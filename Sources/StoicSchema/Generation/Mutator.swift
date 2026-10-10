@@ -122,6 +122,11 @@ struct Mutator {
 
         case .transformed(let transform):
             collect(transform.base, value, path, context, &out)
+            for counterexample in transform.counterexamples where counterexample.value != value {
+                out.add(replacement(
+                        .refusedByConversion, context, at: path, with: counterexample.value, expect: counterexample.code,
+                        summary: "replaced the value with \(counterexample.value.briefDescription), which \(transform.name) refuses"))
+            }
 
         case .lazy(_, let resolve):
             collect(resolve(), value, path, context, &out)

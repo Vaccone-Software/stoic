@@ -370,6 +370,7 @@ struct InvalidDocumentTests {
         try collect(patterned)
         let choice = Schema<String>.string(.oneOf(["a", "b"]))
         try collect(choice)
+        try collect(Wire.schema)
         #expect(offered == Set(Mutation.Kind.allCases), "missing \(Set(Mutation.Kind.allCases).subtracting(offered))")
     }
 

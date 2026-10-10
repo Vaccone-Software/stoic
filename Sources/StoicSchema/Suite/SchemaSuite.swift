@@ -360,6 +360,9 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
             // A Double the decoder refuses for being too exact or too large is
             // still a number to a validator.
             case .precisionLoss, .notFinite: true
+            // A format is an annotation to a JSON Schema validator; only
+            // the conversion knows that 2024-02-30 is no date.
+            case .refusedByConversion: true
             case .tooLong, .tooShort: nonCharacterLengths
             default: false
             }

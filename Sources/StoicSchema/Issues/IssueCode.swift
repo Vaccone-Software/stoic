@@ -72,6 +72,24 @@ public struct IssueCode: RawRepresentable, Hashable, Sendable, CustomStringConve
     /// reason is in the `message` parameter.
     public static let invalidValue = IssueCode(rawValue: "invalid_value")
 
+    /// A string that does not follow the format its schema reads: a
+    /// date-time that is not RFC 3339, a URL that does not parse, a UUID
+    /// with a digit missing, text that is not base64, a decimal written
+    /// with a comma. The format is in the `format` parameter and what is
+    /// wrong with this value, when it can be said, in `message`.
+    public static let invalidFormat = IssueCode(rawValue: "invalid_format")
+
+    // MARK: Wire tolerance
+
+    /// A warning: a value that names no case of an enumeration that has a
+    /// case for unknown values, which it was read as. A server that adds a
+    /// case does not break an older client; the client is told.
+    public static let unknownCase = IssueCode(rawValue: "unknown_case")
+    /// A warning: an element of a lossy array that did not decode and was
+    /// left out. Its `index` and the first problem with it are in the
+    /// parameters.
+    public static let droppedElement = IssueCode(rawValue: "dropped_element")
+
     // MARK: Versions
 
     /// A document of a version newer than the schema's, which the schema
