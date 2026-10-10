@@ -1,0 +1,17 @@
+# Swift Package Index: which modules get hosted documentation.
+# StoicMacros, StoicObservability and StoicLint sit behind package traits,
+# and StoicUIKit needs an iOS build, so they are left out.
+version: 1
+builder:
+  configs:
+    - documentation_targets:
+        - Stoic
+        - StoicTesting
+        - StoicJSON
+        - StoicSchema
+        - StoicSchemaTesting
+        - StoicStore
+        - StoicSettings
+        - StoicHTTP
+        - StoicApple
+        - StoicAppKit
