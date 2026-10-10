@@ -255,7 +255,7 @@ incident review is the wrong default.
 | 03  | [Structured concurrency](design/03-concurrency.md)                | generation counters, semaphores, unbounded streams        | Built                                      |
 | 04  | [Scopes and resources](design/04-scopes-and-resources.md)         | `defer`/`deinit` cleanup, manual teardown order           | Built                                      |
 | 05  | [Errors and reports](design/05-errors.md)                         | `try?`, errors flattened to strings                       | Built; platform catalog planned            |
-| 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times      | Phase 1 built; phase 2 in progress         |
+| 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times      | Built: phases 1 and 2; `@Schema` in progress |
 | 07  | [State machines](design/07-state-machines.md)                     | phase booleans, stale-callback guards                     | Built; macro planned                       |
 | 08  | [Services and app lifecycle](design/08-services-and-lifecycle.md) | `applicationWillTerminate` teardown lists                 | Built, with AppKit and UIKit bridges       |
 | 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                       | Built                                      |
@@ -347,7 +347,7 @@ write wrongly by hand.
 | **M2**    | Scopes, `Resource`, `Saga`, `TaskScope`; `TaskSlot`, `race`, `mapConcurrent`, semaphores, `SingleFlight`, `Channel`   | Done         |
 | **M3**    | `Report`, `Defect`, the event catalog; `Secret`, `IdempotencyKey`                                                     | Done         |
 | **M4**    | `StoicJSON`, `StoicSchema` phase 1                                                                                     | Done         |
-| **M4.2**  | Schema phase 2: unions, transforms, migrations, generators, SchemaSuite, Codable bridge; then `@Schema`                | In progress  |
+| **M4.2**  | Schema phase 2: unions, transforms, migrations, generators, SchemaSuite, Codable bridge; then `@Schema`                | Done; `@Schema` in progress |
 | **M5**    | `StateMachine`, `StateGraph`                                                                                           | Done         |
 | **M6**    | `ServiceGraph`, `Supervisor`; lifecycle bridges                                                                        | Done         |
 | **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | Done         |
