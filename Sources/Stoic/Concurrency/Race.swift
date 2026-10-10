@@ -17,8 +17,9 @@ public struct Racer<R: Sendable, Failure: Error>: Sendable {
 /// then awaited: `race` never returns while a loser is still running, so it
 /// leaks nothing. (A loser that ignores cancellation therefore delays the
 /// return; give such work its own timeout.) If every operation fails, `race`
-/// throws the first failure, and reports the rest in a `race.all_failed`
-/// event.
+/// throws the first failure, as the typed `throws(Failure)` leaves room for
+/// nothing else, and reports every failure it saw, in completion order, in a
+/// `race.all_failed` event (`first`, then `also_1`, `also_2`, …).
 ///
 ///     let mirror = try await race(
 ///         { try await download(from: primary) },
@@ -116,9 +117,14 @@ public nonisolated(nonsending) func race<R: Sendable, Failure: Error>(
         ], fileID: fileID, line: line))
         return outcome.value
     }
+    // The event is bounded: past a handful the extra errors are only counted.
+    let others = failures.dropFirst().prefix(8).enumerated().map { offset, failure in
+        Event.Field("also_\(offset + 1)", .error(failure))
+    }
     Ambient.record(Event("race.all_failed", level: .notice, label: label, fields: [
         .init("operations", .int(operations.count)),
+        .init("failures", .int(failures.count)),
         .init("first", .error(failures[0])),
-    ], fileID: fileID, line: line))
+    ] + others, fileID: fileID, line: line))
     throw failures[0]
 }

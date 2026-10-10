@@ -48,6 +48,24 @@ struct RaceAndMapTests {
         #expect(events.names.contains("race.all_failed"))
     }
 
+    @Test func raceReportsEveryFailureInTheEvent() async throws {
+        let events = RecordingInstrumentation()
+        let racers = (0..<3).map { index in
+            Racer<Int, Failure> { () throws(Failure) -> Int in throw .boom(index) }
+        }
+        var thrown: (any Error)?
+        do {
+            _ = try await withAmbient({ $0.instrumentation = events }) { try await race(racers) }
+        } catch { thrown = error }
+        let event = try #require(events.events.first { $0.name == "race.all_failed" })
+        guard case .int(3)? = event["failures"] else { Issue.record("failures: \(String(describing: event["failures"]))"); return }
+        // Completion order is the scheduler's; `first` is the one thrown.
+        let reported = ["first", "also_1", "also_2"].compactMap { event[$0]?.description }
+        #expect(reported.count == 3)
+        for index in 0..<3 { #expect(reported.contains { $0.hasSuffix("boom(\(index))") }) }
+        #expect(reported.first.map { first in thrown.map { first.hasSuffix(String(describing: $0)) } ?? false } == true)
+    }
+
     @Test func raceAcceptsAnArrayOfRacers() async throws {
         let racers = (0..<5).map { index in
             Racer<Int, Failure> { () throws(Failure) -> Int in
