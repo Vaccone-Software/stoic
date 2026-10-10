@@ -241,6 +241,64 @@ struct SimulationTests {
         }
     }
 
+    // MARK: Teardown
+
+    final class Canary: Sendable {
+        static let alive = Atomic<Int>(0)
+        init() { Canary.alive.add(1, ordering: .relaxed) }
+        deinit { Canary.alive.subtract(1, ordering: .relaxed) }
+    }
+
+    @Test func whatTheRunLeftAsleepIsUnwoundAndFreed() async throws {
+        let before = Canary.alive.load(ordering: .relaxed)
+        let cleaned = Mutex(false)
+        let run = try await simulate(seed: 0) { _ in
+            let canary = Canary()
+            // A task of the user's, asleep on the simulation's clock …
+            Task(executorPreference: Ambient.current.taskExecutor) {
+                _ = canary
+                try? await Ambient.sleep(for: .seconds(3600))
+            }
+            // … and a Stoic one, whose cleanup must get to run.
+            let machine = StateMachine<SimulationPhase, SimulationPhase>(initial: .idle, label: "unwind") { _, to in .to(to) }
+            machine.whileIn(.on, label: "humming") { _ in
+                try? await Ambient.sleep(for: .seconds(3600))
+                cleaned.withLock { $0 = true }
+            }
+            machine.send(.on)
+            await Task.yield()
+            await Task.yield()
+            return machine
+        }
+        // Still reported as it was when the body returned …
+        #expect(run.leftover.contains { $0.label == "unwind.humming" })
+        // … but no longer running, and nothing it held is held.
+        #expect(run.stuck.isEmpty)
+        #expect(cleaned.withLock { $0 })
+        #expect(!TaskLedger.current.contains { $0.label == "unwind.humming" })
+        for _ in 0..<100 where Canary.alive.load(ordering: .relaxed) > before { await Task.yield() }
+        #expect(Canary.alive.load(ordering: .relaxed) == before)
+        _ = run.value
+    }
+
+    @Test func whatCannotBeUnwoundIsReportedAsStuck() async throws {
+        let waiters = Mutex<[CheckedContinuation<Void, Never>]>([])
+        let run = try await simulate(seed: 0) { _ in
+            let machine = StateMachine<SimulationPhase, SimulationPhase>(initial: .idle, label: "wedged") { _, to in .to(to) }
+            machine.whileIn(.on, label: "forever") { _ in
+                await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in waiters.withLock { $0.append(k) } }   // ignores cancellation
+            }
+            machine.send(.on)
+            await Task.yield()
+            await Task.yield()
+            return machine
+        }
+        #expect(run.stuck.contains { $0.label == "wedged.forever" })
+        // Let the test's own continuation go, so the task ends.
+        for waiter in waiters.withLock({ let all = $0; $0 = []; return all }) { waiter.resume() }
+        _ = run.value
+    }
+
     // MARK: Fault points
 
     struct StillOpen: Error {}

@@ -192,6 +192,10 @@ public struct Simulated<Value: Sendable>: Sendable {
     public let fingerprint: UInt64
     /// Stoic tasks still running when the body returned — usually a leak.
     public let leftover: [TaskLedger.Entry]
+    /// Of those, the ones that were still running after the simulation
+    /// cancelled them and gave them time to finish: waiting on something
+    /// that ignores cancellation, or on a continuation nothing will resume.
+    public let stuck: [TaskLedger.Entry]
     /// How many times each fault point fired, by site.
     public let faultsFired: [String: Int]
 }
@@ -385,6 +389,9 @@ final class Simulation<R: Sendable>: Sendable {
         }
 
         let elapsed = start.duration(to: clock.now)
+        // What the run left behind, before it is cleaned up.
+        let leftover = TaskLedger.entries(tag: tag)
+        let stuck = unwind(task)
         if let failure {
             return .failure(SimulationFailure(kind: failure, seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
         }
@@ -392,7 +399,7 @@ final class Simulation<R: Sendable>: Sendable {
         case .success(let value)?:
             return .success(Simulated(
                 value: value, seed: seed, steps: steps, elapsed: elapsed,
-                fingerprint: fingerprint.value, leftover: TaskLedger.entries(tag: tag),
+                fingerprint: fingerprint.value, leftover: leftover, stuck: stuck,
                 faultsFired: faults.fired
             ))
         case .failure(let error)?:
@@ -400,6 +407,32 @@ final class Simulation<R: Sendable>: Sendable {
         case nil:
             return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value))
         }
+    }
+}
+
+extension Simulation {
+    /// Cancels what the run left behind that Stoic can reach — its ledger
+    /// tasks, and everything asleep on its clock — and drives the executor
+    /// until it is quiet, a bounded number of steps. Without this, a task
+    /// parked on the clock keeps the clock, and itself, alive for the rest
+    /// of the process, and a cancelled one never gets to run its cleanup.
+    /// Not counted in the run's steps or fingerprint.
+    ///
+    /// - Returns: The ledger tasks that were still running afterwards.
+    fileprivate func unwind(_ root: Task<Void, Never>) -> [TaskLedger.Entry] {
+        var budget = 20_000
+        for _ in 0..<8 {
+            root.cancel()
+            TaskLedger.cancelAll(tag: tag)
+            clock.cancelAllSleepers()
+            while budget > 0, let (job, _, _) = executor.takeNext() {
+                executor.run(job)
+                budget -= 1
+            }
+            // Cleanup may itself have gone to sleep or started more work.
+            if budget == 0 || (clock.sleeperCount == 0 && TaskLedger.entries(tag: tag).isEmpty) { break }
+        }
+        return TaskLedger.entries(tag: tag)
     }
 }
 

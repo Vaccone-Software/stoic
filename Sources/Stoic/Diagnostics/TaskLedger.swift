@@ -33,6 +33,9 @@ public enum TaskLedger {
     private struct State {
         var nextID: UInt64 = 0
         var entries: [UInt64: Entry] = [:]
+        // How to cancel each registered task, for a simulation unwinding
+        // what a finished run left behind.
+        var cancels: [UInt64: @Sendable () -> Void] = [:]
     }
 
     private static let state = Mutex(State())
@@ -45,6 +48,18 @@ public enum TaskLedger {
     /// The running tasks started under `tag` (see ``Ambient/ledgerTag``).
     public static func entries(tag: UInt64) -> [Entry] {
         current.filter { $0.tag == tag }
+    }
+
+    /// Cancels every running task registered under `tag`, oldest first.
+    ///
+    /// - Returns: How many were cancelled.
+    @discardableResult
+    package static func cancelAll(tag: UInt64) -> Int {
+        let cancels = state.withLock { state in
+            state.entries.filter { $0.value.tag == tag }.keys.sorted().compactMap { state.cancels[$0] }
+        }
+        for cancel in cancels { cancel() }
+        return cancels.count
     }
 
     /// Starts `operation` as a task registered for as long as it runs.
@@ -60,9 +75,20 @@ public enum TaskLedger {
             state.entries[state.nextID] = entry
             return state.nextID
         }
-        return Task.stoic {
-            defer { _ = state.withLock { $0.entries.removeValue(forKey: id) } }
+        let task = Task.stoic {
+            defer {
+                state.withLock { state in
+                    state.entries.removeValue(forKey: id)
+                    state.cancels.removeValue(forKey: id)
+                }
+            }
             return await operation()
         }
+        // Not if it has already finished, which would leave the closure
+        // (and the task it holds) registered for good.
+        state.withLock { state in
+            if state.entries[id] != nil { state.cancels[id] = { task.cancel() } }
+        }
+        return task
     }
 }
