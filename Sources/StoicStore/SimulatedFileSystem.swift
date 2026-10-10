@@ -157,6 +157,16 @@ public final class SimulatedFileSystem: FileSystem {
         }
     }
 
+    /// An independent copy of this file system, pending changes and all, with
+    /// a fresh history. Lets a test branch: run recovery on a copy of a crash
+    /// image and crash *that*.
+    public func fork() -> SimulatedFileSystem {
+        let copy = state.withLock { $0 }
+        let fork = SimulatedFileSystem(capacity: copy.capacity, recordsHistory: copy.recordsHistory)
+        fork.state.withLock { $0 = copy.withoutHistoryReset() }
+        return fork
+    }
+
     // MARK: Faults
 
     /// What a scripted fault applies to.
@@ -353,6 +363,14 @@ extension SimulatedFileSystem {
 
         init(restoring files: [String: [UInt8]], like other: State) {
             self.init(restoring: files, directories: other.directories, like: other)
+        }
+
+        func withoutHistoryReset() -> State {
+            var copy = self
+            copy.operations = []
+            copy.checkpoints = []
+            copy.history = recordsHistory ? [withoutHistory()] : []
+            return copy
         }
 
         func withoutHistory() -> State {
