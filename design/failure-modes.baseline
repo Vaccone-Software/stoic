@@ -128,6 +128,31 @@ design/13 | the baseline has a newer version
 design/13 | the plugin is attached but the Lint trait is off
 design/13 | the same file is passed twice, or a directory and a file in it
 design/13 | the tool fails after writing nothing
+design/15 | a byte flips in the middle of the log
+design/15 | a crash falls inside compact
+design/15 | a crash tears the last record or leaves a hole
+design/15 | a record exceeds maxRecordSize
+design/15 | a second deliverPending starts during a run
+design/15 | a stale .tmp from a crash is found
+design/15 | a step of write fails
+design/15 | an item no longer decodes
+design/15 | append has returned, then power is lost
+design/15 | append's fullSync fails
+design/15 | append's write fails (ENOSPC)
+design/15 | both generations are corrupt
+design/15 | deliverPending is cancelled
+design/15 | it dies after the ack returned
+design/15 | it dies after the server accepted, before the ack
+design/15 | the ack cannot be written
+design/15 | the app dies after enqueue returned
+design/15 | the closure throws a Retryable error saying .stop
+design/15 | the current file is missing or fails its checksum
+design/15 | the log passes compactionThreshold after a run
+design/15 | the process dies at any instruction of write
+design/15 | the schedule is spent
+design/15 | the snapshot fails its checksum
+design/15 | the volume has less free space than the file needs
+design/15 | write has returned, then power is lost
 design/18 | an update produces an invalid value
 design/18 | one field is invalid
 design/18 | the app crashed mid-save
