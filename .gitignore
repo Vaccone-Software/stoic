@@ -6,3 +6,5 @@
 xcuserdata/
 .netrc
 Package.resolved
+/Examples/*/.build
+/Examples/*/Package.resolved
