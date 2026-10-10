@@ -30,6 +30,7 @@ let package = Package(
     products: [
         .library(name: "Stoic", targets: ["Stoic"]),
         .library(name: "StoicTesting", targets: ["StoicTesting"]),
+        .library(name: "StoicJSON", targets: ["StoicJSON"]),
     ],
     // The core depends on the standard library and Synchronization alone.
     // Integrations (swift-log, swift-metrics, swift-distributed-tracing,
@@ -40,6 +41,11 @@ let package = Package(
         // Virtual clocks, seeded randomness and recorded events, for the
         // tests of anything built on Stoic. Never linked into an app.
         .target(name: "StoicTesting", dependencies: ["Stoic"], swiftSettings: strict),
+        // A strict, Foundation-free JSON layer: the trust boundary under the
+        // validation layer (design/06). It depends on the standard library
+        // alone, so a schema can be checked anywhere Swift runs.
+        .target(name: "StoicJSON", swiftSettings: strict),
+        .testTarget(name: "StoicJSONTests", dependencies: ["StoicJSON"], swiftSettings: strict),
         .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
     ]
 )
