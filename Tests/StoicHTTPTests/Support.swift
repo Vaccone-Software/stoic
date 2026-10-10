@@ -1,6 +1,7 @@
 import Foundation
 import Stoic
 import StoicHTTP
+import StoicSchema
 import StoicTesting
 import Testing
 
@@ -18,7 +19,7 @@ func eventually(
     let limit = clock.now.advanced(by: timeout)
     while !condition() {
         if clock.now >= limit {
-            Issue.record(Comment(rawValue: message()), sourceLocation: sourceLocation)
+            Testing.Issue.record(Comment(rawValue: message()), sourceLocation: sourceLocation)
             return
         }
         // stoic:allow(discarded-try): a cancelled poll just checks the condition once more
@@ -45,3 +46,105 @@ extension Event {
 }
 
 let apiBase = URL(string: "https://api.example.com")!
+
+// MARK: - A client on a script and a virtual clock
+
+extension HTTPPolicy {
+    /// The standard policy with a backoff a test can predict: 1 s, then 2 s.
+    static func testing(
+        attempts: Int = 3,
+        timeout: Duration = .seconds(10),
+        breaker: CircuitBreaker.Configuration? = HTTPPolicy.standardBreaker,
+        maxConcurrent: Int? = 8,
+        queueLimit: Int = 64,
+        maxResponseBytes: Int = 10_000_000,
+        retryBudget: RetryBudget = .unlimited,
+        coalesce: Bool = true,
+        wallClock: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 0) }
+    ) -> HTTPPolicy {
+        HTTPPolicy(
+            attemptTimeout: timeout,
+            schedule: Schedule.exponential(base: .seconds(1)).unjittered().attempts(attempts),
+            retryBudget: retryBudget,
+            breaker: breaker,
+            maxConcurrentPerHost: maxConcurrent,
+            queueLimitPerHost: queueLimit,
+            maxResponseBytes: maxResponseBytes,
+            coalesceGETs: coalesce,
+            wallClock: wallClock
+        )
+    }
+}
+
+typealias Step = ScriptedTransport.Step
+typealias Sending = Task<HTTPResponse, any Error>
+
+/// A client, its scripted transport, a test clock and the events it recorded.
+final class Rig: Sendable {
+    let clock = TestClock()
+    let events = RecordingInstrumentation()
+    let transport = ScriptedTransport()
+    let api: HTTPClient
+
+    init(policy: HTTPPolicy, headers: HTTPHeaders) {
+        api = HTTPClient(base: apiBase, policy: policy, transport: transport, headers: headers)
+    }
+
+    /// Starts a request on its own task, which inherits the test's ambient context.
+    func start(_ request: HTTPRequest, key: IdempotencyKey? = nil) -> Sending {
+        let api = api
+        return Task { try await api.send(request, idempotencyKey: key) }
+    }
+
+    /// Waits until the `count`-th failed attempt is waiting out its backoff.
+    func waitForBackoff(_ count: Int = 1) async {
+        await eventually("backoff \(count) never began") { events.count("retry.attempt_failed") >= count }
+        await clock.waitForSleepers(count: 1)
+    }
+
+    /// Waits until an attempt is hanging: its timer and the transport's wait.
+    /// `timers` counts what else sleeps on the clock at the same time: a
+    /// caller's deadline is a timer of its own, and so is each stage that
+    /// honours it.
+    func waitForHangingAttempt(timers: Int = 0) async {
+        await clock.waitForSleepers(count: 2 + timers)
+    }
+
+    /// The error a request ended with, or `nil` if it succeeded.
+    func failure(of task: Sending) async -> (any Error)? {
+        do {
+            _ = try await task.value
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    func httpError(of task: Sending) async -> HTTPError? {
+        await failure(of: task) as? HTTPError
+    }
+
+    /// The headers of every request the transport saw.
+    var sentHeaders: [HTTPHeaders] { transport.requests.map(\.headers) }
+}
+
+func withRig<R>(
+    _ policy: HTTPPolicy = .testing(),
+    headers: HTTPHeaders = [:],
+    _ body: (Rig) async throws -> R
+) async throws -> R {
+    let rig = Rig(policy: policy, headers: headers)
+    return try await withTestAmbient(clock: rig.clock, seed: 7, events: rig.events) { () async throws -> R in
+        try await body(rig)
+    }
+}
+
+struct User: Sendable, Equatable {
+    var id = 0
+    var name = ""
+
+    static let schema = Schema.object(User.self, default: User()) {
+        Field("id", \.id, .int(.range(1...1_000_000)))
+        Field("name", \.name, .string(.length(0...40)))
+    }
+}

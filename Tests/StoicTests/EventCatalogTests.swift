@@ -9,7 +9,7 @@ struct EventCatalogTests {
         let sources = URL(filePath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Sources")
-        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|ratelimiter|store|launch|settings)\.[a-z_]+)""#)
+        let pattern = try Regex(#""((?:channel|deadline|race|recur|retry|scope|semaphore|service|singleflight|slot|statemachine|supervisor|abandoned|saga|hedge|breaker|limiter|bulkhead|lifecycle|ratelimiter|store|launch|settings|http)\.[a-z_]+)""#)
         // Any literal handed straight to `Event(`, whatever its prefix, so a
         // new domain's events cannot slip past the list above.
         let constructed = try Regex(#"Event\(\s*"([a-z]+\.[a-z_]+)""#)
