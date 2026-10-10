@@ -22,132 +22,75 @@ scope is cancelled and awaited before any release runs.
 
 ```swift
 public struct Scope: ~Copyable {
-    // Acquire, and register the release in the same breath.
-    public func acquire<R, Failure: Error>(
+    public func acquire<R: Sendable, Failure: Error>(label:, shielded: Bool = false, timeout: Duration? = nil,
         _ acquire: nonisolated(nonsending) () async throws(Failure) -> R,
-        release: @escaping @Sendable (R, Exit) async -> Void,
-        label: String = #function
-    ) async throws(Failure) -> R where R: Sendable
-
-    public func acquire<R: Sendable, Failure: Error>(_ resource: Resource<R, Failure>) async throws(Failure) -> R
-
-    // Register a finalizer for something already acquired.
-    public func onExit(label: String, timeout: Duration? = nil,
-                       _ finalizer: @escaping @Sendable (Exit) async -> Void)
-
-    public var exitDeadlineFloor: Duration { get }   // minimum time every finalizer gets
+        release: @escaping @Sendable (R, Exit) async throws -> Void) async throws(Failure) -> R
+    public func acquire<R, Failure>(_ resource: Resource<R, Failure>) async throws(Failure) -> R
+    public func onExit(label:, timeout:, _ finalizer: @escaping @Sendable (Exit) async throws -> Void)
 }
-
-// A scope that also owns child tasks. Separate, because child failures are
-// heterogeneous: a TaskScope's body is typed, but the scope throws `any Error`.
-public struct TaskScope: ~Copyable {
-    public var resources: Scope { borrowing get }
-    // Child work owned by the scope: cancelled and awaited at exit, before releases.
-    public func fork(label: String, _ work: sending @escaping @isolated(any) () async throws -> Void)
-}
-
+public struct Resource<Value: Sendable, Failure: Error>: Sendable { init(label:shielded:timeout:acquire:release:) }
 public enum Exit: Sendable { case success, failure(any Error), cancelled }
 
 public nonisolated(nonsending) func withScope<R, Failure: Error>(
-    finalizerTimeout: Duration = .seconds(5),
-    _ body: nonisolated(nonsending) (borrowing Scope) async throws(Failure) -> R
-) async throws(Failure) -> R
+    exitBudget: Duration = .seconds(10), finalizerTimeout: Duration = .seconds(5), label: String? = nil,
+    _ body: nonisolated(nonsending) (borrowing Scope) async throws(Failure) -> R) async throws(Failure) -> R
 
-public nonisolated(nonsending) func withTaskScope<R>(
-    finalizerTimeout: Duration = .seconds(5),
-    _ body: nonisolated(nonsending) (borrowing TaskScope) async throws -> R
-) async throws -> R
+public struct TaskScope: ~Copyable { func fork(label:, _:); acquire…; onExit… }
+public nonisolated(nonsending) func withTaskScope<R: Sendable>(…,
+    @_inheritActorContext _ body: sending @escaping @isolated(any) (borrowing TaskScope) async throws -> R) async throws -> R
 
-// A reusable acquire/release description, composable.
-public struct Resource<Value: Sendable, Failure: Error>: Sendable {
-    public init(acquire: @escaping @Sendable () async throws(Failure) -> Value,
-                release: @escaping @Sendable (Value, Exit) async -> Void)
-    public func map<T>(_ f: @escaping @Sendable (Value) -> T) -> Resource<T, Failure>
-    public func flatMap<T>(_ f: @escaping @Sendable (Value) -> Resource<T, Failure>) -> Resource<T, Failure>
-}
-
-// Compensations run in reverse when the body fails or is cancelled.
-public nonisolated(nonsending) func withSaga<R, Failure: Error>(
-    _ body: nonisolated(nonsending) (borrowing Saga) async throws(Failure) -> R
-) async throws(Failure) -> R
-```
-
-```swift
-try await withTaskScope { scope in
-    let socket = try await scope.resources.acquire { try Socket.bind(path) }
-                                           release: { socket, _ in await socket.close() }
-    let model = try await scope.resources.acquire(Model.resource(config))
-    scope.fork(label: "heartbeat") { try await heartbeat(socket) }
-    try await serve(socket, model)
-}
+public struct Saga: ~Copyable { func step(_ action:, compensate:) }
+public nonisolated(nonsending) func withSaga<R, Failure: Error>(…, _ body: (borrowing Saga) async throws(Failure) -> R) async throws(Failure) -> R
 ```
 
 ## Semantics
 
-**The handle cannot escape.** `Scope` is `~Copyable` and the body receives it
-`borrowing`. The compiler rejects capturing it in an escaping closure
-("cannot be captured by an escaping closure since it is a borrowed
-parameter"), so nothing can register a finalizer on a scope that has already
-ended. Verified with the Swift 6.4 compiler; `~Escapable` would say the same
-thing but still needs experimental lifetime features to construct.
+**The handle cannot escape.** `Scope`, `TaskScope` and `Saga` are
+`~Copyable` and handed to the body `borrowing`; the compiler rejects
+capturing them in an escaping closure. Verified against Swift 6.4.
+(`~Escapable` would say the same, but constructing one still needs
+experimental lifetime features.)
 
-**Acquire is atomic with registration.** Cancellation in Swift cannot
-interrupt synchronous code, so the moment between `acquire` returning and its
-release being registered is not a window — Stoic registers the release before
-returning the value to the body. If the acquire itself throws or is
-cancelled, nothing is registered (acquire is responsible for its own partial
-state). Acquires that must not be interrupted halfway are wrapped by the
-caller in a shield; Stoic offers `acquire(shielded: true)` to make that a
-one-word decision.
+**Acquire is atomic with registration.** Swift cannot interrupt
+synchronous code, so the release is registered before the value reaches the
+body. `shielded: true` runs the acquire itself hidden from cancellation.
 
-**Exit order.** When the body returns, throws or is cancelled:
+**Exit.** When the body returns, throws or is cancelled, finalizers run one
+at a time, newest first. Waiting for them is shielded
+(`withTaskCancellationShield`), so a cancelled task still cleans up. Each
+finalizer runs in its own task and gets `max(250 ms, min(its timeout,
+what is left of exitBudget))`: a total budget, so n finalizers cannot add up
+to n × timeout, and a floor, because cleanup that never runs is worse than
+cleanup that runs late. A finalizer that overruns is abandoned —
+`scope.finalizer_abandoned`, error level — and the next one runs.
 
-1. Forked children are cancelled (cause `.scopeEnded`) and awaited.
-2. Finalizers run one at a time in reverse registration order.
-3. Each runs inside `withTaskCancellationShield`, so cancellation-aware
-   cleanup code does not skip its work, and receives the `Exit` so it can
-   choose (roll back on failure, flush on success).
-4. Each runs under its own timeout (`timeout:` or `finalizerTimeout`). A
-   finalizer that overruns is abandoned through the bounded ledger
-   (design/01), reported, and the next finalizer runs — one hung release does
-   not hold every later release hostage.
-5. The body's outcome is returned or rethrown, unchanged.
+**Finalizers cannot change the outcome.** They may throw; the error is
+reported (`scope.finalizer_failed`) and the body's result or error passes
+through unchanged. Work whose failure must change the outcome — committing
+a transaction — belongs at the end of the body. Review rejected asserting
+in debug on a reported failure: it would crash every test of that path.
 
-**Finalizers are for release, not for commit.** A finalizer that fails does
-not change the body's outcome: its error is reported (`scope.finalizer_failed`,
-error level) and, in debug builds, trips an assertion. Work whose failure must
-change the outcome — committing a transaction, flushing a write the caller
-depends on — belongs at the end of the body, where its error propagates. This
-is Java's suppressed-exception rule with the suppression made loud.
+**TaskScope.** Children forked into a task scope are cancelled
+(`scopeEnded`) and awaited when the body ends, *before* any finalizer runs,
+so no fork can use a released resource. A failing fork cancels the body and
+its siblings (`siblingFailed`); the scope then throws `ConcurrentFailure`
+with every fork failure followed by the body's own error if it failed for
+another reason. The body runs as a child task — the only way a fork's
+failure can cancel it without cancelling the caller — so, like `Task {}`, it
+inherits the caller's actor and returns a `Sendable` result. `withScope`
+has no forks, so its body runs inline with any captures and a typed error.
 
-**Deadline interplay.** A scope inside an expiring deadline still cleans up:
-finalizers get at least `exitDeadlineFloor` (default 1 s) even when the
-enclosing deadline has passed, because cleanup that never runs is worse than
-cleanup that runs a second late.
+**Saga.** A step's compensation is registered only once the step
+succeeds, and runs only if the saga ends in failure or cancellation:
+newest first, shielded, time-bounded, each one even if an earlier one
+failed. Compensations live in memory; effects that must be undone across a
+crash need a durable journal (design/15, planned).
 
-**Forked children (TaskScope).** A child that throws cancels the body and
-its siblings (fail-fast, like a throwing task group). After cleanup the
-scope throws a `ConcurrentFailure<any Error>` holding every child failure in
-completion order, followed by the body's own error if it threw something
-other than the `CancellationError` the child's failure caused. A child that
-returns normally is simply done; a child cancelled by the scope's exit is
-not a failure. Children are for work that lives exactly as long as the
-scope — heartbeats, pumps, observers. Plain `withScope` has no `fork`, so
-its body's typed error passes through untouched; a function that needs
-both typed errors and children nests a `withScope` inside the child.
-
-**Saga.** `saga.step(perform:compensate:)` runs `perform`, and on success
-registers `compensate` as an exit-aware finalizer that runs only when the
-saga exits with failure or cancellation. Compensations run in reverse, each
-shielded and time-bounded; a failed compensation is reported and the rest
-still run.
-
-**Typestate for single resources.** When a resource has states the caller
-must move through (open → committed or rolled back), Stoic's guidance is a
-`~Copyable` type with `consuming` transitions; `deinit` reports a resource
-dropped mid-protocol (design/07 has the pattern). Scopes and typestate
-compose: acquire the typestate value in a scope, so cancellation still
-releases it.
+**Typestate.** For a single resource with states to move through, use a
+`~Copyable` type with `consuming` transitions; a scope then guarantees
+release even under cancellation by holding a *release token*, not the
+typestate value itself (ownership is single, so the value cannot be both
+returned to the body and kept by the release closure).
 
 ## Failure modes
 
@@ -165,9 +108,8 @@ releases it.
 
 ## Events
 
-`scope.finalizer_failed`, `scope.finalizer_timeout`, `scope.finalizer_slow`
-(over half its timeout), `scope.child_failed`, `saga.compensated`,
-`saga.compensation_failed`.
+`scope.finalizer_failed`, `scope.finalizer_abandoned`, `scope.finalizer_slow`
+(over half its allowance), `scope.child_failed`, `scope.fork_after_exit`.
 
 ## Testing
 
