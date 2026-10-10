@@ -343,6 +343,56 @@ struct RateLimiterTests {
         #expect(limiter.availablePermits == 0)
     }
 
+    // MARK: - Late wake-ups
+
+    /// A clock whose sleeps end late, as a loaded machine's do.
+    struct LateClock: Clock {
+        typealias Instant = TestClock.Instant
+        let base: TestClock
+        let lateness: Duration
+        var now: Instant { base.now }
+        var minimumResolution: Duration { .zero }
+        func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+            try await base.sleep(until: deadline.advanced(by: lateness), tolerance: tolerance)
+        }
+    }
+
+    @Test func aHeadThatWakesLateTakesWhatItEarnedAndNothingIsLostOrInvented() async {
+        let base = TestClock()
+        let clock = AnyClock(LateClock(base: base, lateness: .milliseconds(400)), name: "late")
+        // One permit a second, a bucket of two so the extra time is not clipped.
+        let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 2, label: "late", clock: clock)
+        let log = SendableBox<[String]>([])
+        #expect(limiter.tryAcquire(permits: 2))
+        func waiter(_ name: String) -> Task<Void, Never> {
+            Task {
+                do throws(Rejection) {
+                    try await limiter.acquire()
+                    log.mutate { $0.append("\(name)@\(base.now.offset)") }
+                } catch {
+                    unexpected("rejected: \(error)")
+                }
+            }
+        }
+        let first = waiter("a")
+        await waitUntil { limiter.waiterCount == 1 }
+        let second = waiter("b")
+        await waitUntil { limiter.waiterCount == 2 }
+        await base.waitForSleepers(count: 1)
+        await base.advance(by: .seconds(1) + .milliseconds(400))      // a was due at 1.0 s and wakes at 1.4 s
+        await first.value
+        await base.waitForSleepers(count: 1)
+        // a took one permit of the 1.4 earned; b needs 0.6 s more, and wakes 0.4 s late.
+        await base.advance(by: .seconds(1))
+        await second.value
+        #expect(log.value == ["a@1.4 seconds", "b@2.4 seconds"])
+        // At 2.4 s the bucket held 1.4; b took one. Another 0.6 s makes it exactly one again.
+        #expect(limiter.availablePermits == 0)
+        await base.advance(by: .milliseconds(600))
+        #expect(limiter.availablePermits == 1)
+        #expect(limiter.waiterCount == 0)
+    }
+
     // MARK: - Properties
 
     @Test func grantedPermitsNeverExceedBurstPlusRateTimesElapsed() async {
