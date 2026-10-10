@@ -70,6 +70,7 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     /// Supersedes any current work and starts `operation` at once.
     ///
     /// - Parameters:
+    ///   - isolation: The actor `deliver` runs on; the caller's, by default.
     ///   - operation: The new work. Like `Task {}`, it inherits the caller's actor.
     ///   - deliver: Receives the outcome, on the caller's actor, only if no
     ///     newer work has been started by then.

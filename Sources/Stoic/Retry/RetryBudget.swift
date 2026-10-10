@@ -19,7 +19,7 @@ internal import Synchronization
 /// thousandths, so ten deposits of 0.1 make exactly one token.
 ///
 /// Budgets live in the ambient ``RetryBudgets`` registry, so a test that
-/// installs a fresh registry (``withTestAmbient``) starts with full budgets
+/// installs a fresh registry (`withTestAmbient`) starts with full budgets
 /// and cannot be affected by another test's retries.
 public struct RetryBudget: Sendable, CustomStringConvertible {
     enum Kind: Sendable {

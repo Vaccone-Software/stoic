@@ -26,7 +26,7 @@ public enum Idempotency: Sendable, Hashable {
 /// starting the next on a timer. Failure is `retry`'s business, with a
 /// schedule and a budget; a hedge that quietly retried would double the load
 /// on a dependency exactly when it is failing. If every attempt that ran
-/// failed, the failure thrown is the first to complete, as ``race`` does.
+/// failed, the failure thrown is the first to complete, as ``race(label:fileID:line:_:_:)`` does.
 ///
 /// **Hedges are budgeted.** The first attempt deposits into `budget` and each
 /// hedge spends a token, exactly as a retry does, so hedging cannot amplify
@@ -47,6 +47,9 @@ public enum Idempotency: Sendable, Hashable {
 ///   - maxAttempts: The most attempts started, the first included.
 ///   - budget: Where hedges draw their tokens.
 ///   - label: Names the hedge in events.
+///   - fileID: The call site, captured for events.
+///   - line: The call site, captured for events.
+///   - operation: One attempt; it receives which attempt it is.
 public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
     _ idempotency: Idempotency,
     after delay: Duration,

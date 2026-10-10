@@ -22,6 +22,8 @@ internal import Synchronization
 ///   - deadline: The instant by which the operation should finish.
 ///   - tolerance: Leeway for the underlying timer.
 ///   - label: Names the operation in events.
+///   - fileID: The call site, captured for events.
+///   - line: The call site, captured for events.
 ///   - operation: The work to run.
 public nonisolated(nonsending) func withDeadline<R: Sendable, Failure: Error>(
     _ deadline: Deadline,

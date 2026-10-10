@@ -8,7 +8,7 @@
 ///     Schedule.exponential(base: .milliseconds(200)).jittered().attempts(5)
 ///
 /// A schedule that may go on forever is a `Schedule`; one with a fixed
-/// maximum number of attempts is a ``BoundedSchedule``. ``retry(_:budget:classify:nesting:label:fileID:line:operation:)``
+/// maximum number of attempts is a ``BoundedSchedule``. ``retry(_:budget:classify:nesting:clock:label:fileID:line:operation:)``
 /// takes only the bounded kind, so an unbounded retry is a compile error,
 /// not a production incident.
 public struct Schedule: Sendable, Hashable, CustomStringConvertible {
@@ -184,7 +184,7 @@ public struct Schedule: Sendable, Hashable, CustomStringConvertible {
 
 /// A schedule with a fixed maximum number of attempts.
 ///
-/// The only kind ``retry(_:budget:classify:nesting:label:fileID:line:operation:)`` accepts. Its worst case is computable.
+/// The only kind ``retry(_:budget:classify:nesting:clock:label:fileID:line:operation:)`` accepts. Its worst case is computable.
 public struct BoundedSchedule: Sendable, Hashable, CustomStringConvertible {
     /// The underlying schedule.
     public let schedule: Schedule

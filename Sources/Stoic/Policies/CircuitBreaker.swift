@@ -271,6 +271,8 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     ///   - clock: The clock to measure time on; by default the ambient clock
     ///     when the breaker is created. A breaker compares instants across
     ///     calls, so it measures time on one clock for its whole life.
+    ///   - fileID: The call site, captured for events.
+    ///   - line: The call site, captured for events.
     public init(
         label: String,
         _ configuration: Configuration = Configuration(),

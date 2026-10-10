@@ -26,7 +26,7 @@ public enum Exit: Sendable, CustomStringConvertible {
 
 /// Things acquired for the lifetime of a scope, released when it ends.
 ///
-/// A `Scope` is handed to the body of ``withScope(exitBudget:finalizerTimeout:_:)``
+/// A `Scope` is handed to the body of ``withScope(exitBudget:finalizerTimeout:label:_:)``
 /// `borrowing`, and is noncopyable: the compiler rejects any attempt to keep
 /// it — to capture it in an escaping closure, store it, or return it — so
 /// nothing can register a finalizer on a scope that has already ended.
@@ -44,6 +44,7 @@ public struct Scope: ~Copyable {
     /// If `acquire` throws, nothing is registered.
     ///
     /// - Parameters:
+    ///   - label: Names the release in events.
     ///   - shielded: Run `acquire` hidden from cancellation, so that a
     ///     cancellation arriving mid-acquire cannot leave it half done.
     ///   - timeout: How long `release` may take before it is abandoned.

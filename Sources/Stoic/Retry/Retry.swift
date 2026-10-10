@@ -231,7 +231,7 @@ final class RetryContext: Sendable {
 ///
 /// The operation runs inline, on the caller's actor, and may capture
 /// anything. To bound each attempt with a timeout, use
-/// ``retry(_:attemptTimeout:budget:classify:nesting:label:fileID:line:operation:)``.
+/// ``retry(_:attemptTimeout:budget:classify:nesting:clock:label:fileID:line:operation:)``.
 public nonisolated(nonsending) func retry<R, Failure: Error>(
     _ schedule: BoundedSchedule,
     budget: RetryBudget = .perCallSite,

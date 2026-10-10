@@ -3,7 +3,7 @@
 /// A deadline is absolute: passed through three layers of calls, it still
 /// means the same instant, where a timeout passed the same way would grow by
 /// each layer's own overhead. The deadline in force for the current task is
-/// ``current``; ``withDeadline(_:tolerance:operation:)`` narrows it for an
+/// ``current``; ``withDeadline(_:tolerance:label:fileID:line:operation:)`` narrows it for an
 /// operation and everything that operation calls. It is never widened: an
 /// inner deadline later than the outer one has no effect.
 public struct Deadline: Sendable, CustomStringConvertible {

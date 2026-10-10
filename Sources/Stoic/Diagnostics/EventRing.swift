@@ -6,7 +6,7 @@ internal import Synchronization
 /// that would explain it are usually gone or were never collected. A ring
 /// keeps the last `capacity` decisions Stoic made — which retry slept, which
 /// deadline passed, which child restarted — at a fixed memory cost, ready to
-/// attach to a bug report through ``Diagnostics/snapshot()``.
+/// attach to a bug report through ``Diagnostics/snapshot(includePrivate:)``.
 ///
 ///     let ring = EventRing(capacity: 512)
 ///     withAmbient({ $0.instrumentation = CompositeInstrumentation([OSLogInstrumentation(), ring]) }) { … }

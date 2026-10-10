@@ -9,7 +9,7 @@
 ///     ╰─ reading ~/Library/…/settings.json  (FileStore.swift:88)
 ///        ╰─ POSIXError: No such file or directory
 ///
-/// Frames are added with ``withContext(_:metadata:fileID:line:operation:)``
+/// Frames are added with `withContext(_:)`
 /// around a call, or with ``Swift/Error/context(_:metadata:fileID:line:)`` at
 /// a `throw`. Wrapping a report adds a frame to it rather than nesting
 /// reports, so a chain stays one flat, readable list.
@@ -17,7 +17,7 @@
 /// The root stays reachable: ``first(_:)`` and ``contains(_:)`` look through
 /// the report, and Stoic's own classification — retry decisions, defect and
 /// cancellation checks — looks through it too. Cancellation is never wrapped
-/// in the first place: it passes through ``withContext`` as itself, so
+/// in the first place: it passes through `withContext` as itself, so
 /// `catch is CancellationError` keeps working.
 public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertible {
     /// The original error. Never itself a `Report`.
@@ -143,7 +143,7 @@ public nonisolated(nonsending) func withContext<R>(
 }
 
 /// Runs `operation`, adding a frame of context to any error it throws.
-/// The synchronous form of ``withContext(_:metadata:fileID:line:operation:)``.
+/// The synchronous form of `withContext(_:)`.
 public func withContext<R>(
     _ message: @autoclosure () -> String,
     metadata: [Event.Field] = [],

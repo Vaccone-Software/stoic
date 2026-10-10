@@ -22,7 +22,7 @@ public enum RecurOutcome: Sendable, Hashable {
 /// Runs `operation` repeatedly on `schedule`: polling, periodic refresh,
 /// heartbeats.
 ///
-/// Where ``retry(_:budget:classify:nesting:label:fileID:line:operation:)``
+/// Where ``retry(_:budget:classify:nesting:clock:label:fileID:line:operation:)``
 /// repeats after a *failure*, `recur` repeats after a *success*. The first
 /// run happens at once; after each, the operation's decision and the
 /// schedule choose the wait before the next. A failure ends the loop and is

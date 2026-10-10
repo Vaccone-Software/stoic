@@ -29,6 +29,14 @@ for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicApple StoicUIKit; do
         -derivedDataPath .build/ios build
 done
 
+step "documentation: DocC builds with no warnings (broken links, undocumented parameters)"
+warnings=$(xcodebuild docbuild -scheme Stoic -destination 'platform=macOS' -derivedDataPath .build/docs 2>&1 \
+    | grep -E "warning:" | grep -v "(in target" | sort -u || true)
+if [ -n "$warnings" ]; then
+    printf '%s\n' "$warnings"
+    exit 1
+fi
+
 if [ "${1:-}" = "--stress" ]; then
     step "stress: every suite, up to 100 repetitions"
     swift test --maximum-repetitions 100 --repeat-until fail
