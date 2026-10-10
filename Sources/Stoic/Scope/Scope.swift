@@ -128,9 +128,12 @@ public struct Resource<Value: Sendable, Failure: Error>: Sendable {
 /// - **Always run.** On success, failure and cancellation. Waiting for them
 ///   is hidden from cancellation, so a cancelled task still cleans up.
 /// - **Are bounded.** Each may take `finalizerTimeout` (or its own
-///   `timeout`), and all of them together `exitBudget`; every finalizer is
-///   still given at least a quarter of a second, because cleanup that never
-///   runs is worse than cleanup that runs late. A finalizer that overruns is
+///   `timeout`), and all of them together `exitBudget`. A spent budget never
+///   starves a finalizer: each is still given at least
+///   `ScopeState.exitDeadlineFloor` (a quarter of a second), because cleanup
+///   that never runs is worse than cleanup that runs late. The floor lifts
+///   only what the budget left over; it never lengthens a timeout asked for,
+///   so `timeout: .milliseconds(10)` means ten milliseconds. A finalizer that overruns is
 ///   abandoned — it keeps running, unwatched — and reported
 ///   (`scope.finalizer_abandoned`), and the next one runs.
 /// - **Cannot change the outcome.** A finalizer that throws is reported
@@ -170,6 +173,14 @@ struct Finalizer: Sendable {
 
 /// The shared state behind a scope: its finalizers, and how to run them.
 final class ScopeState: Sendable {
+    /// The least a finalizer is given when the exit budget is spent.
+    ///
+    /// Cleanup that never runs is worse than cleanup that runs late, so an
+    /// exhausted budget, or an enclosing deadline already past, still leaves
+    /// each finalizer this long. It raises only the budget's share: a timeout
+    /// the caller asked for, shorter than this, is honoured as written.
+    static let exitDeadlineFloor: Duration = .milliseconds(250)
+
     let label: String?
     let exitBudget: Duration
     let finalizerTimeout: Duration
@@ -195,7 +206,9 @@ final class ScopeState: Sendable {
         }
         // A noncopyable, borrowed scope cannot outlive its body, so this is
         // reachable only from work the body left running (a child task it
-        // did not await). Run the finalizer at once rather than leak.
+        // did not await) that kept hold of the scope some other way. That is
+        // a programming error: trap, rather than accept a finalizer that
+        // would never run.
         precondition(accepted, "Scope\(label.map { " \($0)" } ?? ""): a finalizer was registered after the scope ended")
     }
 
@@ -213,7 +226,8 @@ final class ScopeState: Sendable {
             for finalizer in finalizers {
                 if finalizer.runsOn == .failureOnly, !exit.isFailure { continue }
                 let remaining = exitBudget.saturatingSubtracting(start.duration(to: clock.now))
-                let allowed = max(.milliseconds(250), min(finalizer.timeout ?? finalizerTimeout, remaining))
+                let wanted = finalizer.timeout ?? finalizerTimeout
+                let allowed = min(wanted, max(Self.exitDeadlineFloor, remaining))
                 await run(finalizer, exit: exit, allowed: allowed, clock: clock, instrumentation: ambient.instrumentation)
             }
         }

@@ -133,6 +133,38 @@ struct ScopeTests {
         await task.value
     }
 
+    @Test func anExplicitTimeoutBelowTheFloorIsHonoured() async {
+        let clock = TestClock()
+        let task = Task {
+            await withTestAmbient(clock: clock) {
+                await withScope { scope in
+                    scope.onExit(timeout: .milliseconds(10)) { _ in await AsyncGate().wait() }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        #expect(clock.pendingDeadlines.first?.offset == .milliseconds(10))
+        // Past the floor too, so a regression fails the expectation above
+        // rather than hanging the test.
+        await clock.advance(by: ScopeState.exitDeadlineFloor)
+        await task.value
+    }
+
+    @Test func aSpentBudgetStillLeavesEachFinalizerTheFloor() async {
+        let clock = TestClock()
+        let task = Task {
+            await withTestAmbient(clock: clock) {
+                await withScope(exitBudget: .zero, finalizerTimeout: .seconds(5)) { scope in
+                    scope.onExit { _ in await AsyncGate().wait() }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        #expect(clock.pendingDeadlines.first?.offset == ScopeState.exitDeadlineFloor)
+        await clock.advance(by: ScopeState.exitDeadlineFloor)
+        await task.value
+    }
+
     @Test func aFailedAcquireRegistersNothing() async {
         let log = OrderLog()
         await #expect(throws: Failure.boom) {
