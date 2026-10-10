@@ -57,6 +57,25 @@ struct ScopeTests {
         #expect(exitSeen.value == "cancelled")
     }
 
+    @Test func aRealErrorOnACancelledTaskIsAFailureNotACancellation() async {
+        let exitSeen = SendableBox<String?>(nil)
+        let cancelled = AsyncGate()
+        let task = Task {
+            // The task is cancelled, but the body fails for its own reason.
+            await cancelled.wait()
+            await #expect(throws: Failure.boom) {
+                try await withScope { (scope: borrowing Scope) throws(Failure) in
+                    scope.onExit { exit in exitSeen.mutate { $0 = "\(exit)" } }
+                    throw .boom
+                }
+            }
+        }
+        task.cancel()
+        cancelled.open()
+        await task.value
+        #expect(exitSeen.value == "failure(boom)")
+    }
+
     @Test func aFailingFinalizerIsReportedAndDoesNotChangeTheOutcome() async throws {
         let events = RecordingInstrumentation()
         let log = OrderLog()

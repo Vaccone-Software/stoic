@@ -258,12 +258,17 @@ final class ScopeState: Sendable {
 
 extension Result {
     /// How a scope whose body produced this result ended.
+    ///
+    /// Only a `CancellationError` means cancelled. A body that throws a real
+    /// error on a task that happens to be cancelled failed, and its
+    /// finalizers and compensations should see the error, not a cancellation
+    /// that hides it.
     var exit: Exit {
         switch self {
         case .success:
             return .success
         case .failure(let error):
-            return error is CancellationError || Task.isCancelled ? .cancelled : .failure(error)
+            return error is CancellationError ? .cancelled : .failure(error)
         }
     }
 }
