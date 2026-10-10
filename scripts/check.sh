@@ -24,7 +24,7 @@ step "self-lint"
 swift run --traits Lint stoic-lint Sources Plugins Package.swift
 
 step "iOS: every library builds for iOS (UIKit paths compile only there)"
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicStore StoicApple StoicUIKit StoicAppKit StoicObservability; do
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicStore StoicSettings StoicApple StoicUIKit StoicAppKit StoicObservability; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done

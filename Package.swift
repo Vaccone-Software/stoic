@@ -49,6 +49,7 @@ let package = Package(
         .library(name: "StoicSchema", targets: ["StoicSchema"]),
         .library(name: "StoicSchemaTesting", targets: ["StoicSchemaTesting"]),
         .library(name: "StoicStore", targets: ["StoicStore"]),
+        .library(name: "StoicSettings", targets: ["StoicSettings"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -155,5 +156,11 @@ let package = Package(
         // file system can replace to test every crash point. Foundation-free.
         .target(name: "StoicStore", dependencies: ["Stoic"], swiftSettings: strict),
         .testTarget(name: "StoicStoreTests", dependencies: ["StoicStore", "StoicTesting"], swiftSettings: strict),
+        // Settings: a schema-declared value kept in an atomic file, migrated,
+        // validated and observable (design/18).
+        .target(name: "StoicSettings", dependencies: ["Stoic", "StoicSchema", "StoicStore", "StoicJSON"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicSettingsTests", dependencies: ["StoicSettings", "StoicSchema", "StoicStore", "StoicTesting"],
+            swiftSettings: strict),
     ]
 )
