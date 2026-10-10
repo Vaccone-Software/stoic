@@ -125,7 +125,10 @@ rejection (`cancelled` or `deadlineExceeded`) when they stop waiting; the
 operation is cancelled only when the last caller leaves, and the key is
 retired at once so newcomers start fresh instead of joining a flight being
 cancelled. The operation runs without the first caller's deadline; each
-caller's wait is bounded by its own.
+caller's wait is bounded by its own. The operation runs at the most urgent
+priority any waiting caller has: a caller waits on a continuation, which
+escalates nothing, so the flight escalates the task itself when a
+higher-priority caller joins or a waiting caller is escalated.
 
 **Channel.** A bounded queue between any number of producers and
 consumers; each element reaches exactly one consumer, in order. The
@@ -155,6 +158,7 @@ that keeps the promise, and the lint rule against
 | a body inside `withPermit` throws                       | Permit returned; error passed through as `.failed`                                                                                                    |
 | two single-flight waiters, the first cancels            | The operation continues for the second                                                                                                                |
 | every single-flight waiter cancels                      | The operation is cancelled                                                                                                                            |
+| a higher-priority caller joins a single flight          | The shared operation is escalated to that priority (SE-0462); it is never lowered when that caller leaves                                            |
 
 ## Events
 
