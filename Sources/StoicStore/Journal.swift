@@ -1,0 +1,383 @@
+internal import Stoic
+internal import Synchronization
+
+/// An append-only log of records that survives a crash.
+///
+/// Every record is framed with its length and a CRC-32C, and `append` does
+/// not return until the record is on stable storage (`fullSync`). Opening a
+/// journal finds the last intact record and cuts everything after it: a
+/// record torn by a crash, or a hole of zeros from a reordered write, is
+/// dropped and reported (`store.journal_truncated`), never returned.
+///
+///     let journal = try Journal.open(at: dir + "/events.log")
+///     let sequence = try journal.append(encode(event))         // durable
+///
+///     let state = try journal.replay()                         // after a relaunch
+///     var model = decode(state.snapshot?.bytes)
+///     for record in state.records { model.apply(decode(record.bytes)) }
+///
+///     try journal.compact { replay in encode(fold(replay)) }   // bound the log
+///
+/// ## Format
+///
+/// A record is `length:u32 | crc:u32 | sequence:u64 | payload`, little-endian.
+/// `length` counts the sequence and payload; `crc` is the CRC-32C of the four
+/// length bytes followed by those `length` bytes, so a flipped length is as
+/// visible as a flipped payload, and a hole of zeros is never a valid record.
+/// Sequence numbers are strictly increasing across the log, and across
+/// compactions.
+///
+/// ## Compaction
+///
+/// `compact` writes a snapshot with ``AtomicFile`` (`<path>.snapshot`), naming
+/// the last sequence it covers, and *then* truncates the log. The order, and
+/// the sequence number, make every crash point safe:
+///
+/// - before the snapshot is durable: the old snapshot and the whole log;
+/// - after it but before the truncation is durable: the new snapshot, and a
+///   log whose records are all at or below its sequence, so they are skipped
+///   (and the next `open` finishes the truncation);
+/// - after: the new snapshot and an empty log.
+///
+/// A snapshot that fails its checksum is quarantined and `open` throws
+/// `.corrupt`: the log before it was discarded, so there is nothing safe to
+/// fall back to, and silently starting empty would hide data loss.
+///
+/// ## Failures
+///
+/// A failed write is rolled back by truncating to the last good end. A failed
+/// `fullSync` leaves the outcome unknown (the kernel may have dropped the
+/// pages), and a later successful sync would prove nothing, so the journal is
+/// *poisoned*: every call throws `.poisoned` until it is reopened, which
+/// re-reads the file and settles the question. A record whose append threw may
+/// therefore still be there after recovery; callers that cannot tolerate
+/// duplicates deduplicate by content (the ``Outbox`` does, by key).
+///
+/// ## Contract
+///
+/// Safe to call from many threads; calls are serialised and blocking. One
+/// `Journal` per path per process. The log is read whole at open and by
+/// `replay`, so compact when it grows: the journal is for small, important
+/// state, not for a database's worth of data.
+public final class Journal: Sendable {
+    public struct Options: Sendable, Hashable {
+        /// The largest payload `append` accepts.
+        public var maxRecordSize: Int
+
+        public init(maxRecordSize: Int = 16 * 1024 * 1024) {
+            self.maxRecordSize = maxRecordSize
+        }
+    }
+
+    /// One durable record.
+    public struct Record: Sendable, Hashable {
+        public let sequence: UInt64
+        public let bytes: [UInt8]
+    }
+
+    /// The state folded into a compaction.
+    public struct Snapshot: Sendable, Hashable {
+        /// The last sequence the snapshot covers.
+        public let through: UInt64
+        public let bytes: [UInt8]
+    }
+
+    /// Everything needed to rebuild state: the snapshot, then the records after it.
+    public struct Replay: Sendable, Hashable {
+        public let snapshot: Snapshot?
+        public let records: [Record]
+    }
+
+    /// What opening found and repaired.
+    public struct OpenReport: Sendable, Hashable {
+        /// Bytes cut from the end because they were torn or corrupt.
+        public let droppedBytes: Int
+        /// Intact records that a snapshot already covers (a compaction was interrupted).
+        public let staleRecords: Int
+        /// Records that remain to replay.
+        public let records: Int
+    }
+
+    public let path: String
+    public let fileSystem: any FileSystem
+    public let options: Options
+    public let openReport: OpenReport
+
+    private struct State {
+        var file: OpenFile?
+        var end: Int
+        var lastSequence: UInt64
+        var snapshot: Snapshot?
+        var poison: StoreError?
+    }
+
+    private let state: Mutex<State>
+
+    private var snapshotPath: String { path + ".snapshot" }
+
+    private init(path: String, fileSystem: any FileSystem, options: Options, report: OpenReport, state: State) {
+        self.path = path
+        self.fileSystem = fileSystem
+        self.options = options
+        self.openReport = report
+        self.state = Mutex(state)
+    }
+
+    deinit {
+        // A journal dropped without `close()` still releases its descriptor.
+        // Nothing can be reported from a deinit, and every record is already
+        // durable (append syncs before returning), so a failed close loses nothing.
+        if let file = state.withLock({ $0.file }) {
+            do throws(StoreError) {
+                try fileSystem.close(file)
+            } catch {}
+        }
+    }
+
+    // MARK: Opening
+
+    /// Opens the journal at `path`, repairing a torn tail and finishing an
+    /// interrupted compaction.
+    public static func open(
+        at path: String,
+        fileSystem: any FileSystem = PosixFileSystem(),
+        options: Options = Options()
+    ) throws(StoreError) -> Journal {
+        let directory = StorePath.directory(of: path)
+        let snapshot = try loadSnapshot(path + ".snapshot", fileSystem: fileSystem)
+
+        let created = try !fileSystem.exists(path)
+        let file = try fileSystem.open(path, mode: .readWriteCreate)
+        do throws(StoreError) {
+            if created { try fileSystem.syncDirectory(directory) }   // the name is part of the data
+
+            let size = try fileSystem.size(of: file)
+            let contents = try fileSystem.read(file, at: 0, count: size)
+            let scan = Journal.scan(contents, maxRecordSize: options.maxRecordSize)
+            let through = snapshot?.through ?? 0
+
+            var end = scan.validEnd
+            if end < size {
+                try fileSystem.truncate(file, to: end)
+                try fileSystem.fullSync(file)
+                StoreEvents.record(Event("store.journal_truncated", level: .warning, fields: [
+                    .init("path", .string(path)), .init("droppedBytes", .int(size - end)),
+                    .init("validRecords", .int(scan.records.count)),
+                ]))
+            }
+            var inLog = scan.records
+            let stale = inLog.prefix { $0.sequence <= through }.count
+            if stale == inLog.count, stale > 0 {
+                // Every record is covered by the snapshot: a compaction stopped
+                // between writing the snapshot and truncating the log. Finish it.
+                try fileSystem.truncate(file, to: 0)
+                try fileSystem.fullSync(file)
+                end = 0
+                inLog = []
+            }
+            let report = OpenReport(
+                droppedBytes: size - scan.validEnd, staleRecords: stale,
+                records: inLog.count - (end == 0 ? 0 : stale)
+            )
+            let state = State(
+                file: file, end: end,
+                lastSequence: max(through, scan.records.last?.sequence ?? 0),
+                snapshot: snapshot, poison: nil
+            )
+            return Journal(path: path, fileSystem: fileSystem, options: options, report: report, state: state)
+        } catch {
+            do throws(StoreError) {
+                try fileSystem.close(file)
+            } catch {
+                // The open failed for another reason; report that one.
+            }
+            throw error
+        }
+    }
+
+    private static func loadSnapshot(_ path: String, fileSystem: any FileSystem) throws(StoreError) -> Snapshot? {
+        guard let stored = try AtomicFile(fileSystem: fileSystem).read(path) else { return nil }
+        guard stored.bytes.count >= 8 else {
+            throw StoreError(kind: .corrupt, operation: "snapshot", path: path, detail: "too short for a sequence number")
+        }
+        return Snapshot(through: readLittleEndian(stored.bytes, at: 0), bytes: Array(stored.bytes[8...]))
+    }
+
+    // MARK: Framing
+
+    static let headerSize = 16   // length, crc, sequence
+
+    static func frame(_ payload: [UInt8], sequence: UInt64) -> [UInt8] {
+        let length = UInt32(payload.count + 8)
+        let lengthBytes = littleEndian(length)
+        let body = littleEndian(sequence) + payload
+        var crc = CRC32C.Running()
+        crc.update(lengthBytes)
+        crc.update(body)
+        return lengthBytes + littleEndian(crc.value) + body
+    }
+
+    /// The intact records at the start of `bytes`, and where they end. A frame
+    /// is intact when it fits, is within the size limit, has a valid checksum
+    /// and carries a sequence number above its predecessor's.
+    static func scan(_ bytes: [UInt8], maxRecordSize: Int) -> (records: [Record], validEnd: Int) {
+        var records: [Record] = []
+        var offset = 0
+        var previous: UInt64 = 0
+        while bytes.count - offset >= headerSize {
+            let length = Int(readLittleEndian(bytes, at: offset) as UInt32)
+            guard length >= 8, length - 8 <= maxRecordSize, offset + 8 + length <= bytes.count else { break }
+            let stored: UInt32 = readLittleEndian(bytes, at: offset + 4)
+            var crc = CRC32C.Running()
+            crc.update(bytes[offset..<offset + 4])
+            crc.update(bytes[offset + 8..<offset + 8 + length])
+            guard crc.value == stored else { break }
+            let sequence: UInt64 = readLittleEndian(bytes, at: offset + 8)
+            guard sequence > previous else { break }
+            records.append(Record(sequence: sequence, bytes: Array(bytes[offset + 16..<offset + 8 + length])))
+            previous = sequence
+            offset += 8 + length
+        }
+        return (records, offset)
+    }
+
+    // MARK: Appending
+
+    /// Appends one record and returns its sequence number, after the record is
+    /// on stable storage.
+    @discardableResult
+    public func append(_ payload: [UInt8]) throws(StoreError) -> UInt64 {
+        try append(batch: [payload]).first!
+    }
+
+    /// Appends several records with one write and one `fullSync` (group
+    /// commit): the cost of durability is paid once for the batch. Either all
+    /// of them are durable when this returns, or the call threw and any prefix
+    /// of them may be.
+    ///
+    /// - Returns: The sequence numbers assigned, in order.
+    @discardableResult
+    public func append(batch payloads: [[UInt8]]) throws(StoreError) -> [UInt64] {
+        guard !payloads.isEmpty else { return [] }
+        for payload in payloads where payload.count > options.maxRecordSize {
+            throw StoreError(kind: .invalidArgument, operation: "append", path: path, detail: "record of \(payload.count) bytes exceeds \(options.maxRecordSize)")
+        }
+        return try state.withLock { (state) throws(StoreError) -> [UInt64] in
+            let file = try ready(&state)
+            var bytes: [UInt8] = []
+            var sequences: [UInt64] = []
+            for payload in payloads {
+                sequences.append(state.lastSequence + UInt64(sequences.count) + 1)
+                bytes.append(contentsOf: Journal.frame(payload, sequence: sequences.last!))
+            }
+            do throws(StoreError) {
+                try fileSystem.write(file, bytes, at: state.end)
+            } catch {
+                rollBack(file, to: state.end, state: &state)
+                throw error
+            }
+            do throws(StoreError) {
+                try fileSystem.fullSync(file)
+            } catch {
+                state.poison = StoreError(kind: .poisoned, operation: "append", path: path, detail: "fullSync failed (\(error)); reopen to learn what survived")
+                throw error
+            }
+            state.end += bytes.count
+            state.lastSequence = sequences.last!
+            return sequences
+        }
+    }
+
+    /// Undoes a failed write. If even that fails, the journal's end is unknown.
+    private func rollBack(_ file: OpenFile, to end: Int, state: inout State) {
+        do throws(StoreError) {
+            try fileSystem.truncate(file, to: end)
+        } catch {
+            state.poison = StoreError(kind: .poisoned, operation: "append", path: path, detail: "a failed write could not be rolled back (\(error)); reopen")
+        }
+    }
+
+    private func ready(_ state: inout State) throws(StoreError) -> OpenFile {
+        if let poison = state.poison { throw poison }
+        guard let file = state.file else {
+            throw StoreError(kind: .invalidArgument, operation: "journal", path: path, detail: "closed")
+        }
+        return file
+    }
+
+    // MARK: Reading
+
+    /// The snapshot and every record after it, read back from the file.
+    ///
+    /// - Throws: `.corrupt` if the file no longer verifies: it was damaged
+    ///   after it was opened. (Damage from a crash is repaired at open.)
+    public func replay() throws(StoreError) -> Replay {
+        try state.withLock { (state) throws(StoreError) -> Replay in
+            let file = try ready(&state)
+            return try replay(file, state: state)
+        }
+    }
+
+    private func replay(_ file: OpenFile, state: State) throws(StoreError) -> Replay {
+        let bytes = try fileSystem.read(file, at: 0, count: state.end)
+        let scan = Journal.scan(bytes, maxRecordSize: options.maxRecordSize)
+        guard scan.validEnd == state.end else {
+            throw StoreError(kind: .corrupt, operation: "replay", path: path, detail: "record at byte \(scan.validEnd) fails verification")
+        }
+        let through = state.snapshot?.through ?? 0
+        return Replay(snapshot: state.snapshot, records: scan.records.filter { $0.sequence > through })
+    }
+
+    /// The highest sequence number assigned so far (0 if none).
+    public var lastSequence: UInt64 { state.withLock { $0.lastSequence } }
+
+    /// The size of the log file in bytes; a signal for when to compact.
+    public var byteCount: Int { state.withLock { $0.end } }
+
+    // MARK: Compacting
+
+    /// Replaces the log with a snapshot. `fold` receives the current replay
+    /// (snapshot and records) and returns the bytes of the new snapshot; it
+    /// runs under the journal's lock, so no append can slip in between the
+    /// state it sees and the sequence it is recorded against.
+    public func compact(_ fold: (Replay) -> [UInt8]) throws(StoreError) {
+        try state.withLock { (state) throws(StoreError) in
+            let file = try ready(&state)
+            let current = try replay(file, state: state)
+            let bytes = fold(current)
+            let through = state.lastSequence
+            try AtomicFile(fileSystem: fileSystem).write(littleEndian(through) + bytes, to: snapshotPath)
+            state.snapshot = Snapshot(through: through, bytes: bytes)
+            do throws(StoreError) {
+                try fileSystem.truncate(file, to: 0)
+                try fileSystem.fullSync(file)
+            } catch {
+                // The snapshot is durable and covers every record, so the log
+                // is merely stale; but whether the truncation reached the disk
+                // is unknown.
+                state.poison = StoreError(kind: .poisoned, operation: "compact", path: path, detail: "truncating the log failed (\(error)); reopen")
+                throw error
+            }
+            state.end = 0
+            StoreEvents.record(Event("store.journal_compacted", level: .info, fields: [
+                .init("path", .string(path)), .init("records", .int(current.records.count)),
+                .init("snapshotBytes", .int(bytes.count)),
+            ]))
+        }
+    }
+
+    /// Replaces the log with `snapshot`, which the caller guarantees folds in
+    /// every record appended so far (and the previous snapshot).
+    public func compact(snapshot: [UInt8]) throws(StoreError) {
+        try compact { _ in snapshot }
+    }
+
+    /// Releases the file. Further calls throw.
+    public func close() throws(StoreError) {
+        try state.withLock { (state) throws(StoreError) in
+            guard let file = state.file else { return }
+            state.file = nil
+            try fileSystem.close(file)
+        }
+    }
+}

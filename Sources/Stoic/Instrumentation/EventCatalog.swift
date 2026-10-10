@@ -71,6 +71,8 @@ public enum EventCatalog {
         Entry(name: "statemachine.transition", level: .debug, meaning: "A state machine changed state."),
         Entry(name: "store.corrupt_quarantined", level: .warning, meaning: "A stored file failed its checksum or validation and was renamed aside; reports where it went."),
         Entry(name: "store.fullsync_unavailable", level: .notice, meaning: "F_FULLFSYNC is unsupported on this volume; durability fell back to fsync."),
+        Entry(name: "store.journal_compacted", level: .info, meaning: "A journal's records were folded into a snapshot and the log truncated."),
+        Entry(name: "store.journal_truncated", level: .warning, meaning: "A journal's torn or corrupt tail was cut at open; reports how many bytes were dropped."),
         Entry(name: "store.recovered_previous", level: .warning, meaning: "A stored file's current generation was missing or corrupt; the previous generation was returned."),
         Entry(name: "store.temp_removed", level: .info, meaning: "A temporary file left by an interrupted write was removed before a new write."),
         Entry(name: "supervisor.child_abandoned", level: .error, meaning: "A child ignored its stop and was abandoned after its shutdown timeout."),
