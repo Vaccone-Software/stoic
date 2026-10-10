@@ -365,6 +365,59 @@ element order within an array; there is no better "path order" for them,
 since sorting paths alphabetically would be worse than the declaration.
 A missing key sorts with the object that lacks it.
 
+### Generators
+
+- **`schema.generator`** is a `SchemaGenerator<Value>` derived from the node
+  tree alone; it decodes what it makes, so a `Sample` (the document and the
+  value) is accepted by definition, and a schema it cannot satisfy raises a
+  `GenerationFailure` that says where, instead of returning a bad sample.
+  Randomness is a seeded `SplitMix64` (public), drawn from the caller's own
+  `RandomNumberGenerator` or from `sample(seed:)`.
+- **Valid values are candidate-and-filter.** The generator proposes the edges
+  (bounds, the values beside them, `lower+1`, `upper-1`, zero, negative zero,
+  2^53, the smallest and largest `Double`, empty and full collections,
+  strings of the shortest and longest length) mixed with uniform draws, and
+  the real constraint interpreter keeps what satisfies every constraint.
+  That is how `custom` and `multipleOf` and an unsupported pattern are met
+  without the generator knowing them: the checker is the judge.
+- **Strings are measured in the constraint's unit** (scalars, graphemes or
+  UTF-8 bytes) from pieces whose costs in all three units are known: ASCII,
+  accented letters, CJK, astral characters, combining sequences, a skin-tone
+  modifier, a ZWJ family, a flag, and the ASCII a JSON writer must escape.
+  Several units at once get plain text, the only text that counts the same
+  in all. Patterns are sampled by a small regex sampler (literals, classes,
+  groups, alternation, quantifiers; anything else declines) whose output is
+  verified with `Regex`.
+- **Documents come sparse, dense and mixed**, so defaults, omitted keys and
+  explicit values all occur; versioned objects carry their current version.
+  Recursion is bounded by depth _and_ a per-document node budget (without the
+  budget a union with eight recursive terms makes millions of nodes); past
+  either, collections are as small as allowed and options are left out.
+- **Transforms are met by their `examples`.** A closure cannot be proposed
+  against, so the generator draws from the encodings of the examples the
+  schema declares; `transformsWithoutExamples` lists the ones that have none.
+- **Shrinking is structural.** `shrink(_:)` proposes simpler documents,
+  simplest first (numbers toward zero or the nearest bound, strings toward
+  the minimum length, collections toward their minimum count, fields toward
+  their defaults or absence) and keeps those the schema accepts;
+  `minimize(_:whileFailing:)` greedily follows them to a local minimum.
+- **Invalid documents.** `mutations(of:)` walks the document against the
+  tree and lists every minimal violation with the issue it must cause
+  (`ExpectedIssue`: path, code, severity, and for a misspelling the key or
+  tag to suggest): below, above, wrong type, fractional, `null`, missing
+  required key, unknown key, misspelt key, too long, too short, too many, too
+  few, repeated element, not a multiple, pattern mismatch, bad enumeration
+  case, bad union tag, misspelt tag, missing discriminator, lost precision,
+  not finite, future version. Every candidate is run through the constraint
+  interpreter first so that "exactly one issue" is a property of the
+  mutation. `mutation(of:combining:)` applies several whose parts of the
+  document do not overlap (a wrong container hides what is inside it, so a
+  mutation's _location_ is its whole subtree where that is true, and a
+  mutation in a `unique` array makes the array one unit).
+- **Not generated:** duplicate keys (the JSON layer refuses them before a
+  schema exists), a depth bomb (the parser's limit), and violations of
+  `custom` constraints (opaque).
+
 ## Non-goals
 
 Formats other than JSON in the first version (property lists and YAML can
