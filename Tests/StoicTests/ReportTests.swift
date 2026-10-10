@@ -1,0 +1,82 @@
+@testable import Stoic
+import StoicTesting
+import Testing
+
+@Suite("Report")
+struct ReportTests {
+    enum FileError: Error, Equatable { case missing }
+    struct Bug: Defect {}
+
+    @Test func contextFramesStackInnermostFirst() async {
+        do {
+            try await withContext("loading settings") {
+                try await withContext("reading settings.json") {
+                    await Task.yield()
+                    throw FileError.missing
+                }
+            }
+            Issue.record("expected an error")
+        } catch let report as Report {
+            #expect(report.frames.map(\.message) == ["reading settings.json", "loading settings"])
+            #expect(report.first(FileError.self) == .missing)
+            #expect(report.description.hasPrefix("loading settings"))
+            #expect(report.description.contains("╰─ reading settings.json"))
+            #expect(report.description.contains("FileError: missing"))
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
+    }
+
+    @Test func cancellationPassesThroughUnwrapped() async {
+        await #expect(throws: CancellationError.self) {
+            try await withContext("doing work") {
+                await Task.yield()
+                throw CancellationError()
+            }
+        }
+        #expect(throws: CancellationError.self) {
+            try withContext("doing synchronous work") { throw CancellationError() }
+        }
+        #expect(CancellationError().context("anything") is CancellationError)
+    }
+
+    @Test func reportingAReportAddsAFrameInsteadOfNesting() {
+        let first = FileError.missing.context("inner")
+        let second = first.context("outer")
+        let report = Report(second)
+        #expect(report.frames.count == 2)
+        #expect(report.root is FileError)
+    }
+
+    @Test func theRootIsFoundThroughPolicyWrappers() {
+        let wrapped: any Error = PolicyError<Report>.failed(Report(FileError.missing).adding(.init("fetching")))
+        let report = Report(wrapped.context("syncing"))
+        #expect(report.contains(FileError.self))
+    }
+
+    @Test func retryClassificationSeesThroughReports() async {
+        let attempts = SendableBox(0)
+        await #expect(throws: Report.self) {
+            try await withTestAmbient(clock: ImmediateClock()) {
+                try await retry(.fixed(.seconds(1)).attempts(5)) { _ in
+                    attempts.mutate { $0 += 1 }
+                    throw Bug().context("a bug, reported")
+                }
+            }
+        }
+        #expect(attempts.value == 1, "a defect inside a report still stops retrying")
+    }
+
+    @Test func suppressedErrorsAreKept() {
+        let report = Report(FileError.missing).suppressing(Bug())
+        #expect(report.suppressed.count == 1)
+        #expect(report.debugDescription.contains("suppressed"))
+        #expect(!report.description.contains("suppressed"))
+    }
+
+    @Test func framesCarryMetadataAndLocation() {
+        let report = Report(FileError.missing.context("reading", metadata: [.init("bytes", .int(42))]))
+        #expect(report.frames[0].metadata.first?.key == "bytes")
+        #expect(report.frames[0].fileID.hasSuffix("ReportTests.swift"))
+    }
+}

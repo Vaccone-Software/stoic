@@ -103,6 +103,8 @@ public struct RetryClassifier<Failure: Error>: Sendable {
 /// The decision for errors whose nature Stoic knows, or `nil`.
 private func standardDecision(for failure: any Error) -> RetryDecision? {
     switch failure {
+    case let report as Report:
+        return standardDecision(for: report.root)
     case let retryable as any Retryable:
         return retryable.retryDecision
     case let rejection as Rejection:
@@ -122,6 +124,7 @@ private func standardDecision(for failure: any Error) -> RetryDecision? {
 /// Whether `error`, or any error it wraps, is a ``Defect``.
 func containsDefect(_ error: any Error) -> Bool {
     if error.isDefect { return true }
+    if let report = error as? Report { return containsDefect(report.root) }
     if let policy = error as? any RejectionCarrying, let inner = policy.carriedFailure {
         return containsDefect(inner)
     }
@@ -134,6 +137,7 @@ func containsDefect(_ error: any Error) -> Bool {
 /// Whether `error` is, or wraps, a cancellation.
 func containsCancellation(_ error: any Error) -> Bool {
     if error.isCancellation { return true }
+    if let report = error as? Report { return containsCancellation(report.root) }
     if let rejection = error as? Rejection { return rejection.reason == .cancelled }
     if let policy = error as? any RejectionCarrying {
         if let rejection = policy.carriedRejection { return rejection.reason == .cancelled }
