@@ -17,6 +17,38 @@ swift build
 step "tests"
 swift test
 
+step "compile-fail: a Scope, TaskScope or Saga handle cannot escape its body (design/04)"
+# Swift Testing cannot assert that code fails to compile, so each file in
+# scripts/compile-fail is compiled through SIL (where the noncopyable and
+# escaping-capture checks run) against the module just built. A file whose
+# first line is `// expect-error: <text>` must fail with an error containing
+# <text>; a file without one must compile (it proves the harness itself works,
+# so an expect-error file cannot pass because the module was not found). About
+# a quarter of a second per file.
+bin=$(swift build --show-bin-path)
+for file in scripts/compile-fail/*.swift; do
+    expected=$(sed -n 's|^// expect-error: ||p' "$file" | head -1)
+    status=0
+    output=$(swiftc -emit-sil -o /dev/null -I "$bin" -I "$bin/Modules" -swift-version 6 \
+        -enable-upcoming-feature ExistentialAny -enable-upcoming-feature NonisolatedNonsendingByDefault \
+        "$file" 2>&1) || status=$?
+    if [ -z "$expected" ]; then
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$output"
+            printf 'FAIL %s: the control must compile\n' "$file"
+            exit 1
+        fi
+    elif [ "$status" -eq 0 ]; then
+        printf 'FAIL %s: it compiled, but must not (expected: %s)\n' "$file" "$expected"
+        exit 1
+    elif ! printf '%s\n' "$output" | grep 'error:' | grep -qF -- "$expected"; then
+        printf '%s\n' "$output"
+        printf 'FAIL %s: failed, but not with "%s"\n' "$file" "$expected"
+        exit 1
+    fi
+    printf '  ok %s\n' "$file"
+done
+
 step "lint rule tests (Lint trait)"
 swift test --traits Lint --filter StoicLintCoreTests
 

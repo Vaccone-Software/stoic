@@ -125,8 +125,11 @@ finally ends (it is listed in `AbandonedWork` until then).
   asserting order, `Exit` value and outcome.
 - Property: for any random interleaving of acquire, fork, throw and cancel,
   every acquired resource is released exactly once, in reverse order.
-- A compile-fail test (a fixture target the test suite builds and expects to
-  fail) proves the scope handle cannot escape.
+- A compile-fail check proves the scope handle cannot escape. Swift Testing
+  cannot assert that code fails to compile, so `scripts/check.sh` compiles
+  each file in `scripts/compile-fail` with `swiftc -emit-sil` against the
+  built module and requires the expected error (and a control that
+  compiles).
 - Leak test: thousands of scopes under random cancellation; the resource
   counter returns to zero.
 
