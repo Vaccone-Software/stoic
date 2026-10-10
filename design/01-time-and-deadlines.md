@@ -122,11 +122,19 @@ design answers each:
   them and hand that count to finalizers (`Exit.abandoned`), and a resource
   may declare its release `.quarantine`: leak it deliberately and report,
   rather than close it under a zombie.
-- **A permanent dead end.** Past `limit` abandoned operations under a label,
-  `abandoningAfter` refuses at once (`.rejected(.abandonmentLimit)`) and
-  emits `abandoned.wedged`, which a supervisor (design/09) can escalate to
-  its terminal action: restart the process, the only cure for a wedged
+- **Threads parked without bound.** A label never occupies more than `limit`
+  threads, running or abandoned: a call keeps its slot until its operation
+  actually returns. Counting only abandoned work is not enough — a dozen
+  concurrent callers are all admitted while running and all abandoned
+  together. Callers past the cap wait for a slot, bounded by their deadline.
+- **A permanent dead end.** When every slot of a label is held by abandoned
+  work, `abandoningAfter` refuses at once (`.rejected(.abandonmentLimit)`)
+  and emits `abandoned.wedged`, which a supervisor (design/09) can escalate
+  to its terminal action: restart the process, the only cure for a wedged
   system framework.
+- **Starting doomed work.** A caller that is already cancelled, or whose
+  deadline has passed, is refused before anything is dispatched; otherwise
+  the work would start only to be abandoned at once.
 
 Abandoned work is listed in a process-wide ledger (label, age, call site)
 and appears in diagnostics until it finishes; a late finish is reported with
@@ -152,17 +160,20 @@ duplicate types are deprecated with one minor version of overlap.
 | the deadline passes, operation honours cancellation               | Operation cancelled with cause `.deadline`; its error passes through; `deadline.expired`   |
 | the deadline passes, operation ignores cancellation (cooperative) | Stoic waits — cooperative means cooperative; `deadline.expired` reports the overrun when it ends |
 | the deadline passes, operation ignores cancellation (abandoning)  | Returns `.rejected(.deadlineExceeded)` at the deadline; operation tracked in the ledger    |
-| the abandonment limit for a label is reached                      | Refuses to start: `.rejected(.abandonmentLimit)`; `abandoned.limit` event                  |
+| a label has `limit` operations running (abandoning)              | Later callers wait for a slot until their deadline: `.rejected(.deadlineExceeded)`         |
+| every slot of a label is held by abandoned work                   | Refuses to start: `.rejected(.abandonmentLimit)`; `abandoned.wedged` event                 |
+| an enclosing deadline cancels an abandoning call                  | `.rejected(.deadlineExceeded)`, not `.cancelled`                                           |
 | the caller is cancelled                                           | Operation cancelled with cause `.userRequested`; timer cancelled; caller's error rules     |
 | an inner timeout is longer than the outer deadline                | The outer deadline wins; the inner one is a no-op                                          |
 | the deadline has already passed on entry                          | Operation runs already cancelled (cooperative) / never starts (abandoning)                 |
+| the caller is already cancelled on entry (abandoning)             | Never starts: `.rejected(.cancelled)`                                                      |
 | the clock is a test clock that never advances                     | Nothing fires; the test clock reports the pending deadline in its idle diagnostics         |
 | the Mac sleeps past the deadline                                  | Continuous clock: the deadline passes on wake and fires immediately                        |
 
 ## Events
 
 `deadline.expired` (label, budget, overrun, outcome), `abandoned.started`,
-`abandoned.completed` (lateness), `abandoned.limit`.
+`abandoned.completed` (lateness), `abandoned.wedged`.
 
 ## Testing
 

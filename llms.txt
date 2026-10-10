@@ -6,7 +6,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 
 ## Time
 - `withTimeout(_ duration:) { … }` / `withDeadline(_ deadline:) { … }`: cooperative; operation runs as a child task inheriting the caller's actor; result must be Sendable; error passes through. `Deadline.current` narrows, never widens.
-- `abandoningAfter(_ duration:, label:, limit:) { syncWork() }`: for uncancellable blocking work; runs on Dispatch; throws `PolicyError.rejected(.deadlineExceeded)`; caps abandoned work per label.
+- `abandoningAfter(_ duration:, label:, limit:) { syncWork() }`: for uncancellable blocking work; runs on Dispatch; throws `PolicyError.rejected(.deadlineExceeded)`; a label never occupies more than `limit` threads, running or abandoned; refuses with `.abandonmentLimit` once every slot is abandoned.
 - `CancellationCause.current`: `.deadline`, `.userRequested`, `.superseded`, `.siblingFailed`, `.scopeEnded`, `.supervisorStopped`, `.stateExited`.
 - `Ambient.sleep(for:)`: sleep on the ambient (injectable) clock.
 

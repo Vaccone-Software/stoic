@@ -127,6 +127,18 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
         }
     }
 
+    /// Waits for a permit without a body, for a permit held past the
+    /// caller's own scope (abandonable work keeps its permit until the
+    /// blocked thread returns). Pair every `nil` with ``releasePermit()``.
+    nonisolated(nonsending) func acquirePermit() async -> Rejection? {
+        await acquire(.unbounded)
+    }
+
+    /// Returns a permit taken with ``acquirePermit()``.
+    func releasePermit() {
+        release()
+    }
+
     /// Waits for a permit. Returns `nil` once granted, or why the wait ended.
     private nonisolated(nonsending) func acquire(_ queueing: Queueing) async -> Rejection? {
         if Task.isCancelled {
