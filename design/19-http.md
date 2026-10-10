@@ -145,8 +145,10 @@ drops `Authorization`, `Cookie` and `Proxy-Authorization`.
 product,** as `SimulatedFileSystem` lives in `StoicStore`: it needs nothing
 from `StoicTesting` (only the ambient clock), so an app's tests import one
 module, and it costs an app a few kilobytes. Its steps are `.status`,
-`.json`, `.bytes`, `.failure(URLError.Code)`, `.hang`, `.oversized(n)` (a body
-of `n` bytes that is never allocated) and `.after(delay)` on any of them.
+`.json`, `.bytes`, `.failure(URLError.Code)`, `.hang` (waits for cancellation on no clock: a
+sleeping hang is a timer a simulation may fire early, and a million virtual
+seconds pass at once), `.oversized(n)` (a body of `n` bytes that is never
+allocated) and `.after(delay)` on any of them, on the ambient clock.
 A route's steps are consumed one per request and the last repeats, or `then:`
 answers; an unscripted request is a 404 and is listed. It counts requests in
 flight (at most, now) and requests aborted (cancelled, or cut at the limit).
@@ -251,6 +253,11 @@ uploads and downloads; authentication refresh; delivering through the outbox
 `ScriptedTransport` with no real sleeps (they wait on events and
 `waitForSleepers`); `URLSessionTransport` against a `URLProtocol` stub on a
 real `URLSession`; and `simulate(seeds:)` runs of seventeen concurrent callers
-against a flaky server, which assert that no unkeyed `POST` is ever repeated,
-every keyed attempt carries its key and body, attempts stay within the policy,
-the bulkhead holds, and eight identical `GET`s make one request.
+against a flaky server, under the full schedule portfolio (uniform and PCT,
+early timers), which assert that no unkeyed `POST` is ever repeated, every
+keyed attempt carries its key and body, attempts stay within the policy, and
+the bulkhead holds; identical `GET`s are never in flight twice, and every
+caller either started a request or shared one (exactly one request only on a
+uniform schedule, where time cannot pass while a caller is still arriving).
+A simulated body starts no unstructured `Task {}`: it would run outside the
+simulation and the seed would no longer replay.

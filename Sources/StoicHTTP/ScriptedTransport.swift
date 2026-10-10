@@ -7,10 +7,11 @@ internal import Synchronization
 ///
 /// Each route has its own list of steps, consumed one per request: a status
 /// with headers and a body, a delay, a `URLError`, a hang until the request is
-/// cancelled, a body too large to read. Delays and hangs wait on the
-/// *ambient* clock, so under a `TestClock` (or inside a simulation) the test
-/// decides when a slow response arrives, and a hang ends exactly when the
-/// client's attempt timeout fires. Every request is recorded, headers
+/// cancelled, a body too large to read. Delays wait on the *ambient* clock,
+/// so under a `TestClock` (or inside a simulation) the test decides when a
+/// slow response arrives. A hang waits on no clock at all, only for
+/// cancellation, so it ends exactly when the client's attempt timeout fires
+/// (or the caller leaves) and a simulation has no timer of it to fire early. Every request is recorded, headers
 /// included, so a test can assert what was sent and how often.
 ///
 ///     let transport = ScriptedTransport()
@@ -71,7 +72,7 @@ public final class ScriptedTransport: HTTPTransport {
             Step(.failure(code))
         }
 
-        /// The server never answers: the request waits until it is cancelled.
+        /// The server never answers: the request waits, on no clock, until it is cancelled.
         public static let hang = Step(.hang)
 
         /// This step, after waiting `delay` on the ambient clock.
@@ -232,7 +233,8 @@ public final class ScriptedTransport: HTTPTransport {
             case .failure(let code):
                 throw URLError(code)
             case .hang:
-                while true { try await Ambient.sleep(for: .seconds(1_000_000)) }
+                try await Self.suspendUntilCancelled()
+                throw CancellationError()
             }
         } catch is TooLarge {
             state.withLock { $0.aborted += 1 }
@@ -245,10 +247,53 @@ public final class ScriptedTransport: HTTPTransport {
 
     private struct TooLarge: Error {}
 
+    /// Waits for cancellation and nothing else. A hang that slept on the
+    /// clock would be a timer like any other: a simulation that fires the
+    /// next timer early would fire it, and a whole virtual lifetime would
+    /// pass in one step.
+    private static func suspendUntilCancelled() async throws {
+        let gate = CancellationGate()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                gate.wait(continuation)
+            }
+        } onCancel: {
+            gate.cancel()
+        }
+    }
+
     private static func path(of request: HTTPRequest) -> String {
         switch request.target {
         case .path(let path): path
         case .url(let url): url.path
         }
+    }
+}
+
+/// Resumes one waiter when cancelled, whichever comes first.
+private final class CancellationGate: Sendable {
+    private struct State {
+        var cancelled = false
+        var waiter: CheckedContinuation<Void, Never>?
+    }
+
+    private let state = Mutex(State())
+
+    func wait(_ continuation: CheckedContinuation<Void, Never>) {
+        let resumeNow = state.withLock { state -> Bool in
+            if state.cancelled { return true }
+            state.waiter = continuation
+            return false
+        }
+        if resumeNow { continuation.resume() }
+    }
+
+    func cancel() {
+        let waiter = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            state.cancelled = true
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
     }
 }

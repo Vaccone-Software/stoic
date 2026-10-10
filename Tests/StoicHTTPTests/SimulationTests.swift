@@ -35,8 +35,7 @@ struct HTTPSimulationTests {
         }
     }
 
-    @Test func requestsAreBoundedByThePolicyAndUnsafeOnesAreNeverRepeated() async throws {
-        try await simulate(seeds: 0..<150) { sim in
+    static let manyCallers: @Sendable (SimulationContext) async throws -> Void = { sim in
             let transport = ScriptedTransport()
             transport.on(.get("/a"), respond: [.status(503), Step.status(200).after(.milliseconds(50))])
             transport.on(.get("/b"), respond: [.failure(.networkConnectionLost), .hang, .status(200)])
@@ -59,11 +58,21 @@ struct HTTPSimulationTests {
                 for index in 0..<3 { group.addTask { await Self.run(api, .post("/orders", json: ["n": .number(JSONNumber(index))])) } }
                 for index in 0..<3 { group.addTask { await Self.run(api, .post("/pay", json: ["n": .number(JSONNumber(index))]), key: keys[index]) } }
                 group.addTask {
-                    let task = Task { await Self.run(api, .get("/b")) }
-                    // stoic:allow(discarded-try): the sleep only paces the cancellation
-                    try? await Ambient.sleep(for: .milliseconds(50))
-                    task.cancel()
-                    return await task.value
+                    // A caller cancelled 50 ms in. Structured, so it runs on the simulation's executor
+                    // (an unstructured Task would not, and the run would no longer replay).
+                    await withTaskGroup(of: Outcome?.self) { inner in
+                        inner.addTask { await Self.run(api, .get("/b")) }
+                        inner.addTask {
+                            // stoic:allow(discarded-try): the sleep only paces the cancellation
+                            try? await Ambient.sleep(for: .milliseconds(50))
+                            return nil
+                        }
+                        var result = Outcome.cancelled
+                        for await next in inner {
+                            if let next { result = next } else { inner.cancelAll() }
+                        }
+                        return result
+                    }
                 }
                 var all: [Outcome] = []
                 for await outcome in group { all.append(outcome) }
@@ -95,23 +104,50 @@ struct HTTPSimulationTests {
             try #require(transport.requests(to: .get("/b")).count <= 4 * 3)
             try #require(transport.maxInFlightCount <= 4, "the bulkhead held")
             try #require(transport.unscriptedRequests.isEmpty)
-        }
     }
 
-    @Test func identicalGetsStartedTogetherShareOneRequest() async throws {
-        try await simulate(seeds: 0..<150, faults: .none) { sim in
-            let transport = ScriptedTransport()
-            transport.on(.get("/avatar"), respond: [Step.bytes([9]).after(.milliseconds(20))])
-            let api = HTTPClient(base: URL(string: "https://api.example.com")!, policy: .standard, transport: transport)
-            let results = await withTaskGroup(of: Outcome.self) { group in
-                for _ in 0..<8 { group.addTask { await Self.run(api, .get("/avatar")) } }
-                var all: [Outcome] = []
-                for await outcome in group { all.append(outcome) }
-                return all
-            }
-            try #require(results.count == 8)
-            try #require(results.allSatisfy { if case .ok = $0 { true } else { false } })
-            try #require(transport.requestCount == 1, "eight callers, \(transport.requestCount) requests")
+    @Test func requestsAreBoundedByThePolicyAndUnsafeOnesAreNeverRepeated() async throws {
+        try await simulate(seeds: 0..<300, Self.manyCallers)
+    }
+
+    /// Eight callers ask for the same avatar. Under the full portfolio (PCT schedules, early timers,
+    /// injected delays) a caller may arrive after the response has landed, so the number of requests is
+    /// not fixed, but the invariant is: identical GETs are never in flight twice, and every caller either
+    /// started a request or shared one.
+    @Sendable static func eightIdenticalGets(_ sim: SimulationContext) async throws -> Int {
+        let transport = ScriptedTransport()
+        transport.on(.get("/avatar"), respond: [Step.bytes([9]).after(.milliseconds(20))])
+        let api = HTTPClient(base: URL(string: "https://api.example.com")!, policy: .standard, transport: transport)
+        let results = await withTaskGroup(of: Outcome.self) { group in
+            for _ in 0..<8 { group.addTask { await Self.run(api, .get("/avatar")) } }
+            var all: [Outcome] = []
+            for await outcome in group { all.append(outcome) }
+            return all
+        }
+        try #require(results.count == 8)
+        try #require(results.allSatisfy { if case .ok = $0 { true } else { false } })
+        try #require(transport.maxInFlightCount == 1, "the same GET was in flight twice")
+        try #require(transport.requestCount >= 1)
+        // An early timer can fire the attempt's 10 s timeout before the 20 ms response is due, and the
+        // attempt is retried: a retry is another request for the same caller, not another caller.
+        let shared = sim.events.count("http.coalesced")
+        let started = transport.requestCount - sim.events.count("http.retry")
+        try #require(shared + started == 8, "\(shared) shared + \(started) started != 8 callers")
+        return started
+    }
+
+    @Test func identicalGetsAreNeverInFlightTwiceAndEveryCallerSharesOrStarts() async throws {
+        try await simulate(seeds: 0..<300) { sim in _ = try await Self.eightIdenticalGets(sim) }
+    }
+
+    /// With one uniformly chosen schedule and no injected delays, time passes only when everything is
+    /// asleep, so all eight callers have joined before the 20 ms response can land: exactly one request.
+    /// (This holds only there: a PCT schedule or an early timer can land the response first.)
+    @Test func withNoTimeToSpareTheyShareExactlyOneRequest() async throws {
+        try await simulate(seeds: 0..<150, faults: .none, schedule: .uniform) { sim in
+            let requests = try await Self.eightIdenticalGets(sim)
+            try #require(requests == 1, "eight callers, \(requests) requests")
+            try #require(sim.events.count("http.retry") == 0)
         }
     }
 

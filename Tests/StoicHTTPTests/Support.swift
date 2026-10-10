@@ -102,12 +102,14 @@ final class Rig: Sendable {
         await clock.waitForSleepers(count: 1)
     }
 
-    /// Waits until an attempt is hanging: its timer and the transport's wait.
+    /// Waits until an attempt is hanging in the transport (which waits on no
+    /// clock) and its timeout is running.
     /// `timers` counts what else sleeps on the clock at the same time: a
     /// caller's deadline is a timer of its own, and so is each stage that
     /// honours it.
     func waitForHangingAttempt(timers: Int = 0) async {
-        await clock.waitForSleepers(count: 2 + timers)
+        await eventually("the attempt never reached the transport") { transport.inFlightCount >= 1 }
+        await clock.waitForSleepers(count: 1 + timers)
     }
 
     /// The error a request ended with, or `nil` if it succeeded.

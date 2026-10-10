@@ -97,7 +97,8 @@ struct ScriptedTransportTests {
             let transport = ScriptedTransport()
             transport.on(.get("/never"), respond: [.hang])
             let task = Task { try await Self.send(transport, Self.request("/never")) }
-            await clock.waitForSleepers(count: 1)
+            await eventually { transport.inFlightCount == 1 }
+            #expect(clock.sleeperCount == 0, "a hang waits on no clock")
             task.cancel()
             await #expect(throws: CancellationError.self) { try await task.value }
             #expect(transport.abortedCount == 1)
