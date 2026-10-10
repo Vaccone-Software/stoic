@@ -7,6 +7,10 @@
 /// result instead of acting again (Stripe's `Idempotency-Key` header is the
 /// best-known example).
 ///
+/// A key is `Codable` as the bare string, so one dropped into JSON reads
+/// `"7f3a…"`, not an object; decoding refuses an empty string, which no
+/// server would take as a key and a missing value would otherwise hide.
+///
 /// The one rule that matters: create the key *outside* the retry, so every
 /// attempt carries the same one.
 ///
@@ -38,8 +42,23 @@ public struct IdempotencyKey: Sendable, Hashable, CustomStringConvertible, Codab
 
     public var description: String { rawValue }
 
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        guard !value.isEmpty else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "An idempotency key cannot be empty")
+        }
+        rawValue = value
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     private static func hex(_ value: UInt64) -> String {
         let digits = String(value, radix: 16)
         return String(repeating: "0", count: 16 - digits.count) + digits
     }
 }
+

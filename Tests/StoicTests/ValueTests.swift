@@ -1,3 +1,4 @@
+import Foundation
 @testable import Stoic
 import StoicTesting
 import Testing
@@ -47,6 +48,19 @@ struct ValueTests {
             return await group.reduce(into: []) { $0.append($1) }
         }
         #expect(Set(runs).count == 1)
+    }
+
+    @Test func aKeyEncodesAsABareString() throws {
+        let key = IdempotencyKey(rawValue: "abc123")
+        let json = String(decoding: try JSONEncoder().encode([key]), as: UTF8.self)
+        #expect(json == #"["abc123"]"#)
+        #expect(try JSONDecoder().decode([IdempotencyKey].self, from: Data(json.utf8)) == [key])
+    }
+
+    @Test func decodingAnEmptyKeyFails() {
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode([IdempotencyKey].self, from: Data(#"[""]"#.utf8))
+        }
     }
 
     @Test func oneKeyServesEveryAttempt() async throws {
