@@ -108,12 +108,23 @@ private func readField(
     }
     // Computed properties are not stored, so they are not part of the value.
     if let accessors = binding.accessorBlock {
+        var computed = false
         switch accessors.accessors {
         case .getter:
-            return nil
+            computed = true
         case .accessors(let list):
-            let observersOnly = list.allSatisfy { ["willSet", "didSet"].contains($0.accessorSpecifier.text) }
-            if !observersOnly { return nil }
+            computed = !list.allSatisfy { ["willSet", "didSet"].contains($0.accessorSpecifier.text) }
+        }
+        if computed {
+            for marker in found {
+                reporter.error(
+                    marker.node,
+                    Problem(
+                        id: "marker-on-computed",
+                        message: "\(marker.name) on a computed property: a schema describes stored properties, and `\(pattern.identifier.text)` stores nothing"),
+                    fixIts: marker.node.is(AttributeSyntax.self) ? [.removing(marker.node, "remove \(marker.name)")] : [])
+            }
+            return nil
         }
     }
     let name = pattern.identifier.text

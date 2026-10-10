@@ -56,6 +56,19 @@ func schemaDeclaration(
     of declaration: some DeclGroupSyntax, attribute: AttributeSyntax, reporter: Reporter
 ) -> String? {
     let access = accessPrefix(declaration)
+    for member in declaration.memberBlock.members {
+        guard let variable = member.decl.as(VariableDeclSyntax.self),
+            variable.modifiers.contains(where: { $0.name.text == "static" }),
+            let binding = variable.bindings.first(where: { $0.pattern.trimmedDescription == "schema" })
+        else { continue }
+        reporter.error(
+            binding.pattern,
+            Problem(
+                id: "schema-exists",
+                message: "@Schema writes `static let schema`, and this type already has one: remove it, or remove @Schema and keep the schema written by hand"
+            ))
+        return nil
+    }
     let text: String?
     if let structure = declaration.as(StructDeclSyntax.self) {
         text = expandStruct(structure, attribute: attribute, access: access, reporter: reporter)

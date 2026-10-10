@@ -55,11 +55,11 @@ private func checkKeys(of model: StructModel, arguments: SchemaArguments, report
     var claimed: [String: String] = [:]
     func claim(_ spelling: String, by owner: String, at node: Syntax) {
         if let first = claimed[spelling] {
-            reporter.error(
-                node,
-                Problem(
-                    id: "duplicate-key",
-                    message: "the key \"\(spelling)\" is `\(owner)`'s, and `\(first)` already uses it; give one a different @Key or alias"))
+            let message =
+                first == owner
+                ? "the alias \"\(spelling)\" is `\(owner)`'s own key already; an alias is another spelling"
+                : "the key \"\(spelling)\" is `\(owner)`'s, and `\(first)` already uses it; give one a different @Key or alias"
+            reporter.error(node, Problem(id: "duplicate-key", message: message))
         } else {
             claimed[spelling] = owner
         }

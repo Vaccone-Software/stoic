@@ -138,7 +138,9 @@ private func readUnionCase(
             continue
         }
         if !seen.insert(marker.kind).inserted {
-            reporter.error(marker.node, Problem(id: "duplicate-marker", message: "@Key appears twice on `\(caseName)`"))
+            reporter.error(
+                marker.node, Problem(id: "duplicate-marker", message: "@Key appears twice on `\(caseName)`"),
+                fixIts: [.removing(marker.node, "remove the second @Key")])
             continue
         }
         guard let argument = marker.arguments.first, let (value, source) = plainStringLiteral(argument.expression) else {
