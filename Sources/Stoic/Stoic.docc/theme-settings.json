@@ -1,0 +1,30 @@
+{
+  "theme": {
+    "border-radius": "2px",
+    "typography": {
+      "html-font": "\"Iowan Old Style\", \"Palatino Linotype\", Palatino, Georgia, serif",
+      "html-font-mono": "ui-monospace, \"SF Mono\", Menlo, monospace"
+    },
+    "color": {
+      "fill": { "light": "#f2ede2", "dark": "#13110f" },
+      "fill-secondary": { "light": "#e9e2d3", "dark": "#1a1815" },
+      "fill-tertiary": { "light": "#ded5c3", "dark": "#24211d" },
+      "text": { "light": "#1b1813", "dark": "#e6ddca" },
+      "text-background": { "light": "#f2ede2", "dark": "#13110f" },
+      "figure-gray": { "light": "#1b1813", "dark": "#e6ddca" },
+      "figure-gray-secondary": { "light": "#5b5346", "dark": "#9b917e" },
+      "header-text": { "light": "#1b1813", "dark": "#e6ddca" },
+      "link": { "light": "#3d6b58", "dark": "#78a08d" },
+      "focus-color": { "light": "#3d6b58", "dark": "#78a08d" },
+      "code-background": { "light": "#e9e2d3", "dark": "#1a1815" },
+      "code-plain": { "light": "#1b1813", "dark": "#e6ddca" },
+      "grid": { "light": "#d6ccb8", "dark": "#2e2a24" },
+      "documentation-intro-fill": "#13110f",
+      "documentation-intro-figure": "#e6ddca",
+      "documentation-intro-title": "#e6ddca",
+      "documentation-intro-eyebrow": "#78a08d",
+      "documentation-intro-accent": "#78a08d",
+      "standard-green": { "light": "#3d6b58", "dark": "#2a4339" }
+    }
+  }
+}
