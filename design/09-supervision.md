@@ -66,6 +66,12 @@ instances: so a second failure during a group's backoff cannot start members
 out of order or twice. A child that finished for good (a transient that
 returned, a temporary) stays finished when its group restarts.
 
+**Children own their time.** A child runs without the deadline of whoever
+called `run()`: it lives as long as the supervisor keeps it. Restart delays
+are counted from the decision and heartbeat checks fall on fixed instants
+from the child's start, so neither a timer's own scheduling delay nor drift
+across intervals stretches them.
+
 **Backoff.** Each child waits on the supervisor's schedule before
 restarting (jittered exponential by default, capped at 30 s); a child that
 ran for `resetAfter` without stopping starts its backoff over. A schedule

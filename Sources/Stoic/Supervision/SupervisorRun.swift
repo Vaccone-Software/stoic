@@ -168,6 +168,9 @@ struct SupervisorRun {
             return SupervisorEscalation(supervisor: supervisor.label, child: child.label, lastError: error)
         }
         let delay = scheduled.saturatingMultiplied(by: ambient.conditions.current.backoffFactor)
+        // The restart is due `delay` after this decision, not after the
+        // timer's task first runs.
+        let due = clock.now.advanced(by: delay)
         publish.yield(.restarting(child: child.label, after: delay))
         record("supervisor.child_restarting", .info, child: index, extra: [.init("delay", .duration(delay))])
 
@@ -176,7 +179,7 @@ struct SupervisorRun {
         let clock = clock
         slots[index].restartTimer = Task {
             do {
-                try await clock.sleep(until: clock.now.advanced(by: delay), tolerance: nil)
+                try await clock.sleep(until: due, tolerance: nil)
             } catch {
                 return
             }
@@ -202,9 +205,13 @@ struct SupervisorRun {
         slots[index].task = TaskLedger.task(.supervisorChild, label: child.label) {
             let failure: (any Error)?
             do {
+                // A child lives as long as the supervisor keeps it, not as
+                // long as whoever called `run()` was given: no deadline.
                 try await withAmbient({ $0 = ambient }) {
-                    try await CancellationCauseBox.$current.withValue(cause) {
-                        try await child.run(heartbeat)
+                    try await Deadline.$stored.withValue(nil) {
+                        try await CancellationCauseBox.$current.withValue(cause) {
+                            try await child.run(heartbeat)
+                        }
                     }
                 }
                 failure = nil
@@ -215,13 +222,19 @@ struct SupervisorRun {
         }
         if let policy = child.heartbeat {
             let clock = ambient.livenessClock
+            // Checks fall on fixed instants counted from the start, so the
+            // monitor's own scheduling delays neither stretch the grace
+            // period nor accumulate across intervals.
+            let graceEnds = clock.now.advanced(by: policy.grace)
             slots[index].monitor = Task {
                 do {
-                    try await clock.sleep(until: clock.now.advanced(by: policy.grace), tolerance: nil)
+                    try await clock.sleep(until: graceEnds, tolerance: nil)
                     var last = heartbeat.count
                     var misses = 0
+                    var check = graceEnds
                     while true {
-                        try await clock.sleep(until: clock.now.advanced(by: policy.interval), tolerance: nil)
+                        check = check.advanced(by: policy.interval)
+                        try await clock.sleep(until: check, tolerance: nil)
                         let current = heartbeat.count
                         if current == last {
                             misses += 1

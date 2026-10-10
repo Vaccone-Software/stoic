@@ -282,6 +282,62 @@ struct SupervisorReviewTests {
         #expect(restarts.value == 3, "two scheduled delays, then the schedule ends and the supervisor gives up")
     }
 
+    @Test(.timeLimit(.minutes(1))) func aRestartIsDueFromTheDecisionNotFromWhenItsTimerRuns() async {
+        let clock = TestClock()
+        let script = SupervisorTests.Script()
+        let events = RecordingInstrumentation()
+        let supervisor = Supervisor(label: "test", backoff: .fixed(.seconds(2))) {
+            Child("worker") { _ in
+                if script.started("worker") == 1 { throw SupervisorTests.Crash() }
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+        let decided = Task {
+            for await event in supervisor.events {
+                if case .restarting = event { return }
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock, events: events) { try await supervisor.run() } }
+        await decided.value
+        // At once: no waiting for the timer's task to register its sleep.
+        await clock.advance(by: .seconds(2))
+        #expect(await eventually { script.count("worker") == 2 })
+        run.cancel()
+        _ = await run.result
+    }
+
+    @Test(.timeLimit(.minutes(1))) func heartbeatChecksFallOnFixedInstantsFromTheStart() async {
+        let clock = TestClock()
+        let script = SupervisorTests.Script()
+        let supervisor = Supervisor(label: "test", backoff: .immediate) {
+            Child("tap", heartbeat: .init(interval: .seconds(5), misses: 1, grace: .seconds(10))) { _ in
+                _ = script.started("tap")
+                try await Task.sleep(for: .seconds(3600))   // never beats
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        #expect(await eventually { script.count("tap") == 1 })
+        // Grace ends at 10 s and the first check is at 15 s, both counted
+        // from the start: one jump past both finds the child hung.
+        await clock.advance(by: .seconds(15))
+        #expect(await eventually { script.count("tap") == 2 })
+        run.cancel()
+        _ = await run.result
+    }
+
+    @Test(.timeLimit(.minutes(1))) func childrenDoNotInheritTheCallersDeadline() async throws {
+        let sawDeadline = SendableBox<Bool?>(nil)
+        let supervisor = Supervisor(label: "test") {
+            Child("probe", restart: .temporary) { _ in
+                sawDeadline.mutate { $0 = Deadline.current != nil }
+            }
+        }
+        try await Deadline.$stored.withValue(.after(.seconds(600))) {
+            try await supervisor.run()
+        }
+        #expect(sawDeadline.value == false)
+    }
+
     @Test(.timeLimit(.minutes(1))) func aSupervisorWithNoChildrenReturns() async throws {
         let supervisor = Supervisor(label: "empty") {}
         try await supervisor.run()
