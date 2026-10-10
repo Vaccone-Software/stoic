@@ -168,6 +168,21 @@ struct StateMachineTests {
         #expect(!graph.truncated)
     }
 
+    @Test func explorationFollowsTheEventsStateTimeoutsSend() {
+        enum Step: Sendable { case start, expire, finish }
+        // `expire` is sent only by the timeout, and appears in no event list.
+        let graph = StateGraph<String, Step>.explore(from: "idle", events: [.start, .finish]) { state, step in
+            switch (state, step) {
+            case ("idle", .start): .to("waiting", timeout: .init(after: .seconds(5), send: .expire))
+            case ("waiting", .expire): .to("timedOut")
+            case ("waiting", .finish): .to("idle")
+            default: .ignore
+            }
+        }
+        #expect(Set(graph.states) == ["idle", "waiting", "timedOut"])
+        #expect(graph.edges.contains { $0.from == "waiting" && $0.event == "expire" && $0.to == "timedOut" })
+    }
+
     @Test func explorationStopsAtTheStateLimit() {
         enum Step: Sendable { case next }
         let graph = StateGraph<Int, Step>.explore(from: 0, events: [.next], maximumStates: 50) { n, _ in .to(n + 1) }

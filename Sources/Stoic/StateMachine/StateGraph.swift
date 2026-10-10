@@ -39,8 +39,20 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
     /// Whether exploration stopped at `maximumStates` before finishing.
     public let truncated: Bool
 
+    /// A state and event pair to try, by the event's description.
+    private struct Attempt: Hashable {
+        let state: State
+        let event: String
+    }
+
     /// Explores `transition` from `initial`, trying every one of `events`
-    /// in every reached state (including events a state's timeouts send).
+    /// in every reached state.
+    ///
+    /// Events that a state's timeouts send need not be listed: when a
+    /// transition into a state carries a ``StateTimeout``, its event is also
+    /// tried in that state, so a state reachable only through a timeout is
+    /// still found. (Events sent from outside the machine are the caller's
+    /// to list.)
     public static func explore(
         from initial: State,
         events: [Event],
@@ -52,26 +64,36 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
         var edges: [Edge] = []
         var edgeSet: Set<Edge> = []
         var invalid: [InvalidPair] = []
-        var cursor = 0
         var truncated = false
-        while cursor < states.count {
-            let state = states[cursor]
+
+        // Every (state, event) still to try, in discovery order.
+        var queue: [(state: State, event: Event)] = []
+        var queued: Set<Attempt> = []
+        func enqueue(_ state: State, _ event: Event) {
+            if queued.insert(Attempt(state: state, event: "\(event)")).inserted { queue.append((state, event)) }
+        }
+        for event in events { enqueue(initial, event) }
+
+        var cursor = 0
+        while cursor < queue.count {
+            let (state, event) = queue[cursor]
             cursor += 1
-            for event in events {
-                switch transition(state, event) {
-                case .stay, .ignore:
-                    continue
-                case .invalid(let reason):
-                    invalid.append(InvalidPair(state: state, event: "\(event)", reason: reason))
-                case .to(let next, let timeout):
-                    let edge = Edge(from: state, event: "\(event)", to: next, timeout: timeout?.after)
-                    if edgeSet.insert(edge).inserted { edges.append(edge) }
-                    if !seen.contains(next) {
-                        guard states.count < maximumStates else { truncated = true; continue }
-                        seen.insert(next)
-                        states.append(next)
-                    }
+            switch transition(state, event) {
+            case .stay, .ignore:
+                continue
+            case .invalid(let reason):
+                invalid.append(InvalidPair(state: state, event: "\(event)", reason: reason))
+            case .to(let next, let timeout):
+                let edge = Edge(from: state, event: "\(event)", to: next, timeout: timeout?.after)
+                if edgeSet.insert(edge).inserted { edges.append(edge) }
+                if !seen.contains(next) {
+                    guard states.count < maximumStates else { truncated = true; continue }
+                    seen.insert(next)
+                    states.append(next)
+                    for event in events { enqueue(next, event) }
                 }
+                // Reaching `next` arms its timeout, whether or not it was new.
+                if let timeout, seen.contains(next) { enqueue(next, timeout.event) }
             }
         }
         return StateGraph(states: states, edges: edges, invalid: invalid, truncated: truncated)
