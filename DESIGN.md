@@ -248,22 +248,50 @@ incident review is the wrong default.
 
 ## The primitives
 
-| #   | Contract                                                          | Replaces                                              | Milestone |
-| --- | ----------------------------------------------------------------- | ----------------------------------------------------- | --------- |
-| 01  | [Time and deadlines](design/01-time-and-deadlines.md)             | hand-rolled timeout races, `asyncAfter` timeouts      | M1        |
-| 02  | [Schedules and retry](design/02-schedules-and-retry.md)           | retry loops, fixed delays, drifting budgets           | M1        |
-| 03  | [Structured concurrency](design/03-concurrency.md)                | generation counters, semaphores, ad hoc single-flight | M2        |
-| 04  | [Scopes and resources](design/04-scopes-and-resources.md)         | `defer`/`deinit` cleanup, manual teardown order       | M2        |
-| 05  | [Errors and reports](design/05-errors.md)                         | `try?`, errors flattened to strings                   | M3        |
-| 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times  | M4        |
-| 07  | [State machines](design/07-state-machines.md)                     | phase booleans, stale-callback guards                 | M5        |
-| 08  | [Services and app lifecycle](design/08-services-and-lifecycle.md) | `applicationWillTerminate` teardown lists             | M6        |
-| 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                   | M6        |
-| 10  | [Resilience policies](design/10-resilience-policies.md)           | none today: circuit breaker, rate limiter, bulkhead   | M7        |
-| 11  | [Observability](design/11-observability.md)                       | silent decisions                                      | M3        |
-| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                  | M1 →      |
-| 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                             | M0 → M8   |
-| 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                      | M0 →      |
+| #   | Contract                                                          | Replaces                                                  | Status                                     |
+| --- | ----------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ |
+| 01  | [Time and deadlines](design/01-time-and-deadlines.md)             | hand-rolled timeout races, `asyncAfter` timeouts          | Built, including `abandoningAfter`         |
+| 02  | [Schedules and retry](design/02-schedules-and-retry.md)           | retry loops, fixed delays, drifting budgets               | Built                                      |
+| 03  | [Structured concurrency](design/03-concurrency.md)                | generation counters, semaphores, unbounded streams        | Built                                      |
+| 04  | [Scopes and resources](design/04-scopes-and-resources.md)         | `defer`/`deinit` cleanup, manual teardown order           | Built                                      |
+| 05  | [Errors and reports](design/05-errors.md)                         | `try?`, errors flattened to strings                       | Built; platform catalog planned            |
+| 06  | [Validation and schema](design/06-validation.md)                  | hand-written validators, ranges repeated three times      | Phase 1 built; phase 2 in progress         |
+| 07  | [State machines](design/07-state-machines.md)                     | phase booleans, stale-callback guards                     | Built; macro planned                       |
+| 08  | [Services and app lifecycle](design/08-services-and-lifecycle.md) | `applicationWillTerminate` teardown lists                 | Graph built; AppKit/UIKit bridges planned  |
+| 09  | [Supervision](design/09-supervision.md)                           | watchdogs, restart-on-failure loops                       | Built                                      |
+| 10  | [Resilience policies](design/10-resilience-policies.md)           | nothing between the app and a failing dependency          | In progress                                |
+| 11  | [Observability](design/11-observability.md)                       | silent decisions                                          | Built; adapters planned                    |
+| 12  | [Testing](design/12-testing.md)                                   | wall-clock tests, hand-written fakes                      | Built; simulation planned                  |
+| 13  | [Build enforcement](design/13-build-enforcement.md)               | conventions nobody checks                                 | In progress                                |
+| 14  | [Guidance](design/14-guidance.md)                                 | tribal knowledge                                          | README, AGENTS.md; skill and llms.txt next |
+| 15  | Persistence (planned)                                             | `Data.write` without fsync, configs corrupted by crashes  | Planned: `StoicStore`                      |
+| 16  | System conditions (planned)                                       | ignoring memory pressure, thermal state, background expiry| Planned                                    |
+| 17  | Diagnostics (planned)                                             | "it hung once, no idea why"                               | Planned                                    |
+
+**Planned domains, in brief.**
+
+- **Persistence (`StoicStore`).** Atomic file writes done right on Apple
+  platforms (temporary file, `F_FULLFSYNC` — plain `fsync` does not flush
+  the drive cache — rename, directory sync, checksum envelope, previous
+  generation kept, corrupt files quarantined), a crash-consistent
+  append-only journal with torn-tail detection, and an outbox for
+  at-least-once delivery with idempotency keys. All behind a `FileSystem`
+  protocol so tests can replay every prefix and reordering of the syscalls a
+  write makes and check that recovery always finds the old file or the new
+  one — crash-consistency testing no Swift library ships.
+- **System conditions.** Memory pressure, thermal state, low-power mode,
+  network constraints and app activity as an observable value in the
+  ambient context, so policies adapt: schedules slow down when the device
+  is hot, bulkheads shrink under memory pressure, hedging pauses on low
+  power. Background-task expiry becomes a deadline that existing primitives
+  already honour. A crash-loop marker counts unclean launches and enters a
+  safe mode — skipping optional services, quarantining the last config or
+  migration — after too many.
+- **Diagnostics.** A bounded ring of recent events, a crash-surviving
+  variant on a memory-mapped file so the next launch can say what the app
+  was deciding when it died, and a ledger of every Stoic-owned task (label,
+  owner, age, what it waits on) that can be dumped on demand — the
+  goroutine dump Swift lacks — and asserted empty at the end of every test.
 
 ## Quality bar
 
@@ -312,25 +340,20 @@ write wrongly by hand.
 
 ## Roadmap
 
-Each milestone ends with a tagged pre-release and the primitives it
-delivers meeting the full quality bar.
-
-| Milestone | Delivers                                                                                                                       |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **M0**    | Repository, strict build, design contracts, agent guidance skeleton                                                            |
-| **M1**    | `Ambient`, `AnyClock`, deadlines and timeouts, `Schedule`, `retry`, `recur`, `RetryBudget`; `StoicTesting` clocks and seeds    |
-| **M2**    | `withScope`, `withTaskScope`, `Resource`, `Saga`; `TaskSlot`, `race`, `hedge`, `mapConcurrent`, `AsyncSemaphore`, `SingleFlight` |
-| **M3**    | `Report`, `Defect`, context chains; the event catalog                                                                           |
-| **M4**    | Validation runtime, strict JSON, `@Schema`, JSON Schema export                                                                  |
-| **M5**    | `StateMachine`, `@StateMachine`, model-based testing                                                                            |
-| **M6**    | `ServiceGraph`, AppKit/UIKit lifecycle bridges, `Supervisor`, `Heartbeat`                                                      |
-| **M7**    | `CircuitBreaker`, `RateLimiter`, `Bulkhead`, `Pipeline`                                                                         |
-| **M8**    | `StoicLint` full rule set, `stoic-doctor`                                                                                       |
-| **1.0**   | API freeze after every primitive has shipped in a real app; SSWG incubation application                                        |
-
-M8's plugin starts earlier with two rules (M1) and grows with each
-milestone; every primitive lands with the lint rule that pushes code toward
-it.
+| Milestone | Delivers                                                                                                              | Status       |
+| --------- | --------------------------------------------------------------------------------------------------------------------- | ------------ |
+| **M0**    | Repository, strict build, design contracts, guidance                                                                  | Done         |
+| **M1**    | `Ambient`, `AnyClock`, deadlines, `Schedule`, `retry`, `recur`, budgets; test clocks and seeds                        | Done         |
+| **M2**    | Scopes, `Resource`, `Saga`, `TaskScope`; `TaskSlot`, `race`, `mapConcurrent`, semaphores, `SingleFlight`, `Channel`   | Done         |
+| **M3**    | `Report`, `Defect`, the event catalog; `Secret`, `IdempotencyKey`                                                     | Done         |
+| **M4**    | `StoicJSON`, `StoicSchema` phase 1                                                                                     | Done         |
+| **M4.2**  | Schema phase 2: unions, transforms, migrations, generators, SchemaSuite, Codable bridge; then `@Schema`                | In progress  |
+| **M5**    | `StateMachine`, `StateGraph`                                                                                           | Done         |
+| **M6**    | `ServiceGraph`, `Supervisor`; lifecycle bridges                                                                        | Bridges next |
+| **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | In progress  |
+| **M8**    | `StoicLint` build plugin with a ratchet baseline                                                                       | In progress  |
+| **M9**    | Persistence, system conditions, diagnostics                                                                            | Planned      |
+| **1.0**   | API freeze after every primitive has shipped in a real app; SSWG incubation application                               | —            |
 
 ## Decisions on record
 
