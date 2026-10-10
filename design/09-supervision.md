@@ -70,7 +70,9 @@ returned, a temporary) stays finished when its group restarts.
 called `run()`: it lives as long as the supervisor keeps it. Restart delays
 are counted from the decision and heartbeat checks fall on fixed instants
 from the child's start, so neither a timer's own scheduling delay nor drift
-across intervals stretches them.
+across intervals stretches them. The exception is a check that runs more
+than a whole interval late (see Heartbeats): that is a gap, and the instants
+are counted afresh from it.
 
 **Backoff.** Each child waits on the supervisor's schedule before
 restarting (jittered exponential by default, capped at 30 s); a child that
@@ -85,6 +87,18 @@ stops while the machine sleeps, and are not checked during `grace` after a
 start, for slow launches. Both rules exist because watchdogs that ignored
 them have turned slow launches and wake-from-sleep into crash loops.
 
+**Gaps.** The liveness clock stops while the machine sleeps, but not while
+the process alone is frozen: `kill -STOP`, a debugger, iOS suspending an
+app in the background. On resume, every check that came due meanwhile would
+run at once, back to back, before the child gets to run, and a healthy
+child would be counted silent `misses` times. So a check that wakes more
+than one interval after its instant is a gap, not evidence: it counts no
+miss, the misses so far are forgotten, and the checks start again from that
+moment, so the child has at least one full interval to beat. A check that
+is late by less than an interval is judged as usual and the next one stays
+on its fixed instant, so the monitor's own scheduling delays neither
+stretch the wait nor accumulate.
+
 **Stopping.** Newest first. Each child is cancelled with cause
 `supervisorStopped` and given its `shutdownTimeout`; one that does not stop
 is abandoned and reported (`supervisor.child_abandoned`) so shutdown always
@@ -92,17 +106,18 @@ finishes.
 
 ## Failure modes
 
-| What happens if…                         | Behaviour                                                      |
-| ---------------------------------------- | -------------------------------------------------------------- |
-| a permanent child throws                 | Restarted after its backoff                                    |
-| a transient child returns                | Done; not restarted                                            |
-| a temporary child throws                 | Done; reported                                                 |
-| restarts exceed the intensity            | All children stopped; `SupervisorEscalation` thrown            |
-| a child stops beating                    | After `misses` intervals (past `grace`): stopped and restarted |
-| the Mac sleeps                           | The liveness clock stops; no false hang                        |
-| the supervisor's task is cancelled       | Children stopped newest first; `CancellationError`             |
-| a child ignores cancellation on shutdown | Abandoned after `shutdownTimeout`; reported                    |
-| a child ran long and then failed         | Its backoff starts over                                        |
+| What happens if…                                     | Behaviour                                                                         |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------- |
+| a permanent child throws                             | Restarted after its backoff                                                       |
+| a transient child returns                            | Done; not restarted                                                               |
+| a temporary child throws                             | Done; reported                                                                    |
+| restarts exceed the intensity                        | All children stopped; `SupervisorEscalation` thrown                               |
+| a child stops beating                                | After `misses` intervals (past `grace`): stopped and restarted                    |
+| the Mac sleeps                                       | The liveness clock stops; no false hang                                           |
+| the process is suspended for longer than an interval | A gap, not misses: checks restart from the resume; the child gets a full interval |
+| the supervisor's task is cancelled                   | Children stopped newest first; `CancellationError`                                |
+| a child ignores cancellation on shutdown             | Abandoned after `shutdownTimeout`; reported                                       |
+| a child ran long and then failed                     | Its backoff starts over                                                           |
 
 ## Events
 
@@ -115,7 +130,9 @@ also published on `events` for a UI or a parent.
 
 Each row above, on the virtual clock: restart after backoff, transient and
 temporary completion, escalation, both multi-child strategies, a silent child
-detected and a beating one left alone, cancellation order and causes, and
+detected and a beating one left alone, a suspension of many intervals (a
+clock that jumps, as a frozen process sees it) that hangs nothing while a
+check a little late still counts, cancellation order and causes, and
 abandonment. 300 repetitions are clean.
 
 ## Planned

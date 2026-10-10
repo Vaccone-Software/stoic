@@ -39,7 +39,9 @@ internal import Synchronization
 /// silent intervals the child is treated as hung: cancelled and restarted.
 /// Heartbeats are measured on the *liveness* clock, which stops while the
 /// machine sleeps — a process that was asleep was not hung — and are not
-/// checked during a child's `grace` period after it starts.
+/// checked during a child's `grace` period after it starts. A check that
+/// runs more than an interval late (the process was suspended while that
+/// clock ran on) is a gap, not a miss: counting starts again from then.
 ///
 /// **Stopping.** Children stop newest first. Each is cancelled
 /// (``CancellationCause/supervisorStopped``) and given `shutdownTimeout`;
