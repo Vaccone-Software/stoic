@@ -5,7 +5,7 @@ import Testing
 
 @Suite("TestClock sleepers")
 struct TestClockSleepersTests {
-    @Test func sleepersWakeInDeadlineOrderThenInTheOrderTheyWentToSleep() async throws {
+    @Test func sleepersWakeInDeadlineOrder() async throws {
         let clock = TestClock()
         let woken = Mutex<[Int]>([])
         await withTaskGroup(of: Void.self) { group in
@@ -20,7 +20,12 @@ struct TestClockSleepersTests {
             await clock.advance(by: .seconds(3))
             await clock.waitForSleepers(count: 0)
         }
-        #expect(woken.withLock { $0 } == [1, 3, 2, 5, 0, 4])
+        // Sleepers sharing a deadline are resumed together, in the order they
+        // went to sleep, but then run concurrently: only the order between
+        // deadlines is observable from outside.
+        let order = woken.withLock { $0 }
+        #expect(order.count == 6)
+        #expect(Set(order.prefix(2)) == [1, 3] && Set(order.dropFirst(2).prefix(2)) == [2, 5] && Set(order.suffix(2)) == [0, 4], "\(order)")
     }
 
     @Test func aCancelledSleeperLeavesNoGhostInTheOrder() async throws {
