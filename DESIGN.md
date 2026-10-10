@@ -370,6 +370,12 @@ write wrongly by hand.
 
 ## Decisions on record
 
+- **Apache-2.0, and public.** The license of Swift itself and of most of the
+  Swift Server Workgroup's packages: permissive, with a patent grant from
+  every contributor and contributions licensed by submission. A
+  source-available license (as Lodestar uses) would protect an app, but
+  would keep a library out of the companies and the workgroup it is for.
+
 - **No `Effect<A, E, R>` type.** Swift has no error unions, no higher-kinded
   types and no do-notation; result builders cannot express monadic bind.
   Bow and SwiftEffect died of this, and Point-Free's TCA 2.0 moved from
@@ -395,18 +401,13 @@ write wrongly by hand.
 
 ## Open questions
 
-1. **License.** A library that wants adoption is usually Apache-2.0 (the
-   Swift ecosystem's default) or MIT. Decide before the repository goes
-   public.
-2. **Going public.** The repository starts private. Public at M1 (first
-   usable primitives) or at M2?
-3. **CI runners.** GitHub's hosted runners must offer macOS 27 with Xcode 27
+1. **CI runners.** GitHub's hosted runners must offer macOS 27 with Xcode 27
    before CI can run Stoic's tests; until then, CI is a self-hosted runner
    or local `scripts/check.sh`.
-4. **Linux.** Server users will ask. The core is Foundation-free, so the
+2. **Linux.** Server users will ask. The core is Foundation-free, so the
    cost is CI and the Linux story for shields (which have no availability
-   gate there). Decide after M2.
-5. **Upstreaming.** `retry` with schedules overlaps swift-async-algorithms
+   gate there).
+3. **Upstreaming.** `retry` with schedules overlaps swift-async-algorithms
    PR #364. If it merges, Stoic wraps it; Stoic's budgets, deadline
    awareness and classification are the value on top. Worth a forum post
    once M1 is real.

@@ -89,7 +89,7 @@ dependency at all (see [Packaging](#packaging-and-the-lint-trait)):
 let package = Package(
     name: "App",
     dependencies: [
-        .package(url: "https://github.com/…/stoic", from: "0.1.0", traits: ["Lint"]),
+        .package(url: "https://github.com/Vaccone-Software/stoic", from: "0.1.0", traits: ["Lint"]),
     ],
     targets: [
         .target(

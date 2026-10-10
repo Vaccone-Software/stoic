@@ -168,7 +168,7 @@ that replays exactly.
 `StoicLint` is opt in, so apps that do not use it never fetch swift-syntax:
 
 ```swift
-.package(url: "https://github.com/…/stoic", from: "0.1.0", traits: ["Lint"]),
+.package(url: "https://github.com/Vaccone-Software/stoic", from: "0.1.0", traits: ["Lint"]),
 // …and on a target:
 plugins: [.plugin(name: "StoicLint", package: "stoic")]
 ```
@@ -180,7 +180,7 @@ See [design/13](design/13-build-enforcement.md) for the rules, the
 schema the declaration of the type:
 
 ```swift
-.package(url: "https://github.com/…/stoic", from: "0.1.0", traits: ["Macros"]),
+.package(url: "https://github.com/Vaccone-Software/stoic", from: "0.1.0", traits: ["Macros"]),
 // …and on a target:
 dependencies: [.product(name: "StoicSchema", package: "stoic"), .product(name: "StoicMacros", package: "stoic")]
 ```
@@ -227,3 +227,7 @@ patterns to replace in order of payoff.
 [AGENTS.md](AGENTS.md) is written for coding agents, and for anyone who
 wants the rules in one place: which primitive to reach for, the patterns
 to replace, and the conventions this repository holds itself to.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
