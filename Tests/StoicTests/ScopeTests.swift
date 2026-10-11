@@ -270,7 +270,7 @@ struct ScopeTests {
         #expect(log.values == ["heartbeat stopped: scope_ended", "release"])
     }
 
-    @Test func aFailingForkCancelsTheBodyAndIsThrown() async {
+    @Test(.failureMode("design/04", "a forked child throws")) func aFailingForkCancelsTheBodyAndIsThrown() async {
         let bodyCause = SendableBox<CancellationCause?>(nil)
         do {
             _ = try await withTaskScope { scope -> Int in

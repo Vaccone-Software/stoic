@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Synchronization
 import Testing
 
@@ -152,7 +153,7 @@ struct ObjectReaderTests {
         #expect(result.value == Segment(from: Point(x: 0, y: 0), to: Point(x: 1, y: 1), label: nil, width: 1))
     }
 
-    @Test func unknownKeysAreRejectedWithSuggestions() {
+    @Test(.failureMode("design/06", "a key is misspelt")) func unknownKeysAreRejectedWithSuggestions() {
         let result = Point.schema.decodeReporting(#"{"x": 1, "y": 2, "z": 3, "xx": 4}"#)
         #expect(result.value == nil)
         #expect(result.issues.locations == ["$.z unknown_key", "$.xx unknown_key"])
@@ -160,7 +161,7 @@ struct ObjectReaderTests {
         #expect(result.issues.allSatisfy { $0.suggestions.isEmpty })
     }
 
-    @Test func aTypoedRequiredKeyIsBothMissingAndUnknownWithTheHint() {
+    @Test(.failureMode("design/06", "a key is misspelt")) func aTypoedRequiredKeyIsBothMissingAndUnknownWithTheHint() {
         let result = Account.schema.decodeReporting(#"{"id": 1, "nmae": "A", "token": "12345678"}"#)
         #expect(result.issues.locations == ["$.name missing_key", "$.nmae unknown_key"])
         #expect(result.issues[1].suggestions == ["name"])
@@ -173,7 +174,7 @@ struct ObjectReaderTests {
         #expect(result.issues.allSatisfy { $0.severity == .warning })
     }
 
-    @Test func lenientRepairsFieldsWithDefaultsAndLeavesTheRestErrors() {
+    @Test(.failureMode("design/06", "the same under .lenient")) func lenientRepairsFieldsWithDefaultsAndLeavesTheRestErrors() {
         let result = Segment.schema.decodeReporting(
             #"{"from": {"x": 0, "y": 0}, "to": {"x": 1}, "width": 99}"#, options: .lenient)
         // `width` has a default and is repaired; `to.y` has none and is not.
@@ -221,7 +222,7 @@ struct ObjectReaderTests {
         #expect(result.errors.count == 1)
     }
 
-    @Test func secretsAreRedacted() {
+    @Test(.failureMode("design/06", "a secret field is invalid")) func secretsAreRedacted() {
         let result = Account.schema.decodeReporting(#"{"id": 1, "name": "A", "token": "short"}"#)
         #expect(result.issues.map(\.code) == [.tooShort])
         #expect(result.issues[0].actual == nil)

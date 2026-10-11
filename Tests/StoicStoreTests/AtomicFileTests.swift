@@ -79,7 +79,7 @@ struct AtomicFileTests {
         #expect(throws: StoreError.self) { try file.read(dir.file("s")) }
     }
 
-    @Test func aCorruptCurrentFileFallsBackToThePreviousGeneration() async throws {
+    @Test(.failureMode("design/15", "the current file is missing or fails its checksum")) func aCorruptCurrentFileFallsBackToThePreviousGeneration() async throws {
         let dir = try TempDirectory()
         let events = RecordingInstrumentation()
         try await withAmbient({ $0.instrumentation = events }) {
@@ -97,7 +97,7 @@ struct AtomicFileTests {
         }
     }
 
-    @Test func aMissingCurrentFileFallsBackToThePreviousGeneration() throws {
+    @Test(.failureMode("design/15", "the current file is missing or fails its checksum")) func aMissingCurrentFileFallsBackToThePreviousGeneration() throws {
         let dir = try TempDirectory()
         let file = AtomicFile(options: .init(keepPrevious: true))
         try file.write(bytes("v1"), to: dir.file("s"))
@@ -106,7 +106,7 @@ struct AtomicFileTests {
         #expect(try file.read(dir.file("s")) == .init(bytes: bytes("v1"), source: .previous))
     }
 
-    @Test func bothGenerationsCorruptIsAnErrorAndBothAreQuarantined() throws {
+    @Test(.failureMode("design/15", "both generations are corrupt")) func bothGenerationsCorruptIsAnErrorAndBothAreQuarantined() throws {
         let dir = try TempDirectory()
         let file = AtomicFile(options: .init(keepPrevious: true))
         try file.write(bytes("v1"), to: dir.file("s"))
@@ -150,7 +150,7 @@ struct AtomicFileTests {
         #expect(try fs.list(directory: dir.path) == ["s.corrupt-3", "s.corrupt-4"])
     }
 
-    @Test func aStaleTemporaryFromACrashIsRemovedAndReported() async throws {
+    @Test(.failureMode("design/15", "a stale .tmp from a crash is found")) func aStaleTemporaryFromACrashIsRemovedAndReported() async throws {
         let dir = try TempDirectory()
         let events = RecordingInstrumentation()
         try await withAmbient({ $0.instrumentation = events }) {
@@ -173,7 +173,7 @@ struct AtomicFileFailureTests {
         return disk
     }
 
-    @Test(arguments: [SimulatedFileSystem.FaultTarget.write, .fullSync, .rename, .syncDirectory])
+    @Test(.failureMode("design/15", "a step of write fails"), arguments: [SimulatedFileSystem.FaultTarget.write, .fullSync, .rename, .syncDirectory])
     func aFailedWriteLeavesTheOldContentsAndNoTemporary(target: SimulatedFileSystem.FaultTarget) throws {
         let disk = try disk()
         let file = AtomicFile(fileSystem: disk, options: .init(keepPrevious: true))
@@ -188,7 +188,7 @@ struct AtomicFileFailureTests {
         }
     }
 
-    @Test func aFullDiskIsRefusedBeforeAnythingIsTouched() throws {
+    @Test(.failureMode("design/15", "the volume has less free space than the file needs")) func aFullDiskIsRefusedBeforeAnythingIsTouched() throws {
         let disk = SimulatedFileSystem(capacity: 60)
         try disk.createDirectory("/d")
         let file = AtomicFile(fileSystem: disk)

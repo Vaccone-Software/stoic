@@ -28,7 +28,7 @@ struct StateMachineTests {
         #expect(machine.history.map { "\($0.from)>\($0.to)" } == ["idle>listening", "listening>transcribing", "transcribing>idle"])
     }
 
-    @Test func invalidEventsAreReportedAndChangeNothing() async {
+    @Test(.failureMode("design/07", "an event is invalid in the current state")) func invalidEventsAreReportedAndChangeNothing() async {
         let events = RecordingInstrumentation()
         await withTestAmbient(clock: TestClock(), events: events) {
             let machine = StateMachine(initial: Phase.idle, label: "dictation", transition: Self.transitions)
@@ -38,7 +38,7 @@ struct StateMachineTests {
         #expect(events.names == ["statemachine.invalid"])
     }
 
-    @Test func stateWorkIsCancelledWhenTheStateIsLeft() async {
+    @Test(.failureMode("design/07", "a state is left while its work runs")) func stateWorkIsCancelledWhenTheStateIsLeft() async {
         let observed = SendableBox<CancellationCause?>(nil)
         let started = AsyncGate()
         let stopped = AsyncGate()
@@ -57,7 +57,7 @@ struct StateMachineTests {
         #expect(observed.value == .stateExited)
     }
 
-    @Test func eventsFromAnEarlierVisitAreDropped() async {
+    @Test(.failureMode("design/07", "the work sends an event after its visit ended")) func eventsFromAnEarlierVisitAreDropped() async {
         let events = RecordingInstrumentation()
         let clock = TestClock()
         await withTestAmbient(clock: clock, events: events) {
@@ -80,7 +80,7 @@ struct StateMachineTests {
         #expect(events.names.contains("statemachine.stale_event"))
     }
 
-    @Test func aStateTimeoutFiresOnlyIfTheStateIsStillCurrent() async {
+    @Test(.failureMode("design/07", "the state is left before its timeout"), .failureMode("design/07", "a state's timeout elapses during its visit")) func aStateTimeoutFiresOnlyIfTheStateIsStillCurrent() async {
         let clock = TestClock()
         let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: clock.erased, transition: Self.transitions)
         machine.send(.start)
@@ -142,7 +142,7 @@ struct StateMachineTests {
         #expect(seen.value == false, "state work belongs to the state, not to the sender")
     }
 
-    @Test func concurrentSendersAreSerialised() async {
+    @Test(.failureMode("design/07", "a thousand tasks send events at once")) func concurrentSendersAreSerialised() async {
         enum Counter: Sendable { case tick }
         let machine = StateMachine<Int, Counter>(initial: 0, label: "counter", historyLimit: 2_000, clock: TestClock().erased) { count, _ in
             .to(count + 1)
@@ -156,7 +156,7 @@ struct StateMachineTests {
 
     // MARK: StateGraph
 
-    @Test func explorationFindsReachableStatesInvalidPairsAndUnreachableOnes() {
+    @Test(.failureMode("design/07", "a declared state can never be reached")) func explorationFindsReachableStatesInvalidPairsAndUnreachableOnes() {
         let graph = StateGraph.explore(from: Phase.idle, events: Input.allCases, transition: Self.transitions)
         #expect(Set(graph.states) == [.idle, .listening, .transcribing, .failed])
         #expect(graph.unreachable(of: Phase.allCases) == [.orphan])

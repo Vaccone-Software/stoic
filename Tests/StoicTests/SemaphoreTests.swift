@@ -90,7 +90,7 @@ struct SemaphoreTests {
         #expect(semaphore.waiterCount == 0)
     }
 
-    @Test func aFailingBodyReturnsItsPermit() async {
+    @Test(.failureMode("design/03", "a body inside withPermit throws")) func aFailingBodyReturnsItsPermit() async {
         let semaphore = AsyncSemaphore(permits: 1, label: "fail")
         await #expect(throws: PolicyError<Failure>.self) {
             try await semaphore.withPermit { () throws(Failure) in throw .boom }

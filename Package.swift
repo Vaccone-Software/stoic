@@ -140,7 +140,7 @@ let package = Package(
         // validation layer (design/06). It depends on the standard library
         // alone, so a schema can be checked anywhere Swift runs.
         .target(name: "StoicJSON", swiftSettings: strict),
-        .testTarget(name: "StoicJSONTests", dependencies: ["StoicJSON"], swiftSettings: strict),
+        .testTarget(name: "StoicJSONTests", dependencies: ["StoicJSON", "StoicTesting"], swiftSettings: strict),
         // One declaration per type that decodes, encodes, validates and
         // documents it (design/06). Foundation-free, and it depends on
         // StoicJSON alone, so a schema runs anywhere Swift does.
@@ -150,7 +150,7 @@ let package = Package(
         // never links a test framework; this target is for test bundles.
         .target(name: "StoicSchemaTesting", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
         .testTarget(
-            name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicSchemaTesting", "StoicJSON"],
+            name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicSchemaTesting", "StoicJSON", "StoicTesting"],
             swiftSettings: strict),
         .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
         // AppKit lifecycle: finishing async shutdown before a Mac app quits.
@@ -204,7 +204,7 @@ let package = Package(
         .plugin(name: "StoicLint", capability: .buildTool(), dependencies: ["stoic-lint"]),
         .testTarget(
             name: "StoicLintCoreTests",
-            dependencies: ["StoicLintCore"] + swiftSyntax,
+            dependencies: ["StoicLintCore", "StoicTesting"] + swiftSyntax,
             swiftSettings: strict + [lintDefine]
         ),
         // Persistence (design/15): atomic file writes, a crash-consistent

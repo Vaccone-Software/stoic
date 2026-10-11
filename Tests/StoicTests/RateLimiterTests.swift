@@ -24,7 +24,7 @@ struct RateLimiterTests {
 
     // MARK: - The bucket
 
-    @Test func aBurstIsAllowedThenTheSteadyRate() async {
+    @Test(.failureMode("design/10", "the limiter has enough tokens and no queue")) func aBurstIsAllowedThenTheSteadyRate() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 10, per: .seconds(1), burst: 5, label: "burst", clock: clock.erased)
         #expect(limiter.availablePermits == 5)
@@ -80,7 +80,7 @@ struct RateLimiterTests {
 
     // MARK: - Waiting
 
-    @Test func waitersAreServedFirstInFirstOutAtTheSteadyRate() async {
+    @Test(.failureMode("design/10", "the limiter is empty and the wait fits the deadline and the queue")) func waitersAreServedFirstInFirstOutAtTheSteadyRate() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 1, label: "fifo", clock: clock.erased)
         let log = SendableBox<[String]>([])
@@ -124,7 +124,7 @@ struct RateLimiterTests {
         #expect(log.value == ["big@3.0 seconds", "small@4.0 seconds"])
     }
 
-    @Test func tryAcquireNeverOvertakesAWaiter() async {
+    @Test(.failureMode("design/10", "tryAcquire while others wait")) func tryAcquireNeverOvertakesAWaiter() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 2, label: "no-overtake", clock: clock.erased)
         let log = SendableBox<[String]>([])
@@ -142,7 +142,7 @@ struct RateLimiterTests {
 
     // MARK: - Leaving
 
-    @Test func theHeadLeavingHandsItsPlaceToTheNextWaiterAndConsumesNothing() async {
+    @Test(.failureMode("design/10", "a queued limiter waiter is cancelled")) func theHeadLeavingHandsItsPlaceToTheNextWaiterAndConsumesNothing() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 1, label: "head-leaves", clock: clock.erased)
         let log = SendableBox<[String]>([])
@@ -165,7 +165,7 @@ struct RateLimiterTests {
         #expect(log.value == ["second@1.0 seconds"])
     }
 
-    @Test func aWaiterBehindTheHeadLeavingConsumesNothing() async {
+    @Test(.failureMode("design/10", "a queued limiter waiter is cancelled")) func aWaiterBehindTheHeadLeavingConsumesNothing() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 1, label: "tail-leaves", clock: clock.erased)
         let log = SendableBox<[String]>([])
@@ -203,7 +203,7 @@ struct RateLimiterTests {
         #expect(limiter.availablePermits == 1)
     }
 
-    @Test func aDeadlineThatCancelsAQueuedWaiterIsReportedAsOne() async throws {
+    @Test(.failureMode("design/10", "a queued limiter waiter's enclosing deadline cancels it")) func aDeadlineThatCancelsAQueuedWaiterIsReportedAsOne() async throws {
         // The limiter measures time on one clock and the deadline on another,
         // so the wait looks like it fits when admitted and then the deadline
         // fires first.
@@ -234,7 +234,7 @@ struct RateLimiterTests {
 
     // MARK: - Refusing at once
 
-    @Test func aWaitThatWouldOutliveTheDeadlineIsRefusedAtOnceWithItsLength() async {
+    @Test(.failureMode("design/10", "the wait would outlive Deadline.current")) func aWaitThatWouldOutliveTheDeadlineIsRefusedAtOnceWithItsLength() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 1, label: "deadline", clock: clock.erased)
@@ -290,7 +290,7 @@ struct RateLimiterTests {
         #expect(limiter.availablePermits == 5)
     }
 
-    @Test func aFullQueueRefusesAtOnceWithTheWait() async {
+    @Test(.failureMode("design/10", "the limiter's queue is full")) func aFullQueueRefusesAtOnceWithTheWait() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 1, per: .seconds(1), burst: 1, queueLimit: 1, label: "queue", clock: clock.erased)
         let log = SendableBox<[String]>([])
@@ -315,7 +315,7 @@ struct RateLimiterTests {
         #expect(refusal?.retryAfter == .seconds(1))
     }
 
-    @Test func aRequestLargerThanTheBurstIsRefusedForever() async {
+    @Test(.failureMode("design/10", "permits exceeds burst")) func aRequestLargerThanTheBurstIsRefusedForever() async {
         let events = RecordingInstrumentation()
         let limiter = RateLimiter(rate: 5, burst: 5, label: "oversized", clock: TestClock().erased)
         await withTestAmbient(clock: ImmediateClock(), events: events) {
@@ -333,7 +333,7 @@ struct RateLimiterTests {
 
     // MARK: - execute
 
-    @Test func executeRunsTheOperationAndKeepsTheTokenSpentWhenItFails() async {
+    @Test(.failureMode("design/10", "the operation of a limiter's execute fails")) func executeRunsTheOperationAndKeepsTheTokenSpentWhenItFails() async {
         let clock = TestClock()
         let limiter = RateLimiter(rate: 1, burst: 2, label: "execute", clock: clock.erased)
         let value = await outcome(of: limiter) { 7 }
@@ -357,7 +357,7 @@ struct RateLimiterTests {
         }
     }
 
-    @Test func aHeadThatWakesLateTakesWhatItEarnedAndNothingIsLostOrInvented() async {
+    @Test(.failureMode("design/10", "the limiter's clock wakes the head late")) func aHeadThatWakesLateTakesWhatItEarnedAndNothingIsLostOrInvented() async {
         let base = TestClock()
         let clock = AnyClock(LateClock(base: base, lateness: .milliseconds(400)), name: "late")
         // One permit a second, a bucket of two so the extra time is not clipped.

@@ -33,7 +33,7 @@ struct TestClockWaitTests {
         sleeper.cancel()
     }
 
-    @Test(.timeLimit(.minutes(1))) func aSleeperThatNeverComesTimesOutWithTheClocksState() async throws {
+    @Test(.failureMode("design/01", "the clock is a test clock that never advances"), .timeLimit(.minutes(1))) func aSleeperThatNeverComesTimesOutWithTheClocksState() async throws {
         let clock = TestClock()
         let sleeper = Task { try await clock.sleep(for: .seconds(10)) }
         await clock.waitForSleepers(count: 1)

@@ -59,7 +59,7 @@ struct HedgeTests {
         }
     }
 
-    @Test func aFastFirstAttemptNeverHedgesAndLeavesNoTimerBehind() async {
+    @Test(.failureMode("design/10", "the first hedged attempt finishes before delay")) func aFastFirstAttemptNeverHedgesAndLeavesNoTimerBehind() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -74,7 +74,7 @@ struct HedgeTests {
         #expect(events.names.isEmpty)
     }
 
-    @Test func aSlowFirstAttemptIsHedgedAndTheLoserIsCancelledAndAwaited() async {
+    @Test(.failureMode("design/10", "the winner is found"), .failureMode("design/10", "the first attempt is slow")) func aSlowFirstAttemptIsHedgedAndTheLoserIsCancelledAndAwaited() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -160,7 +160,7 @@ struct HedgeTests {
         #expect(returned.value)
     }
 
-    @Test func anEmptyBudgetPreventsHedgingAndTheFirstAttemptCarriesOn() async {
+    @Test(.failureMode("design/10", "the hedge budget has no token"), .failureMode("design/03", "the hedge budget is empty")) func anEmptyBudgetPreventsHedgingAndTheFirstAttemptCarriesOn() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -205,7 +205,7 @@ struct HedgeTests {
         }
     }
 
-    @Test func ifEveryAttemptFailsTheFirstFailureInCompletionOrderIsThrown() async {
+    @Test(.failureMode("design/10", "every attempt fails")) func ifEveryAttemptFailsTheFirstFailureInCompletionOrderIsThrown() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -225,7 +225,7 @@ struct HedgeTests {
         #expect(events.events(named: "hedge.all_failed")[0].number("attempts") == 2)
     }
 
-    @Test func aFailureWithNothingElseRunningEndsTheHedgeAtOnce() async {
+    @Test(.failureMode("design/10", "an attempt fails and none is running")) func aFailureWithNothingElseRunningEndsTheHedgeAtOnce() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -240,7 +240,7 @@ struct HedgeTests {
         #expect(events.names == ["hedge.attempt_failed", "hedge.all_failed"])
     }
 
-    @Test func noMoreAttemptsStartThanMaxAttemptsAndEachWaitsItsOwnDelay() async {
+    @Test(.failureMode("design/10", "maxAttempts attempts have started")) func noMoreAttemptsStartThanMaxAttemptsAndEachWaitsItsOwnDelay() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -262,7 +262,7 @@ struct HedgeTests {
         #expect(log.cancelled == [2, 3])
     }
 
-    @Test func aCallerCancelledMidHedgeCancelsEveryAttemptAndWaitsForThem() async {
+    @Test(.failureMode("design/10", "the caller is cancelled")) func aCallerCancelledMidHedgeCancelsEveryAttemptAndWaitsForThem() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
@@ -280,7 +280,7 @@ struct HedgeTests {
         #expect(clock.sleeperCount == 0)
     }
 
-    @Test func noHedgeStartsOnceTheDeadlineHasPassed() async {
+    @Test(.failureMode("design/10", "the deadline has passed when a hedge is due")) func noHedgeStartsOnceTheDeadlineHasPassed() async {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()

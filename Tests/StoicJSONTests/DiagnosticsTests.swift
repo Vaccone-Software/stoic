@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 /// Where an error is reported matters as much as what it is: these assert
@@ -159,7 +160,7 @@ struct DiagnosticsTests {
         #expect(error.path.description == input.path, "\(error)")
     }
 
-    @Test func duplicateKeyNamesTheFirstOccurrence() throws {
+    @Test(.failureMode("design/06", "the input has duplicate keys")) func duplicateKeyNamesTheFirstOccurrence() throws {
         let error = try #require(parse("{\r\n  \"a\": 1,\r\n  \"a\": 2\r\n}").error)
         let first = try #require(error.related)
         #expect(first.offset == 5)

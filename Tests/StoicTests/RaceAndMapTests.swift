@@ -21,6 +21,33 @@ struct RaceAndMapTests {
         #expect(loserCause.value == .superseded, "the loser is cancelled and awaited before race returns")
     }
 
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/03", "a racer ignores cancellation after another won"))
+    func aRacerThatIgnoresCancellationIsWaitedFor() async {
+        let gate = AsyncGate()
+        let returned = SendableBox(false)
+        let loserCancelled = SendableBox(false)
+        let task = Task {
+            let value = try? await race(
+                { () async throws(Failure) -> String in
+                    // Cannot be cancelled, but can see that it was.
+                    await withTaskCancellationHandler {
+                        await gate.wait()
+                    } onCancel: {
+                        loserCancelled.mutate { $0 = true }
+                    }
+                    return "slow"
+                },
+                { () async throws(Failure) -> String in "fast" }
+            )
+            returned.mutate { $0 = true }
+            return value
+        }
+        await waitUntil { loserCancelled.value }   // the race has a winner and has cancelled the loser
+        #expect(await holdsThroughout { !returned.value })   // but the loser still runs, so race has not returned
+        gate.open()
+        #expect(await task.value == "fast")
+    }
+
     @Test func raceSkipsFailuresWhileAnotherCanStillWin() async throws {
         let value = try await race(
             { () async throws(Failure) -> Int in throw .boom(1) },
@@ -32,7 +59,7 @@ struct RaceAndMapTests {
         #expect(value == 2)
     }
 
-    @Test func raceThrowsTheFirstFailureWhenAllFail() async {
+    @Test(.failureMode("design/03", "every racer fails")) func raceThrowsTheFirstFailureWhenAllFail() async {
         let events = RecordingInstrumentation()
         await #expect(throws: Failure.boom(1)) {
             try await withAmbient({ $0.instrumentation = events }) {
