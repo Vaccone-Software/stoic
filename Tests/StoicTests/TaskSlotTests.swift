@@ -190,6 +190,31 @@ struct TaskSlotReviewTests {
         #expect(slot.unfinishedCount == 0, "previously most tasks were never registered and ran forever")
     }
 
+    /// Work outlives the `withTimeout` it was started in, so it must not
+    /// carry that deadline: it would run already expired.
+    @Test func workStartedInsideAnEndedTimeoutRunsWithoutItsDeadline() async {
+        let clock = TestClock()
+        let slot = TaskSlot<Bool, Never>(label: "outlives")
+        let gate = AsyncGate()
+        let delivered = AsyncGate()
+        let outcome = SendableBox<Bool?>(nil)
+        await withTestAmbient(clock: clock) {
+            await withTimeout(.seconds(1)) {
+                slot.run {
+                    await gate.wait()
+                    return Deadline.current == nil
+                } deliver: { result in
+                    outcome.mutate { $0 = result.get() }
+                    delivered.open()
+                }
+            }
+            await clock.advance(by: .seconds(5))   // the timeout's instant is long past
+            gate.open()
+            await delivered.wait()
+        }
+        #expect(outcome.value == true, "the work inherited the caller's deadline")
+    }
+
     @MainActor final class SearchModel {
         let search = TaskSlot<[String], Never>(label: "search")
         var hits: [String] = []

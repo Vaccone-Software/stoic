@@ -72,7 +72,9 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
 the superseded work to finish first, for work that must never overlap (two
 uses of one microphone). `deliver` runs on the actor that called `run`, and
 the is-this-still-the-newest check happens there, synchronously with the
-delivery, so no newer `run` can slip between them. Late results from
+delivery, so no newer `run` can slip between them. The work does not
+inherit the caller's deadline (it outlives any `withTimeout` it was started
+in; SingleFlight, StateMachine and Supervisor make the same reset). Late results from
 superseded work are dropped and reported (`slot.superseded_late`). The work
 holds the slot weakly, and a released slot cancels its work: a view model
 that goes away takes its in-flight request with it.
