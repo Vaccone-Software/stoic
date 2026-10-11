@@ -18,8 +18,10 @@ public struct Attempt: Sendable, Hashable, CustomStringConvertible {
 public enum RetryDecision: Sendable, Hashable {
     /// Try again after the schedule's delay.
     case retry
-    /// Try again after this delay — a server's `Retry-After`, say. Still
-    /// subject to the schedule's bounds, the budget and the deadline.
+    /// Try again after this delay instead of the schedule's own — a server's
+    /// `Retry-After`, say. The schedule still bounds the number of attempts,
+    /// the budget and the deadline still apply, and the wait is capped at five
+    /// minutes, come what may (design/02).
     case retryAfter(Duration)
     /// Do not try again: the failure is permanent.
     case stop
@@ -393,6 +395,11 @@ private final class AttemptHandoff<R, Failure: Error>: @unchecked Sendable {
     }
 }
 
+/// The most a server's `Retry-After` may delay a retry, whatever the device's
+/// conditions (design/02): the cap is the last word, so a hot or low-power
+/// device cannot stretch an hour-long wait to eight times that.
+private let retryAfterCap = Duration.seconds(300)
+
 /// The loop both forms of `retry` share; they differ only in how one
 /// attempt runs.
 private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
@@ -467,16 +474,25 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             throw error
         }
         var delay = scheduled
+        var retryAfterCeiling: Duration?
         if case .retryAfter(let requested) = decision {
-            let cap = Duration.seconds(300)
-            if requested > cap {
-                report("retry.after_capped", common + [.init("requested", .duration(requested)), .init("cap", .duration(cap))], level: .notice)
+            // A server's wait replaces the schedule's delay for this retry;
+            // the schedule's bound, the budget and the deadline still apply
+            // (design/02). The five-minute ceiling is remembered here and
+            // enforced last, so nothing after it can extend the wait.
+            if requested > retryAfterCap {
+                report("retry.after_capped", common + [
+                    .init("requested", .duration(requested)),
+                    .init("cap", .duration(retryAfterCap)),
+                ], level: .notice)
             }
-            delay = min(max(.zero, requested), cap)
+            retryAfterCeiling = retryAfterCap
+            delay = max(.zero, requested)
         }
         // A struggling device backs off further: hot, saving power, or low on memory.
         let factor = ambient.conditions.current.backoffFactor
         if factor > 1 { delay = delay.saturatingMultiplied(by: factor) }
+        if let ceiling = retryAfterCeiling { delay = min(delay, ceiling) }
         // 5. The deadline.
         if let deadline = Deadline.current {
             let needed = delay.saturatingAdding(attemptDuration)

@@ -127,8 +127,9 @@ reproduces a run's delays; in production the source is the system generator
 and concurrent callers draw independently.
 
 **Retry-After.** `.retryAfter(d)` replaces the schedule's delay for that
-retry but not its bound, its budget or the deadline, and is capped at five
-minutes.
+retry but not its bound, its budget or the deadline. The device's conditions
+stretch it as they stretch any delay, and the five-minute cap is the last
+word: whatever the device is going through, the wait is never longer than it.
 
 **Recur.** `recur` (next) runs an operation on a schedule after *success*
 — polling, periodic refresh — and may be unbounded, but only inside a scope

@@ -445,7 +445,7 @@ the operation off the caller's task, which is why a timeout is an option of
 | a stage inside a pipeline rejects                                         | The caller sees one `.rejected(r)`, never a nested `PolicyError`                                          |
 | a pipeline's operation fails                                              | The caller sees `.failed(error)` with the operation's own error                                           |
 | a pipeline has no stages                                                  | The operation runs; a failure is `.failed`                                                                |
-| `Retrying` meets `.circuitOpen` with a `retryAfter`                       | Backs off for at least that long (subject to the schedule's bounds and deadline)                          |
+| `Retrying` meets `.circuitOpen` with a `retryAfter`                       | Backs off for that long in place of the schedule's delay — stretched by the device's conditions, capped at five minutes, still bounded by the deadline |
 | an attempt under `Retrying(attemptTimeout:)` runs out of time             | Cancelled and awaited; counted as transient, so retried on the schedule (a `Defect` still stops)          |
 
 ## Events

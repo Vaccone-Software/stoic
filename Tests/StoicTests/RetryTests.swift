@@ -134,6 +134,24 @@ struct RetryTests {
         #expect(clock.sleeps == [.seconds(300)])
     }
 
+    // Row: the server sends Retry-After longer than the cap.
+    @Test func retryAfterCapHoldsOnAStrugglingDevice() async throws {
+        let clock = ImmediateClock()
+        let struggling = SystemConditions(memoryPressure: .critical, thermal: .critical, lowPowerMode: true)
+        _ = try await withTestAmbient(clock: clock) {
+            try await withAmbient({ $0.conditions = FixedConditions(struggling) }) {
+                try await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { attempt throws(Failure) -> Int in
+                    if attempt.number == 1 { throw .slowDown(.seconds(86_400)) }
+                    return attempt.number
+                }
+            }
+        }
+        #expect(
+            clock.sleeps == [.seconds(300)],
+            "the five-minute cap is the last word, whatever the device is going through"
+        )
+    }
+
     @Test(.failureMode("design/02", "the budget is empty")) func anEmptyBudgetStopsRetrying() async {
         let clock = ImmediateClock()
         let events = RecordingInstrumentation()
