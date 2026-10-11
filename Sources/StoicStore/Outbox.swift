@@ -79,14 +79,55 @@ public actor Outbox<Item: Sendable> {
         let bytes: [UInt8]
     }
 
+    /// The pending entries in enqueue order, found by key in constant time.
+    ///
+    /// An array searched by key for every record made opening quadratic: a
+    /// journal of 20,000 pending entries took 17 seconds. Removal leaves a
+    /// hole that is skipped, and the holes are squeezed out once they
+    /// outnumber the entries, so every operation is amortised constant time
+    /// and the order never changes.
+    private struct PendingQueue {
+        private var slots: [Stored?] = []
+        private var positions: [IdempotencyKey: Int] = [:]
+
+        init() {}
+
+        var count: Int { positions.count }
+
+        func contains(_ key: IdempotencyKey) -> Bool { positions[key] != nil }
+
+        /// Adds an entry at the end; does nothing if its key is already pending.
+        mutating func append(_ stored: Stored) {
+            guard positions[stored.key] == nil else { return }
+            positions[stored.key] = slots.count
+            slots.append(stored)
+        }
+
+        mutating func remove(_ key: IdempotencyKey) {
+            guard let position = positions.removeValue(forKey: key) else { return }
+            slots[position] = nil
+            if slots.count > 32, slots.count > 2 * positions.count { squeeze() }
+        }
+
+        /// The entries, in order.
+        var entries: [Stored] { slots.compactMap { $0 } }
+
+        private mutating func squeeze() {
+            let live = entries
+            slots = live.map { Optional($0) }
+            positions.removeAll(keepingCapacity: true)
+            for (position, stored) in live.enumerated() { positions[stored.key] = position }
+        }
+    }
+
     private let journal: Journal
     private let codec: OutboxCodec<Item>
     private let policy: DeliveryPolicy
     private let compactionThreshold: Int
-    private var pending: [Stored]
+    private var pending: PendingQueue
     private var delivering = false
 
-    private init(journal: Journal, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int, pending: [Stored]) {
+    private init(journal: Journal, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int, pending: PendingQueue) {
         self.journal = journal
         self.codec = codec
         self.policy = policy
@@ -109,16 +150,16 @@ public actor Outbox<Item: Sendable> {
     ) throws(StoreError) -> Outbox {
         let journal = try Journal.open(at: path, fileSystem: fileSystem)
         let replay = try journal.replay()
-        var pending: [Stored] = []
-        if let snapshot = replay.snapshot { pending = try Self.decodeSnapshot(snapshot.bytes, path: path) }
+        var pending = PendingQueue()
+        if let snapshot = replay.snapshot {
+            for stored in try Self.decodeSnapshot(snapshot.bytes, path: path) { pending.append(stored) }
+        }
         for record in replay.records {
             switch try Self.decodeRecord(record.bytes, path: path) {
             case .enqueue(let key, let item):
-                if !pending.contains(where: { $0.key == key }) {
-                    pending.append(Stored(key: key, sequence: record.sequence, bytes: item))
-                }
+                pending.append(Stored(key: key, sequence: record.sequence, bytes: item))
             case .acknowledge(let key):
-                pending.removeAll { $0.key == key }
+                pending.remove(key)
             }
         }
         return Outbox(journal: journal, codec: codec, policy: policy, compactionThreshold: compactionThreshold, pending: pending)
@@ -134,7 +175,7 @@ public actor Outbox<Item: Sendable> {
     /// double-fired, a task re-ran) never queues twice.
     @discardableResult
     public func enqueue(_ item: Item, key: IdempotencyKey = .random()) throws(StoreError) -> IdempotencyKey {
-        if pending.contains(where: { $0.key == key }) { return key }
+        if pending.contains(key) { return key }
         let encoded: [UInt8]
         do {
             encoded = try codec.encode(item)
@@ -153,13 +194,13 @@ public actor Outbox<Item: Sendable> {
     public var pendingCount: Int { pending.count }
 
     /// The waiting entries' keys, in delivery order.
-    public var pendingKeys: [IdempotencyKey] { pending.map(\.key) }
+    public var pendingKeys: [IdempotencyKey] { pending.entries.map(\.key) }
 
     /// The waiting entries, decoded, in delivery order.
     ///
     /// - Throws: `.corrupt` if an item no longer decodes.
     public func entries() throws(StoreError) -> [Entry] {
-        try pending.map { (stored) throws(StoreError) in try decode(stored) }
+        try pending.entries.map { (stored) throws(StoreError) in try decode(stored) }
     }
 
     private func decode(_ stored: Stored) throws(StoreError) -> Entry {
@@ -198,7 +239,7 @@ public actor Outbox<Item: Sendable> {
         delivering = true
         defer { delivering = false }
 
-        for stored in pending {
+        for stored in pending.entries {
             try Task.checkCancellation()
             var attempts = 0
             do {
@@ -238,9 +279,9 @@ public actor Outbox<Item: Sendable> {
     }
 
     private func acknowledge(_ key: IdempotencyKey) throws(StoreError) {
-        guard pending.contains(where: { $0.key == key }) else { return }
+        guard pending.contains(key) else { return }
         try journal.append(try Self.acknowledgeRecord(key: key))
-        pending.removeAll { $0.key == key }
+        pending.remove(key)
     }
 
     /// Folds the pending entries into a snapshot once the log is long. A
@@ -248,7 +289,7 @@ public actor Outbox<Item: Sendable> {
     /// reported, not thrown: the delivery run's result matters more.
     private func compactIfNeeded() {
         guard journal.byteCount > compactionThreshold else { return }
-        let snapshot = Self.encodeSnapshot(pending)
+        let snapshot = Self.encodeSnapshot(pending.entries)
         do throws(StoreError) {
             try journal.compact(snapshot: snapshot)
         } catch {

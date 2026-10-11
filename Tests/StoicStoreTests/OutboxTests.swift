@@ -305,4 +305,95 @@ struct OutboxTests {
         }
         #expect(events.names.filter { $0.rawValue.hasPrefix("store.") } == ["store.outbox_delivered", "store.outbox_delivery_failed"])
     }
+
+    // MARK: Opening a long outbox
+
+    /// A journal holding `pending + acknowledged` enqueues and `acknowledged`
+    /// acknowledgements (every fifth entry), written as the outbox would.
+    func writeLongOutbox(_ disk: SimulatedFileSystem, pending: Int, acknowledged: Int) throws {
+        let journal = try Journal.open(at: "/d/outbox", fileSystem: disk)
+        let total = pending + acknowledged
+        let step = max(1, total / max(1, acknowledged))
+        var records: [[UInt8]] = []
+        var acknowledgements = 0
+        for index in 0..<total {
+            let key = IdempotencyKey(rawValue: "key-\(index)")
+            records.append(try Outbox<String>.enqueueRecord(key: key, item: Array("item \(index)".utf8)))
+            if index % step == 0, acknowledgements < acknowledged {
+                records.append(try Outbox<String>.acknowledgeRecord(key: key))
+                acknowledgements += 1
+            }
+        }
+        try journal.append(batch: records)
+        try journal.close()
+    }
+
+    func timeToOpen(pending: Int, acknowledged: Int) async throws -> Duration {
+        let disk = SimulatedFileSystem(recordsHistory: false)
+        try disk.createDirectory("/d")
+        try writeLongOutbox(disk, pending: pending, acknowledged: acknowledged)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let outbox = try open(disk)
+        let elapsed = clock.now - start
+        #expect(await outbox.pendingCount == pending)
+        return elapsed
+    }
+
+    @Test func openingTwentyThousandPendingEntriesIsFast() async throws {
+        let elapsed = try await timeToOpen(pending: 20_000, acknowledged: 4_000)
+        // Quadratic, this took 17 seconds (and 1.1 s at 5,000). The bound is
+        // generous for a slow, loaded machine and a debug build; it still
+        // fails by an order of magnitude on a quadratic open.
+        #expect(elapsed < .seconds(3), "opened 20,000 pending entries in \(elapsed)")
+    }
+
+    @Test func theTimeToOpenGrowsLinearlyNotQuadratically() async throws {
+        let small = try await timeToOpen(pending: 5_000, acknowledged: 1_000)
+        let large = try await timeToOpen(pending: 20_000, acknowledged: 4_000)
+        // Four times the entries: about four times the time when linear,
+        // sixteen when quadratic. The floor keeps timer noise on a small
+        // run from making the ratio meaningless.
+        let floor = Duration.milliseconds(20)
+        #expect(large < max(small, floor) * 10, "5,000 entries took \(small), 20,000 took \(large)")
+    }
+
+    @Test func theOrderSurvivesManyRemovalsAndTheirCleanUp() async throws {
+        let outbox = try open(try disk(), policy: DeliveryPolicy(schedule: .fixed(.seconds(1)).attempts(1), onFailure: .continueWithNext))
+        var keys: [IdempotencyKey] = []
+        for index in 0..<200 { keys.append(try await outbox.enqueue("item \(index)")) }
+        // Deliver every entry but the multiples of seven: 171 removals, with
+        // the holes squeezed out several times along the way.
+        let report = try await outbox.deliverPending { entry in
+            if Int(entry.item.dropFirst(5))! % 7 == 0 { throw Rejected() }
+        }
+        let kept = keys.enumerated().filter { $0.offset % 7 == 0 }.map(\.element)
+        #expect(report.delivered.count == 200 - kept.count)
+        #expect(await outbox.pendingKeys == kept)
+        try await outbox.enqueue("late")
+        #expect(try await outbox.entries().map(\.item).suffix(2) == ["item 196", "late"])
+    }
+
+    @Test func aFlippedBitInTheMiddleOfTheJournalCostsOneEntryNotTheRest() async throws {
+        let disk = try disk()
+        var outbox = try open(disk)
+        var keys: [IdempotencyKey] = []
+        for index in 0..<100 {
+            let number = String(index + 1000).dropFirst()   // fixed width, so every record is the same size
+            keys.append(try await outbox.enqueue("item-\(number)", key: IdempotencyKey(rawValue: "key-\(number)")))
+        }
+        try await outbox.close()
+        let frame = Journal.headerSize + 2 + "key-000".utf8.count + "item-000".utf8.count
+        let file = try disk.open("/d/outbox", mode: .readWrite)
+        #expect(try disk.size(of: file) == 100 * frame)
+        let byte = try disk.read(file, at: frame + 20, count: 1)   // inside the second record
+        try disk.write(file, [byte[0] ^ 0x01], at: frame + 20)
+        try disk.fullSync(file)
+        try disk.close(file)
+
+        outbox = try open(disk)
+        #expect(await outbox.pendingKeys == keys.enumerated().filter { $0.offset != 1 }.map(\.element), "the other 99 are still pending, in order")
+        let report = try await outbox.deliverPending { _ in }
+        #expect(report.delivered.count == 99)
+    }
 }

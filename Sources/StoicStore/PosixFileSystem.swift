@@ -168,6 +168,31 @@ public final class PosixFileSystem: FileSystem {
         return available
     }
 
+    public func permissions(of path: String) throws(StoreError) -> UInt16? {
+        let (bits, failure) = CSys.permissionBits(of: path)
+        if let failure {
+            if failure == ENOENT || failure == ENOTDIR { return nil }
+            throw StoreError(errno: failure, operation: "stat", path: path)
+        }
+        return bits
+    }
+
+    public func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) {
+        while CSys.changeMode(file.rawValue, to: mode_t(permissions)) != 0 {
+            if errno != EINTR { throw StoreError(errno: errno, operation: "fchmod") }
+        }
+    }
+
+    public func readLink(_ path: String) throws(StoreError) -> String? {
+        let (target, failure) = CSys.linkTarget(of: path)
+        if let failure {
+            // Not a link (EINVAL) or not there at all: either way, nothing to follow.
+            if failure == EINVAL || failure == ENOENT || failure == ENOTDIR { return nil }
+            throw StoreError(errno: failure, operation: "readlink", path: path)
+        }
+        return target
+    }
+
     public func createDirectory(_ path: String) throws(StoreError) {
         var prefix = path.hasPrefix("/") ? "/" : ""
         for component in path.split(separator: "/", omittingEmptySubsequences: true) {
@@ -219,6 +244,30 @@ private enum CSys {
         // fstat fills the struct whose address is passed; it lives for the call.
         if unsafe fstat(descriptor, &info) != 0 { return (0, errno) }
         return (Int(info.st_size), nil)
+    }
+
+    static func permissionBits(of path: String) -> (bits: UInt16, failure: Int32?) {
+        var info = stat()
+        // stat fills the struct whose address is passed, and copies the C string
+        // of `path`, which lives for the call.
+        if unsafe stat(path, &info) != 0 { return (0, errno) }
+        return (UInt16(info.st_mode & 0o7777), nil)
+    }
+
+    static func linkTarget(of path: String) -> (target: String?, failure: Int32?) {
+        var buffer = [CChar](repeating: 0, count: 4096 + 1)
+        let length = buffer.withUnsafeMutableBufferPointer { storage in
+            // readlink writes at most 4096 bytes into storage (one short of its size)
+            // and does not NUL-terminate; the path's C string lives for the call.
+            unsafe readlink(path, storage.baseAddress, storage.count - 1)
+        }
+        if length < 0 { return (nil, errno) }
+        let bytes = buffer[..<length].map { UInt8(bitPattern: $0) }
+        return (String(decoding: bytes, as: UTF8.self), nil)
+    }
+
+    static func changeMode(_ descriptor: Int32, to mode: mode_t) -> Int32 {
+        fchmod(descriptor, mode)
     }
 
     static func truncateFile(_ descriptor: Int32, to size: Int) -> Int32 {

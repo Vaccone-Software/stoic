@@ -61,12 +61,44 @@ internal import Synchronization
 /// state, not for a database's worth of data.
 public final class Journal: Sendable {
     public struct Options: Sendable, Hashable {
+        /// What `open` does on finding damage in the middle of the log: a bad
+        /// record with intact records after it. (Damage with nothing intact
+        /// after it is a torn tail, cut as always.)
+        public enum MiddleDamage: Sendable, Hashable {
+            /// Keep the intact records after the damage, leave the damaged
+            /// bytes where they are, and report them (``OpenReport/corruption``,
+            /// `store.journal_corruption`). Nothing intact is lost.
+            case skipAndReport
+            /// Throw `.corrupt` and touch nothing, for a caller that cannot
+            /// tolerate a gap in its history and would rather recover by hand.
+            case refuse
+        }
+
         /// The largest payload `append` accepts.
         public var maxRecordSize: Int
 
-        public init(maxRecordSize: Int = 16 * 1024 * 1024) {
+        /// What `open` does with damage in the middle of the log.
+        public var middleDamage: MiddleDamage
+
+        public init(maxRecordSize: Int = 16 * 1024 * 1024, middleDamage: MiddleDamage = .skipAndReport) {
             self.maxRecordSize = maxRecordSize
+            self.middleDamage = middleDamage
         }
+    }
+
+    /// A stretch of the log that failed verification with intact records
+    /// after it, and was skipped.
+    public struct Corruption: Sendable, Hashable {
+        /// Where the damaged bytes start, in the log file.
+        public let offset: Int
+        /// How many bytes were skipped.
+        public let length: Int
+        /// How many records the skipped stretch held, counted from the gap in
+        /// sequence numbers between the intact records on either side of it
+        /// (records a snapshot already covers are not counted: nothing was lost).
+        public let lostRecords: Int
+        /// The sequence number of the first record lost, if any.
+        public let firstLostSequence: UInt64?
     }
 
     /// One durable record.
@@ -96,6 +128,18 @@ public final class Journal: Sendable {
         public let staleRecords: Int
         /// Records that remain to replay.
         public let records: Int
+        /// Damage found in the middle of the log and skipped; empty if none.
+        public let corruption: [Corruption]
+
+        /// How many records were lost to ``corruption``.
+        public var corruptRecords: Int { corruption.reduce(0) { $0 + $1.lostRecords } }
+
+        init(droppedBytes: Int, staleRecords: Int, records: Int, corruption: [Corruption] = []) {
+            self.droppedBytes = droppedBytes
+            self.staleRecords = staleRecords
+            self.records = records
+            self.corruption = corruption
+        }
     }
 
     public let path: String
@@ -109,6 +153,9 @@ public final class Journal: Sendable {
         var lastSequence: UInt64
         var snapshot: Snapshot?
         var poison: StoreError?
+        /// Damage skipped in the middle of the log at open, still in the file
+        /// until a compaction cuts it.
+        var corruption: [Corruption]
     }
 
     private let state: Mutex<State>
@@ -153,8 +200,15 @@ public final class Journal: Sendable {
 
             let size = try fileSystem.size(of: file)
             let contents = try fileSystem.read(file, at: 0, count: size)
-            let scan = Journal.scan(contents, maxRecordSize: options.maxRecordSize)
             let through = snapshot?.through ?? 0
+            let scan = Journal.scan(contents, maxRecordSize: options.maxRecordSize, after: through)
+            if let first = scan.corruption.first, options.middleDamage == .refuse {
+                // Before anything is changed, not even a torn tail cut.
+                throw StoreError(
+                    kind: .corrupt, operation: "open", path: path,
+                    detail: "\(first.length) bytes at offset \(first.offset) fail verification with intact records after them (\(scan.corruption.count) such stretches, \(scan.corruption.reduce(0) { $0 + $1.lostRecords }) records lost); the file was left untouched"
+                )
+            }
 
             var end = scan.validEnd
             if end < size {
@@ -164,6 +218,14 @@ public final class Journal: Sendable {
                     .init("path", .string(path)), .init("droppedBytes", .int(size - end)),
                     .init("validRecords", .int(scan.records.count)),
                 ]))
+            }
+            for damage in scan.corruption {
+                var fields: [Event.Field] = [
+                    .init("path", .string(path)), .init("offset", .int(damage.offset)), .init("length", .int(damage.length)),
+                    .init("lostRecords", .int(damage.lostRecords)),
+                ]
+                if let first = damage.firstLostSequence { fields.append(.init("firstLostSequence", .int(Int(truncatingIfNeeded: first)))) }
+                StoreEvents.record(Event("store.journal_corruption", level: .error, fields: fields))
             }
             var inLog = scan.records
             let stale = inLog.prefix { $0.sequence <= through }.count
@@ -177,12 +239,12 @@ public final class Journal: Sendable {
             }
             let report = OpenReport(
                 droppedBytes: size - scan.validEnd, staleRecords: stale,
-                records: inLog.count - (end == 0 ? 0 : stale)
+                records: inLog.count - (end == 0 ? 0 : stale), corruption: scan.corruption
             )
             let state = State(
                 file: file, end: end,
                 lastSequence: max(through, scan.records.last?.sequence ?? 0),
-                snapshot: snapshot, poison: nil
+                snapshot: snapshot, poison: nil, corruption: end == 0 ? [] : scan.corruption
             )
             return Journal(path: path, fileSystem: fileSystem, options: options, report: report, state: state)
         } catch {
@@ -217,28 +279,92 @@ public final class Journal: Sendable {
         return lengthBytes + littleEndian(crc.value) + body
     }
 
-    /// The intact records at the start of `bytes`, and where they end. A frame
-    /// is intact when it fits, is within the size limit, has a valid checksum
-    /// and carries a sequence number above its predecessor's.
-    static func scan(_ bytes: [UInt8], maxRecordSize: Int) -> (records: [Record], validEnd: Int) {
+    /// What a scan of the log found.
+    struct Scan {
+        /// The intact records, in order, with damaged stretches between them skipped.
         var records: [Record] = []
+        /// Where the last intact record ends. Whatever follows is a torn tail.
+        var validEnd = 0
+        /// Damaged stretches with intact records after them.
+        var corruption: [Corruption] = []
+    }
+
+    /// A frame is intact when it fits, is within the size limit, has a valid
+    /// checksum and carries a sequence number above `previous`.
+    private static func intactFrame(
+        in bytes: [UInt8], at offset: Int, after previous: UInt64, maxRecordSize: Int
+    ) -> (record: Record, end: Int)? {
+        guard bytes.count - offset >= headerSize else { return nil }
+        let length = Int(readLittleEndian(bytes, at: offset) as UInt32)
+        guard length >= 8, length - 8 <= maxRecordSize, offset + 8 + length <= bytes.count else { return nil }
+        let stored: UInt32 = readLittleEndian(bytes, at: offset + 4)
+        var crc = CRC32C.Running()
+        crc.update(bytes[offset..<offset + 4])
+        crc.update(bytes[offset + 8..<offset + 8 + length])
+        guard crc.value == stored else { return nil }
+        let sequence: UInt64 = readLittleEndian(bytes, at: offset + 8)
+        guard sequence > previous else { return nil }
+        return (Record(sequence: sequence, bytes: Array(bytes[offset + 16..<offset + 8 + length])), offset + 8 + length)
+    }
+
+    /// The intact records of `bytes`, where the last one ends, and the
+    /// damaged stretches skipped between them.
+    ///
+    /// A bad frame is either a **torn tail** (a crash cut the last write, or
+    /// left a hole of zeros), or **damage in the middle** (a flipped bit, a
+    /// bad sector) with records after it. They are told apart by looking
+    /// ahead: if some later offset holds an intact frame, the stretch up to it
+    /// is damage, skipped, and the scan carries on there; if none does, the
+    /// bad frame and everything after it is a tail, and `validEnd` stops
+    /// before it. A flipped bit in the *last* record is therefore a tail,
+    /// which no format without a marker could tell from a crash.
+    ///
+    /// The format has no sync marker, so "intact frame" is the only signal:
+    /// a length that fits, a CRC-32C that matches, a sequence above the last.
+    /// A candidate must also be *plausible*: the records missing between it
+    /// and the last good one (the gap in sequence numbers) must fit in the
+    /// bytes skipped, at no fewer than `headerSize` each. That rejects a
+    /// framed record that happens to sit inside a damaged payload, unless its
+    /// sequence number is also just right (see design/15).
+    ///
+    /// - Parameter through: The last sequence a snapshot covers, which the
+    ///   first record's gap is measured from.
+    static func scan(_ bytes: [UInt8], maxRecordSize: Int, after through: UInt64 = 0) -> Scan {
+        var scan = Scan()
         var offset = 0
         var previous: UInt64 = 0
-        while bytes.count - offset >= headerSize {
-            let length = Int(readLittleEndian(bytes, at: offset) as UInt32)
-            guard length >= 8, length - 8 <= maxRecordSize, offset + 8 + length <= bytes.count else { break }
-            let stored: UInt32 = readLittleEndian(bytes, at: offset + 4)
-            var crc = CRC32C.Running()
-            crc.update(bytes[offset..<offset + 4])
-            crc.update(bytes[offset + 8..<offset + 8 + length])
-            guard crc.value == stored else { break }
-            let sequence: UInt64 = readLittleEndian(bytes, at: offset + 8)
-            guard sequence > previous else { break }
-            records.append(Record(sequence: sequence, bytes: Array(bytes[offset + 16..<offset + 8 + length])))
-            previous = sequence
-            offset += 8 + length
+        while offset < bytes.count {
+            if let (record, end) = intactFrame(in: bytes, at: offset, after: previous, maxRecordSize: maxRecordSize) {
+                scan.records.append(record)
+                previous = record.sequence
+                offset = end
+                continue
+            }
+            // Damage, or the tail. Look ahead for an intact frame.
+            let baseline = max(previous, through)
+            var probe = offset + 1
+            var resumed = false
+            while probe + headerSize <= bytes.count {
+                if let (record, end) = intactFrame(in: bytes, at: probe, after: previous, maxRecordSize: maxRecordSize) {
+                    let lost = record.sequence > baseline + 1 ? Int(clamping: record.sequence - baseline - 1) : 0
+                    if lost <= (probe - offset) / headerSize {
+                        scan.corruption.append(Corruption(
+                            offset: offset, length: probe - offset, lostRecords: lost,
+                            firstLostSequence: lost > 0 ? baseline + 1 : nil
+                        ))
+                        scan.records.append(record)
+                        previous = record.sequence
+                        offset = end
+                        resumed = true
+                        break
+                    }
+                }
+                probe += 1
+            }
+            if !resumed { break }
         }
-        return (records, offset)
+        scan.validEnd = offset
+        return scan
     }
 
     // MARK: Appending
@@ -320,11 +446,17 @@ public final class Journal: Sendable {
 
     private func replay(_ file: OpenFile, state: State) throws(StoreError) -> Replay {
         let bytes = try fileSystem.read(file, at: 0, count: state.end)
-        let scan = Journal.scan(bytes, maxRecordSize: options.maxRecordSize)
-        guard scan.validEnd == state.end else {
-            throw StoreError(kind: .corrupt, operation: "replay", path: path, detail: "record at byte \(scan.validEnd) fails verification")
-        }
         let through = state.snapshot?.through ?? 0
+        let scan = Journal.scan(bytes, maxRecordSize: options.maxRecordSize, after: through)
+        // What open found and skipped is known and reported; anything else is
+        // damage that appeared since.
+        guard scan.validEnd == state.end, scan.corruption == state.corruption else {
+            let first = scan.corruption.first { !state.corruption.contains($0) }
+            throw StoreError(
+                kind: .corrupt, operation: "replay", path: path,
+                detail: "record at byte \(first?.offset ?? scan.validEnd) fails verification"
+            )
+        }
         return Replay(snapshot: state.snapshot, records: scan.records.filter { $0.sequence > through })
     }
 
@@ -346,6 +478,9 @@ public final class Journal: Sendable {
             let current = try replay(file, state: state)
             let bytes = fold(current)
             let through = state.lastSequence
+            // The truncation below destroys the damaged bytes; keep a copy of
+            // the log first, so what could not be read is at least not gone.
+            let saved = state.corruption.isEmpty ? nil : try saveDamagedLog(file, end: state.end)
             try AtomicFile(fileSystem: fileSystem).write(littleEndian(through) + bytes, to: snapshotPath)
             state.snapshot = Snapshot(through: through, bytes: bytes)
             do throws(StoreError) {
@@ -359,11 +494,28 @@ public final class Journal: Sendable {
                 throw error
             }
             state.end = 0
-            StoreEvents.record(Event("store.journal_compacted", level: .info, fields: [
+            state.corruption = []
+            var fields: [Event.Field] = [
                 .init("path", .string(path)), .init("records", .int(current.records.count)),
                 .init("snapshotBytes", .int(bytes.count)),
-            ]))
+            ]
+            if let saved { fields.append(.init("damagedLogSavedAs", .string(saved))) }
+            StoreEvents.record(Event("store.journal_compacted", level: .info, fields: fields))
         }
+    }
+
+    /// Writes the log as it stands, damage and all, to `<path>.corrupt-N`
+    /// (the next free N), durably, and returns where.
+    private func saveDamagedLog(_ file: OpenFile, end: Int) throws(StoreError) -> String {
+        let contents = try fileSystem.read(file, at: 0, count: end)
+        let directory = StorePath.directory(of: path)
+        let prefix = StorePath.name(of: path) + ".corrupt-"
+        let taken = try fileSystem.list(directory: directory).compactMap { name -> Int? in
+            name.hasPrefix(prefix) ? Int(name.dropFirst(prefix.count)) : nil
+        }
+        let target = StorePath.join(directory, prefix + String((taken.max() ?? 0) + 1))
+        try AtomicFile(fileSystem: fileSystem, options: .init(envelope: false)).write(contents, to: target)
+        return target
     }
 
     /// Replaces the log with `snapshot`, which the caller guarantees folds in

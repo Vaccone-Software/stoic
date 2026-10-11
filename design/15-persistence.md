@@ -68,7 +68,7 @@ type, `StoreError`.
 
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSystem`                     | The 14 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, and `open` in four modes. |
+| `FileSystem`                     | The 17 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, and `open` in four modes. |
 | `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine.                                                                                                   |
@@ -118,6 +118,23 @@ type, `StoreError`.
 
 ### Atomic file
 
+Symbolic links: `write` and `read` first resolve `path` through any links (up
+to 40 hops; a relative target is relative to the link's directory; a link to
+nothing resolves to where the file would be), then do everything beside the
+real file: `.tmp`, `.previous`, `.corrupt-N`, the rename and the directory sync.
+Renaming over the link itself would replace the link with a regular file and
+leave its target stale. A loop of links is `.invalidArgument`. The simulation
+models links as durable from the moment they exist, since the store never
+creates one.
+
+Permissions: the temporary is created, then given the permission bits of the
+file it will replace (`fchmod`, before a byte is written), so a write never
+widens a private file; a path with no file yet gets `Options.newFileMode`
+(default `0o644`; the settings store asks for `0o600`). The previous
+generation is the old inode renamed, so it keeps its bits. A `FileSystem` that
+does not implement `permissions(of:)` reports "unknown" and every file gets
+the new-file mode. The journal's own files are still opened `0o644`.
+
 Write: preflight free space (`.diskFull` before touching anything) → remove a
 stale `.tmp` → create `.tmp` exclusively, write `envelope(bytes)`, `fullSync`
 → if keeping a previous generation and the current file is intact, rename it to
@@ -149,9 +166,26 @@ Record: `length:u32 | crc32c:u32 | sequence:u64 | payload`, little-endian;
 `length` counts sequence + payload, and the CRC covers the four length bytes
 and the body. A record is valid only if it fits in the file, is within
 `maxRecordSize`, checks, and has a sequence above its predecessor's. A hole of
-zeros is never valid. `open` keeps the valid prefix, cuts the rest
-(`truncate` + `fullSync`, `store.journal_truncated` with `droppedBytes`), and
-`syncDirectory`s when it created the file — the name is part of the data.
+zeros is never valid. `open` tells a **torn tail** from **damage in the
+middle** by looking ahead from the first bad record. If no later offset holds
+a valid record, the bad record and everything after it is a tail: cut
+(`truncate` + `fullSync`, `store.journal_truncated` with `droppedBytes`). If
+one does, the bytes up to it are damage: skipped, the scan carries on from
+there, and the stretch is reported (`OpenReport.corruption`, a list of
+`Corruption(offset, length, lostRecords, firstLostSequence)`, and one
+`store.journal_corruption` event each). The damaged bytes are left in the
+file, so appends go after them and the report is repeated on every open until
+a compaction. `open` also `syncDirectory`s when it created the file — the name
+is part of the data.
+
+The format has no sync marker, so resynchronising means trying every byte
+offset after the bad record for a valid frame (length fits, CRC-32C matches,
+sequence above the last good one). A candidate is also required to be
+*plausible*: the records missing between it and the last good one, counted
+from the gap in sequence numbers, must fit in the skipped bytes at no fewer
+than 16 each. `lostRecords` is that gap. It is a count, not a recovery.
+`Options.middleDamage = .refuse` makes `open` throw `.corrupt`, touching
+nothing, for a caller that would rather not run with a gap.
 
 Compaction writes `<path>.snapshot` with `AtomicFile` — the payload is the
 last sequence it covers followed by the caller's bytes — and *then* truncates
@@ -163,7 +197,9 @@ the sequence number is what makes every crash point correct.
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `append` has returned, then power is lost                  | The record is replayed                                                                              |
 | a crash tears the last record or leaves a hole             | Cut at `open`; replay yields a prefix of the appended records                                       |
-| a byte flips in the middle of the log                      | The log ends there; later records are dropped (and counted in `droppedBytes`)                      |
+| a byte flips in the middle of the log                      | That record is lost; the intact ones after it are kept; the damage is reported (`corruption`, `store.journal_corruption`) |
+| a byte flips in the *last* record                          | Indistinguishable from a crash: cut as a torn tail (`droppedBytes`), not reported as corruption    |
+| `compact` runs over a log with skipped damage              | The log is copied to `<path>.corrupt-N` first, then folded and truncated                           |
 | a crash falls inside `compact`                             | Old snapshot + full log, or new snapshot + stale log (skipped, then truncated), or new + empty     |
 | the snapshot fails its checksum                            | Quarantined; `open` throws `.corrupt` (the records it replaced are gone, so starting empty would hide data loss) |
 | `append`'s write fails (`ENOSPC`)                          | Rolled back by truncating to the last end; the journal stays usable                                |
@@ -175,7 +211,11 @@ the sequence number is what makes every crash point correct.
 Journal records: `0x01 | keyLength | key | item` (enqueue) and
 `0x02 | keyLength | key` (acknowledge). The pending list is the snapshot's
 entries plus the log, enqueues in order minus acknowledged keys. `enqueue` is
-idempotent in its key. `deliverPending` takes the pending list as of its start;
+idempotent in its key. The pending list is kept in enqueue order with a key
+index (removal leaves a hole that is squeezed out later), so opening,
+enqueueing and acknowledging are linear in the journal, not quadratic: 20,000
+pending entries open in tens of milliseconds, where a list searched per record
+took 17 seconds. `deliverPending` takes the pending list as of its start;
 each entry runs `retry(policy.schedule, budget:, classify:)` around the user's
 closure, and is acknowledged durably the moment the closure returns. Failures
 stay pending. Semantics are at least once: an entry delivered but not yet
@@ -210,7 +250,7 @@ what the key is for.
 ### Events
 
 `store.corrupt_quarantined`, `store.recovered_previous`, `store.temp_removed`,
-`store.fullsync_unavailable`, `store.journal_truncated`,
+`store.fullsync_unavailable`, `store.journal_corruption`, `store.journal_truncated`,
 `store.journal_compacted`, `store.outbox_delivered`,
 `store.outbox_delivery_failed`, `store.outbox_maintenance_failed`. All are in
 `EventCatalog`; the catalog test now scans for the `store.` prefix too.
@@ -231,8 +271,12 @@ again. Invariants:
 - **`Journal`:** recovery yields a prefix of the appended records at least as
   long as the acknowledged ones, in order, with increasing sequences; after
   recovery a further append is readable after another reopen (this is what
-  catches a tail that was scanned but not cut). For single appends, batches,
-  a repaired torn tail, and one and two compactions.
+  catches a tail that was scanned but not cut; so does the check that a
+  recovered journal reports no damage in the middle, which a crash never
+  causes). For single appends, batches, a repaired torn tail, and one and two
+  compactions. Over a log with a damaged record in the middle: appends and a
+  compaction keep every intact record and every acknowledged append at every
+  crash point, and a compaction leaves a copy of the damaged log.
 - **`Outbox`:** pending entries are a subsequence of those enqueued, intact;
   no enqueued entry whose delivery had not finished is missing; no entry whose
   acknowledgement returned is pending; the recovered outbox delivers exactly
@@ -251,12 +295,29 @@ acknowledgement that is never written) each fail the suite.
 
 ### Open problems
 
-- **Mid-file corruption ends the journal there.** A record that fails its
-  checksum with valid records after it is indistinguishable from a torn tail
-  without a resynchronisation marker, so the later records are dropped and
-  counted in `droppedBytes`. A bit flip in an old record loses everything after
-  it. Detecting it (a valid frame found after the bad one) and refusing to
-  truncate without an opt-in is a possible hardening.
+- **Mid-file corruption costs the damaged records, and says so, but they are
+  not recovered.** A bit flip in record *n* of a log loses record *n*; the
+  rest are kept (tested: one flipped bit in each byte of a record, adjacent
+  and separate damaged records, damage after a snapshot). What is *not*
+  covered:
+  - The lost records' contents. For an outbox that is an entry that is never
+    delivered (a lost enqueue), or one delivered again (a lost
+    acknowledgement). The report says how many and from which sequence, no more.
+  - **A flip in the last record, or in a stretch with nothing valid after it,**
+    is a torn tail by definition and is cut with only `store.journal_truncated`.
+  - **A damaged length field** is recoverable only because the scan retries
+    every offset; a damaged *sequence number* that still checks is impossible
+    (the CRC covers it). A false resync, a valid frame inside a damaged
+    payload (a journal that stores journals), is rejected unless its sequence
+    number fits the gap, which a deliberate payload could be made to satisfy.
+  - **Damage that appears while the journal is open** makes `replay` throw
+    `.corrupt`; it is not skipped silently. Reopen to resynchronise.
+  - Resynchronising reads the whole log and tries each offset after a bad
+    record: quadratic in the worst case (a large damaged stretch), fine at the
+    sizes a journal is meant for.
+  - The damaged bytes stay in the file, and are reported at every open, until
+    `compact`, which keeps a copy as `<path>.corrupt-N`. The copy is never
+    pruned.
 - **The real disk is not tested for power loss.** `PosixFileSystem` is tested
   functionally against a temp directory; the durability claims rest on the
   simulated model being no more generous than hardware, and on `F_FULLFSYNC`

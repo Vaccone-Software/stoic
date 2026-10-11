@@ -100,6 +100,14 @@ public final class SimulatedFileSystem: FileSystem {
         state.withLock { state in state.durableNames[path].map { state.inodes[$0]!.durable } }
     }
 
+    /// Makes `path` a symbolic link to `target` (relative targets resolve
+    /// against the link's directory). Links are modelled as durable the
+    /// moment they exist: the store never creates one, so what a crash does
+    /// to a pending link never matters, and a crash image keeps them all.
+    public func symlink(at path: String, to target: String) {
+        state.withLock { $0.links[path] = target }
+    }
+
     /// Every file's current contents, by path.
     public var files: [String: [UInt8]] {
         state.withLock { state in state.live.mapValues { state.inodes[$0]!.current } }
@@ -125,7 +133,7 @@ public final class SimulatedFileSystem: FileSystem {
     /// legally produce, use ``crashImages(afterOperation:samples:seed:)``.
     public func crash() {
         state.withLock { state in
-            state = State(restoring: state.imageWithNothingPending(), like: state)
+            state = State(restoring: state.imageWithNothingPending(), modes: state.durableModes(), like: state)
         }
     }
 
@@ -236,13 +244,34 @@ public final class SimulatedFileSystem: FileSystem {
     }
 
     public func exists(_ path: String) throws(StoreError) -> Bool {
-        state.withLock { $0.live[path] != nil || $0.directories.contains(path) }
+        try state.withLock { (state) throws(StoreError) in
+            let target = try state.followingLinks(path)
+            return state.live[target] != nil || state.directories.contains(target)
+        }
+    }
+
+    public func readLink(_ path: String) throws(StoreError) -> String? {
+        state.withLock { $0.links[path] }
     }
 
     public func freeSpace(at directory: String) throws(StoreError) -> UInt64 {
         state.withLock { state in
             guard let capacity = state.capacity else { return UInt64.max / 2 }
             return UInt64(max(0, capacity - state.usedBytes))
+        }
+    }
+
+    public func permissions(of path: String) throws(StoreError) -> UInt16? {
+        try state.withLock { (state) throws(StoreError) in
+            let target = try state.followingLinks(path)
+            return state.live[target].map { state.inodes[$0]!.mode }
+        }
+    }
+
+    public func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) {
+        try state.withLock { (state) throws(StoreError) in
+            let ino = try state.inode(for: file)
+            state.inodes[ino]!.mode = permissions & 0o7777
         }
     }
 
@@ -265,6 +294,10 @@ extension SimulatedFileSystem {
         var current: [UInt8] = []
         var pending: [Pending] = []
         var name: String
+        /// The permission bits. Modelled as durable the moment they are set:
+        /// the store only sets them on a file it is about to rename into
+        /// place, so what a crash could do to a pending `chmod` never matters.
+        var mode: UInt16 = 0o644
     }
 
     enum Pending: Sendable {
@@ -330,6 +363,7 @@ extension SimulatedFileSystem {
         var durableNames: [String: Int] = [:]
         var pendingDirOps: [DirectoryOperation] = []
         var directories: Set<String> = []
+        var links: [String: String] = [:]
         var descriptors: [Int32: Int] = [:]
         var nextInode = 1
         var nextDescriptor: Int32 = 3
@@ -347,22 +381,23 @@ extension SimulatedFileSystem {
         }
 
         /// A state restored from a crash image's files.
-        init(restoring files: [String: [UInt8]], directories: Set<String>, like other: State) {
+        init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], links: [String: String], directories: Set<String>, like other: State) {
+            self.links = links
             capacity = other.capacity
             recordsHistory = other.recordsHistory
             self.directories = directories
             for path in files.keys.sorted() {
                 let inode = nextInode
                 nextInode += 1
-                inodes[inode] = Inode(durable: files[path]!, current: files[path]!, name: path)
+                inodes[inode] = Inode(durable: files[path]!, current: files[path]!, name: path, mode: modes[path] ?? 0o644)
                 live[path] = inode
                 durableNames[path] = inode
             }
             if recordsHistory { history = [withoutHistory()] }
         }
 
-        init(restoring files: [String: [UInt8]], like other: State) {
-            self.init(restoring: files, directories: other.directories, like: other)
+        init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], like other: State) {
+            self.init(restoring: files, modes: modes, links: other.links, directories: other.directories, like: other)
         }
 
         func withoutHistoryReset() -> State {
@@ -394,6 +429,10 @@ extension SimulatedFileSystem {
         }
 
         /// The files that would exist if nothing pending survived.
+        func durableModes() -> [String: UInt16] {
+            durableNames.mapValues { inodes[$0]!.mode }
+        }
+
         func imageWithNothingPending() -> [String: [UInt8]] {
             durableNames.mapValues { inodes[$0]!.durable }
         }
@@ -413,13 +452,28 @@ extension SimulatedFileSystem {
             throw StoreError(errno: faults[index].errno, operation: "\(target)", path: path)
         }
 
+        /// `path` with a symbolic link as its last component replaced by what
+        /// it points to, repeatedly: what `open` and `access` do.
+        func followingLinks(_ path: String) throws(StoreError) -> String {
+            var current = path
+            for _ in 0..<40 {
+                guard let target = links[current] else { return current }
+                current = target.hasPrefix("/") ? target : StorePath.join(StorePath.directory(of: current), target)
+            }
+            throw StoreError(errno: ELOOP_, operation: "open", path: path)
+        }
+
         func parentExists(_ path: String) -> Bool {
             let parent = StorePath.directory(of: path)
             return parent == "." || parent == "/" || directories.contains(parent)
         }
 
-        mutating func open(_ path: String, mode: OpenMode) throws(StoreError) -> OpenFile {
-            try checkFault(.open, path: path)
+        mutating func open(_ requested: String, mode: OpenMode) throws(StoreError) -> OpenFile {
+            try checkFault(.open, path: requested)
+            // O_EXCL refuses a symbolic link as the final component; every
+            // other mode follows it.
+            if mode == .createExclusive, links[requested] != nil { throw StoreError(errno: EEXIST_, operation: "open", path: requested) }
+            let path = try followingLinks(requested)
             guard parentExists(path) else { throw StoreError(errno: ENOENT_, operation: "open", path: path) }
             let inode: Int
             if let existing = live[path] {
@@ -514,8 +568,17 @@ extension SimulatedFileSystem {
 
         mutating func rename(from source: String, to destination: String) throws(StoreError) {
             try checkFault(.rename, path: source)
-            guard let ino = live[source] else { throw StoreError(errno: ENOENT_, operation: "rename", path: source) }
             guard parentExists(destination) else { throw StoreError(errno: ENOENT_, operation: "rename", path: destination) }
+            if live[source] == nil, let link = links[source] {
+                // A rename moves the link itself, never what it points to.
+                links[source] = nil
+                links[destination] = link
+                live[destination] = nil
+                return
+            }
+            guard let ino = live[source] else { throw StoreError(errno: ENOENT_, operation: "rename", path: source) }
+            // Renaming over a symbolic link replaces the link, not its target.
+            links[destination] = nil
             live[source] = nil
             live[destination] = ino
             inodes[ino]!.name = destination
@@ -525,6 +588,10 @@ extension SimulatedFileSystem {
 
         mutating func remove(_ path: String) throws(StoreError) {
             try checkFault(.remove, path: path)
+            if live[path] == nil, links[path] != nil {
+                links[path] = nil
+                return
+            }
             guard live[path] != nil else { throw StoreError(errno: ENOENT_, operation: "unlink", path: path) }
             live[path] = nil
             pendingDirOps.append(.remove(path: path))
@@ -535,7 +602,7 @@ extension SimulatedFileSystem {
             guard directory == "." || directory == "/" || directories.contains(directory) else {
                 throw StoreError(errno: ENOENT_, operation: "readdir", path: directory)
             }
-            return live.keys.filter { StorePath.directory(of: $0) == directory }.map(StorePath.name(of:)).sorted()
+            return (Array(live.keys) + Array(links.keys)).filter { StorePath.directory(of: $0) == directory }.map(StorePath.name(of:)).sorted()
         }
     }
 }
@@ -551,3 +618,4 @@ private let ENOENT_ = ENOENT
 private let EEXIST_ = EEXIST
 private let EBADF_ = EBADF
 private let ENOSPC_ = ENOSPC
+private let ELOOP_ = ELOOP

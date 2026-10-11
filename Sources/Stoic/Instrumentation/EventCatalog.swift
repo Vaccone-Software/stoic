@@ -92,6 +92,7 @@ public enum EventCatalog {
         Entry(name: "store.corrupt_quarantined", level: .warning, meaning: "A stored file failed its checksum or validation and was renamed aside; reports where it went."),
         Entry(name: "store.fullsync_unavailable", level: .notice, meaning: "F_FULLFSYNC is unsupported on this volume; durability fell back to fsync."),
         Entry(name: "store.journal_compacted", level: .info, meaning: "A journal's records were folded into a snapshot and the log truncated."),
+        Entry(name: "store.journal_corruption", level: .error, meaning: "A journal had damage in the middle of its log with intact records after it; the damaged stretch was skipped and the records after it kept. Reports its offset, length and how many records were lost."),
         Entry(name: "store.journal_truncated", level: .warning, meaning: "A journal's torn or corrupt tail was cut at open; reports how many bytes were dropped."),
         Entry(name: "store.outbox_delivered", level: .debug, meaning: "An outbox entry was delivered and its acknowledgement made durable."),
         Entry(name: "store.outbox_delivery_failed", level: .warning, meaning: "An outbox entry used up its attempts or failed permanently; it stays pending."),

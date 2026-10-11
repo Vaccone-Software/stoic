@@ -43,6 +43,14 @@ struct JournalCrashTests {
             try journal.close()
             let again = try recovered(disk)
             guard again == found + ["after"] else { return "after recovery and one more append, found \(again), not \(found + ["after"])" }
+            // A crash tears a tail; it never damages the middle. A recovery
+            // that leaves its torn bytes in the file would show up here as
+            // damage with intact records after it.
+            let reopened = try Journal.open(at: path, fileSystem: disk)
+            defer { _ = try? reopened.close() }
+            guard reopened.openReport.corruption.isEmpty, reopened.openReport.droppedBytes == 0 else {
+                return "after recovery the journal reports \(reopened.openReport.corruption) and \(reopened.openReport.droppedBytes) dropped bytes"
+            }
             return nil
         }
     }
@@ -231,10 +239,11 @@ struct JournalCrashTests {
         #expect(!report.violations.isEmpty)
     }
 
-    @Test func aRecoveryThatDoesNotTruncateTheTailHidesLaterRecords() throws {
-        // Scan the tail but leave it on disk: records appended after it are
-        // unreachable on the next open. The invariant's "append after
-        // recovery, then reopen" step is what catches it.
+    @Test func aRecoveryThatDoesNotTruncateTheTailIsCaughtAsDamageInTheMiddle() throws {
+        // Scan the tail but leave it on disk, and append after it. The later
+        // record is found again by resynchronising, but the torn bytes now
+        // sit in the middle of the log and are reported there on every open:
+        // the invariant's "no damage after recovery" step is what catches it.
         let disk = SimulatedFileSystem()
         try disk.createDirectory("/d")
         let journal = try Journal.open(at: Self.path, fileSystem: disk)
@@ -249,7 +258,93 @@ struct JournalCrashTests {
         try disk.write(file, Journal.frame(bytes("two"), sequence: 2), at: garbageEnd)
         try disk.fullSync(file)
         try disk.close(file)
-        #expect(try Self.recovered(disk) == ["one"])   // "two" is unreachable: exactly the bug
+        #expect(try Self.recovered(disk) == ["one", "two"])
+        let reopened = try Journal.open(at: Self.path, fileSystem: disk)
+        #expect(reopened.openReport.corruption.map(\.length) == [9], "the bytes that should have been cut are reported as damage")
+    }
+
+    // MARK: Damage in the middle of the log
+
+    /// Five records, "one" … "five", with the third damaged (one byte of its
+    /// payload flipped) and durable.
+    static func prepareWithDamage(_ disk: SimulatedFileSystem) throws {
+        try Self.prepare(disk)
+        let journal = try Journal.open(at: Self.path, fileSystem: disk)
+        var third = 0
+        for (index, name) in ["one", "two", "three", "four", "five"].enumerated() {
+            if index == 2 { third = journal.byteCount }
+            try journal.append(bytes(name))
+        }
+        try journal.close()
+        let file = try disk.open(Self.path, mode: .readWrite)
+        let byte = try disk.read(file, at: third + 17, count: 1)
+        try disk.write(file, [byte[0] ^ 0x10], at: third + 17)
+        try disk.fullSync(file)
+        try disk.close(file)
+    }
+
+    static let survivors = ["one", "two", "four", "five"]
+
+    @Test func appendingAfterSkippedDamageIsCorrectAtEveryCrashPoint() async throws {
+        let report = try await exploreCrashes(
+            "Journal.append after mid-log damage",
+            setup: Self.prepareWithDamage,
+            operation: { disk in
+                let journal = try Journal.open(at: Self.path, fileSystem: disk)
+                #expect(journal.openReport.corruptRecords == 1)
+                try journal.append(bytes("six"))
+                disk.checkpoint("ack:1")
+                try journal.append(bytes("seven"))
+                disk.checkpoint("ack:2")
+                try journal.close()
+            },
+            recovery: { disk in _ = try Self.recovered(disk) },
+            check: { disk, context in
+                // The damaged record never comes back; the others never go,
+                // and nothing acknowledged after the damage is lost.
+                let acknowledged = context.checkpointsReached(prefix: "ack:").compactMap { Int($0.dropFirst(4)) }.max() ?? 0
+                let found = try Self.recovered(disk)
+                let all = Self.survivors + ["six", "seven"]
+                guard found == Array(all.prefix(found.count)), found.count >= Self.survivors.count + acknowledged else {
+                    return "recovered \(found), expected a prefix of \(all) holding \(Self.survivors.count + acknowledged) records"
+                }
+                return nil
+            }
+        )
+        print(report)
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
+        #expect(report.crashPoints >= 4)
+    }
+
+    @Test func compactingAfterSkippedDamageIsCorrectAtEveryCrashPoint() async throws {
+        let report = try await exploreCrashes(
+            "Journal.compact after mid-log damage",
+            setup: Self.prepareWithDamage,
+            operation: { disk in
+                let journal = try Journal.open(at: Self.path, fileSystem: disk)
+                try journal.compact(Self.fold)
+                disk.checkpoint("compacted")
+                try journal.append(bytes("six"))
+                disk.checkpoint("ack:1")
+                try journal.close()
+            },
+            recovery: { disk in _ = try Self.recovered(disk) },
+            check: { disk, context in
+                let acknowledged = context.checkpointsReached(prefix: "ack:").compactMap { Int($0.dropFirst(4)) }.max() ?? 0
+                let found = try Self.recovered(disk)
+                let all = Self.survivors + ["six"]
+                guard found == Array(all.prefix(found.count)), found.count >= Self.survivors.count + acknowledged else {
+                    return "recovered \(found), expected a prefix of \(all) holding \(Self.survivors.count + acknowledged) records"
+                }
+                // Once the log is cut, a copy of what was in it must exist,
+                // or the damaged bytes were destroyed unseen.
+                let copies = try disk.list(directory: "/d").filter { $0.hasPrefix("journal.corrupt-") }
+                if context.reached("compacted"), copies.isEmpty { return "the log was compacted but no copy of the damaged log was kept" }
+                return nil
+            }
+        )
+        print(report)
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 }
 

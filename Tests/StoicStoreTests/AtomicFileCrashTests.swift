@@ -157,6 +157,72 @@ struct AtomicFileCrashTests {
         #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 
+    /// A private file must never look more open than it was, at any crash
+    /// point: not the replacement, not the previous generation.
+    @Test(arguments: [true, false])
+    func aReplacementIsNeverMoreOpenThanTheFileItReplaces(existing: Bool) async throws {
+        let options = AtomicFile.Options(keepPrevious: true, newFileMode: 0o600)
+        let report = try await exploreCrashes(
+            "AtomicFile.write permissions existing=\(existing)",
+            setup: { disk in
+                try disk.createDirectory("/d")
+                if existing {
+                    try AtomicFile(fileSystem: disk, options: options).write(Self.old, to: Self.path)
+                    let file = try disk.open(Self.path, mode: .readWrite)
+                    try disk.setPermissions(file, to: 0o640)
+                    try disk.close(file)
+                }
+            },
+            operation: { disk in
+                try AtomicFile(fileSystem: disk, options: options).write(Self.new, to: Self.path)
+                try AtomicFile(fileSystem: disk, options: options).write(Self.large, to: Self.path)
+            },
+            check: { disk, _ in
+                let expected: UInt16 = existing ? 0o640 : 0o600
+                for name in ["", ".previous"] {
+                    let mode = try disk.permissions(of: Self.path + name)
+                    if let mode, mode != expected { return "\(Self.path + name) has mode \(String(mode, radix: 8)), expected \(String(expected, radix: 8))" }
+                }
+                return nil
+            }
+        )
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
+    }
+
+    /// Through a link, the link stays and the target is old or new at every
+    /// crash point; once the write returns it is new. Syncing the wrong
+    /// directory (the link's) would show here as a lost acknowledged write.
+    @Test(arguments: [true, false])
+    func aWriteThroughALinkIsAtomicAndKeepsTheLink(keepPrevious: Bool) async throws {
+        let options = AtomicFile.Options(keepPrevious: keepPrevious)
+        let target = "/real/settings"
+        let linked = "/links/settings"
+        let report = try await exploreCrashes(
+            "AtomicFile.write through a link previous=\(keepPrevious)",
+            setup: { disk in
+                try disk.createDirectory("/real")
+                try disk.createDirectory("/links")
+                try AtomicFile(fileSystem: disk, options: options).write(Self.old, to: target)
+                disk.symlink(at: linked, to: target)
+            },
+            operation: { disk in
+                try AtomicFile(fileSystem: disk, options: options).write(Self.new, to: linked)
+                disk.checkpoint("returned")
+            },
+            recovery: { disk in _ = try AtomicFile(fileSystem: disk, options: options).read(linked) },
+            check: { disk, context in
+                if try disk.readLink(linked) != target { return "the link was replaced or lost" }
+                let read: (SimulatedFileSystem) throws -> [UInt8]? = { image in try AtomicFile(fileSystem: image, options: options).read(linked)?.bytes }
+                if let failure = try atomicWriteInvariant(path: linked, old: Self.old, new: Self.new, read: read)(disk, context) { return failure }
+                if try disk.list(directory: "/links") != ["settings"] { return "something was left beside the link: \(try disk.list(directory: "/links"))" }
+                return nil
+            }
+        )
+        print(report)
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
+        #expect(report.images > report.crashPoints)
+    }
+
     // MARK: The harness must be able to fail
 
     static func exploreBroken(_ defect: BrokenAtomicWrite) async throws -> CrashReport {

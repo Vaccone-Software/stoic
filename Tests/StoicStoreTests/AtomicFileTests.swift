@@ -162,6 +162,113 @@ struct AtomicFileTests {
             #expect(events.names == ["store.temp_removed"])
         }
     }
+
+    // MARK: Permissions
+
+    func chmod(_ path: String, to mode: UInt16) throws {
+        let file = try fs.open(path, mode: .readWrite)
+        try fs.setPermissions(file, to: mode)
+        try fs.close(file)
+    }
+
+    @Test(arguments: [UInt16(0o600), UInt16(0o640), UInt16(0o664), UInt16(0o400)])
+    func aReplacementKeepsThePermissionsOfTheFileItReplaces(mode: UInt16) throws {
+        let dir = try TempDirectory()
+        let file = AtomicFile(options: .init(keepPrevious: true))
+        try file.write(bytes("first"), to: dir.file("s"))
+        try chmod(dir.file("s"), to: mode)
+        try file.write(bytes("second"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == mode)
+        try file.write(bytes("third"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == mode, "and again, now that a previous generation is demoted")
+        #expect(try fs.permissions(of: dir.file("s.previous")) == mode)
+    }
+
+    @Test func aNewFileTakesTheRequestedMode() throws {
+        let dir = try TempDirectory()
+        // The process umask can only remove bits, so ask for something it
+        // cannot be expected to strip: owner read and write.
+        try AtomicFile(options: .init(newFileMode: 0o600)).write(bytes("secret"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == 0o600)
+        try AtomicFile(options: .init(newFileMode: 0o640)).write(bytes("shared"), to: dir.file("t"))
+        #expect(try fs.permissions(of: dir.file("t")) == 0o640, "the mode is set exactly, not through the umask")
+    }
+
+    @Test func theRequestedModeDoesNotOverrideAnExistingFilesMode() throws {
+        let dir = try TempDirectory()
+        try AtomicFile().write(bytes("first"), to: dir.file("s"))
+        try chmod(dir.file("s"), to: 0o640)
+        try AtomicFile(options: .init(newFileMode: 0o600)).write(bytes("second"), to: dir.file("s"))
+        #expect(try fs.permissions(of: dir.file("s")) == 0o640)
+    }
+
+    // MARK: Symbolic links
+
+    func link(_ path: String, to target: String) throws {
+        try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: target)
+    }
+
+    @Test func aWriteThroughALinkReplacesTheTargetAndKeepsTheLink() throws {
+        let dir = try TempDirectory()
+        try FileManager.default.createDirectory(atPath: dir.file("dotfiles"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: dir.file("config"), withIntermediateDirectories: true)
+        let target = dir.file("dotfiles/settings.json")
+        let linked = dir.file("config/settings.json")
+        let file = AtomicFile(options: .init(envelope: false, keepPrevious: true))
+        try file.write(bytes("first"), to: target)
+        try link(linked, to: target)
+
+        try file.write(bytes("second"), to: linked)
+
+        #expect(try fs.readLink(linked) == target, "the link is still a link")
+        #expect(text(try fs.readAll(target)) == "second", "and its target has the new contents")
+        #expect(text(try file.read(linked)!.bytes) == "second")
+        #expect(try fs.list(directory: dir.file("config")) == ["settings.json"], "nothing was left beside the link")
+        #expect(try fs.list(directory: dir.file("dotfiles")) == ["settings.json", "settings.json.previous"], "the previous generation sits beside the target")
+        #expect(text(try fs.readAll(target + ".previous")) == "first")
+    }
+
+    @Test func aRelativeLinkAndAChainOfLinksAreFollowed() throws {
+        let dir = try TempDirectory()
+        try FileManager.default.createDirectory(atPath: dir.file("real"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: dir.file("a"), withIntermediateDirectories: true)
+        try AtomicFile(options: .init(envelope: false)).write(bytes("one"), to: dir.file("real/s"))
+        try link(dir.file("a/hop"), to: "../real/s")          // relative to a/
+        try link(dir.file("start"), to: dir.file("a/hop"))    // a chain of two
+        try AtomicFile(options: .init(envelope: false)).write(bytes("two"), to: dir.file("start"))
+        #expect(text(try fs.readAll(dir.file("real/s"))) == "two")
+        #expect(try fs.readLink(dir.file("start")) == dir.file("a/hop"))
+        #expect(try fs.readLink(dir.file("a/hop")) == "../real/s")
+    }
+
+    @Test func aLinkToNothingIsWrittenThrough() throws {
+        let dir = try TempDirectory()
+        try link(dir.file("s"), to: dir.file("elsewhere"))
+        try AtomicFile(options: .init(envelope: false)).write(bytes("hello"), to: dir.file("s"))
+        #expect(try fs.readLink(dir.file("s")) == dir.file("elsewhere"))
+        #expect(text(try fs.readAll(dir.file("elsewhere"))) == "hello")
+    }
+
+    @Test func aLoopOfLinksIsRefused() throws {
+        let dir = try TempDirectory()
+        try link(dir.file("a"), to: dir.file("b"))
+        try link(dir.file("b"), to: dir.file("a"))
+        let error = #expect(throws: StoreError.self) { try AtomicFile().write(bytes("x"), to: dir.file("a")) }
+        #expect(error?.kind == .invalidArgument)
+        #expect(try fs.readLink(dir.file("a")) == dir.file("b"))
+    }
+
+    @Test func aCorruptFileBehindALinkIsQuarantinedBesideTheTarget() throws {
+        let dir = try TempDirectory()
+        try FileManager.default.createDirectory(atPath: dir.file("real"), withIntermediateDirectories: true)
+        let file = AtomicFile()
+        try file.write(bytes("payload!!"), to: dir.file("real/s"))
+        try link(dir.file("s"), to: dir.file("real/s"))
+        try flipBit(in: dir.file("real/s"), at: 22)
+        #expect(throws: StoreError.self) { try file.read(dir.file("s")) }
+        #expect(try fs.readLink(dir.file("s")) == dir.file("real/s"), "the link is not what got moved aside")
+        #expect(try fs.list(directory: dir.file("real")) == ["s.corrupt-1"])
+    }
 }
 
 @Suite("AtomicFile failures")
