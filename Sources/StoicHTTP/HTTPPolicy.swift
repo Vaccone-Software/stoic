@@ -92,7 +92,7 @@ public struct HTTPPolicy: Sendable {
         queueLimitPerHost: Int = 64,
         maxResponseBytes: Int = 10_000_000,
         errorExcerptBytes: Int = 512,
-        coalesceGETs: Bool = true,
+        coalesceGETs: Bool = false,
         varyHeaders: [String] = HTTPPolicy.defaultVaryHeaders,
         wallClock: @escaping @Sendable () -> Date = { Date() }
     ) {
