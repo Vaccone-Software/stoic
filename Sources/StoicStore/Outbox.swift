@@ -113,9 +113,10 @@ public actor Outbox<Item: Sendable> {
         var entries: [Stored] { slots.compactMap { $0 } }
 
         private mutating func squeeze() {
-            slots = slots.compactMap { $0 }
+            let live = entries
+            slots = live.map { Optional($0) }
             positions.removeAll(keepingCapacity: true)
-            for (position, stored) in slots.enumerated() { positions[stored!.key] = position }
+            for (position, stored) in live.enumerated() { positions[stored.key] = position }
         }
     }
 

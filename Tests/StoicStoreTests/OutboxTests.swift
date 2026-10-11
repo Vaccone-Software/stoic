@@ -357,4 +357,43 @@ struct OutboxTests {
         let floor = Duration.milliseconds(20)
         #expect(large < max(small, floor) * 10, "5,000 entries took \(small), 20,000 took \(large)")
     }
+
+    @Test func theOrderSurvivesManyRemovalsAndTheirCleanUp() async throws {
+        let outbox = try open(try disk(), policy: DeliveryPolicy(schedule: .fixed(.seconds(1)).attempts(1), onFailure: .continueWithNext))
+        var keys: [IdempotencyKey] = []
+        for index in 0..<200 { keys.append(try await outbox.enqueue("item \(index)")) }
+        // Deliver every entry but the multiples of seven: 171 removals, with
+        // the holes squeezed out several times along the way.
+        let report = try await outbox.deliverPending { entry in
+            if Int(entry.item.dropFirst(5))! % 7 == 0 { throw Rejected() }
+        }
+        let kept = keys.enumerated().filter { $0.offset % 7 == 0 }.map(\.element)
+        #expect(report.delivered.count == 200 - kept.count)
+        #expect(await outbox.pendingKeys == kept)
+        try await outbox.enqueue("late")
+        #expect(try await outbox.entries().map(\.item).suffix(2) == ["item 196", "late"])
+    }
+
+    @Test func aFlippedBitInTheMiddleOfTheJournalCostsOneEntryNotTheRest() async throws {
+        let disk = try disk()
+        var outbox = try open(disk)
+        var keys: [IdempotencyKey] = []
+        for index in 0..<100 {
+            let number = String(index + 1000).dropFirst()   // fixed width, so every record is the same size
+            keys.append(try await outbox.enqueue("item-\(number)", key: IdempotencyKey(rawValue: "key-\(number)")))
+        }
+        try await outbox.close()
+        let frame = Journal.headerSize + 2 + "key-000".utf8.count + "item-000".utf8.count
+        let file = try disk.open("/d/outbox", mode: .readWrite)
+        #expect(try disk.size(of: file) == 100 * frame)
+        let byte = try disk.read(file, at: frame + 20, count: 1)   // inside the second record
+        try disk.write(file, [byte[0] ^ 0x01], at: frame + 20)
+        try disk.fullSync(file)
+        try disk.close(file)
+
+        outbox = try open(disk)
+        #expect(await outbox.pendingKeys == keys.enumerated().filter { $0.offset != 1 }.map(\.element), "the other 99 are still pending, in order")
+        let report = try await outbox.deliverPending { _ in }
+        #expect(report.delivered.count == 99)
+    }
 }

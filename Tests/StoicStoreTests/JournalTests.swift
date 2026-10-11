@@ -64,18 +64,214 @@ struct JournalTests {
         }
     }
 
-    @Test func aFlippedByteInTheMiddleEndsTheLogThere() async throws {
+    // MARK: Damage in the middle of the log
+
+    /// A journal of `count` records, "record-0" and on, closed; and where each starts.
+    func makeJournal(_ path: String, count: Int) throws -> [Int] {
+        let journal = try Journal.open(at: path)
+        var starts: [Int] = []
+        var end = 0
+        for index in 0..<count {
+            starts.append(end)
+            end += Journal.headerSize + "record-\(index)".utf8.count
+        }
+        try journal.append(batch: (0..<count).map { bytes("record-\($0)") })   // one sync, not a hundred
+        try journal.close()
+        return starts
+    }
+
+    func names(except lost: Set<Int> = [], count: Int = 100) -> [String] {
+        (0..<count).filter { !lost.contains($0) }.map { "record-\($0)" }
+    }
+
+    @Test func aFlippedBitInTheMiddleLosesOnlyThatRecordAndSaysSo() async throws {
+        let dir = try TempDirectory()
+        let events = RecordingInstrumentation()
+        try await withAmbient({ $0.instrumentation = events }) {
+            let starts = try makeJournal(dir.file("j"), count: 100)
+            let size = try fs.readAll(dir.file("j")).count
+            try flipBit(in: dir.file("j"), at: starts[50] + 17)   // inside record 50's payload
+
+            let journal = try Journal.open(at: dir.file("j"))
+            let replay = try journal.replay()
+            #expect(payloads(replay) == names(except: [50]), "the other 99 survive, in order")
+            #expect(replay.records.map(\.sequence) == (1...100).filter { $0 != 51 }.map(UInt64.init))
+            #expect(journal.openReport.droppedBytes == 0, "nothing was cut from the end")
+            #expect(journal.openReport.corruptRecords == 1)
+            #expect(journal.openReport.corruption == [
+                .init(offset: starts[50], length: starts[51] - starts[50], lostRecords: 1, firstLostSequence: 51),
+            ])
+            let event = try #require(events.events(named: "store.journal_corruption").first)
+            #expect(event["offset"].map(\.description) == "\(starts[50])")
+            #expect(event["lostRecords"].map(\.description) == "1")
+            #expect(event["firstLostSequence"].map(\.description) == "51")
+            #expect(try fs.readAll(dir.file("j")).count == size, "the damaged bytes are left where they are")
+            try journal.close()
+        }
+    }
+
+    @Test(arguments: Array(0..<25))   // every byte of a 25-byte record: length, checksum, sequence, payload
+    func damageToAnyByteOfARecordCostsThatRecordAlone(byte: Int) throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 100)
+        try flipBit(in: dir.file("j"), at: starts[50] + byte)
+        let journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [50]))
+        #expect(journal.openReport.corruptRecords == 1)
+        #expect(journal.openReport.droppedBytes == 0)
+    }
+
+    @Test func adjacentDamagedRecordsAreCountedTogether() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 20)
+        try flipBit(in: dir.file("j"), at: starts[7] + 20)
+        try flipBit(in: dir.file("j"), at: starts[8] + 20)
+        try flipBit(in: dir.file("j"), at: starts[9] + 20)
+        let journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [7, 8, 9], count: 20))
+        #expect(journal.openReport.corruption == [
+            .init(offset: starts[7], length: starts[10] - starts[7], lostRecords: 3, firstLostSequence: 8),
+        ])
+    }
+
+    @Test func twoSeparateStretchesAreReportedSeparately() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 20)
+        try flipBit(in: dir.file("j"), at: starts[3] + 20)
+        try flipBit(in: dir.file("j"), at: starts[12] + 20)
+        let journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [3, 12], count: 20))
+        #expect(journal.openReport.corruption.map(\.offset) == [starts[3], starts[12]])
+        #expect(journal.openReport.corruptRecords == 2)
+    }
+
+    @Test func theFirstRecordMayBeTheDamagedOne() throws {
+        let dir = try TempDirectory()
+        _ = try makeJournal(dir.file("j"), count: 10)
+        try flipBit(in: dir.file("j"), at: 18)
+        let journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [0], count: 10))
+        #expect(journal.openReport.corruption.first?.firstLostSequence == 1)
+    }
+
+    @Test func damageAfterASnapshotIsCountedFromTheSnapshotsSequence() throws {
+        let dir = try TempDirectory()
+        var journal = try Journal.open(at: dir.file("j"))
+        for name in ["a", "b", "c"] { try journal.append(bytes(name)) }
+        try journal.compact(snapshot: bytes("abc"))
+        var starts: [Int] = []
+        for index in 0..<5 {
+            starts.append(journal.byteCount)
+            try journal.append(bytes("post-\(index)"))
+        }
+        try journal.close()
+        try flipBit(in: dir.file("j"), at: starts[0] + 18)   // the first record after the snapshot
+        journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == ["post-1", "post-2", "post-3", "post-4"])
+        #expect(journal.openReport.corruption.first?.firstLostSequence == 4)
+        #expect(journal.openReport.corruptRecords == 1)
+    }
+
+    @Test func aFlippedBitInTheLastRecordIsATornTailAndIsCutAsBefore() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 100)
+        let size = try fs.readAll(dir.file("j")).count
+        try flipBit(in: dir.file("j"), at: starts[99] + 17)
+        let journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [99]))
+        #expect(journal.openReport.droppedBytes == size - starts[99])
+        #expect(journal.openReport.corruption.isEmpty, "nothing intact follows it: indistinguishable from a crash")
+        #expect(journal.byteCount == starts[99])
+    }
+
+    @Test func damageInTheMiddleAndATornTailAreEachHandled() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 10)
+        try flipBit(in: dir.file("j"), at: starts[4] + 20)
+        let file = try fs.open(dir.file("j"), mode: .readWrite)
+        try fs.truncate(file, to: starts[9] + 11)   // record 9 torn
+        try fs.close(file)
+        let journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [4, 9], count: 10))
+        #expect(journal.openReport.droppedBytes == 11)
+        #expect(journal.openReport.corruptRecords == 1)
+        #expect(journal.byteCount == starts[9])
+    }
+
+    @Test func theJournalKeepsWorkingAfterSkippingDamage() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 10)
+        try flipBit(in: dir.file("j"), at: starts[4] + 20)
+        var journal = try Journal.open(at: dir.file("j"))
+        #expect(try journal.append(bytes("new")) == 11, "numbering continues past every record there ever was")
+        try journal.close()
+        journal = try Journal.open(at: dir.file("j"))
+        #expect(payloads(try journal.replay()) == names(except: [4], count: 10) + ["new"])
+        #expect(journal.openReport.corruptRecords == 1, "the damage is still in the file, and is reported again")
+    }
+
+    @Test func refusingToOpenLeavesTheFileUntouched() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 10)
+        try flipBit(in: dir.file("j"), at: starts[4] + 20)
+        let file = try fs.open(dir.file("j"), mode: .readWrite)
+        try fs.write(file, [1, 2, 3], at: try fs.size(of: file))   // and a torn tail besides
+        try fs.close(file)
+        let before = try fs.readAll(dir.file("j"))
+        let error = #expect(throws: StoreError.self) {
+            try Journal.open(at: dir.file("j"), options: .init(middleDamage: .refuse))
+        }
+        #expect(error?.kind == .corrupt)
+        #expect(try fs.readAll(dir.file("j")) == before, "not even the torn tail was cut")
+        #expect(try fs.list(directory: dir.path) == ["j"])
+    }
+
+    @Test func compactingKeepsACopyOfTheDamagedLogBeforeItIsTruncated() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 10)
+        try flipBit(in: dir.file("j"), at: starts[4] + 20)
+        let damaged = try fs.readAll(dir.file("j"))
+        var journal = try Journal.open(at: dir.file("j"))
+        try journal.compact { replay in bytes(payloads(replay).joined(separator: "|")) }
+        #expect(try fs.readAll(dir.file("j.corrupt-1")) == damaged, "the evidence is saved before the log is cut")
+        #expect(journal.byteCount == 0)
+        try journal.close()
+        journal = try Journal.open(at: dir.file("j"))
+        #expect(journal.openReport.corruption.isEmpty)
+        #expect(try journal.replay().snapshot.map { text($0.bytes) } == names(except: [4], count: 10).joined(separator: "|"))
+    }
+
+    @Test func aCompactionOfAnUndamagedLogSavesNothing() throws {
+        let dir = try TempDirectory()
+        _ = try makeJournal(dir.file("j"), count: 3)
+        let journal = try Journal.open(at: dir.file("j"))
+        try journal.compact(snapshot: bytes("x"))
+        #expect(try fs.list(directory: dir.path).filter { $0.contains("corrupt") }.isEmpty)
+    }
+
+    @Test func damageThatAppearsAfterOpenIsAnErrorNotASilentSkip() throws {
+        let dir = try TempDirectory()
+        let starts = try makeJournal(dir.file("j"), count: 10)
+        let journal = try Journal.open(at: dir.file("j"))
+        try flipBit(in: dir.file("j"), at: starts[4] + 20)
+        let error = #expect(throws: StoreError.self) { try journal.replay() }
+        #expect(error?.kind == .corrupt)
+    }
+
+    @Test func aFrameInsideADamagedPayloadIsNotMistakenForARecord() throws {
+        // A record whose payload is itself a framed record, with a sequence
+        // number far above what could fit in the damaged stretch.
         let dir = try TempDirectory()
         var journal = try Journal.open(at: dir.file("j"))
         try journal.append(bytes("one"))
-        let first = journal.byteCount
-        try journal.append(bytes("two"))
+        let start = journal.byteCount
+        try journal.append(Journal.frame(bytes("inner"), sequence: 1000))
         try journal.append(bytes("three"))
         try journal.close()
-        try flipBit(in: dir.file("j"), at: first + 17)   // inside "two"'s payload
+        try flipBit(in: dir.file("j"), at: start + 5)   // the outer record's checksum
         journal = try Journal.open(at: dir.file("j"))
-        #expect(payloads(try journal.replay()) == ["one"])
-        #expect(journal.openReport.droppedBytes > 0)
+        #expect(payloads(try journal.replay()) == ["one", "three"])
+        #expect(journal.openReport.corruptRecords == 1)
     }
 
     @Test func aHoleOfZerosIsNeverARecord() throws {
