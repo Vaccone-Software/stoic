@@ -304,6 +304,95 @@ public nonisolated(nonsending) func retry<R: Sendable, Failure: Error>(
     }
 }
 
+/// ``retry(_:attemptTimeout:budget:classify:nesting:clock:label:fileID:line:operation:)``
+/// for an operation that is not `Sendable`: the inline closure of a
+/// ``Policy``, which `Retrying(attemptTimeout:)` runs.
+///
+/// The attempt is bounded by the same engine, so a timed-out attempt is
+/// transient to the classifier in the same way. A timeout has to run the
+/// attempt in a child task so that it can be cancelled without cancelling the
+/// caller; the operation is therefore handed to that task (see
+/// ``AttemptHandoff``), and runs there on the caller's actor.
+nonisolated(nonsending) func retryBoundingEachAttempt<R, Failure: Error>(
+    _ schedule: BoundedSchedule,
+    attemptTimeout: Duration,
+    budget: RetryBudget,
+    classify: RetryClassifier<Failure>,
+    nesting: RetryNesting,
+    label: String?,
+    fileID: String,
+    line: UInt,
+    operation: nonisolated(nonsending) () async throws(Failure) -> R
+) async throws(Failure) -> R {
+    let isolation = #isolation
+    return try await retryLoop(
+        schedule, budget: budget, classify: classify, nesting: nesting, clock: nil,
+        label: label, fileID: fileID, line: line
+    ) { attempt in
+        let context = RetryContext()
+        defer { context.end() }
+        // A local function, not a closure: `withoutActuallyEscaping`'s own
+        // body is not `nonsending`, and the operation must stay on the
+        // caller's actor.
+        nonisolated(nonsending) func bounded(
+            _ escapable: nonisolated(nonsending) @escaping () async throws(Failure) -> R
+        ) async -> DeadlineOutcome<AttemptResult<R>, Failure> {
+            await AttemptHandoff(escapable).runBounded(
+                on: isolation, context: context, timeout: attemptTimeout,
+                label: label.map { "\($0) attempt \(attempt.number)" }, fileID: fileID, line: line
+            )
+        }
+        let outcome = await withoutActuallyEscaping(operation, do: bounded)
+        return (outcome.result.map(\.value), outcome.expired)
+    }
+}
+
+/// A result carried out of an attempt's child task.
+///
+/// The attempt's task is awaited before `retryBoundingEachAttempt` goes on, so
+/// the value is only ever touched by one task at a time, in turn.
+// stoic:allow(unchecked-sendable): a hand-off between two tasks, never shared: the child finishes before the parent reads it
+private struct AttemptResult<R>: @unchecked Sendable {
+    let value: R
+}
+
+/// A policy's inline operation, handed to an attempt's child task.
+///
+/// An attempt timeout must cancel the attempt without cancelling its caller,
+/// so the attempt has to run in a task of its own, while a ``Policy``'s
+/// operation is neither `Sendable` nor escaping. The caller is suspended for
+/// the whole time the child runs, so the operation is used by one task at a
+/// time (the structured hand-off `withTaskGroup` makes), and it is called on
+/// the caller's actor, so what it captures is touched where the caller would
+/// have touched it.
+// stoic:allow(unchecked-sendable): a hand-off to one child task that the caller awaits; used by one task at a time, on the caller's actor
+private final class AttemptHandoff<R, Failure: Error>: @unchecked Sendable {
+    private let operation: nonisolated(nonsending) () async throws(Failure) -> R
+
+    init(_ operation: nonisolated(nonsending) @escaping () async throws(Failure) -> R) {
+        self.operation = operation
+    }
+
+    func runBounded(
+        on isolation: (any Actor)?,
+        context: RetryContext,
+        timeout: Duration,
+        label: String?,
+        fileID: String,
+        line: UInt
+    ) async -> DeadlineOutcome<AttemptResult<R>, Failure> {
+        await RetryContext.$active.withValue(context) {
+            await runWithDeadline(.after(timeout, clock: nil), tolerance: nil, label: label, fileID: fileID, line: line) { () async throws(Failure) -> AttemptResult<R> in
+                try await self.run(on: isolation)
+            }
+        }
+    }
+
+    private func run(on isolation: isolated (any Actor)?) async throws(Failure) -> AttemptResult<R> {
+        AttemptResult(value: try await operation())
+    }
+}
+
 /// The loop both forms of `retry` share; they differ only in how one
 /// attempt runs.
 private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
