@@ -13,6 +13,8 @@ indirect enum ValueType {
     case double
     case string
     case json
+    /// Foundation's leaves, which the library has schemas for.
+    case date, url, uuid, data, decimal
     /// Any fixed-width integer, by name.
     case integer(String)
     case array(ValueType)
@@ -31,6 +33,10 @@ indirect enum ValueType {
     /// What a constraint on the value ends up applying to.
     enum Leaf {
         case number, string, bool, json, named
+        /// A `Decimal`: constraints about numbers reach it.
+        case decimal
+        /// A `Date`, `URL`, `UUID` or `Data`, which constraints do not reach.
+        case foundation
     }
 
     /// The innermost value: what `@Range` and `@Length` talk about, through
@@ -41,8 +47,18 @@ indirect enum ValueType {
         case .double, .integer: .number
         case .string: .string
         case .json: .json
+        case .decimal: .decimal
+        case .date, .url, .uuid, .data: .foundation
         case .array(let element), .dictionary(let element), .optional(let element), .secret(let element): element.leaf
         case .named: .named
+        }
+    }
+
+    /// The value under every optional, array, dictionary and secret.
+    var innermost: ValueType {
+        switch self {
+        case .array(let element), .dictionary(let element), .optional(let element), .secret(let element): element.innermost
+        default: self
         }
     }
 
@@ -88,11 +104,6 @@ private let knownUnsupported: [String: String] = [
     "Float": "use `Double`",
     "Float16": "use `Double`",
     "CGFloat": "use `Double`",
-    "Decimal": "use `String` with a `@Pattern`, or write a transform",
-    "Date": "write a transform from a string or a number",
-    "URL": "write a transform from a string",
-    "UUID": "write a transform from a string",
-    "Data": "write a transform from a string",
     "Character": "use `String` with `@Length(1...1)`",
     "Substring": "use `String`",
     "Set": "use an array with `@Unique`",
@@ -108,9 +119,9 @@ func classify(_ type: TypeSyntax, enclosing: String) throws(UnsupportedType) -> 
         return try classify(name: identifier.name.text, arguments: identifier.genericArgumentClause, whole: type, enclosing: enclosing)
     }
     if let member = type.as(MemberTypeSyntax.self) {
-        // `Swift.String` is `String`; anything else qualified is a name to
+        // `Swift.String` is `String` and `Foundation.Date` is `Date`; anything else qualified is a name to
         // be resolved by the compiler.
-        if let base = member.baseType.as(IdentifierTypeSyntax.self), base.name.text == "Swift" {
+        if let base = member.baseType.as(IdentifierTypeSyntax.self), base.name.text == "Swift" || base.name.text == "Foundation" {
             return try classify(name: member.name.text, arguments: member.genericArgumentClause, whole: type, enclosing: enclosing)
         }
         return .named(type.trimmedDescription, isSelf: type.trimmedDescription == enclosing)
@@ -162,6 +173,11 @@ private func classify(
     case "Double" where arguments == nil: return .double
     case "String" where arguments == nil: return .string
     case "JSONValue" where arguments == nil: return .json
+    case "Date" where arguments == nil: return .date
+    case "URL" where arguments == nil: return .url
+    case "UUID" where arguments == nil: return .uuid
+    case "Data" where arguments == nil: return .data
+    case "Decimal" where arguments == nil: return .decimal
     case "Int", "Int64", "UInt64":
         if arguments == nil { return .integer(name) }
     case "Array":

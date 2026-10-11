@@ -71,6 +71,55 @@ struct StructExpansionTests {
                 """)
     }
 
+    @Test func foundationTypesAreFieldsAndAFormatAttributeChoosesTheirSpelling() {
+        expand(
+            """
+            @Schema
+            struct Event {
+                var id = UUID()
+                var created: Date = Date()
+                @DateFormat(.epochSeconds) var seen: Date = Date()
+                @DateFormat(.epochMilliseconds) var clicks: [Date?] = []
+                var home: URL = URL(string: "https://example.com")!
+                @URLFormat(.relative) var link: URL? = nil
+                var blob: Data = Data()
+                @DataFormat(.base64url) var token: [String: Data] = [:]
+                @Range(0...100) @MultipleOf(0.5) var discount: Decimal = 0
+                var prices: [Decimal] = []
+            }
+            """,
+            to: """
+                struct Event {
+                    var id = UUID()
+                    var created: Date = Date()
+                    var seen: Date = Date()
+                    var clicks: [Date?] = []
+                    var home: URL = URL(string: "https://example.com")!
+                    var link: URL? = nil
+                    var blob: Data = Data()
+                    var token: [String: Data] = [:]
+                    var discount: Decimal = 0
+                    var prices: [Decimal] = []
+
+                    static let schema: StoicSchema::Schema<Event> = StoicSchema::Schema.object(Event.self, default: Event()) {
+                        StoicSchema::Field("id", \\.id, .uuid)
+                        StoicSchema::Field("created", \\.created, .date())
+                        StoicSchema::Field("seen", \\.seen, .date(.epochSeconds))
+                        StoicSchema::Field("clicks", \\.clicks, .array(of: .optional(.date(.epochMilliseconds))))
+                        StoicSchema::Field("home", \\.home, .url())
+                        StoicSchema::Field("link", \\.link, .optional(.url(.relative)))
+                        StoicSchema::Field("blob", \\.blob, .data())
+                        StoicSchema::Field("token", \\.token, .dictionary(of: .data(.base64url)))
+                        StoicSchema::Field("discount", \\.discount, .decimal(.range(0 ... 100), .multipleOf(0.5)))
+                        StoicSchema::Field("prices", \\.prices, .array(of: .decimal()))
+                    }
+                }
+
+                extension Event: StoicSchema::Schematic {
+                }
+                """)
+    }
+
     @Test func publicTypesGetPublicSchemas() {
         expand(
             """

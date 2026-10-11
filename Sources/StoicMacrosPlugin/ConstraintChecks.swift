@@ -37,7 +37,7 @@ func checkFit(scalar: [Marker], collection: [Marker], type: ValueType, subject: 
     for marker in scalar {
         let leaf = type.leaf
         let fits =
-            (marker.kind.constrainsNumbers && leaf == .number) || (marker.kind.constrainsStrings && leaf == .string)
+            (marker.kind.constrainsNumbers && (leaf == .number || leaf == .decimal)) || (marker.kind.constrainsStrings && leaf == .string)
         if !fits {
             let wanted = marker.kind.constrainsNumbers ? "a number" : "a string"
             let message: String
@@ -145,7 +145,7 @@ private func checkDefault(
         // `Secret("…")` and `nil` are not literals of the wrapped type.
         if case .secret = type { return }
         checkDefault(value, type: wrapped, field: field, allowed: allowed, reporter: reporter)
-    case .integer, .double:
+    case .integer, .double, .decimal:
         guard let literal = number(of: value) else { return }
         for marker in field.scalar where marker.kind.constrainsNumbers {
             if let interval = interval(of: marker), !interval.contains(literal) {
