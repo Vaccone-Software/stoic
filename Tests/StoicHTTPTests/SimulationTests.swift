@@ -117,7 +117,7 @@ struct HTTPSimulationTests {
     @Sendable static func eightIdenticalGets(_ sim: SimulationContext) async throws -> Int {
         let transport = ScriptedTransport()
         transport.on(.get("/avatar"), respond: [Step.bytes([9]).after(.milliseconds(20))])
-        let api = HTTPClient(base: URL(string: "https://api.example.com")!, policy: .standard, transport: transport)
+        let api = HTTPClient(base: URL(string: "https://api.example.com")!, policy: { var policy = HTTPPolicy.standard; policy.coalesceGETs = true; return policy }(), transport: transport)
         let results = await withTaskGroup(of: Outcome.self) { group in
             for _ in 0..<8 { group.addTask { await Self.run(api, .get("/avatar")) } }
             var all: [Outcome] = []

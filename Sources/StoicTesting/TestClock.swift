@@ -403,6 +403,7 @@ public final class TestClock: Clock, Sendable {
                 if let immediate {
                     continuation.resume(returning: immediate)
                 } else if let timer, let timeout {
+                    // stoic:allow(sleep-for-timeout): a real-time safety net for a test that waits on a clock nobody advances; it only reports, and the test owns the wait
                     DispatchQueue.global().asyncAfter(deadline: .now() + timeout.dispatchInterval, execute: timer)
                 }
             }

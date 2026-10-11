@@ -172,7 +172,7 @@ struct JournalTests {
         #expect(journal.openReport.corruptRecords == 1)
     }
 
-    @Test func aFlippedBitInTheLastRecordIsATornTailAndIsCutAsBefore() throws {
+    @Test(.failureMode("design/15", "a byte flips in the *last* record")) func aFlippedBitInTheLastRecordIsATornTailAndIsCutAsBefore() throws {
         let dir = try TempDirectory()
         let starts = try makeJournal(dir.file("j"), count: 100)
         let size = try fs.readAll(dir.file("j")).count
@@ -226,7 +226,7 @@ struct JournalTests {
         #expect(try fs.list(directory: dir.path) == ["j"])
     }
 
-    @Test func compactingKeepsACopyOfTheDamagedLogBeforeItIsTruncated() throws {
+    @Test(.failureMode("design/15", "compact runs over a log with skipped damage")) func compactingKeepsACopyOfTheDamagedLogBeforeItIsTruncated() throws {
         let dir = try TempDirectory()
         let starts = try makeJournal(dir.file("j"), count: 10)
         try flipBit(in: dir.file("j"), at: starts[4] + 20)
