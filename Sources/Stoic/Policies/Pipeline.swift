@@ -15,14 +15,15 @@
 ///
 /// **Order matters**, and the recommended one is the order of Polly's
 /// documentation and resilience4j's decorators: *overall timeout → retry →
-/// circuit breaker → rate limiter → bulkhead → attempt timeout → operation.*
-/// A timeout cannot be a stage (it must run the operation in a child task,
-/// which an inline `Policy` operation cannot do), but it nests around and
-/// inside a pipeline without changing its error type, because `withTimeout`
-/// passes the operation's error through:
+/// circuit breaker → rate limiter → bulkhead → operation,* with the attempt
+/// timeout given to ``Retrying`` (`attemptTimeout`). A timeout cannot be a
+/// stage (it must run the operation in a child task, which an inline `Policy`
+/// operation cannot do), but the overall one nests around a pipeline without
+/// changing its error type, because `withTimeout` passes the operation's error
+/// through:
 ///
 ///     let pipeline = Pipeline(
-///         Retrying(.exponential(base: .milliseconds(200)).jittered().attempts(3)),
+///         Retrying(.exponential(base: .milliseconds(200)).jittered().attempts(3), attemptTimeout: .seconds(2)),
 ///         CircuitBreaker(label: "api"),
 ///         RateLimiter(rate: 50, burst: 100, label: "api"),
 ///         Bulkhead(maxConcurrent: 8, queueLimit: 16, label: "api")
@@ -30,9 +31,7 @@
 ///
 ///     try await withTimeout(.seconds(10)) {                  // the whole call, retries included
 ///         try await pipeline.execute { () async throws(APIError) -> Reply in
-///             try await withTimeout(.seconds(2)) {           // each attempt
-///                 try await client.send(request)
-///             }
+///             try await client.send(request)                 // each attempt: Retrying bounds it
 ///         }
 ///     }
 public struct Pipeline: Policy {
@@ -102,11 +101,22 @@ extension PolicyError {
 /// not know the failure type of the pipeline it will sit in; the standard
 /// classifier sees through ``PolicyError``. The budget is per call site of
 /// `Retrying(…)`, unless you give one.
+///
+/// Give it an `attemptTimeout` to bound each attempt, as
+/// ``retry(_:attemptTimeout:budget:classify:nesting:clock:label:fileID:line:operation:)``
+/// does: an attempt that runs out of time is cancelled and counts as
+/// transient, so it is retried. Prefer this to a `withTimeout` inside the
+/// operation: `Retrying` sees only the error the cut-off attempt threw, which
+/// it cannot tell from a cancellation of the caller, and stops on it. The
+/// cost is that a ``CircuitBreaker`` inside the stage sees the cut-off as a
+/// cancellation, which it does not count. Each attempt runs in a child task,
+/// on the caller's actor.
 public struct Retrying: Policy {
     private let schedule: BoundedSchedule
     private let budget: RetryBudget
     private let classify: RetryClassifier<any Error>
     private let nesting: RetryNesting
+    private let attemptTimeout: Duration?
     private let label: String?
     private let fileID: String
     private let line: UInt
@@ -116,6 +126,7 @@ public struct Retrying: Policy {
         budget: RetryBudget = .perCallSite,
         classify: RetryClassifier<any Error> = .standard,
         nesting: RetryNesting = .singleAttempt,
+        attemptTimeout: Duration? = nil,
         label: String? = nil,
         fileID: String = #fileID,
         line: UInt = #line
@@ -124,6 +135,7 @@ public struct Retrying: Policy {
         self.budget = budget
         self.classify = classify
         self.nesting = nesting
+        self.attemptTimeout = attemptTimeout
         self.label = label
         self.fileID = fileID
         self.line = line
@@ -137,6 +149,12 @@ public struct Retrying: Policy {
             classify.decision(for: failure, attemptTimedOut: false)
         }
         do throws(Failure) {
+            if let attemptTimeout {
+                return try await retryBoundingEachAttempt(
+                    schedule, attemptTimeout: attemptTimeout, budget: budget, classify: typed, nesting: nesting,
+                    label: label, fileID: fileID, line: line, operation: operation
+                )
+            }
             return try await retry(
                 schedule, budget: budget, classify: typed, nesting: nesting,
                 label: label, fileID: fileID, line: line

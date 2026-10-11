@@ -66,9 +66,14 @@ that does not match is `.decoding(ValidationFailure)` with every issue and
 its path, and is never retried — asking again will not change the
 server's mind.
 
-**Coalescing.** Identical `GET`s in flight at once (same URL and the same
-values of the headers that vary the response) share one request
-(`SingleFlight`): ten views asking for the same avatar make one call.
+**Coalescing** (opt in: `coalesceGETs: true`). Identical `GET`s in flight
+at once (same URL and the same values of the headers that vary the
+response) share one request (`SingleFlight`): ten views asking for the same
+avatar make one call. It is off by default because the key covers only the
+URL and `varyHeaders`: two callers that differ only in a header outside
+that list, such as a custom `X-API-Key`, would share one response. Turn it
+on for clients whose credentials travel in a listed header (`Authorization`,
+`Cookie`), or add yours to `varyHeaders`.
 
 **Errors are one typed value.** `HTTPError`: `.status(code, body
 excerpt, retryAfter)`, `.transport(URLError.Code)`, `.timedOut(attempt:)`,

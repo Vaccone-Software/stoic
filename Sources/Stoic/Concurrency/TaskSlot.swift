@@ -164,8 +164,13 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
                     return
                 }
             }
-            let result = await CancellationCauseBox.$current.withValue(cause) {
-                await slot.runResult()
+            // The work outlives the caller's `withTimeout`, so it must not
+            // inherit that deadline (it would run already expired); the same
+            // reset SingleFlight, StateMachine and Supervisor make.
+            let result = await Deadline.$stored.withValue(nil) {
+                await CancellationCauseBox.$current.withValue(cause) {
+                    await slot.runResult()
+                }
             }
             // Between finishing and delivering: where newer work may arrive.
             await FaultPoint.hit("slot.deliver")

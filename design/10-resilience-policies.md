@@ -120,7 +120,8 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
 public struct Retrying: Policy {                      // design/02's retry, as a pipeline stage
     public init(_ schedule: BoundedSchedule, budget: RetryBudget = .perCallSite,
                 classify: RetryClassifier<any Error> = .standard,
-                nesting: RetryNesting = .singleAttempt, label: String? = nil)
+                nesting: RetryNesting = .singleAttempt,
+                attemptTimeout: Duration? = nil, label: String? = nil)
 }
 
 public struct Pipeline: Policy {                      // outermost stage first
@@ -133,7 +134,7 @@ A realistic stack for an HTTP client, outermost first:
 
 ```swift
 let pipeline = Pipeline(
-    Retrying(.exponential(base: .milliseconds(200)).jittered().attempts(3)),
+    Retrying(.exponential(base: .milliseconds(200)).jittered().attempts(3), attemptTimeout: .seconds(2)),
     CircuitBreaker(label: "api.example.com"),
     RateLimiter(rate: 50, per: .seconds(1), burst: 100, label: "api.example.com"),
     Bulkhead(maxConcurrent: 8, queueLimit: 16, label: "api.example.com")
@@ -142,9 +143,7 @@ let pipeline = Pipeline(
 func fetch(_ request: Request) async throws(PolicyError<HTTPError>) -> Response {
     try await withTimeout(.seconds(10)) {                  // the whole call, retries included
         try await pipeline.execute { () async throws(HTTPError) -> Response in
-            try await withTimeout(.seconds(2)) {           // each attempt
-                try await client.send(request)
-            }
+            try await client.send(request)                 // each attempt is bounded by Retrying
         }
     }
 }
@@ -177,7 +176,8 @@ inside the operation it bounds one attempt and throws `F`.
 
 **Recommended order, outermost first** (the order of Polly's documentation and
 resilience4j's decorators, adjusted for Stoic): _overall timeout → retry →
-circuit breaker → rate limiter → bulkhead → attempt timeout → operation._
+circuit breaker → rate limiter → bulkhead → operation_, the attempt timeout
+being `Retrying(attemptTimeout:)`.
 
 - The overall timeout bounds the caller's wait, retries included.
 - Retry is outside the breaker so that every attempt is judged and an open
@@ -185,9 +185,19 @@ circuit breaker → rate limiter → bulkhead → attempt timeout → operation.
 - The breaker is outside the limiter and bulkhead so that local load-shedding
   (which says nothing about the dependency) never reaches its window, and so
   that a call the limiter or bulkhead refuses never uses up a half-open probe.
-- The attempt timeout is innermost so that a hung call is _seen_ by the
-  breaker as a slow, failed call. A breaker outside every timeout would see
-  only the caller's cancellation, which it never counts.
+- Bound each attempt with `Retrying(attemptTimeout:)`, not with a
+  `withTimeout` inside the operation. An inner `withTimeout` cancels the
+  attempt, and `Retrying` receives only what the cut-off attempt threw,
+  typically a `CancellationError`, which it cannot tell from the caller having
+  been cancelled on purpose; the standard classifier stops on it, so a
+  timed-out attempt is never retried. `Retrying(attemptTimeout:)` knows the
+  attempt ran out of time and classifies it as transient (a `Defect` still
+  stops), exactly as `retry(attemptTimeout:)` does (design/02).
+- The cost: that timeout sits outside the breaker, so the cancelled attempt
+  reaches the breaker as a cancellation, which it never counts (the same as a
+  breaker outside any timeout). If the breaker must count hung calls, put a
+  `withTimeout` inside the operation that throws your own `Retryable` timeout
+  error, and leave `attemptTimeout` off.
 
 **Cancellation and deadlines, for every policy.** A policy that has not
 started the operation and finds the task cancelled rejects with `.cancelled`;
@@ -375,6 +385,15 @@ is typed `RetryClassifier<any Error>` because a stage does not know the
 failure type of the pipeline it will be placed in; the standard classifier
 sees through `PolicyError`. The budget is per call site of `Retrying(…)`.
 
+With `attemptTimeout`, each attempt runs under the engine of
+`retry(attemptTimeout:)`: a timeout that cancels the attempt and awaits it. A
+timeout has to run the attempt in a child task, so the stage hands its
+(non-`Sendable`) inline operation to that task for the length of the attempt;
+the caller is suspended meanwhile, so the operation is used by one task at a
+time, and it runs on the caller's actor. This is the one place a stage moves
+the operation off the caller's task, which is why a timeout is an option of
+`Retrying` rather than a stage of its own.
+
 ## Failure modes
 
 | What happens if…                                                          | Behaviour                                                                                                 |
@@ -427,6 +446,7 @@ sees through `PolicyError`. The budget is per call site of `Retrying(…)`.
 | a pipeline's operation fails                                              | The caller sees `.failed(error)` with the operation's own error                                           |
 | a pipeline has no stages                                                  | The operation runs; a failure is `.failed`                                                                |
 | `Retrying` meets `.circuitOpen` with a `retryAfter`                       | Backs off for at least that long (subject to the schedule's bounds and deadline)                          |
+| an attempt under `Retrying(attemptTimeout:)` runs out of time             | Cancelled and awaited; counted as transient, so retried on the schedule (a `Defect` still stops)          |
 
 ## Events
 

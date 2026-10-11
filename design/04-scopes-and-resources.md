@@ -80,8 +80,12 @@ its siblings (`siblingFailed`); the scope then throws `ConcurrentFailure`
 with every fork failure followed by the body's own error if it failed for
 another reason. The body runs as a child task — the only way a fork's
 failure can cancel it without cancelling the caller — so, like `Task {}`, it
-inherits the caller's actor and returns a `Sendable` result. `withScope`
-has no forks, so its body runs inline with any captures and a typed error.
+inherits the caller's actor and returns a `Sendable` result. A fork that
+finishes is forgotten at once, its failure (if any) already recorded: the
+scope holds only the forks still running, so one that lives as long as an
+app and forks per event does not grow with every event it has handled.
+`withScope` has no forks, so its body runs inline with any captures and a
+typed error.
 
 **Saga.** A step's compensation is registered only once the step
 succeeds, and runs only if the saga ends in failure or cancellation:
@@ -97,18 +101,19 @@ returned to the body and kept by the release closure).
 
 ## Failure modes
 
-| What happens if…                                  | Behaviour                                                                              |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| the body succeeds                                 | Children awaited, finalizers run with `.success`, value returned                       |
-| the body throws                                   | Finalizers run with `.failure(error)`, error rethrown unchanged                        |
-| the task is cancelled mid-body                    | Finalizers run with `.cancelled`, shielded; `CancellationError` rethrown               |
-| a finalizer throws (logs) / fails                 | Reported at error level; remaining finalizers run; outcome unchanged                   |
-| work started in the scope was abandoned            | Releases marked `.quarantine` are skipped (leaked on purpose); `scope.release_quarantined` |
-| a finalizer hangs                                 | Abandoned after its timeout, listed in `AbandonedWork`; `scope.finalizer_abandoned`    |
-| the acquire throws                                | Nothing registered; error rethrown; earlier acquisitions are released                  |
-| a forked child throws                             | Body and siblings cancelled; after cleanup, `ConcurrentFailure` with every child error |
-| the enclosing deadline has already passed at exit | Finalizers still get `exitDeadlineFloor` each                                          |
-| someone tries to keep the `Scope`                 | Compile error                                                                          |
+| What happens if…                                  | Behaviour                                                                                  |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| the body succeeds                                 | Children awaited, finalizers run with `.success`, value returned                           |
+| the body throws                                   | Finalizers run with `.failure(error)`, error rethrown unchanged                            |
+| the task is cancelled mid-body                    | Finalizers run with `.cancelled`, shielded; `CancellationError` rethrown                   |
+| a finalizer throws (logs) / fails                 | Reported at error level; remaining finalizers run; outcome unchanged                       |
+| work started in the scope was abandoned           | Releases marked `.quarantine` are skipped (leaked on purpose); `scope.release_quarantined` |
+| a finalizer hangs                                 | Abandoned after its timeout, listed in `AbandonedWork`; `scope.finalizer_abandoned`        |
+| the acquire throws                                | Nothing registered; error rethrown; earlier acquisitions are released                      |
+| a forked child throws                             | Body and siblings cancelled; after cleanup, `ConcurrentFailure` with every child error     |
+| a long-lived scope forks many short tasks         | Each fork is forgotten when it finishes; the scope holds only the running ones             |
+| the enclosing deadline has already passed at exit | Finalizers still get `exitDeadlineFloor` each                                              |
+| someone tries to keep the `Scope`                 | Compile error                                                                              |
 
 ## Events
 

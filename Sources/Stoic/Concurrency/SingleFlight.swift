@@ -19,6 +19,11 @@ internal import Synchronization
 ///   the first caller's deadline; each caller's wait is bounded by its own.
 ///   A flight whose callers have all given up is cancelled, so the
 ///   operation is never orphaned.
+/// - **It runs at the most urgent caller's priority.** A caller waits on a
+///   continuation, which escalates nothing by itself, so the flight does it:
+///   a caller who joins at a higher priority than the flight runs at, or who
+///   is escalated while waiting, escalates the shared operation to match. A
+///   background prefetch that a tap then joins runs at the tap's priority.
 /// - It inherits the first caller's ``Ambient`` context and other task-locals.
 ///
 /// Every caller receives the same value, or the same error.
@@ -34,6 +39,9 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         let cause = CancellationCauseBox(parent: nil)
         var task: Task<Void, Never>?
         var waiters: [UInt64: Waiter] = [:]
+        /// The most urgent priority a caller has asked for: what the task
+        /// must be escalated to, including before it exists.
+        var priority: TaskPriority
     }
 
     private struct State {
@@ -79,24 +87,30 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         }
         await FaultPoint.hit("singleflight.arriving")
         let deadline = Deadline.current
-        let outcome: Outcome = await withTaskGroup(of: Void.self) { group in
-            if let deadline {
-                group.addTask {
-                    do {
-                        try await deadline.clock.sleep(until: deadline.instant, tolerance: nil)
-                        self.leave(waiterID, because: Rejection(.deadlineExceeded, label: self.label))
-                    } catch {}
+        // A waiting caller's task can be escalated (something more urgent now
+        // awaits it); its continuation would not pass that on, so pass it on.
+        let outcome: Outcome = await withTaskPriorityEscalationHandler {
+            await withTaskGroup(of: Void.self) { group in
+                if let deadline {
+                    group.addTask {
+                        do {
+                            try await deadline.clock.sleep(until: deadline.instant, tolerance: nil)
+                            self.leave(waiterID, because: Rejection(.deadlineExceeded, label: self.label))
+                        } catch {}
+                    }
                 }
-            }
-            let outcome = await withTaskCancellationHandler {
-                await withCheckedContinuation { (waiter: Waiter) in
-                    join(waiterID, key: key, operation: operation, waiter: waiter)
+                let outcome = await withTaskCancellationHandler {
+                    await withCheckedContinuation { (waiter: Waiter) in
+                        join(waiterID, key: key, operation: operation, waiter: waiter)
+                    }
+                } onCancel: {
+                    leave(waiterID, because: Rejection(.cancelled, label: label))
                 }
-            } onCancel: {
-                leave(waiterID, because: Rejection(.cancelled, label: label))
+                group.cancelAll()
+                return outcome
             }
-            group.cancelAll()
-            return outcome
+        } onPriorityEscalated: { old, new in
+            self.escalate(waiterID, to: max(old, new))
         }
         if case .failure(.rejected(let rejection)) = outcome,
            rejection.reason == .cancelled, CancellationCause.current == .deadline {
@@ -111,33 +125,64 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value,
         waiter: Waiter
     ) {
-        let next = state.withLock { state -> FlightJoin in
-            if let early = state.arriving.removeValue(forKey: waiterID) ?? nil {
-                return .rejected(early)
-            }
-            state.membership[waiterID] = key
-            if state.flights[key] != nil {
-                state.flights[key]!.waiters[waiterID] = waiter
-                return .joined
-            }
-            let flightID = state.nextID
-            state.nextID += 1
-            var flight = Flight(id: flightID)
-            flight.waiters[waiterID] = waiter
-            state.flights[key] = flight
-            return .launch(flightID)
+        let (next, priority) = state.withLock { state -> (FlightJoin, TaskPriority) in
+            // Read under the lock: an escalation that lands after this finds
+            // the caller's membership, set in the same critical section.
+            let priority = Task.currentPriority
+            return (joinLocked(&state, waiterID, key: key, waiter: waiter, priority: priority), priority)
         }
         switch next {
         case .rejected(let rejection):
             waiter.resume(returning: .failure(.rejected(rejection)))
-        case .joined:
+        case .joined(let escalating):
+            // Outside the lock: an escalation runs the operation's own
+            // escalation handlers, synchronously.
+            escalating?.escalatePriority(to: priority)
             Ambient.record(Event("singleflight.joined", level: .debug, label: label))
-        case .launch(let flightID):
-            launch(key: key, flightID: flightID, operation: operation)
+        case .launch(let flightID, let priority):
+            launch(key: key, flightID: flightID, priority: priority, operation: operation)
         }
     }
 
-    private func launch(key: Key, flightID: UInt64, operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value) {
+    private func joinLocked(_ state: inout State, _ waiterID: UInt64, key: Key, waiter: Waiter, priority: TaskPriority) -> FlightJoin {
+        if let early = state.arriving.removeValue(forKey: waiterID) ?? nil {
+            return .rejected(early)
+        }
+        state.membership[waiterID] = key
+        if state.flights[key] != nil {
+            state.flights[key]!.waiters[waiterID] = waiter
+            guard priority > state.flights[key]!.priority else { return .joined(escalating: nil) }
+            // The caller escalates a running task; a task not created yet
+            // is escalated by its launch, which reads this.
+            state.flights[key]!.priority = priority
+            return .joined(escalating: state.flights[key]!.task)
+        }
+        let flightID = state.nextID
+        state.nextID += 1
+        var flight = Flight(id: flightID, priority: priority)
+        flight.waiters[waiterID] = waiter
+        state.flights[key] = flight
+        return .launch(flightID, priority)
+    }
+
+    /// Raises the flight `waiterID` is waiting on to `priority`.
+    private func escalate(_ waiterID: UInt64, to priority: TaskPriority) {
+        let task = state.withLock { state -> Task<Void, Never>? in
+            // Not joined yet: it joins at its current, escalated, priority.
+            guard let key = state.membership[waiterID], state.flights[key] != nil,
+                  priority > state.flights[key]!.priority else { return nil }
+            state.flights[key]!.priority = priority
+            return state.flights[key]!.task
+        }
+        task?.escalatePriority(to: priority)
+    }
+
+    private func launch(
+        key: Key,
+        flightID: UInt64,
+        priority launchedAt: TaskPriority,
+        operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value
+    ) {
         let cause = state.withLock { $0.flights[key]?.id == flightID ? $0.flights[key]?.cause : nil }
         guard let cause else { return }   // every caller already left
         let task = TaskLedger.task(.flight, label: label) {
@@ -152,11 +197,13 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
             }
             self.land(key: key, flightID: flightID, result: result)
         }
-        let orphaned = state.withLock { state -> Bool in
-            guard state.flights[key]?.id == flightID else { return true }
+        let (orphaned, wanted) = state.withLock { state -> (Bool, TaskPriority) in
+            guard state.flights[key]?.id == flightID else { return (true, launchedAt) }
             state.flights[key]!.task = task
-            return false
+            return (false, state.flights[key]!.priority)
         }
+        // A more urgent caller joined before the task existed.
+        if wanted > launchedAt { task.escalatePriority(to: wanted) }
         if orphaned {
             // Every caller left between the flight's creation and its task's.
             cause.record(.userRequested)
@@ -207,6 +254,6 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
 
 private enum FlightJoin {
     case rejected(Rejection)
-    case joined
-    case launch(UInt64)
+    case joined(escalating: Task<Void, Never>?)
+    case launch(UInt64, TaskPriority)
 }

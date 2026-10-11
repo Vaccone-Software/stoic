@@ -125,6 +125,40 @@ struct PipelineTests {
         }
     }
 
+    /// An inner `withTimeout` cancels a hung attempt, and the retry stage sees
+    /// a plain cancellation, which it takes for the caller's and stops on.
+    /// `Retrying(attemptTimeout:)` knows the attempt timed out, so it retries.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/10", "an attempt under `Retrying(attemptTimeout:)` runs out of time"))
+    func retryingBoundsEachAttemptAndRetriesOneThatTimesOut() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        await withTestAmbient(clock: clock, events: events) {
+            let pipeline = Pipeline(
+                Retrying(.fixed(.seconds(1)).attempts(3), budget: .unlimited, attemptTimeout: .seconds(2), label: "api")
+            )
+            let calls = SendableBox(0)
+            let task = Task {
+                await outcome(of: pipeline) { () async throws -> Int in
+                    calls.mutate { $0 += 1 }
+                    try await clock.sleep(for: .seconds(3600))   // hangs until its attempt is cut off
+                    return 1
+                }
+            }
+            for attempt in 1...3 {
+                await clock.waitForSleepers(count: 2)       // the attempt, and its timeout
+                await clock.advance(by: .seconds(2))
+                if attempt < 3 {
+                    await clock.waitForSleepers(count: 1)   // the backoff
+                    await clock.advance(by: .seconds(1))
+                }
+            }
+            let result = await task.value
+            if case .failure(let error) = result { #expect(error.failure is CancellationError) } else { unexpected("every attempt timed out") }
+            #expect(calls.value == 3, "a timed-out attempt is transient: all three attempts run")
+            #expect(events.events(named: "retry.attempt_failed").count == 2)
+        }
+    }
+
     @Test func aRetryThatMeetsAnOpenBreakerGetsItsRetryAfterAndEndsWithTheOperationsOwnError() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(minimumCalls: 2), clock: clock.erased)

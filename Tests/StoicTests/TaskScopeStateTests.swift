@@ -42,3 +42,50 @@ struct TaskScopeStateTests {
         #expect(StoicTest.events.names.contains("scope.fork_after_exit"))
     }
 }
+
+/// A long-lived scope that forks per event: what it holds must not grow
+/// with the number of forks that have come and gone.
+@Suite("TaskScope: finished forks")
+struct TaskScopeFinishedForkTests {
+    struct Boom: Error {}
+
+    @Test(.stoic(seed: 3), .failureMode("design/04", "a long-lived scope forks many short tasks"))
+    func finishedForksAreForgotten() async throws {
+        try await withTaskScope(label: "long-lived") { scope in
+            let tasks = scope.tasks
+            for round in 0..<10 {
+                for _ in 0..<100 { scope.fork(label: "event") {} }
+                #expect(await eventually { tasks.trackedForkCount == 0 }, "round \(round): \(tasks.trackedForkCount) still held")
+            }
+        }
+    }
+
+    @Test(.stoic(seed: 4)) func forgettingFinishedForksKeepsTheRunningOnesCancellableAndAwaited() async throws {
+        let stopped = SendableBox(0)
+        try await withTaskScope(label: "mixed") { scope in
+            let tasks = scope.tasks
+            for _ in 0..<50 { scope.fork(label: "short") {} }
+            for _ in 0..<3 {
+                scope.fork(label: "long") {
+                    do { try await Task.sleep(for: .seconds(3600)) } catch {
+                        stopped.mutate { $0 += 1 }
+                        throw error
+                    }
+                }
+            }
+            #expect(await eventually { tasks.trackedForkCount == 3 })
+        }
+        #expect(stopped.value == 3, "every running fork was cancelled and awaited at exit")
+    }
+
+    @Test(.stoic(seed: 5)) func aFinishedForksFailureStillFailsTheScope() async {
+        await #expect(throws: ConcurrentFailure<any Error>.self) {
+            try await withTaskScope(label: "failing") { scope in
+                let tasks = scope.tasks
+                scope.fork(label: "broken") { throw Boom() }
+                await eventually { tasks.trackedForkCount == 0 }
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+    }
+}

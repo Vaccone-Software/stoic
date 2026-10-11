@@ -237,6 +237,19 @@ struct SupervisorRun {
                         check = check.advanced(by: policy.interval)
                         try await clock.sleep(until: check, tolerance: nil)
                         let current = heartbeat.count
+                        // Woken more than an interval late: the process was
+                        // suspended (`kill -STOP`, an app in the background)
+                        // while the liveness clock ran on, and every overdue
+                        // check would come due at once, before the child can
+                        // run. The gap says nothing about the child: start
+                        // counting again from now, and give it an interval.
+                        let now = clock.now
+                        if check.duration(to: now) > policy.interval {
+                            check = now
+                            last = current
+                            misses = 0
+                            continue
+                        }
                         if current == last {
                             misses += 1
                             if misses >= policy.misses {
