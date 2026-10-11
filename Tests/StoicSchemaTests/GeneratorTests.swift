@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -373,7 +374,7 @@ struct InvalidDocumentTests {
         #expect(offered == Set(Mutation.Kind.allCases), "missing \(Set(Mutation.Kind.allCases).subtracting(offered))")
     }
 
-    @Test func independentMutationsYieldExactlyThatManyIssues() throws {
+    @Test(.failureMode("design/06", "three fields are invalid")) func independentMutationsYieldExactlyThatManyIssues() throws {
         var random = SplitMix64(seed: 9)
         var combined = 0
         for seed in 0..<UInt64(150) {

@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -67,7 +68,7 @@ struct IntSchemaTests {
         #expect(decode(.int(), "1.5", .lenient).value == nil)
     }
 
-    @Test func overflowIsOutOfRangeNeverWrapped() {
+    @Test(.failureMode("design/06", "a number is out of range under .strict")) func overflowIsOutOfRangeNeverWrapped() {
         let result = decode(.int(), "9223372036854775808")
         #expect(result.value == nil)
         #expect(result.issues.map(\.code) == [.outOfRange])
@@ -165,7 +166,7 @@ struct DoubleSchemaTests {
         #expect(result.issues.map(\.code) == [.parseError])
     }
 
-    @Test func anIntegerAboveTwoToTheFiftyThreeIsPrecisionLoss() {
+    @Test(.failureMode("design/06", "an integer exceeds 2^53 for a Double field")) func anIntegerAboveTwoToTheFiftyThreeIsPrecisionLoss() {
         let result = decode(.double(), "9007199254740993")
         #expect(result.value == nil)
         #expect(result.issues.map(\.code) == [.precisionLoss])

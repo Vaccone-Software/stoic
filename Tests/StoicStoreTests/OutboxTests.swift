@@ -46,7 +46,7 @@ struct OutboxTests {
         #expect(try await outbox.entries().map(\.item) == ["one", "two"])
     }
 
-    @Test func enqueueIsDurableBeforeItReturns() async throws {
+    @Test(.failureMode("design/15", "the app dies after enqueue returned")) func enqueueIsDurableBeforeItReturns() async throws {
         let disk = try disk()
         let outbox = try open(disk)
         try await outbox.enqueue("one")
@@ -95,7 +95,7 @@ struct OutboxTests {
         #expect(report.delivered == [key])
     }
 
-    @Test func retriesFollowTheBoundedSchedule() async throws {
+    @Test(.failureMode("design/15", "the schedule is spent")) func retriesFollowTheBoundedSchedule() async throws {
         let outbox = try open(try disk(), policy: DeliveryPolicy(schedule: .delays([.seconds(1), .seconds(5)])))
         try await outbox.enqueue("x")
         let clock = ImmediateClock()
@@ -113,7 +113,7 @@ struct OutboxTests {
         #expect(await outbox.pendingCount == 1)
     }
 
-    @Test func aPermanentFailureIsNotRetriedAndStopsTheRun() async throws {
+    @Test(.failureMode("design/15", "the closure throws a Retryable error saying .stop")) func aPermanentFailureIsNotRetriedAndStopsTheRun() async throws {
         let outbox = try open(try disk())
         try await outbox.enqueue("bad")
         try await outbox.enqueue("good")
@@ -130,7 +130,7 @@ struct OutboxTests {
         #expect(await outbox.pendingCount == 2)
     }
 
-    @Test func independentEntriesCanContinuePastAFailure() async throws {
+    @Test(.failureMode("design/15", "the closure throws a Retryable error saying .stop")) func independentEntriesCanContinuePastAFailure() async throws {
         let outbox = try open(try disk(), policy: DeliveryPolicy(schedule: .immediate.attempts(2), onFailure: .continueWithNext))
         try await outbox.enqueue("bad")
         try await outbox.enqueue("good")
@@ -162,7 +162,7 @@ struct OutboxTests {
         #expect(report.remaining == 0)
     }
 
-    @Test func anEntryDeliveredButNeverAcknowledgedIsDeliveredAgainWithTheSameKey() async throws {
+    @Test(.failureMode("design/15", "the ack cannot be written"), .failureMode("design/15", "it dies after the server accepted, before the ack")) func anEntryDeliveredButNeverAcknowledgedIsDeliveredAgainWithTheSameKey() async throws {
         // At-least-once: the app dies after the server accepted the entry and
         // before the acknowledgement was durable.
         let disk = try disk()
@@ -183,7 +183,7 @@ struct OutboxTests {
         #expect(sent.value == [key.rawValue, key.rawValue])
     }
 
-    @Test func aSecondRunWhileOneIsInProgressDoesNothing() async throws {
+    @Test(.failureMode("design/15", "a second deliverPending starts during a run")) func aSecondRunWhileOneIsInProgressDoesNothing() async throws {
         let outbox = try open(try disk())
         try await outbox.enqueue("a")
         let started = TestGate()
@@ -204,7 +204,7 @@ struct OutboxTests {
         #expect(try await first.value.delivered.count == 1)
     }
 
-    @Test func cancellationLeavesTheEntryInFlightPending() async throws {
+    @Test(.failureMode("design/15", "deliverPending is cancelled")) func cancellationLeavesTheEntryInFlightPending() async throws {
         let outbox = try open(try disk())
         try await outbox.enqueue("a")
         let started = TestGate()
@@ -230,7 +230,7 @@ struct OutboxTests {
         #expect(try await open(disk).entries().map(\.item) == ["fine"])
     }
 
-    @Test func compactionBoundsTheLogAndLosesNothing() async throws {
+    @Test(.failureMode("design/15", "the log passes compactionThreshold after a run")) func compactionBoundsTheLogAndLosesNothing() async throws {
         let disk = try disk()
         var outbox = try open(disk, threshold: 200)
         for index in 0..<20 { try await outbox.enqueue("message \(index)") }
@@ -250,7 +250,7 @@ struct OutboxTests {
         #expect(await outbox.pendingKeys.last == key)
     }
 
-    @Test func anItemThatNoLongerDecodesIsReportedAndCanBeDiscarded() async throws {
+    @Test(.failureMode("design/15", "an item no longer decodes")) func anItemThatNoLongerDecodesIsReportedAndCanBeDiscarded() async throws {
         let disk = try disk()
         let writer = try Outbox<Message>.open(at: "/d/m", codec: .json(), fileSystem: disk)
         let key = try await writer.enqueue(Message(id: 1, text: "hi"))

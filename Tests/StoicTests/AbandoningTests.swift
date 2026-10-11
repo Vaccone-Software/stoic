@@ -28,7 +28,7 @@ struct AbandoningTests {
         }
     }
 
-    @Test func wedgedWorkIsAbandonedAtTheDeadline() async throws {
+    @Test(.failureMode("design/01", "the deadline passes, operation ignores cancellation (abandoning)")) func wedgedWorkIsAbandonedAtTheDeadline() async throws {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let wedge = Wedge()
@@ -59,7 +59,7 @@ struct AbandoningTests {
         #expect(!AbandonedWork.current.contains { $0.label == label })
     }
 
-    @Test func aWedgedLabelRefusesNewWork() async throws {
+    @Test(.failureMode("design/01", "every slot of a label is held by abandoned work")) func aWedgedLabelRefusesNewWork() async throws {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let wedge = Wedge()
@@ -85,7 +85,7 @@ struct AbandoningTests {
         #expect(events.names.contains("abandoned.wedged"))
     }
 
-    @Test func concurrentCallersNeverOccupyMoreThanTheLimit() async throws {
+    @Test(.failureMode("design/01", "a label has limit operations running (abandoning)")) func concurrentCallersNeverOccupyMoreThanTheLimit() async throws {
         let clock = TestClock()
         let wedge = Wedge()
         defer { for _ in 0..<12 { wedge.release() } }
@@ -123,7 +123,33 @@ struct AbandoningTests {
         #expect(reasons.allSatisfy { $0 == .deadlineExceeded })
     }
 
-    @Test func anAlreadyCancelledCallerStartsNothing() async throws {
+    @Test(.failureMode("design/01", "an enclosing deadline cancels an abandoning call"))
+    func anEnclosingDeadlineEndsAnAbandoningCallAsDeadlineExceededNotCancelled() async throws {
+        let clock = TestClock()
+        let wedge = Wedge()
+        defer { wedge.release() }
+        let label = Self.uniqueLabel("enclosed")
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    try await abandoningAfter(.seconds(60), label: label) { () throws(Failure) -> Int in
+                        wedge.block()
+                        return 1
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the enclosing deadline and the abandoning call's own
+        await clock.advance(by: .seconds(1))
+        do {
+            _ = try await task.value
+            Issue.record("expected a refusal")
+        } catch let error as PolicyError<Failure> {
+            #expect(error.rejection?.reason == .deadlineExceeded)
+        }
+    }
+
+    @Test(.failureMode("design/01", "the caller is already cancelled on entry (abandoning)")) func anAlreadyCancelledCallerStartsNothing() async throws {
         let ran = SendableBox(false)
         let label = Self.uniqueLabel("cancelled.first")
         let task = Task {
@@ -144,7 +170,7 @@ struct AbandoningTests {
         #expect(ran.value == false)
     }
 
-    @Test func aPassedDeadlineStartsNothing() async throws {
+    @Test(.failureMode("design/01", "the deadline has already passed on entry")) func aPassedDeadlineStartsNothing() async throws {
         let clock = TestClock()
         let ran = SendableBox(false)
         let label = Self.uniqueLabel("late")

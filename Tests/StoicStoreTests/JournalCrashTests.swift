@@ -1,4 +1,5 @@
 @testable import StoicStore
+import StoicTesting
 import Testing
 
 @Suite("Journal crash consistency")
@@ -75,7 +76,7 @@ struct JournalCrashTests {
         try journal.close()
     }
 
-    @Test func eachAppendIsDurableBeforeItReturns() async throws {
+    @Test(.failureMode("design/15", "append has returned, then power is lost")) func eachAppendIsDurableBeforeItReturns() async throws {
         let names = ["alpha", "bravo", "charlie", "delta", "echo"]
         let report = try await exploreCrashes(
             "Journal.append x5",
@@ -138,7 +139,7 @@ struct JournalCrashTests {
         #expect(report.recoveryImages > 0)
     }
 
-    @Test func compactionIsCorrectAtEveryCrashPoint() async throws {
+    @Test(.failureMode("design/15", "a crash falls inside compact")) func compactionIsCorrectAtEveryCrashPoint() async throws {
         let before = ["a", "b", "c"]
         let after = ["d", "e"]
         let report = try await exploreCrashes(

@@ -1,6 +1,7 @@
 #if STOIC_LINT
 import Foundation
 import StoicLintCore
+import StoicTesting
 import Testing
 
 @Suite("Diagnostic format")
@@ -93,7 +94,7 @@ struct BaselineTests {
         #expect(report.hasSuffix("stoic-lint: 0 error(s), 2 baselined in 1 file(s)\n"))
     }
 
-    @Test func aNewFindingFailsEvenWithABaseline() {
+    @Test(.failureMode("design/13", "a new finding appears with a baseline present")) func aNewFindingFailsEvenWithABaseline() {
         let changed = source + "\nfunc c() {\n    try? other()\n}\n"
         let outcome = lint(changed, baseline: recorded())
         #expect(outcome.errors.map(\.rule) == [.discardedTry])
@@ -115,14 +116,14 @@ struct BaselineTests {
         #expect(lint(reindented, baseline: recorded()).errors.isEmpty)
     }
 
-    @Test func changingTheOffendingLineIsANewFinding() {
+    @Test(.failureMode("design/13", "a baselined line is edited")) func changingTheOffendingLineIsANewFinding() {
         let edited = source.replacingOccurrences(of: "try? save()", with: "try? save(force: true)")
         let outcome = lint(edited, baseline: recorded())
         #expect(outcome.errors.map(\.rule) == [.discardedTry])
         #expect(outcome.stale.count == 1)
     }
 
-    @Test func fixingAFindingLeavesAStaleEntryAndAWarning() {
+    @Test(.failureMode("design/13", "a baselined finding is fixed")) func fixingAFindingLeavesAStaleEntryAndAWarning() {
         let fixed = source.replacingOccurrences(of: "    try? save()\n", with: "    try save()\n")
         let outcome = lint(fixed, baseline: recorded())
         #expect(outcome.errors.isEmpty)
@@ -166,7 +167,7 @@ struct BaselineTests {
         #expect(Baseline.hash(ofLine: "a") == "af63dc4c8601ec8c")
     }
 
-    @Test func anUnknownVersionIsRejected() {
+    @Test(.failureMode("design/13", "the baseline has a newer version")) func anUnknownVersionIsRejected() {
         let data = Data(#"{"version": 2, "entries": []}"#.utf8)
         #expect(throws: BaselineError.unsupportedVersion(2)) { try Baseline.decode(data) }
     }

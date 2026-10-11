@@ -1,4 +1,5 @@
 @testable import StoicStore
+import StoicTesting
 import Testing
 
 /// A deliberately wrong atomic write, so the harness can be shown to fail.
@@ -102,7 +103,7 @@ struct AtomicFileCrashTests {
         }
     }
 
-    @Test(arguments: variants)
+    @Test(.failureMode("design/15", "write has returned, then power is lost"), .failureMode("design/15", "the process dies at any instruction of write"), arguments: variants)
     func writeIsAtomicAndDurableAtEveryCrashPoint(variant: Variant) async throws {
         let options = AtomicFile.Options(envelope: variant.envelope, keepPrevious: variant.keepPrevious)
         let old: [UInt8]? = variant.existing ? Self.old : nil

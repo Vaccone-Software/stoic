@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -265,7 +266,7 @@ struct UnknownKeyTests {
 
 @Suite("Objects with defaults: aliases and deprecation")
 struct AliasTests {
-    @Test func snakeCaseIsAnAliasNotAnUnknownKey() {
+    @Test(.failureMode("design/06", "a key uses the snake_case spelling")) func snakeCaseIsAnAliasNotAnUnknownKey() {
         let result = decode(#"{"scroll_speed": 2000}"#)
         #expect(result.value?.scrollSpeed == 2000)
         #expect(result.issues.count == 1)

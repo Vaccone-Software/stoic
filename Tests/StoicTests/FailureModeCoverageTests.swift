@@ -4,24 +4,33 @@ import Testing
 /// Every row of every failure-mode table in `design/` must be proved by a
 /// test marked `.failureMode(document, row)`. Rows not yet covered are
 /// listed in `design/failure-modes.baseline`, which may only shrink.
+///
+/// A failure-mode table is either any table under a "## Failure modes"
+/// heading, or, wherever it sits, any table whose header row opens with
+/// "What happens if" (design/15 keeps its tables under "## As built").
 @Suite("Failure-mode coverage")
 struct FailureModeCoverageTests {
     static let root = URL(filePath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-    /// `design/NN` → the first column of each row of its "Failure modes" table.
+    /// `design/NN` → the first column of each row of its failure-mode tables.
     static func rows() throws -> Set<String> {
         var rows: Set<String> = []
         let design = root.appending(path: "design")
         for file in try FileManager.default.contentsOfDirectory(atPath: design.path()) where file.hasSuffix(".md") {
             let document = "design/" + file.prefix(2)
             let text = try String(contentsOf: design.appending(path: file), encoding: .utf8)
+            var inSection = false
             var inTable = false
+            var isFailureTable = false
             for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-                if line.hasPrefix("## ") { inTable = line.hasPrefix("## Failure modes") }
-                guard inTable, line.hasPrefix("|"), !line.hasPrefix("| -") else { continue }
+                if line.hasPrefix("## ") { inSection = line.hasPrefix("## Failure modes") }
+                guard line.hasPrefix("|") else { inTable = false; continue }
                 let cell = normalized(line.split(separator: "|", omittingEmptySubsequences: false)[1])
-                if cell.lowercased().hasPrefix("what happens if") || cell.isEmpty { continue }
+                let isHeader = cell.lowercased().hasPrefix("what happens if")
+                // The first line of a table is its header row.
+                if !inTable { inTable = true; isFailureTable = isHeader }
+                guard inSection || isFailureTable, !line.hasPrefix("| -"), !isHeader, !cell.isEmpty else { continue }
                 rows.insert("\(document) | \(cell)")
             }
         }

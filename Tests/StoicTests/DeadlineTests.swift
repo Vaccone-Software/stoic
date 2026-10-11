@@ -6,7 +6,7 @@ import Testing
 struct DeadlineTests {
     enum Failure: Error, Equatable { case boom }
 
-    @Test func anOperationThatFinishesFirstReturnsAndStopsTheTimer() async throws {
+    @Test(.failureMode("design/01", "the operation finishes first")) func anOperationThatFinishesFirstReturnsAndStopsTheTimer() async throws {
         let clock = TestClock()
         let value = try await withTestAmbient(clock: clock) {
             try await withTimeout(.seconds(5)) { () throws(Failure) -> Int in 42 }
@@ -21,7 +21,7 @@ struct DeadlineTests {
         }
     }
 
-    @Test func anExpiredDeadlineCancelsTheOperationWithACause() async throws {
+    @Test(.failureMode("design/01", "the deadline passes, operation honours cancellation")) func anExpiredDeadlineCancelsTheOperationWithACause() async throws {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let observed = SendableBox<CancellationCause?>(nil)
@@ -46,7 +46,7 @@ struct DeadlineTests {
         #expect(expired.first?.label == "fetch")
     }
 
-    @Test func anOperationThatIgnoresCancellationIsAwaited() async throws {
+    @Test(.failureMode("design/01", "the deadline passes, operation ignores cancellation (cooperative)")) func anOperationThatIgnoresCancellationIsAwaited() async throws {
         let clock = TestClock()
         let gate = AsyncGate()
         let task = Task {
@@ -63,7 +63,7 @@ struct DeadlineTests {
         #expect(try await task.value == "late")
     }
 
-    @Test func cancellingTheCallerCancelsTheOperationAsUserRequested() async {
+    @Test(.failureMode("design/01", "the caller is cancelled")) func cancellingTheCallerCancelsTheOperationAsUserRequested() async {
         let clock = TestClock()
         let observed = SendableBox<CancellationCause?>(nil)
         let task = Task {
@@ -84,7 +84,7 @@ struct DeadlineTests {
         #expect(observed.value == .userRequested)
     }
 
-    @Test func anOuterDeadlineIsTheCauseInsideAnInnerScope() async {
+    @Test(.failureMode("design/01", "an inner timeout is longer than the outer deadline")) func anOuterDeadlineIsTheCauseInsideAnInnerScope() async {
         let clock = TestClock()
         let observed = SendableBox<CancellationCause?>(nil)
         let task = Task {
@@ -107,7 +107,7 @@ struct DeadlineTests {
         #expect(observed.value == .deadline)
     }
 
-    @Test func nestedDeadlinesNarrowAndNeverWiden() async throws {
+    @Test(.failureMode("design/01", "an inner timeout is longer than the outer deadline")) func nestedDeadlinesNarrowAndNeverWiden() async throws {
         let clock = TestClock()
         try await withTestAmbient(clock: clock) {
             try await withTimeout(.seconds(2)) {
@@ -124,7 +124,7 @@ struct DeadlineTests {
         }
     }
 
-    @Test func anAlreadyPassedDeadlineRunsTheOperationCancelled() async throws {
+    @Test(.failureMode("design/01", "the deadline has already passed on entry")) func anAlreadyPassedDeadlineRunsTheOperationCancelled() async throws {
         let clock = TestClock()
         let deadline = Deadline(clock.erased.now, clock: clock.erased)
         let wasCancelled = try await withTestAmbient(clock: clock) {

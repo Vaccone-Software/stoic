@@ -1,139 +1,15 @@
 # Failure-mode rows not yet proved by a test marked .failureMode(document, row).
 # This list may only shrink: FailureModeCoverageTests fails when a row here gains a test.
-design/01 | a label has limit operations running (abandoning)
-design/01 | an enclosing deadline cancels an abandoning call
-design/01 | an inner timeout is longer than the outer deadline
-design/01 | every slot of a label is held by abandoned work
 design/01 | the Mac sleeps past the deadline
-design/01 | the caller is already cancelled on entry (abandoning)
-design/01 | the caller is cancelled
-design/01 | the clock is a test clock that never advances
-design/01 | the deadline has already passed on entry
-design/01 | the deadline passes, operation honours cancellation
-design/01 | the deadline passes, operation ignores cancellation (abandoning)
-design/01 | the deadline passes, operation ignores cancellation (cooperative)
-design/01 | the operation finishes first
-design/02 | a retry runs inside another retry's attempt
-design/02 | an attempt's own timeout fires
-design/02 | every attempt fails
-design/02 | the budget is empty
-design/02 | the error is a DecodingError
-design/02 | the error is a Defect
-design/02 | the next attempt cannot finish before the deadline
-design/02 | the operation succeeds on attempt n
 design/02 | the schedule is unbounded
-design/02 | the server sends Retry-After longer than the cap
-design/02 | the task is cancelled during the backoff sleep
-design/03 | a body inside withPermit throws
-design/03 | a racer ignores cancellation after another won
-design/03 | every racer fails
-design/03 | the hedge budget is empty
-design/04 | a forked child throws
 design/04 | someone tries to keep the Scope
-design/04 | work started in the scope was abandoned
-design/05 | a defect is wrapped in a report
-design/05 | a report wraps a PolicyError wrapping the root
-design/05 | an error passes through three withContext layers
-design/05 | cleanup fails while handling an error
-design/05 | the error is a CancellationError
-design/06 | a default changed between releases
-design/06 | a key is misspelt
-design/06 | a key uses the snake_case spelling
-design/06 | a number is out of range under .strict
-design/06 | a secret field is invalid
-design/06 | an integer exceeds 2^53 for a Double field
-design/06 | the input has duplicate keys
-design/06 | the same under .lenient
-design/06 | three fields are invalid
-design/07 | a declared state can never be reached
-design/07 | a state is left while its work runs
-design/07 | a state's timeout elapses during its visit
-design/07 | a thousand tasks send events at once
-design/07 | an event is invalid in the current state
-design/07 | the state is left before its timeout
-design/07 | the work sends an event after its visit ended
 design/08 | a factory reads a service it did not declare
-design/08 | a service needs one that is absent
-design/08 | a start throws or times out
-design/08 | a stop hangs
-design/08 | services need each other
-design/08 | the body throws
-design/08 | two services share a key
-design/09 | a child ignores cancellation on shutdown
-design/09 | a permanent child throws
-design/09 | a temporary child throws
-design/09 | a transient child returns
-design/09 | restarts exceed the intensity
-design/09 | the supervisor's task is cancelled
-design/10 | Retrying meets .circuitOpen with a retryAfter
-design/10 | a breaker has fewer than minimumCalls calls in its window
-design/10 | a bulkhead has a free slot
-design/10 | a call arrives while open
-design/10 | a call finishes after the breaker changed state
-design/10 | a dependency stays healthy for resetAfter after closing
-design/10 | a pipeline has no stages
-design/10 | a pipeline's operation fails
-design/10 | a probe fails
-design/10 | a probe is still running after halfOpenTimeout
-design/10 | a queued bulkhead waiter is cancelled or its deadline passes
-design/10 | a queued limiter waiter is cancelled
-design/10 | a queued limiter waiter's enclosing deadline cancels it
-design/10 | a stage inside a pipeline rejects
-design/10 | a stateChanges consumer falls behind
-design/10 | an attempt fails and none is running
-design/10 | an inner policy rejects (bulkhead full, limiter, budget)
-design/10 | every attempt fails
-design/10 | every probe succeeds
-design/10 | forceClosed() or reset()
-design/10 | forceOpen()
-design/10 | maxAttempts attempts have started
-design/10 | more calls arrive than there are probe permits
-design/10 | permits exceeds burst
-design/10 | recordWhen returns false for an error
-design/10 | the bulkhead and its queue are full (or queueLimit is 0 and it is full)
-design/10 | the bulkhead is full and the queue has room
-design/10 | the bulkhead's operation throws
-design/10 | the caller is cancelled
-design/10 | the caller is cancelled while the operation runs
-design/10 | the deadline has passed when a hedge is due
-design/10 | the failure rate reaches the threshold with enough calls
-design/10 | the first attempt is slow
-design/10 | the first hedged attempt finishes before delay
-design/10 | the hedge budget has no token
-design/10 | the limiter has enough tokens and no queue
-design/10 | the limiter is empty and the wait fits the deadline and the queue
-design/10 | the limiter's clock wakes the head late
-design/10 | the limiter's queue is full
-design/10 | the open duration has elapsed
-design/10 | the operation of a limiter's execute fails
-design/10 | the operation throws CancellationError and the caller is not cancelled
-design/10 | the operation throws a Defect
-design/10 | the slow-call rate reaches the threshold with enough calls
-design/10 | the task is cancelled, or the deadline has passed, before admission
-design/10 | the wait would outlive Deadline.current
-design/10 | the winner is found
-design/10 | tryAcquire while others wait
-design/13 | a baselined finding is fixed
-design/13 | a baselined line is edited
 design/13 | a file is not valid UTF-8
 design/13 | a finding sits in generated code
-design/13 | a new finding appears with a baseline present
 design/13 | a path does not exist
 design/13 | a source file has syntax errors
-design/13 | a suppression has no reason
-design/13 | a suppression names an unknown rule
 design/13 | a target has no Swift sources
 design/13 | the baseline file is missing or invalid
-design/13 | the baseline has a newer version
 design/13 | the plugin is attached but the Lint trait is off
 design/13 | the same file is passed twice, or a directory and a file in it
 design/13 | the tool fails after writing nothing
-design/18 | an update produces an invalid value
-design/18 | one field is invalid
-design/18 | the app crashed mid-save
-design/18 | the document is a newer version
-design/18 | the document is an older version
-design/18 | the file is torn or not JSON
-design/18 | the write fails (disk full, read-only volume)
-design/18 | there is no file
-design/18 | two updates race

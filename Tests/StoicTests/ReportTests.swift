@@ -7,27 +7,30 @@ struct ReportTests {
     enum FileError: Error, Equatable { case missing }
     struct Bug: Defect {}
 
-    @Test func contextFramesStackInnermostFirst() async {
+    @Test(.failureMode("design/05", "an error passes through three withContext layers")) func contextFramesStackInnermostFirst() async {
         do {
             try await withContext("loading settings") {
                 try await withContext("reading settings.json") {
-                    await Task.yield()
-                    throw FileError.missing
+                    try await withContext("opening the file") {
+                        await Task.yield()
+                        throw FileError.missing
+                    }
                 }
             }
             Issue.record("expected an error")
         } catch let report as Report {
-            #expect(report.frames.map(\.message) == ["reading settings.json", "loading settings"])
+            #expect(report.frames.map(\.message) == ["opening the file", "reading settings.json", "loading settings"])
             #expect(report.first(FileError.self) == .missing)
             #expect(report.description.hasPrefix("loading settings"))
             #expect(report.description.contains("╰─ reading settings.json"))
+            #expect(report.description.contains("╰─ opening the file"))
             #expect(report.description.contains("FileError: missing"))
         } catch {
             Issue.record("unexpected \(error)")
         }
     }
 
-    @Test func cancellationPassesThroughUnwrapped() async {
+    @Test(.failureMode("design/05", "the error is a CancellationError")) func cancellationPassesThroughUnwrapped() async {
         await #expect(throws: CancellationError.self) {
             try await withContext("doing work") {
                 await Task.yield()
@@ -91,13 +94,14 @@ struct ReportTests {
         #expect(report.root is FileError)
     }
 
-    @Test func theRootIsFoundThroughPolicyWrappers() {
+    @Test(.failureMode("design/05", "a report wraps a PolicyError wrapping the root")) func theRootIsFoundThroughPolicyWrappers() {
         let wrapped: any Error = PolicyError<Report>.failed(Report(FileError.missing).adding(.init("fetching")))
         let report = Report(wrapped.context("syncing"))
         #expect(report.contains(FileError.self))
     }
 
-    @Test func retryClassificationSeesThroughReports() async {
+    @Test(.failureMode("design/05", "a defect is wrapped in a report")) func retryClassificationSeesThroughReports() async {
+        #expect(Report(Bug()).isDefect)
         let attempts = SendableBox(0)
         await #expect(throws: Report.self) {
             try await withTestAmbient(clock: ImmediateClock()) {
@@ -110,7 +114,7 @@ struct ReportTests {
         #expect(attempts.value == 1, "a defect inside a report still stops retrying")
     }
 
-    @Test func suppressedErrorsAreKept() {
+    @Test(.failureMode("design/05", "cleanup fails while handling an error")) func suppressedErrorsAreKept() {
         let report = Report(FileError.missing).suppressing(Bug())
         #expect(report.suppressed.count == 1)
         #expect(report.debugDescription.contains("suppressed"))

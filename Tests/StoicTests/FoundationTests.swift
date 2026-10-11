@@ -231,9 +231,11 @@ struct TestClockReviewTests {
 
     @Test func waitingForSleepersEndsWhenCancelled() async {
         let clock = TestClock()
-        let waiter = Task { await clock.waitForSleepers(count: 1) }
-        try? await Task.sleep(for: .milliseconds(5))
-        waiter.cancel()
-        await waiter.value   // previously hung forever
+        await withKnownIssue("a cancelled wait is reported, not satisfied") {
+            let waiter = Task { await clock.waitForSleepers(count: 1) }
+            try? await Task.sleep(for: .milliseconds(5))
+            waiter.cancel()
+            await waiter.value   // previously hung forever
+        }
     }
 }

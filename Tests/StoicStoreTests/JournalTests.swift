@@ -35,7 +35,7 @@ struct JournalTests {
         #expect(try journal.append(bytes("c")) == 3)
     }
 
-    @Test(arguments: [1, 7, 8, 15, 16, 17, 20])   // cut inside the header, the sequence, the payload
+    @Test(.failureMode("design/15", "a crash tears the last record or leaves a hole"), arguments: [1, 7, 8, 15, 16, 17, 20])   // cut inside the header, the sequence, the payload
     func aTornTailIsCutAtOpenAndReported(cutAt: Int) async throws {
         let dir = try TempDirectory()
         let events = RecordingInstrumentation()
@@ -84,7 +84,7 @@ struct JournalTests {
         (0..<count).filter { !lost.contains($0) }.map { "record-\($0)" }
     }
 
-    @Test func aFlippedBitInTheMiddleLosesOnlyThatRecordAndSaysSo() async throws {
+    @Test(.failureMode("design/15", "a byte flips in the middle of the log")) func aFlippedBitInTheMiddleLosesOnlyThatRecordAndSaysSo() async throws {
         let dir = try TempDirectory()
         let events = RecordingInstrumentation()
         try await withAmbient({ $0.instrumentation = events }) {
@@ -274,7 +274,7 @@ struct JournalTests {
         #expect(journal.openReport.corruptRecords == 1)
     }
 
-    @Test func aHoleOfZerosIsNeverARecord() throws {
+    @Test(.failureMode("design/15", "a crash tears the last record or leaves a hole")) func aHoleOfZerosIsNeverARecord() throws {
         let dir = try TempDirectory()
         var journal = try Journal.open(at: dir.file("j"))
         try journal.append(bytes("one"))
@@ -287,7 +287,7 @@ struct JournalTests {
         #expect(journal.openReport.droppedBytes == 64)
     }
 
-    @Test func aRecordLargerThanTheLimitIsRefused() throws {
+    @Test(.failureMode("design/15", "a record exceeds maxRecordSize")) func aRecordLargerThanTheLimitIsRefused() throws {
         let dir = try TempDirectory()
         let journal = try Journal.open(at: dir.file("j"), options: .init(maxRecordSize: 8))
         let error = #expect(throws: StoreError.self) { try journal.append([UInt8](repeating: 0, count: 9)) }
@@ -339,7 +339,7 @@ struct JournalTests {
         #expect(try journal.append(bytes("c")) == 3)
     }
 
-    @Test func aCorruptSnapshotIsQuarantinedAndOpenRefuses() throws {
+    @Test(.failureMode("design/15", "the snapshot fails its checksum")) func aCorruptSnapshotIsQuarantinedAndOpenRefuses() throws {
         let dir = try TempDirectory()
         var journal = try Journal.open(at: dir.file("j"))
         try journal.append(bytes("a"))
@@ -380,7 +380,7 @@ struct JournalFailureTests {
         return disk
     }
 
-    @Test func aFailedWriteIsRolledBackAndTheJournalKeepsWorking() throws {
+    @Test(.failureMode("design/15", "append's write fails (ENOSPC)")) func aFailedWriteIsRolledBackAndTheJournalKeepsWorking() throws {
         let disk = try disk()
         let journal = try Journal.open(at: "/d/j", fileSystem: disk)
         try journal.append(bytes("a"))
@@ -392,7 +392,7 @@ struct JournalFailureTests {
         #expect(try journal.replay().records.map(\.sequence) == [1, 2])
     }
 
-    @Test func aFailedFullSyncPoisonsTheJournalUntilItIsReopened() throws {
+    @Test(.failureMode("design/15", "append's fullSync fails")) func aFailedFullSyncPoisonsTheJournalUntilItIsReopened() throws {
         let disk = try disk()
         var journal = try Journal.open(at: "/d/j", fileSystem: disk)
         try journal.append(bytes("a"))

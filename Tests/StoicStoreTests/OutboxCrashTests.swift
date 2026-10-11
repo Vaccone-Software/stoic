@@ -84,7 +84,7 @@ struct OutboxCrashTests {
         }
     }
 
-    @Test(arguments: [64 * 1024, 1], [nil, "B", "A"] as [String?])
+    @Test(.failureMode("design/15", "it dies after the ack returned"), arguments: [64 * 1024, 1], [nil, "B", "A"] as [String?])
     func noEntryIsLostAndNoAcknowledgedEntryComesBack(threshold: Int, failing: String?) async throws {
         let report = try await exploreCrashes(
             "Outbox threshold=\(threshold) failing=\(failing ?? "none")",

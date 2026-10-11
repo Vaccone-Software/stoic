@@ -64,7 +64,7 @@ struct ServiceGraphTests {
         #expect(gauge.value.peak == 3)
     }
 
-    @Test func validationCatchesDuplicatesMissingDependenciesAndCycles() {
+    @Test(.failureMode("design/08", "services need each other"), .failureMode("design/08", "a service needs one that is absent"), .failureMode("design/08", "two services share a key")) func validationCatchesDuplicatesMissingDependenciesAndCycles() {
         #expect(throws: ServiceGraphError.self) {
             try ServiceGraph(label: "dup") {
                 Provide(Self.database) { _ in Database(name: "a") }
@@ -92,7 +92,7 @@ struct ServiceGraphTests {
         }
     }
 
-    @Test func aFailedStartStopsWhatAlreadyStarted() async {
+    @Test(.failureMode("design/08", "a start throws or times out")) func aFailedStartStopsWhatAlreadyStarted() async {
         let log = OrderLog()
         let graph = try! ServiceGraph(label: "app") {
             Provide(Self.database) { _ in Database(name: "main") } stop: { _, _ in log.append("stop database") }
@@ -132,7 +132,7 @@ struct ServiceGraphTests {
         await #expect(throws: ServiceGraphError.self) { try await task.value }
     }
 
-    @Test func servicesStopEvenWhenTheBodyFails() async {
+    @Test(.failureMode("design/08", "the body throws")) func servicesStopEvenWhenTheBodyFails() async {
         let log = OrderLog()
         let graph = try! ServiceGraph(label: "app") {
             Provide(Self.database) { _ in Database(name: "main") } stop: { _, exit in log.append("stop \(exit.isFailure)") }
@@ -141,6 +141,28 @@ struct ServiceGraphTests {
             try await graph.run { _ in throw Failed() }
         }
         #expect(log.values == ["stop true"])
+    }
+
+    @Test(.failureMode("design/08", "a stop hangs")) func aStopThatHangsIsAbandonedAfterItsTimeoutAndTheRestStillStop() async throws {
+        let clock = TestClock()
+        let log = OrderLog()
+        let run = Task {
+            try await withTestAmbient(clock: clock) {
+                let graph = try ServiceGraph(label: "app") {
+                    Provide(Self.database) { _ in Database(name: "main") } stop: { _, _ in log.append("stop database") }
+                    Provide(Self.sync, needs: [Self.database.any], stopTimeout: .seconds(5)) { services in
+                        Sync(database: services[Self.database])
+                    } stop: { _, _ in
+                        try? await Ambient.sleep(for: .seconds(3600))
+                    }
+                }
+                try await graph.run { _ in }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the hung stop and its timeout
+        await clock.advance(by: .seconds(5))
+        try await run.value
+        #expect(log.values == ["stop database"])
     }
 }
 

@@ -28,7 +28,7 @@ struct RetryTests {
         }
     }
 
-    @Test func succeedsAfterTransientFailuresWithTheScheduledDelays() async throws {
+    @Test(.failureMode("design/02", "the operation succeeds on attempt n")) func succeedsAfterTransientFailuresWithTheScheduledDelays() async throws {
         let clock = ImmediateClock()
         let events = RecordingInstrumentation()
         let operation = flaky(succeedOn: 3)
@@ -42,7 +42,7 @@ struct RetryTests {
         #expect(events.names == ["retry.attempt_failed", "retry.attempt_failed", "retry.succeeded"])
     }
 
-    @Test func exhaustingTheScheduleRethrowsTheLastError() async {
+    @Test(.failureMode("design/02", "every attempt fails")) func exhaustingTheScheduleRethrowsTheLastError() async {
         let clock = ImmediateClock()
         let events = RecordingInstrumentation()
         let operation = flaky(succeedOn: 100)
@@ -72,7 +72,7 @@ struct RetryTests {
         #expect(clock.sleeps.isEmpty)
     }
 
-    @Test func aDefectStopsEvenWhenTheClassifierWouldRetry() async {
+    @Test(.failureMode("design/02", "the error is a Defect")) func aDefectStopsEvenWhenTheClassifierWouldRetry() async {
         let events = RecordingInstrumentation()
         await #expect(throws: Bug()) {
             try await withTestAmbient(clock: ImmediateClock(), events: events) {
@@ -84,7 +84,7 @@ struct RetryTests {
         #expect(events.names == ["retry.defect"])
     }
 
-    @Test func decodingErrorsAreNotRetried() async {
+    @Test(.failureMode("design/02", "the error is a DecodingError")) func decodingErrorsAreNotRetried() async {
         let attempts = SendableBox(0)
         await #expect(throws: DecodingError.self) {
             try await withTestAmbient(clock: ImmediateClock()) {
@@ -123,7 +123,7 @@ struct RetryTests {
         #expect(clock.sleeps == [.seconds(42)])
     }
 
-    @Test func retryAfterIsCapped() async throws {
+    @Test(.failureMode("design/02", "the server sends Retry-After longer than the cap")) func retryAfterIsCapped() async throws {
         let clock = ImmediateClock()
         _ = try await withTestAmbient(clock: clock) {
             try await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { attempt throws(Failure) -> Int in
@@ -134,7 +134,7 @@ struct RetryTests {
         #expect(clock.sleeps == [.seconds(300)])
     }
 
-    @Test func anEmptyBudgetStopsRetrying() async {
+    @Test(.failureMode("design/02", "the budget is empty")) func anEmptyBudgetStopsRetrying() async {
         let clock = ImmediateClock()
         let events = RecordingInstrumentation()
         let budget = RetryBudget(ratio: 0, reservePerSecond: 0, reserveCapacity: 1)
@@ -166,7 +166,7 @@ struct RetryTests {
         #expect(attempts.value == 10 + 3)
     }
 
-    @Test func aRetryThatCannotFinishBeforeTheDeadlineIsSkipped() async throws {
+    @Test(.failureMode("design/02", "the next attempt cannot finish before the deadline")) func aRetryThatCannotFinishBeforeTheDeadlineIsSkipped() async throws {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let operation = flaky(succeedOn: 100)
@@ -182,7 +182,7 @@ struct RetryTests {
         #expect(events.names.contains("retry.deadline_skip"))
     }
 
-    @Test func aNestedRetryMakesOneAttempt() async {
+    @Test(.failureMode("design/02", "a retry runs inside another retry's attempt")) func aNestedRetryMakesOneAttempt() async {
         let events = RecordingInstrumentation()
         let inner = SendableBox(0)
         await #expect(throws: Failure.transient(0)) {
@@ -214,7 +214,7 @@ struct RetryTests {
         #expect(inner.value == 3)
     }
 
-    @Test func cancellingTheCallerDuringBackoffRethrowsTheLastError() async {
+    @Test(.failureMode("design/02", "the task is cancelled during the backoff sleep")) func cancellingTheCallerDuringBackoffRethrowsTheLastError() async {
         let clock = TestClock()
         let attempts = SendableBox(0)
         let task = Task {
@@ -231,7 +231,7 @@ struct RetryTests {
         #expect(attempts.value == 1)
     }
 
-    @Test func aTimedOutAttemptIsRetried() async throws {
+    @Test(.failureMode("design/02", "an attempt's own timeout fires")) func aTimedOutAttemptIsRetried() async throws {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let task = Task {

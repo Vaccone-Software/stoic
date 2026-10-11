@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -184,7 +185,7 @@ struct VersionedObjectTests {
         #expect(result.value?.network.timeoutMillis == 2000)
     }
 
-    @Test func pinDefaultKeepsTheValueAnOldDocumentMeant() {
+    @Test(.failureMode("design/06", "a default changed between releases")) func pinDefaultKeepsTheValueAnOldDocumentMeant() {
         // Version 1's default speed was 600 and a sparse v1 file omits it.
         // Version 4's default is 1200: without the pin the user's speed
         // would silently double.

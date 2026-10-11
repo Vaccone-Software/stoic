@@ -6,7 +6,7 @@ import Testing
 struct BulkheadTests {
     enum Failure: Error, Equatable { case boom }
 
-    @Test func runsAtOnceWhenASlotIsFree() async throws {
+    @Test(.failureMode("design/10", "a bulkhead has a free slot")) func runsAtOnceWhenASlotIsFree() async throws {
         let bulkhead = Bulkhead(maxConcurrent: 2, label: "free")
         let value = try await bulkhead.execute { 42 }
         #expect(value == 42)
@@ -35,7 +35,7 @@ struct BulkheadTests {
         #expect(bulkhead.queuedCount == 0)
     }
 
-    @Test func aFullBulkheadWithNoQueueRejectsAtOnce() async throws {
+    @Test(.failureMode("design/10", "the bulkhead and its queue are full (or queueLimit is 0 and it is full)")) func aFullBulkheadWithNoQueueRejectsAtOnce() async throws {
         let events = RecordingInstrumentation()
         let bulkhead = Bulkhead(maxConcurrent: 1, label: "shed")
         let gate = AsyncGate()
@@ -83,7 +83,7 @@ struct BulkheadTests {
         #expect(outcomes.value.rejected == 45)
     }
 
-    @Test func waitersRunFirstInFirstOut() async throws {
+    @Test(.failureMode("design/10", "the bulkhead is full and the queue has room")) func waitersRunFirstInFirstOut() async throws {
         let bulkhead = Bulkhead(maxConcurrent: 1, queueLimit: 5, label: "fifo")
         let gate = AsyncGate()
         let order = OrderLog()
@@ -100,7 +100,7 @@ struct BulkheadTests {
         #expect(order.values == ["0", "1", "2", "3", "4"])
     }
 
-    @Test func aCancelledWaiterLeavesWithoutTakingASlotAndFreesItsPlace() async throws {
+    @Test(.failureMode("design/10", "a queued bulkhead waiter is cancelled or its deadline passes")) func aCancelledWaiterLeavesWithoutTakingASlotAndFreesItsPlace() async throws {
         let bulkhead = Bulkhead(maxConcurrent: 1, queueLimit: 1, label: "cancel")
         let gate = AsyncGate()
         let holder = Task { try await bulkhead.execute { await gate.wait() } }
@@ -124,7 +124,7 @@ struct BulkheadTests {
         #expect(bulkhead.activeCount == 0)
     }
 
-    @Test func aWaiterWhoseDeadlinePassesIsRejected() async throws {
+    @Test(.failureMode("design/10", "a queued bulkhead waiter is cancelled or its deadline passes")) func aWaiterWhoseDeadlinePassesIsRejected() async throws {
         let clock = TestClock()
         let bulkhead = Bulkhead(maxConcurrent: 1, queueLimit: 1, label: "deadline")
         let gate = AsyncGate()
@@ -177,7 +177,7 @@ struct BulkheadTests {
         #expect(bulkhead.activeCount == 0)
     }
 
-    @Test func aFailingOperationReturnsItsSlot() async {
+    @Test(.failureMode("design/10", "the bulkhead's operation throws")) func aFailingOperationReturnsItsSlot() async {
         let bulkhead = Bulkhead(maxConcurrent: 1, label: "fail")
         let result = await outcome(of: bulkhead) { () throws(Failure) in throw .boom }
         if case .failure(let error) = result { #expect(error.failure == .boom) } else { unexpected("expected a failure") }

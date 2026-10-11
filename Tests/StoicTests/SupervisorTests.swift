@@ -15,7 +15,7 @@ struct SupervisorTests {
         func count(_ name: String) -> Int { starts.value[name] ?? 0 }
     }
 
-    @Test func aPermanentChildIsRestartedAfterItsBackoff() async throws {
+    @Test(.failureMode("design/09", "a permanent child throws")) func aPermanentChildIsRestartedAfterItsBackoff() async throws {
         let clock = TestClock()
         let script = Script()
         let supervisor = Supervisor(label: "test", backoff: .fixed(.seconds(2))) {
@@ -35,7 +35,7 @@ struct SupervisorTests {
         await #expect(throws: CancellationError.self) { try await run.value }
     }
 
-    @Test func transientAndTemporaryChildrenFinishAndTheSupervisorReturns() async throws {
+    @Test(.failureMode("design/09", "a temporary child throws"), .failureMode("design/09", "a transient child returns")) func transientAndTemporaryChildrenFinishAndTheSupervisorReturns() async throws {
         let script = Script()
         let supervisor = Supervisor(label: "test") {
             Child("transient", restart: .transient) { _ in _ = script.started("transient") }
@@ -49,7 +49,7 @@ struct SupervisorTests {
         #expect(script.count("temporary") == 1)
     }
 
-    @Test func exceedingTheIntensityEscalates() async throws {
+    @Test(.failureMode("design/09", "restarts exceed the intensity")) func exceedingTheIntensityEscalates() async throws {
         let events = RecordingInstrumentation()
         let supervisor = Supervisor(label: "test", intensity: .init(maxRestarts: 2, within: .seconds(60)), backoff: .immediate) {
             Child("doomed") { _ in throw Crash() }
@@ -157,7 +157,7 @@ struct SupervisorTests {
         _ = try? await run.value
     }
 
-    @Test func cancellingTheSupervisorStopsChildrenWithACause() async throws {
+    @Test(.failureMode("design/09", "the supervisor's task is cancelled")) func cancellingTheSupervisorStopsChildrenWithACause() async throws {
         let causes = SendableBox<[String]>([])
         let started = AsyncGate()
         let supervisor = Supervisor(label: "test") {
@@ -182,7 +182,7 @@ struct SupervisorTests {
         #expect(causes.value == ["two:supervisor_stopped", "one:supervisor_stopped"], "newest first")
     }
 
-    @Test func aChildThatIgnoresCancellationIsAbandonedAfterItsTimeout() async throws {
+    @Test(.failureMode("design/09", "a child ignores cancellation on shutdown")) func aChildThatIgnoresCancellationIsAbandonedAfterItsTimeout() async throws {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let stuck = AsyncGate()

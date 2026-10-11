@@ -60,7 +60,7 @@ extension CircuitBreaker {
 struct CircuitBreakerTests {
     // MARK: - Judging
 
-    @Test func staysClosedUntilItHasSeenMinimumCalls() async {
+    @Test(.failureMode("design/10", "a breaker has fewer than minimumCalls calls in its window")) func staysClosedUntilItHasSeenMinimumCalls() async {
         await withBreakerWorld { clock, _ in
             let breaker = CircuitBreaker(label: "min", testConfiguration(minimumCalls: 5), clock: clock.erased)
             for _ in 0..<4 { await breaker.fail() }
@@ -70,7 +70,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func opensAtTheFailureRateExactlyAndNotBelow() async {
+    @Test(.failureMode("design/10", "the failure rate reaches the threshold with enough calls")) func opensAtTheFailureRateExactlyAndNotBelow() async {
         await withBreakerWorld { clock, _ in
             // 4 of 10 is 40%: below. The tenth call makes 5 of 10 = 50%: at.
             let breaker = CircuitBreaker(label: "rate", testConfiguration(minimumCalls: 10), clock: clock.erased)
@@ -101,7 +101,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func slowCallsOpenTheBreakerEvenWhenTheySucceed() async {
+    @Test(.failureMode("design/10", "the slow-call rate reaches the threshold with enough calls")) func slowCallsOpenTheBreakerEvenWhenTheySucceed() async {
         await withBreakerWorld { clock, events in
             let config = testConfiguration(minimumCalls: 4, slowAfter: .seconds(1), slowRate: 0.5)
             let breaker = CircuitBreaker(label: "slow", config, clock: clock.erased)
@@ -132,7 +132,7 @@ struct CircuitBreakerTests {
 
     // MARK: - Open
 
-    @Test func anOpenBreakerRejectsWithTheTimeLeftAndDoesNotRunTheOperation() async {
+    @Test(.failureMode("design/10", "a call arrives while open")) func anOpenBreakerRejectsWithTheTimeLeftAndDoesNotRunTheOperation() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "open", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -169,7 +169,7 @@ struct CircuitBreakerTests {
 
     // MARK: - Half-open
 
-    @Test func theBreakerMovesToHalfOpenWhenTheOpenPeriodEnds() async {
+    @Test(.failureMode("design/10", "the open duration has elapsed")) func theBreakerMovesToHalfOpenWhenTheOpenPeriodEnds() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "half", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -182,7 +182,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func halfOpenAdmitsExactlyTheProbePermitsConcurrentlyAndRejectsTheRest() async {
+    @Test(.failureMode("design/10", "more calls arrive than there are probe permits")) func halfOpenAdmitsExactlyTheProbePermitsConcurrentlyAndRejectsTheRest() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "probes", testConfiguration(probes: 3), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -237,7 +237,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aSuccessfulProbeClosesTheBreakerWithAnEmptyWindow() async {
+    @Test(.failureMode("design/10", "every probe succeeds")) func aSuccessfulProbeClosesTheBreakerWithAnEmptyWindow() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "close", testConfiguration(minimumCalls: 3), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -255,7 +255,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aFailedProbeReopensForLongerEachTime() async {
+    @Test(.failureMode("design/10", "a probe fails")) func aFailedProbeReopensForLongerEachTime() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "growth", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -286,7 +286,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func growthStartsOverOnlyAfterTheBreakerHasStayedClosedLongEnough() async {
+    @Test(.failureMode("design/10", "a dependency stays healthy for resetAfter after closing")) func growthStartsOverOnlyAfterTheBreakerHasStayedClosedLongEnough() async {
         await withBreakerWorld { clock, _ in
             let open = CircuitBreaker.OpenDuration.exponential(
                 initial: .seconds(30), factor: 2, maximum: .seconds(300), jitter: 0, resetAfter: .seconds(100)
@@ -323,7 +323,7 @@ struct CircuitBreakerTests {
         #expect(seen[0] != seen[2])
     }
 
-    @Test func aProbeThatNeverFinishesIsGivenUpOn() async {
+    @Test(.failureMode("design/10", "a probe is still running after halfOpenTimeout")) func aProbeThatNeverFinishesIsGivenUpOn() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "wedge", testConfiguration(probeTimeout: .seconds(60)), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -346,7 +346,7 @@ struct CircuitBreakerTests {
 
     // MARK: - What counts
 
-    @Test func aCancelledCallerIsNeverRecordedWhatEverTheOperationThrew() async {
+    @Test(.failureMode("design/10", "the caller is cancelled while the operation runs")) func aCancelledCallerIsNeverRecordedWhatEverTheOperationThrew() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "cancel", testConfiguration(minimumCalls: 1), clock: clock.erased)
             for _ in 0..<10 {
@@ -364,7 +364,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aCancelledProbeReturnsItsPermit() async {
+    @Test(.failureMode("design/10", "the caller is cancelled while the operation runs")) func aCancelledProbeReturnsItsPermit() async {
         await withBreakerWorld { clock, _ in
             let breaker = CircuitBreaker(label: "cancel-probe", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -394,7 +394,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aDefectIsRethrownReportedLoudlyAndNeverRecorded() async {
+    @Test(.failureMode("design/10", "the operation throws a Defect")) func aDefectIsRethrownReportedLoudlyAndNeverRecorded() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "defect", testConfiguration(minimumCalls: 1), clock: clock.erased)
             let result = await outcome(of: breaker) { () throws(Bug) -> Void in throw Bug() }
@@ -428,7 +428,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func anInnerPoliciesRefusalIsNotEvidenceAboutTheDependency() async {
+    @Test(.failureMode("design/10", "an inner policy rejects (bulkhead full, limiter, budget)")) func anInnerPoliciesRefusalIsNotEvidenceAboutTheDependency() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "inner", testConfiguration(minimumCalls: 1), clock: clock.erased)
             for _ in 0..<5 {
@@ -457,7 +457,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aCancellationErrorFromInsideWhileTheCallerIsLiveIsAFailure() async {
+    @Test(.failureMode("design/10", "the operation throws CancellationError and the caller is not cancelled")) func aCancellationErrorFromInsideWhileTheCallerIsLiveIsAFailure() async {
         await withBreakerWorld { clock, _ in
             let breaker = CircuitBreaker(label: "inner-timeout", testConfiguration(minimumCalls: 2), clock: clock.erased)
             for _ in 0..<2 {
@@ -467,7 +467,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func anErrorTheClassifierExcusesIsASuccess() async {
+    @Test(.failureMode("design/10", "recordWhen returns false for an error")) func anErrorTheClassifierExcusesIsASuccess() async {
         await withBreakerWorld { clock, _ in
             let config = testConfiguration(minimumCalls: 2, recordWhen: { ($0 as? Boom) != .notFound })
             let breaker = CircuitBreaker(label: "excused", config, clock: clock.erased)
@@ -485,7 +485,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aCallThatFinishesAfterTheBreakerMovedOnIsIgnoredAsStale() async {
+    @Test(.failureMode("design/10", "a call finishes after the breaker changed state")) func aCallThatFinishesAfterTheBreakerMovedOnIsIgnoredAsStale() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "stale", testConfiguration(minimumCalls: 3), clock: clock.erased)
             let gate = AsyncGate()
@@ -502,7 +502,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func aCancelledOrLateTaskIsRefusedBeforeUsingAProbe() async {
+    @Test(.failureMode("design/10", "the task is cancelled, or the deadline has passed, before admission")) func aCancelledOrLateTaskIsRefusedBeforeUsingAProbe() async {
         await withBreakerWorld { clock, _ in
             let breaker = CircuitBreaker(label: "pre", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -573,7 +573,7 @@ struct CircuitBreakerTests {
 
     // MARK: - Manual control
 
-    @Test func forcedOpenRejectsWithoutAnEndAndNeverProbes() async {
+    @Test(.failureMode("design/10", "forceOpen()")) func forcedOpenRejectsWithoutAnEndAndNeverProbes() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "forced", testConfiguration(), clock: clock.erased)
             breaker.forceOpen()
@@ -589,7 +589,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func forceClosedClosesAtOnceAndNormalJudgingResumes() async {
+    @Test(.failureMode("design/10", "forceClosed() or reset()")) func forceClosedClosesAtOnceAndNormalJudgingResumes() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "force-closed", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -602,7 +602,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func resetForgetsTheTripCountToo() async {
+    @Test(.failureMode("design/10", "forceClosed() or reset()")) func resetForgetsTheTripCountToo() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "reset", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -648,7 +648,7 @@ struct CircuitBreakerTests {
         }
     }
 
-    @Test func eachSubscriberGetsItsOwnStreamAndTheBreakerDoesNotWaitForSlowOnes() async {
+    @Test(.failureMode("design/10", "a stateChanges consumer falls behind")) func eachSubscriberGetsItsOwnStreamAndTheBreakerDoesNotWaitForSlowOnes() async {
         await withBreakerWorld { clock, _ in
             let breaker = CircuitBreaker(label: "buffer", testConfiguration(), clock: clock.erased)
             var slow = breaker.stateChanges.makeAsyncIterator()

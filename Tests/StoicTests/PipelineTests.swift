@@ -24,7 +24,7 @@ struct Tracer: Policy {
 
 @Suite("Pipeline")
 struct PipelineTests {
-    @Test func anEmptyPipelineJustRunsTheOperation() async {
+    @Test(.failureMode("design/10", "a pipeline has no stages")) func anEmptyPipelineJustRunsTheOperation() async {
         let pipeline = Pipeline([])
         let value = await outcome(of: pipeline) { 5 }
         if case .success(let number) = value { #expect(number == 5) } else { unexpected("expected a value") }
@@ -39,7 +39,7 @@ struct PipelineTests {
         #expect(log.values == ["a in", "b in", "c in", "operation", "c out", "b out", "a out"])
     }
 
-    @Test func aRefusalFromAnyDepthArrivesAsOneRejectionAndStopsTheOperation() async {
+    @Test(.failureMode("design/10", "a stage inside a pipeline rejects")) func aRefusalFromAnyDepthArrivesAsOneRejectionAndStopsTheOperation() async {
         for refusingDepth in 0..<3 {
             let log = OrderLog()
             let stages = (0..<3).map { index in
@@ -55,7 +55,7 @@ struct PipelineTests {
         }
     }
 
-    @Test func theOperationsOwnErrorSurvivesEveryStageUnwrapped() async {
+    @Test(.failureMode("design/10", "a pipeline's operation fails")) func theOperationsOwnErrorSurvivesEveryStageUnwrapped() async {
         let log = OrderLog()
         let pipeline = Pipeline(Tracer(name: "a", log: log), Tracer(name: "b", log: log), Tracer(name: "c", log: log))
         let result = await outcome(of: pipeline) { () throws(Boom) -> Void in throw .notFound }
@@ -104,7 +104,7 @@ struct PipelineTests {
         }
     }
 
-    @Test func retryingOutsideABreakerWaitsOutTheBreakersRetryAfter() async {
+    @Test(.failureMode("design/10", "Retrying meets .circuitOpen with a retryAfter")) func retryingOutsideABreakerWaitsOutTheBreakersRetryAfter() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()

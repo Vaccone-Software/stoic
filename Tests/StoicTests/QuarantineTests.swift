@@ -36,7 +36,7 @@ struct QuarantineTests {
         #expect(released.withLock { $0 })
     }
 
-    @Test func abandonedWorkQuarantinesOnlyWhatAskedFor() async {
+    @Test(.failureMode("design/04", "work started in the scope was abandoned")) func abandonedWorkQuarantinesOnlyWhatAskedFor() async {
         let events = RecordingInstrumentation()
         let wedge = Wedge()
         defer { wedge.release() }

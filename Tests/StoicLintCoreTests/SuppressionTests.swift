@@ -1,10 +1,11 @@
 #if STOIC_LINT
 import StoicLintCore
+import StoicTesting
 import Testing
 
 @Suite("Suppression comments")
 struct SuppressionTests {
-    @Test func aReasonlessAllowIsAFindingAndSuppressesNothing() {
+    @Test(.failureMode("design/13", "a suppression has no reason")) func aReasonlessAllowIsAFindingAndSuppressesNothing() {
         let source = """
             // stoic:allow(task-detached)
             let x = 1
@@ -18,6 +19,11 @@ struct SuppressionTests {
     @Test func anEmptyReasonCountsAsNone() {
         #expect(rules(in: "let x = 1 // stoic:allow(force-try):   \n") == ["allow-without-reason"])
         #expect(rules(in: "let x = 1 // stoic:allow(force-try)\n") == ["allow-without-reason"])
+    }
+
+    @Test(.failureMode("design/13", "a suppression names an unknown rule"))
+    func anUnknownRuleSuppressesNothing() {
+        #expect(rules(in: "let x = try! parse() // stoic:allow(no-such-rule): a typo\n") == ["force-try"])
     }
 
     @Test func aReasonIsAccepted() {

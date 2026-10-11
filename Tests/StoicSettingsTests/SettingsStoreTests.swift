@@ -81,7 +81,7 @@ struct SettingsStoreTests {
         try AtomicFile(fileSystem: disk, options: .init(envelope: format == .appOwned)).write(Array(text.utf8), to: path)
     }
 
-    @Test func aFirstLaunchHasTheDefaultsAndWritesNothing() throws {
+    @Test(.failureMode("design/18", "there is no file")) func aFirstLaunchHasTheDefaultsAndWritesNothing() throws {
         let disk = try Self.disk()
         let settings = try Self.open(disk)
         #expect(settings.value == Prefs())
@@ -97,7 +97,7 @@ struct SettingsStoreTests {
         #expect(next.source == .file)
     }
 
-    @Test func anInvalidUpdateIsRefusedAndChangesNothing() throws {
+    @Test(.failureMode("design/18", "an update produces an invalid value")) func anInvalidUpdateIsRefusedAndChangesNothing() throws {
         let disk = try Self.disk()
         let settings = try Self.open(disk)
         try settings.update { $0.speed = 900 }
@@ -113,7 +113,7 @@ struct SettingsStoreTests {
         }
     }
 
-    @Test func aFailedWriteChangesNothing() throws {
+    @Test(.failureMode("design/18", "the write fails (disk full, read-only volume)")) func aFailedWriteChangesNothing() throws {
         let disk = try Self.disk()
         let settings = try Self.open(disk)
         disk.inject(ENOSPC, on: .write)
@@ -124,7 +124,7 @@ struct SettingsStoreTests {
         #expect(try Self.open(disk).value.speed == 901)
     }
 
-    @Test func oneInvalidFieldFallsBackAloneAndIsReported() throws {
+    @Test(.failureMode("design/18", "one field is invalid")) func oneInvalidFieldFallsBackAloneAndIsReported() throws {
         let disk = try Self.disk()
         try Self.place(#"{"version": 2, "speed": 99999, "name": "kept"}"#, on: disk, format: .appOwned)
         let settings = try Self.open(disk)
@@ -136,7 +136,7 @@ struct SettingsStoreTests {
         #expect(reopened.value.name == "kept")
     }
 
-    @Test func anUnusableFileIsQuarantinedAndThePreviousGenerationUsed() throws {
+    @Test(.failureMode("design/18", "the file is torn or not JSON")) func anUnusableFileIsQuarantinedAndThePreviousGenerationUsed() throws {
         let disk = try Self.disk()
         let settings = try Self.open(disk)
         try settings.update { $0.speed = 700 }
@@ -156,7 +156,7 @@ struct SettingsStoreTests {
         #expect(settings.source == .defaults(.unusable))
     }
 
-    @Test func anOldFormatIsMigratedWrittenBackAndKeptAsPrevious() throws {
+    @Test(.failureMode("design/18", "the document is an older version")) func anOldFormatIsMigratedWrittenBackAndKeptAsPrevious() throws {
         let disk = try Self.disk()
         try Self.place(#"{"version": 1, "scroll_speed": 1200}"#, on: disk, format: .appOwned)
         let settings = try Self.open(disk)
@@ -168,7 +168,7 @@ struct SettingsStoreTests {
         #expect(String(decoding: previous.bytes, as: UTF8.self).contains("scroll_speed"), "the old file survives for a downgrade")
     }
 
-    @Test func aNewerFormatIsReadOnlyAndNeverOverwritten() throws {
+    @Test(.failureMode("design/18", "the document is a newer version")) func aNewerFormatIsReadOnlyAndNeverOverwritten() throws {
         let disk = try Self.disk()
         let newer = #"{"version": 3, "speed": 1500, "hyperdrive": true}"#
         try Self.place(newer, on: disk, format: .appOwned)
@@ -216,7 +216,7 @@ struct SettingsStoreTests {
         #expect(changed.withLock { $0 })
     }
 
-    @Test func concurrentUpdatesAreSerialised() async throws {
+    @Test(.failureMode("design/18", "two updates race")) func concurrentUpdatesAreSerialised() async throws {
         let disk = try Self.disk()
         let settings = try Self.open(disk)
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -229,7 +229,7 @@ struct SettingsStoreTests {
         #expect(try Self.open(disk).value.speed == 700)
     }
 
-    @Test func aCrashAtAnyPointOfAnUpdateLeavesTheOldValueOrTheNew() throws {
+    @Test(.failureMode("design/18", "the app crashed mid-save")) func aCrashAtAnyPointOfAnUpdateLeavesTheOldValueOrTheNew() throws {
         let disk = try Self.disk()
         try Self.open(disk).update { $0.speed = 700 }
         disk.settle()
