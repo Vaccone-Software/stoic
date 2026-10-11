@@ -17,6 +17,9 @@ enum MarkerKind: String, CaseIterable {
     case nullable = "Nullable"
     case ignored = "Ignored"
     case preserveUnknownKeys = "PreserveUnknownKeys"
+    case dateFormat = "DateFormat"
+    case urlFormat = "URLFormat"
+    case dataFormat = "DataFormat"
     case range = "Range"
     case greaterThan = "GreaterThan"
     case lessThan = "LessThan"
@@ -33,6 +36,23 @@ enum MarkerKind: String, CaseIterable {
         switch self {
         case .range, .greaterThan, .lessThan, .multipleOf, .length, .pattern, .count, .unique, .finite: true
         default: false
+        }
+    }
+
+    /// How a Foundation leaf is spelt on the wire.
+    var isFormat: Bool {
+        switch self {
+        case .dateFormat, .urlFormat, .dataFormat: true
+        default: false
+        }
+    }
+
+    /// The type a format is about, as a word in a message.
+    var formatSubject: String {
+        switch self {
+        case .dateFormat: "Date"
+        case .urlFormat: "URL"
+        default: "Data"
         }
     }
 

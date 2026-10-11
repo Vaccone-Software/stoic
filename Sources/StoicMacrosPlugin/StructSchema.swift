@@ -25,7 +25,9 @@ func expandStruct(
         let scalar = field.scalar.map(\.constraintCode)
         let collection = field.collection.map(\.constraintCode)
         arguments.append(
-            schemaExpression(field.type, scalar: scalar, collection: collection, nullable: field.isNullable))
+            schemaExpression(
+                field.type, scalar: scalar, collection: collection, nullable: field.isNullable,
+                format: field.format?.arguments.first?.expression.trimmedDescription ?? ""))
         if let doc = field.doc { arguments.append("doc: \(swiftLiteral(doc))") }
         if let unit = field.unit { arguments.append("unit: \(unit)") }
         if !field.aliases.isEmpty { arguments.append("aliases: [\(field.aliases.map(\.source).joined(separator: ", "))]") }

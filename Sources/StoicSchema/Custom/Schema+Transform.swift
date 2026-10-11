@@ -76,13 +76,16 @@ extension Schema {
     ///   - describe: The accepted values in words, an issue's `expected`.
     ///   - name: The type's name in the export; defaults to `Value`'s.
     ///   - examples: Values that are known to be accepted.
+    ///   - format: The JSON Schema `format` of the wire value, if it has one
+    ///     (`date-time`, `email`), for the export.
     public static func transform<Base: Sendable>(
         base: Schema<Base>,
         decode: @escaping @Sendable (Base) throws(TransformFailure) -> Value,
         encode: @escaping @Sendable (Value) -> Base,
         describe: String,
         name: String? = nil,
-        examples: [Value] = []
+        examples: [Value] = [],
+        format: String? = nil
     ) -> Schema<Value> {
         let name = name ?? String(describing: Value.self)
         let encodedExamples = examples.map { example -> JSONValue in
@@ -91,7 +94,8 @@ extension Schema {
         }
         return Schema(
             node: .transformed(
-                TransformNode(base: base.node, name: name, description: describe, examples: encodedExamples)),
+                TransformNode(
+                    base: base.node, name: name, description: describe, examples: encodedExamples, format: format)),
             decoder: { json, state in
                 guard let decoded = base.decoder(json, &state) else { return nil }
                 do throws(TransformFailure) {

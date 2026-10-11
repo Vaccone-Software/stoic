@@ -112,6 +112,8 @@ struct JSONSchemaExporter {
 
         case .transformed(let transform):
             out = export(transform.base, location: location)
+            if let format = transform.format { out["format"] = .string(format) }
+            for member in transform.keywords { out[member.key] = member.value }
             out["x-stoic-transform"] = .object([
                 "name": .string(transform.name), "description": .string(transform.description),
             ])

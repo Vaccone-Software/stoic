@@ -161,6 +161,16 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let reason = parameters["message"]?.string ?? "is not valid"
             guard let expected else { return reason }
             return "\(reason), expected \(expected)"
+        case .invalidFormat:
+            let reason = parameters["message"]?.string.map { ": " + $0 } ?? ""
+            return "\(value) is not \(want)\(reason)"
+        case .unknownCase:
+            let fallback = parameters["fallback"]?.string ?? "the fallback case"
+            return "\(value) is no known case and was read as `\(fallback)`; expected \(want)"
+        case .droppedElement:
+            let index = parameters["index"]?.number?.lexeme ?? "?"
+            let reason = parameters["reason"]?.string.map { ": " + $0 } ?? ""
+            return "dropped the element at index \(index), which is invalid\(reason)"
         case .versionTooNew:
             let found = parameters["version"]?.number?.lexeme ?? "?"
             let supported = parameters["supported"]?.number?.lexeme ?? "?"

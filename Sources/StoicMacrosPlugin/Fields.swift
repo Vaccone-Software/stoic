@@ -22,6 +22,8 @@ struct FieldModel {
     var isNullable = false
     var scalar: [Marker] = []
     var collection: [Marker] = []
+    /// `@DateFormat`, `@URLFormat` or `@DataFormat`: it reaches the innermost value.
+    var format: Marker?
     /// The declaration, for diagnostics about the field as a whole.
     var node: Syntax
     /// The node a diagnostic about the key points at.
@@ -250,6 +252,9 @@ private func defaultSuggestion(for type: ValueType) -> String? {
     case .array: "[]"
     case .dictionary: "[:]"
     case .optional: "nil"
+    case .decimal: "0"
+    case .data: "Data()"
+    case .uuid: "UUID()"
     default: nil
     }
 }
@@ -324,6 +329,8 @@ private func readMarkers(
             field.scalar.append(marker)
         case .count, .unique:
             field.collection.append(marker)
+        case .dateFormat, .urlFormat, .dataFormat:
+            field.format = marker
         }
     }
 }
@@ -339,6 +346,25 @@ private func checkMarkersAgainstType(_ found: [Marker], type: ValueType, field: 
                     id: "nullable-not-optional",
                     message: "@Nullable says that `nil` is written as `null`, and `\(field.property)` is not optional"),
                 fixIts: [.removing(marker.node, "remove @Nullable")])
+        case .dateFormat, .urlFormat, .dataFormat:
+            let subject = marker.kind.formatSubject
+            let leaf = type.leaf
+            let fits: Bool
+            switch (marker.kind, type.innermost) {
+            case (.dateFormat, .date), (.urlFormat, .url), (.dataFormat, .data): fits = true
+            default: fits = false
+            }
+            if !fits {
+                let message: String
+                if leaf == .named {
+                    message =
+                        "\(marker.name) cannot be applied to `\(field.property)`: the macro cannot look inside `\(field.typeText)`, so it cannot tell that it is a \(subject). Put the format in that type's own schema"
+                } else {
+                    message = "\(marker.name) is about a `\(subject)`, and `\(field.property)` is `\(field.typeText)`"
+                }
+                reporter.error(
+                    marker.node, Problem(id: "format-type-mismatch", message: message), fixIts: marker.removalFixIts)
+            }
         case .secret where type.isSecret:
             reporter.warning(
                 marker.node,

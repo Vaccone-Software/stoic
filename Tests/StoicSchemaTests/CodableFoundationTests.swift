@@ -153,7 +153,11 @@ private struct JSONTree: Decodable {
 
 @Suite("Foundation-free")
 struct FoundationFreeTests {
-    @Test func theLibrarySourcesNeverImportFoundation() throws {
+    /// StoicJSON never imports Foundation, and StoicSchema imports it only in
+    /// the files that give Foundation's own types their schemas (design/06,
+    /// "Foundation"): the decoder, the encoder and every tool are written
+    /// against the standard library.
+    @Test func theLibrarySourcesImportFoundationOnlyForFoundationTypes() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Sources")
@@ -164,6 +168,7 @@ struct FoundationFreeTests {
                 guard url.pathExtension == "swift" else { continue }
                 let text = try String(contentsOf: url, encoding: .utf8)
                 checked += 1
+                if target == "StoicSchema", url.deletingLastPathComponent().lastPathComponent == "Foundation" { continue }
                 for line in text.split(separator: "\n") where line.contains("import Foundation") {
                     Issue.record("\(url.lastPathComponent) imports Foundation: \(line)")
                 }

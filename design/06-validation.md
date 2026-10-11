@@ -198,6 +198,8 @@ schema and throws one `DecodingError` listing every issue.
 | a secret field is invalid                    | Issue without `actual`                                                    |
 | the input has duplicate keys                 | Rejected by StoicJSON with both locations                                 |
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
+| a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
+| a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
 
 ## Testing
 
@@ -211,7 +213,8 @@ generated values.
 ## As built: phase 1 (StoicSchema)
 
 Layers 1 and 2 and the JSON Schema exporter of Layer 3 are implemented in
-`StoicSchema`, which depends on `StoicJSON` alone. The decisions the sketches
+`StoicSchema`, which depends on `StoicJSON` (and, for Foundation's own types
+only, on Foundation; see "As built: wire models"). The decisions the sketches
 above left open:
 
 - **Constraints are a struct over a `Kind` enum**, so `Constraint.range(…)`
@@ -743,6 +746,98 @@ trait.
   before `@Schema` sees them is outside what it reads.
 - **Linux and Windows** are outside the platform floor, as for the rest of
   Stoic; the plugin itself has no platform dependency.
+
+## As built: wire models
+
+Phases 1 and 2 were written for configuration. An API's models need more:
+Foundation's types as fields, fields that must be present, enumerations a
+server may extend, collections that survive one bad element, and models that
+cannot be rewritten yet. This section records what was added for them, in
+the order it was built.
+
+### Foundation's types
+
+- **`Schema.date(_:)`, `.url(_:)`, `.uuid`, `.data(_:)`**, and `Date`,
+  `URL`, `UUID` and `Data` conform to `Schematic` (so `[UUID].schema` and the
+  macro's `Name.schema` work). Each is a `.transformed` node over a plain
+  string (or number, for the epoch dates), so every tool that knows
+  transforms knows them without a case of its own.
+- **Formats.** `DateFormat`: `.iso8601` (RFC 3339, the default: fractions of
+  any length, any offset, `t`/`z`/space accepted, a time without an offset
+  refused because it names no instant), `.epochSeconds` (a number, which may
+  have a fraction) and `.epochMilliseconds` (an integer). `URLFormat`:
+  `.absolute` (has a scheme; the default) or `.relative` (any reference).
+  `DataFormat`: `.base64` (padded, the default) or `.base64url` (read with or
+  without padding, written without). A UUID is read in either case and
+  written in lower case.
+- **RFC 3339 is parsed by hand**, not by a formatter: a formatter is locale
+  and calendar machinery and rolls February 30th into March. Every format
+  covers the years 0000 to 9999 in UTC, the range RFC 3339 can write, so a
+  date read in one format can be written in any other; a date outside it is
+  `out_of_range` from `validate` and is written as `null`.
+- **Precision.** A `Date` is written in UTC with the fewest fractional digits
+  that read back as exactly the same `Date` (none for whole seconds, three
+  for milliseconds), found by trying each length; that is "the original
+  precision" as far as a `Date` remembers it, and it makes every date a
+  fixed point of encode-then-decode. The offset a date was written with is
+  not kept.
+- **A URL is never repaired.** Foundation's `URL(string:)` percent-encodes
+  invalid characters by default, which would read `"a b"` as a different URL
+  from the one sent; the schema refuses it with the reason.
+- **Issues.** A string that does not parse is `invalid_format` (new), with
+  `format` and a `message` saying what is wrong (`there is no month 13`, `it
+  is a relative reference`, `its length, 7, is not a multiple of 4`) and,
+  where there is one, a suggestion (the hyphenated form of a UUID written
+  without hyphens). Inside a secret the reason is dropped with the value,
+  since it is derived from it.
+- **Export and generation.** `TransformNode` gained `format` (exported as
+  JSON Schema's `format`: `date-time`, `uri`, `uri-reference`, `uuid`,
+  `byte`), `keywords` (more keywords, here `contentEncoding`) and
+  `counterexamples`: values of the base that the conversion refuses, with the
+  issue each raises. The generator draws valid values from `examples` (which
+  include offsets, fractions, upper-case UUIDs, the first and last
+  representable dates) and the mutator offers each counterexample as a
+  `refusedByConversion` mutation, which `SchemaSuite` checks yields exactly
+  that issue; the agreement check skips those, since `format` is an
+  annotation to a JSON Schema validator.
+
+- **`Schema.decimal(_:acceptingStrings:)`**, and `Decimal` is `Schematic`. It
+  reads a JSON number from the digits StoicJSON kept (`ExactDecimal` has them
+  already for range checks), so `19.99` is exactly that and no `Double` is
+  involved; it writes a number, with the digits `Decimal` prints. A number
+  with more than 38 significant digits (trailing zeros are not digits) or a
+  power of ten outside -128...127 is `out_of_range`, never rounded: the
+  conversion is checked by reading the `Decimal` back and comparing digits,
+  so a Foundation that rounded would be caught. `acceptingStrings: true` also
+  reads text under JSON's number grammar and no other: `"1,5"`, `"+1"`,
+  `".5"`, `"5."` and a string with spaces are `invalid_format`, each with the
+  reason and, where one is obvious, the number that was meant (`1.5`). The
+  constraints (`.range`, `.greaterThan`, `.multipleOf`) are checked on the
+  digits, so `.multipleOf(0.05)` accepts `0.15`. The export says `number`
+  with the constraints and `format: decimal`; with strings accepted it is an
+  `anyOf` of that and a string with the number grammar as its `pattern`
+  (JSON Schema cannot constrain a string by its value, so the constraints
+  are on the number alternative only). `TransformNode.readsNumberDigits`
+  tells the mutator that 2^53 + 1 and 1e400, which a `Double` refuses, are
+  not refused here; the conversion's own `counterexamples` (`1e200`, a
+  39-digit number, the bad strings) say what is.
+
+### Decisions
+
+- **Foundation, deliberately, and only where its types are.** `Date`, `URL`,
+  `UUID`, `Data` and `Decimal` are Foundation's, so a schema for them needs
+  Foundation; so does the `Codable` leaf, which runs `JSONDecoder`. The
+  choice was between importing it in StoicSchema and a separate
+  `StoicSchemaFoundation` target. A separate target would make every file
+  that uses `@Schema` with a `Date` import a second module (the macro's
+  expansion names `Date.schema`, which only resolves where the conformance
+  is visible), and buys nothing on the platforms Stoic supports, where
+  Foundation is part of the OS. So StoicSchema imports it, in the files under
+  `Sources/StoicSchema/Foundation/` and nowhere else (a test enforces it):
+  the parser, the decoder, the encoder and every tool stay written against
+  the standard library, and StoicJSON stays Foundation-free entirely. (The
+  files import `FoundationEssentials` where it exists, for a later Linux
+  port.)
 
 ## Non-goals
 

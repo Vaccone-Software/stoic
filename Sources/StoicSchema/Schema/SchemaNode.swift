@@ -129,12 +129,49 @@ public struct TransformNode: Sendable {
     /// proof that some values pass. Without examples a generator can only
     /// try base values and hope.
     public var examples: [JSONValue]
+    /// The JSON Schema `format` of the wire value (`date-time`, `uri`,
+    /// `uuid`, `byte`), for the export and for a UI that offers a date
+    /// picker rather than a text field. An annotation: a JSON Schema
+    /// validator need not check it, and the one in this library does not.
+    public var format: String?
+    /// Further JSON Schema keywords the export writes over the base's own,
+    /// such as `contentEncoding`, or a whole schema supplied for a type the
+    /// library cannot look into.
+    public var keywords: JSONObject
+    /// Values of the base that the conversion refuses, each with the issue
+    /// it raises: the invalid documents a generator cannot find on its own,
+    /// because the rule they break is code.
+    public var counterexamples: [Counterexample]
+    /// Whether the conversion reads the digits of a number rather than a
+    /// `Double`, as a decimal's does. A generator then does not offer 2^53 + 1
+    /// or 1e400 as values the number refuses: whether the conversion does is
+    /// for its own ``counterexamples`` to say.
+    public var readsNumberDigits: Bool
 
-    public init(base: SchemaNode, name: String, description: String, examples: [JSONValue] = []) {
+    /// A value the base accepts and the conversion refuses.
+    public struct Counterexample: Sendable, Hashable {
+        public var value: JSONValue
+        /// The code of the one issue it must raise.
+        public var code: IssueCode
+
+        public init(_ value: JSONValue, code: IssueCode = .invalidValue) {
+            self.value = value
+            self.code = code
+        }
+    }
+
+    public init(
+        base: SchemaNode, name: String, description: String, examples: [JSONValue] = [], format: String? = nil,
+        keywords: JSONObject = JSONObject(), counterexamples: [Counterexample] = [], readsNumberDigits: Bool = false
+    ) {
         self.base = base
         self.name = name
         self.description = description
         self.examples = examples
+        self.format = format
+        self.keywords = keywords
+        self.counterexamples = counterexamples
+        self.readsNumberDigits = readsNumberDigits
     }
 }
 

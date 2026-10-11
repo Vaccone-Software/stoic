@@ -52,6 +52,9 @@ struct NullableMacro: MarkerMacro { static let kind = MarkerKind.nullable }
 struct IgnoredMacro: MarkerMacro { static let kind = MarkerKind.ignored }
 
 struct PreserveUnknownKeysMacro: MarkerMacro { static let kind = MarkerKind.preserveUnknownKeys }
+struct DateFormatMacro: MarkerMacro { static let kind = MarkerKind.dateFormat }
+struct URLFormatMacro: MarkerMacro { static let kind = MarkerKind.urlFormat }
+struct DataFormatMacro: MarkerMacro { static let kind = MarkerKind.dataFormat }
 struct RangeMacro: MarkerMacro { static let kind = MarkerKind.range }
 struct GreaterThanMacro: MarkerMacro { static let kind = MarkerKind.greaterThan }
 struct LessThanMacro: MarkerMacro { static let kind = MarkerKind.lessThan }

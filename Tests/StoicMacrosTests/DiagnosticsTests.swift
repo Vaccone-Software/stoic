@@ -213,44 +213,79 @@ struct PropertyDiagnosticTests {
             @Schema
             struct Unsupported {
                 var a: Set<Int> = []
-                var b: Date = Date()
+                var b: Character = "a"
                 var c: Float = 0
                 var d: (Int, Int) = (0, 0)
                 var e: () -> Void = {}
                 var f: Int! = 0
                 var g: [Int: String] = [:]
                 var h: any Sendable = 0
-                var i: URL = URL(string: "a")!
+                var i: CGFloat = 0
                 var j: Dictionary<Int, Int> = [:]
                 var k: [Set<Int>] = []
             }
             """,
             diagnostics: [
                 problem("`a`: `Set` has no schema: use an array with `@Unique`", 3, 12),
-                problem("`b`: `Date` has no schema: write a transform from a string or a number", 4, 12),
+                problem("`b`: `Character` has no schema: use `String` with `@Length(1...1)`", 4, 12),
                 problem("`c`: `Float` has no schema: use `Double`", 5, 12),
                 problem("`d`: a tuple has no JSON shape; declare a struct", 6, 12),
                 problem("`e`: a function cannot be read from JSON", 7, 12),
                 problem("`f`: an implicitly unwrapped optional hides whether the key is required; write `Int?`", 8, 12),
                 problem("`g`: a dictionary needs `String` keys to be a JSON object, not `Int`; use an array of entries instead", 9, 13),
                 problem("`h`: an existential or opaque type has no single schema; use the concrete type", 10, 12),
-                problem("`i`: `URL` has no schema: write a transform from a string", 11, 12),
+                problem("`i`: `CGFloat` has no schema: use `Double`", 11, 12),
                 problem("`j`: a dictionary needs `String` keys to be a JSON object, not `Int`", 12, 23),
                 problem("`k`: `Set` has no schema: use an array with `@Unique`", 13, 13),
             ],
             to: """
                 struct Unsupported {
                     var a: Set<Int> = []
-                    var b: Date = Date()
+                    var b: Character = "a"
                     var c: Float = 0
                     var d: (Int, Int) = (0, 0)
                     var e: () -> Void = {}
                     var f: Int! = 0
                     var g: [Int: String] = [:]
                     var h: any Sendable = 0
-                    var i: URL = URL(string: "a")!
+                    var i: CGFloat = 0
                     var j: Dictionary<Int, Int> = [:]
                     var k: [Set<Int>] = []
+                }
+                """)
+    }
+
+    @Test func aFormatNeedsTheTypeItIsAbout() {
+        expand(
+            """
+            @Schema
+            struct Wrong {
+                @DateFormat(.epochSeconds) var a: String = ""
+                @URLFormat(.relative) var b: Date = Date()
+                @Range(1...5) var c: Date = Date()
+                @DataFormat(.base64url) var d: Port = Port()
+                @DateFormat(.iso8601) @DateFormat(.epochSeconds) var e: Date = Date()
+                @Length(1...5) var f: UUID = UUID()
+                @DateFormat(.epochSeconds) var ok: [String: Date?] = [:]
+            }
+            """,
+            diagnostics: [
+                problem("@DateFormat is about a `Date`, and `a` is `String`", 3, 5, fixIts: ["remove @DateFormat"]),
+                problem("@URLFormat is about a `URL`, and `b` is `Date`", 4, 5, fixIts: ["remove @URLFormat"]),
+                problem("@Range needs a number, and `c` is `Date`", 5, 5, fixIts: ["remove @Range"]),
+                problem("@DataFormat cannot be applied to `d`: the macro cannot look inside `Port`, so it cannot tell that it is a Data. Put the format in that type's own schema", 6, 5, fixIts: ["remove @DataFormat"]),
+                problem("@DateFormat appears twice on `e`", 7, 27, fixIts: ["remove the second @DateFormat"]),
+                problem("@Length needs a string, and `f` is `UUID`", 8, 5, fixIts: ["remove @Length"]),
+            ],
+            to: """
+                struct Wrong {
+                    var a: String = ""
+                    var b: Date = Date()
+                    var c: Date = Date()
+                    var d: Port = Port()
+                    var e: Date = Date()
+                    var f: UUID = UUID()
+                    var ok: [String: Date?] = [:]
                 }
                 """)
     }

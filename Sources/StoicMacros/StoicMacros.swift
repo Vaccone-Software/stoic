@@ -66,6 +66,19 @@ public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "Igno
 @attached(peer)
 public macro PreserveUnknownKeys() = #externalMacro(module: "StoicMacrosPlugin", type: "PreserveUnknownKeysMacro")
 
+/// How a `Date` is written: `@DateFormat(.epochSeconds)`. RFC 3339 without
+/// it. Reaches the `Date` inside an optional, array or dictionary.
+@attached(peer)
+public macro DateFormat(_ format: DateFormat) = #externalMacro(module: "StoicMacrosPlugin", type: "DateFormatMacro")
+
+/// Which URLs are accepted: `@URLFormat(.relative)`. Absolute ones without it.
+@attached(peer)
+public macro URLFormat(_ format: URLFormat) = #externalMacro(module: "StoicMacrosPlugin", type: "URLFormatMacro")
+
+/// How bytes are spelt: `@DataFormat(.base64url)`. Standard base64 without it.
+@attached(peer)
+public macro DataFormat(_ format: DataFormat) = #externalMacro(module: "StoicMacrosPlugin", type: "DataFormatMacro")
+
 /// A named refinement: a checked type whose constraints are data.
 ///
 ///     @Refined(Double.self, .range(0.1...10), .finite)

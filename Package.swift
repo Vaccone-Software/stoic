@@ -142,8 +142,10 @@ let package = Package(
         .target(name: "StoicJSON", swiftSettings: strict),
         .testTarget(name: "StoicJSONTests", dependencies: ["StoicJSON", "StoicTesting"], swiftSettings: strict),
         // One declaration per type that decodes, encodes, validates and
-        // documents it (design/06). Foundation-free, and it depends on
-        // StoicJSON alone, so a schema runs anywhere Swift does.
+        // documents it (design/06). It depends on StoicJSON, and on
+        // Foundation only for the leaves of Foundation's own types (`Date`,
+        // `URL`, `UUID`, `Data`, `Decimal`) and the `Codable` leaf, which
+        // live in Sources/StoicSchema/Foundation.
         .target(name: "StoicSchema", dependencies: ["StoicJSON"], swiftSettings: strict),
         // The Swift Testing glue for SchemaSuite. The suite itself lives in
         // StoicSchema and asserts nothing, so the library that apps ship
