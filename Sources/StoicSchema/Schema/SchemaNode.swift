@@ -142,6 +142,11 @@ public struct TransformNode: Sendable {
     /// it raises: the invalid documents a generator cannot find on its own,
     /// because the rule they break is code.
     public var counterexamples: [Counterexample]
+    /// Whether the conversion reads the digits of a number rather than a
+    /// `Double`, as a decimal's does. A generator then does not offer 2^53 + 1
+    /// or 1e400 as values the number refuses: whether the conversion does is
+    /// for its own ``counterexamples`` to say.
+    public var readsNumberDigits: Bool
 
     /// A value the base accepts and the conversion refuses.
     public struct Counterexample: Sendable, Hashable {
@@ -157,7 +162,7 @@ public struct TransformNode: Sendable {
 
     public init(
         base: SchemaNode, name: String, description: String, examples: [JSONValue] = [], format: String? = nil,
-        keywords: JSONObject = JSONObject(), counterexamples: [Counterexample] = []
+        keywords: JSONObject = JSONObject(), counterexamples: [Counterexample] = [], readsNumberDigits: Bool = false
     ) {
         self.base = base
         self.name = name
@@ -166,6 +171,7 @@ public struct TransformNode: Sendable {
         self.format = format
         self.keywords = keywords
         self.counterexamples = counterexamples
+        self.readsNumberDigits = readsNumberDigits
     }
 }
 

@@ -199,6 +199,7 @@ schema and throws one `DecodingError` listing every issue.
 | the input has duplicate keys                 | Rejected by StoicJSON with both locations                                 |
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
+| a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
 
 ## Testing
 
@@ -799,6 +800,27 @@ the order it was built.
   `refusedByConversion` mutation, which `SchemaSuite` checks yields exactly
   that issue; the agreement check skips those, since `format` is an
   annotation to a JSON Schema validator.
+
+- **`Schema.decimal(_:acceptingStrings:)`**, and `Decimal` is `Schematic`. It
+  reads a JSON number from the digits StoicJSON kept (`ExactDecimal` has them
+  already for range checks), so `19.99` is exactly that and no `Double` is
+  involved; it writes a number, with the digits `Decimal` prints. A number
+  with more than 38 significant digits (trailing zeros are not digits) or a
+  power of ten outside -128...127 is `out_of_range`, never rounded: the
+  conversion is checked by reading the `Decimal` back and comparing digits,
+  so a Foundation that rounded would be caught. `acceptingStrings: true` also
+  reads text under JSON's number grammar and no other: `"1,5"`, `"+1"`,
+  `".5"`, `"5."` and a string with spaces are `invalid_format`, each with the
+  reason and, where one is obvious, the number that was meant (`1.5`). The
+  constraints (`.range`, `.greaterThan`, `.multipleOf`) are checked on the
+  digits, so `.multipleOf(0.05)` accepts `0.15`. The export says `number`
+  with the constraints and `format: decimal`; with strings accepted it is an
+  `anyOf` of that and a string with the number grammar as its `pattern`
+  (JSON Schema cannot constrain a string by its value, so the constraints
+  are on the number alternative only). `TransformNode.readsNumberDigits`
+  tells the mutator that 2^53 + 1 and 1e400, which a `Double` refuses, are
+  not refused here; the conversion's own `counterexamples` (`1e200`, a
+  39-digit number, the bad strings) say what is.
 
 ### Decisions
 

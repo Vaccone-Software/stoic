@@ -26,6 +26,9 @@ struct Mutator {
         /// The node's generic mutations (null, wrong type) were already made
         /// by a wrapper around it.
         var genericDone = false
+        /// A number is read through a `Double`, so 2^53 + 1 and 1e400 are
+        /// refused. Not so below a conversion that reads the digits.
+        var doubleLimits = true
     }
 
     mutating func mutations(of document: JSONValue, node: SchemaNode) -> [Mutation] {
@@ -121,7 +124,9 @@ struct Mutator {
             if !value.isNull { collect(wrapped, value, path, context, &out) }
 
         case .transformed(let transform):
-            collect(transform.base, value, path, context, &out)
+            var inner = context
+            if transform.readsNumberDigits { inner.doubleLimits = false }
+            collect(transform.base, value, path, inner, &out)
             for counterexample in transform.counterexamples where counterexample.value != value {
                 out.add(replacement(
                         .refusedByConversion, context, at: path, with: counterexample.value, expect: counterexample.code,
@@ -296,6 +301,7 @@ struct Mutator {
             }
         }
         // An integer a Double cannot hold exactly, and a number it cannot hold at all.
+        guard context.doubleLimits else { return }
         if let loss = JSONNumber(lexeme: "9007199254740993") {
             out.add(replacement(
                     .precisionLoss, context, at: path, with: .number(loss), expect: .precisionLoss,
