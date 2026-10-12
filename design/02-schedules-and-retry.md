@@ -121,10 +121,11 @@ success streak cannot bank a burst for the next outage.
 multiplication traps on overflow), so an exponential at attempt 300 is just
 its cap.
 
-**Jitter and seeds.** Full jitter is opt-in per schedule (`.jittered()`).
-Randomness comes from the ambient source, one stream per call site, so a seed
-reproduces a run's delays; in production the source is the system generator
-and concurrent callers draw independently.
+**Jitter and seeds.** `exponential` and `fibonacci` are fully jittered by
+default (`.unjittered()` turns it off, `.jittered(_:)` changes it); `fixed`
+is not. Randomness comes from the ambient source, one stream per call site,
+so a seed reproduces a run's delays; in production the source is the system
+generator and concurrent callers draw independently.
 
 **Retry-After.** `.retryAfter(d)` replaces the schedule's delay for that
 retry but not its bound, its budget or the deadline. The device's conditions
