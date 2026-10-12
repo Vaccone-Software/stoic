@@ -53,18 +53,50 @@ struct HTTPCoalescingTests {
         }
     }
 
-    @Test func aHeaderTheAppAddsToTheVaryListSplitsFlights() async throws {
-        var policy = HTTPPolicy.testing()
-        policy.varyHeaders.append("X-Api-Version")
-        try await withRig(policy) { (rig) async throws in
+    @Test func callersThatDifferOnlyInACustomHeaderAreNotShared() async throws {
+        try await withRig { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [Step.json("{}").after(.seconds(1))])
-            let tasks = ["1", "2"].map { rig.start(.get("/a", headers: ["X-Api-Version": $0])) }
+            let tasks = ["alice", "bob"].map { rig.start(.get("/a", headers: ["X-Auth-Token": $0])) }
             await eventually { rig.transport.inFlightCount == 2 }
             await rig.clock.waitForSleepers(count: 4)
             await rig.clock.advance(by: .seconds(1))
             for task in tasks { _ = try await task.value }
-            #expect(rig.transport.requestCount == 2)
+            #expect(rig.transport.requestCount == 2, "one for each token")
         }
+    }
+
+    @Test func identicalCallersWithACustomHeaderShareOneRequestWhateverTheCaseAndOrder() async throws {
+        try await withRig { (rig) async throws in
+            rig.transport.on(.get("/a"), respond: [Step.json("{}").after(.seconds(1))])
+            let first = HTTPRequest.get("/a", headers: ["X-Auth-Token": "alice", "X-Trace": "t"])
+            let second = HTTPRequest.get("/a", headers: ["x-trace": "t", "x-auth-token": "alice"])
+            let tasks = [rig.start(first), rig.start(second), rig.start(first)]
+            await eventually("every caller joins the flight") { rig.api.coalescedWaiters(for: first) == 3 }
+            await rig.clock.waitForSleepers(count: 2)
+            await rig.clock.advance(by: .seconds(1))
+            for task in tasks { _ = try await task.value }
+            #expect(rig.transport.requestCount == 1)
+        }
+    }
+
+    @Test func aHeaderNamedInTheIgnoreListDoesNotSplitFlights() async throws {
+        var policy = HTTPPolicy.testing()
+        policy.ignoreHeadersForCoalescing = ["X-Request-Id"]
+        try await withRig(policy) { (rig) async throws in
+            rig.transport.on(.get("/a"), respond: [Step.json("{}").after(.seconds(1))])
+            let tasks = ["1", "2"].map { rig.start(.get("/a", headers: ["x-request-id": $0, "X-Auth-Token": "alice"])) }
+            await eventually("both callers join the flight") {
+                rig.api.coalescedWaiters(for: .get("/a", headers: ["X-Request-Id": "9", "X-Auth-Token": "alice"])) == 2
+            }
+            await rig.clock.waitForSleepers(count: 2)
+            await rig.clock.advance(by: .seconds(1))
+            for task in tasks { _ = try await task.value }
+            #expect(rig.transport.requestCount == 1)
+        }
+    }
+
+    @Test func getCoalescingIsOnByDefault() {
+        #expect(HTTPPolicy.standard.coalesceGETs)
     }
 
     @Test func nothingIsSharedOnceTheFirstResponseHasLanded() async throws {

@@ -61,20 +61,18 @@ public struct HTTPPolicy: Sendable {
     /// ``HTTPError/status(_:excerpt:retryAfter:attempts:)``. Default 512.
     public var errorExcerptBytes: Int
 
-    /// Whether identical `GET`s in flight at once share one request.
-    /// Default `true`.
+    /// Whether identical `GET`s in flight at once share one request. Identical
+    /// means the same URL and the same headers (see
+    /// ``ignoreHeadersForCoalescing``). Default `true`.
     public var coalesceGETs: Bool
 
-    /// The request headers that are part of what makes two `GET`s identical.
-    /// Two requests are shared only if they agree on every one of these, so
-    /// a request with another user's `Authorization`, another `Accept` or
-    /// `Accept-Language`, or a different `Range` or validator never shares a
-    /// response. Default: `Accept`, `Accept-Encoding`, `Accept-Language`,
-    /// `Authorization`, `Cookie`, `Proxy-Authorization`, `Range`, `If-Match`,
-    /// `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` and
-    /// `If-Range`. Add a header your API varies on (an API-version header,
-    /// say).
-    public var varyHeaders: [String]
+    /// Headers left out of what makes two `GET`s identical. Two requests are
+    /// shared only if they agree on the name and value of every other header,
+    /// custom ones included, so callers with different credentials never share
+    /// a response. List the noise that differs per call and changes nothing in
+    /// the answer (`X-Request-Id`, `traceparent`); matching is
+    /// case-insensitive. Default: none.
+    public var ignoreHeadersForCoalescing: [String]
 
     /// The current wall-clock time, used only to turn an HTTP-date
     /// `Retry-After` into a wait. (The wait itself runs on the ambient
@@ -92,8 +90,8 @@ public struct HTTPPolicy: Sendable {
         queueLimitPerHost: Int = 64,
         maxResponseBytes: Int = 10_000_000,
         errorExcerptBytes: Int = 512,
-        coalesceGETs: Bool = false,
-        varyHeaders: [String] = HTTPPolicy.defaultVaryHeaders,
+        coalesceGETs: Bool = true,
+        ignoreHeadersForCoalescing: [String] = [],
         wallClock: @escaping @Sendable () -> Date = { Date() }
     ) {
         precondition(attemptTimeout > .zero, "an attempt needs a positive timeout")
@@ -111,7 +109,7 @@ public struct HTTPPolicy: Sendable {
         self.maxResponseBytes = maxResponseBytes
         self.errorExcerptBytes = errorExcerptBytes
         self.coalesceGETs = coalesceGETs
-        self.varyHeaders = varyHeaders
+        self.ignoreHeadersForCoalescing = ignoreHeadersForCoalescing
         self.wallClock = wallClock
     }
 
@@ -129,9 +127,4 @@ public struct HTTPPolicy: Sendable {
     public static let standardBreaker = CircuitBreaker.Configuration(minimumCalls: 20, failureRateThreshold: 0.5)
 
     public static let defaultRetryStatuses: Set<Int> = [408, 429, 500, 502, 503, 504]
-
-    public static let defaultVaryHeaders: [String] = [
-        "Accept", "Accept-Encoding", "Accept-Language", "Authorization", "Cookie", "Proxy-Authorization", "Range",
-        "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since", "If-Range",
-    ]
 }

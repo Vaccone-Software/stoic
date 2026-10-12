@@ -66,14 +66,14 @@ that does not match is `.decoding(ValidationFailure)` with every issue and
 its path, and is never retried — asking again will not change the
 server's mind.
 
-**Coalescing** (opt in: `coalesceGETs: true`). Identical `GET`s in flight
-at once (same URL and the same values of the headers that vary the
-response) share one request (`SingleFlight`): ten views asking for the same
-avatar make one call. It is off by default because the key covers only the
-URL and `varyHeaders`: two callers that differ only in a header outside
-that list, such as a custom `X-API-Key`, would share one response. Turn it
-on for clients whose credentials travel in a listed header (`Authorization`,
-`Cookie`), or add yours to `varyHeaders`.
+**Coalescing** (on by default; `coalesceGETs: false` turns it off).
+Identical `GET`s in flight at once (same URL and the same name and value of
+every request header) share one request (`SingleFlight`): ten views asking
+for the same avatar make one call. The key covers every header, custom ones
+such as `X-API-Key` included, so callers with different credentials never
+share a response. A header that differs per call and changes nothing in the
+answer (`X-Request-Id`, `traceparent`) would defeat sharing; list it in
+`ignoreHeadersForCoalescing`.
 
 **Errors are one typed value.** `HTTPError`: `.status(code, body
 excerpt, retryAfter)`, `.transport(URLError.Code)`, `.timedOut(attempt:)`,
@@ -216,12 +216,13 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   .singleAttempt`: inside another retry's attempt (an `Outbox` delivery, say)
   it makes one attempt and the outer retry owns the retrying.
 - **Coalescing** applies to `GET` without a body. The key is the absolute URL
-  (query included) plus the values of `HTTPPolicy.varyHeaders`: `Accept`,
-  `Accept-Encoding`, `Accept-Language`, `Authorization`, `Cookie`,
-  `Proxy-Authorization`, `Range`, `If-Match`, `If-None-Match`,
-  `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`; add your API's own
-  (a version header). `Authorization` and `Cookie` are in the key so that one
-  user can never be handed another's response. One flight runs the whole
+  (query included) plus every request header, names lowercased and the pairs
+  sorted, so header case and order do not matter; headers named in
+  `HTTPPolicy.ignoreHeadersForCoalescing` (default none) are left out. This
+  replaces an allow-list of headers that vary a response (`varyHeaders`),
+  which shared a response between callers that differed only in a header the
+  list had not heard of. `Authorization` and `Cookie` are in the key so that
+  one user can never be handed another's response. One flight runs the whole
   pipeline once. `SingleFlight` gives a flight no deadline, so the caller who
   starts it lends it theirs; a caller who joined with *more* time and finds
   the flight ended by the starter's deadline starts a new flight rather than

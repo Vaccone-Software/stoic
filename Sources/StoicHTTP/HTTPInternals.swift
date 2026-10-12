@@ -152,18 +152,22 @@ final class LedFlag: Sendable {
     var value: Bool { led.withLock { $0 } }
 }
 
-/// What makes two `GET`s the same request: the URL and the values of the
-/// headers that vary the response.
+/// What makes two `GET`s the same request: the URL and every header, names
+/// lowercased and sorted, except the ones the policy says to ignore. A header
+/// the library has never heard of (`X-API-Key`) can change the response as
+/// surely as `Authorization`, so the key errs on the side of not sharing.
 struct FlightKey: Hashable, Sendable {
     var url: String
-    var vary: [String]
+    var headers: [String]
 
-    init(_ request: HTTPRequest, varying names: [String]) {
+    init(_ request: HTTPRequest, ignoring ignored: [String]) {
         url = request.url?.absoluteString ?? ""
-        vary = Set(names.map { $0.lowercased() }).sorted().compactMap { name in
-            let values = request.headers.values(for: name)
-            return values.isEmpty ? nil : "\(name)\u{0}\(values.joined(separator: "\u{0}"))"
-        }
+        let skipped = Set(ignored.map { $0.lowercased() })
+        headers = request.headers.fields
+            .map { (name: $0.name.lowercased(), value: $0.value) }
+            .filter { !skipped.contains($0.name) }
+            .map { "\($0.name)\u{0}\($0.value)" }
+            .sorted()
     }
 }
 

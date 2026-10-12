@@ -115,7 +115,7 @@ public final class HTTPClient: Sendable {
         } catch {
             return 0
         }
-        return flights.waiterCount(for: FlightKey(prepared.request, varying: policy.varyHeaders))
+        return flights.waiterCount(for: FlightKey(prepared.request, ignoring: policy.ignoreHeadersForCoalescing))
     }
 
     /// The breaker for `host` (as `host` or `host:port`), once the client has
@@ -165,7 +165,7 @@ public final class HTTPClient: Sendable {
     /// deadline, and finds the flight ended by the starter's, starts a new
     /// flight instead of inheriting someone else's timeout.
     private func coalesced(_ prepared: PreparedRequest) async throws -> Delivered {
-        let key = FlightKey(prepared.request, varying: policy.varyHeaders)
+        let key = FlightKey(prepared.request, ignoring: policy.ignoreHeadersForCoalescing)
         let led = LedFlag()
         while true {
             let lent = Deadline.current
