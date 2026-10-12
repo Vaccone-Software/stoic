@@ -1,5 +1,7 @@
 public import Foundation
 public import Stoic
+public import StoicSchema
+internal import StoicJSON
 
 /// Every number the client's resilience is made of.
 ///
@@ -57,24 +59,34 @@ public struct HTTPPolicy: Sendable {
     /// The most body bytes read from one response. Default 10 MB.
     public var maxResponseBytes: Int
 
+    /// How responses are decoded by ``HTTPClient/send(_:idempotencyKey:decoding:options:)``;
+    /// a call can pass its own. `nil` (the default) means strict decoding of
+    /// strict JSON, with the parser's input limit raised to
+    /// ``maxResponseBytes`` so that a response the client was willing to read
+    /// is not refused by the decoder for being over 8 MiB. Set a value to
+    /// use it exactly as given, limits included.
+    ///
+    /// Unknown keys are not an option here: each object schema carries its
+    /// own ``UnknownKeyPolicy``, and the default (`warn`) ignores a field the
+    /// server added; a schema declared `reject` rejects it.
+    public var decodeOptions: DecodeOptions?
+
     /// How much of an error response's body is kept in
     /// ``HTTPError/status(_:excerpt:retryAfter:attempts:)``. Default 512.
     public var errorExcerptBytes: Int
 
-    /// Whether identical `GET`s in flight at once share one request.
-    /// Default `true`.
+    /// Whether identical `GET`s in flight at once share one request. Identical
+    /// means the same URL and the same headers (see
+    /// ``ignoreHeadersForCoalescing``). Default `true`.
     public var coalesceGETs: Bool
 
-    /// The request headers that are part of what makes two `GET`s identical.
-    /// Two requests are shared only if they agree on every one of these, so
-    /// a request with another user's `Authorization`, another `Accept` or
-    /// `Accept-Language`, or a different `Range` or validator never shares a
-    /// response. Default: `Accept`, `Accept-Encoding`, `Accept-Language`,
-    /// `Authorization`, `Cookie`, `Proxy-Authorization`, `Range`, `If-Match`,
-    /// `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` and
-    /// `If-Range`. Add a header your API varies on (an API-version header,
-    /// say).
-    public var varyHeaders: [String]
+    /// Headers left out of what makes two `GET`s identical. Two requests are
+    /// shared only if they agree on the name and value of every other header,
+    /// custom ones included, so callers with different credentials never share
+    /// a response. List the noise that differs per call and changes nothing in
+    /// the answer (`X-Request-Id`, `traceparent`); matching is
+    /// case-insensitive. Default: none.
+    public var ignoreHeadersForCoalescing: [String]
 
     /// The current wall-clock time, used only to turn an HTTP-date
     /// `Retry-After` into a wait. (The wait itself runs on the ambient
@@ -92,8 +104,9 @@ public struct HTTPPolicy: Sendable {
         queueLimitPerHost: Int = 64,
         maxResponseBytes: Int = 10_000_000,
         errorExcerptBytes: Int = 512,
-        coalesceGETs: Bool = false,
-        varyHeaders: [String] = HTTPPolicy.defaultVaryHeaders,
+        decodeOptions: DecodeOptions? = nil,
+        coalesceGETs: Bool = true,
+        ignoreHeadersForCoalescing: [String] = [],
         wallClock: @escaping @Sendable () -> Date = { Date() }
     ) {
         precondition(attemptTimeout > .zero, "an attempt needs a positive timeout")
@@ -110,8 +123,9 @@ public struct HTTPPolicy: Sendable {
         self.queueLimitPerHost = queueLimitPerHost
         self.maxResponseBytes = maxResponseBytes
         self.errorExcerptBytes = errorExcerptBytes
+        self.decodeOptions = decodeOptions
         self.coalesceGETs = coalesceGETs
-        self.varyHeaders = varyHeaders
+        self.ignoreHeadersForCoalescing = ignoreHeadersForCoalescing
         self.wallClock = wallClock
     }
 
@@ -129,9 +143,14 @@ public struct HTTPPolicy: Sendable {
     public static let standardBreaker = CircuitBreaker.Configuration(minimumCalls: 20, failureRateThreshold: 0.5)
 
     public static let defaultRetryStatuses: Set<Int> = [408, 429, 500, 502, 503, 504]
+}
 
-    public static let defaultVaryHeaders: [String] = [
-        "Accept", "Accept-Encoding", "Accept-Language", "Authorization", "Cookie", "Proxy-Authorization", "Range",
-        "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since", "If-Range",
-    ]
+extension HTTPPolicy {
+    /// The options a response is decoded with when the call names none.
+    var responseDecodeOptions: DecodeOptions {
+        if let decodeOptions { return decodeOptions }
+        var options = DecodeOptions.strict
+        options.parse.maxBytes = max(options.parse.maxBytes, maxResponseBytes)
+        return options
+    }
 }

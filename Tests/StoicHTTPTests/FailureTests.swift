@@ -218,6 +218,51 @@ struct HTTPFailureTests {
         }
     }
 
+    @Test func aFieldTheServerAddsDoesNotBreakDecoding() async throws {
+        try await withRig { (rig) async throws in
+            rig.transport.on(.get("/users/42"), respond: [.json(#"{"id": 42, "name": "Ada", "plan": "pro", "flags": [1, 2]}"#)])
+            let user = try await rig.api.send(.get("/users/42"), decoding: User.schema)
+            #expect(user == User(id: 42, name: "Ada"))
+        }
+    }
+
+    @Test func aResponseWithinTheCapDecodesEvenWhenItIsOverTheParsersDefaultLimit() async throws {
+        let chunk = String(repeating: "x", count: 900_000)
+        let pad = Array(repeating: "\"\(chunk)\"", count: 10).joined(separator: ",")
+        let body = Array(#"{"id": 3, "name": "Ada", "pad": [\#(pad)]}"#.utf8)
+        #expect(body.count > JSONParseOptions.strict.maxBytes, "the premise: over 8 MiB")
+        try await withRig(.testing(maxResponseBytes: 10_000_000)) { (rig) async throws in
+            rig.transport.on(.get("/big"), respond: [.bytes(body)])
+            let user = try await rig.api.send(.get("/big"), decoding: User.schema)
+            #expect(user == User(id: 3, name: "Ada"))
+        }
+    }
+
+    @Test func aResponseOverTheCapNeverReachesTheDecoder() async throws {
+        try await withRig(.testing(maxResponseBytes: 1000)) { (rig) async throws in
+            rig.transport.on(.get("/big"), respond: [.oversized(5000)])
+            let error = await #expect(throws: HTTPError.self) { try await rig.api.send(.get("/big"), decoding: User.schema) }
+            #expect(error == .responseTooLarge(limit: 1000, attempts: 1))
+        }
+    }
+
+    @Test func decodeOptionsSetOnThePolicyApplyToEveryCallAndACallCanOverrideThem() async throws {
+        var policy = HTTPPolicy.testing()
+        policy.decodeOptions = .lenient
+        try await withRig(policy) { (rig) async throws in
+            rig.transport.on(.get("/users/1"), respond: [.json(#"{"id": 7, "name": 5}"#)])
+            let repaired = try await rig.api.send(.get("/users/1"), decoding: User.schema)
+            #expect(repaired == User(id: 7, name: ""), "the policy's lenient mode repaired the field")
+            let error = await #expect(throws: HTTPError.self) {
+                try await rig.api.send(.get("/users/1"), decoding: User.schema, options: .strict)
+            }
+            guard case .decoding? = error else {
+                Issue.record("the per-call strict options should have failed the decode, got \(String(describing: error))")
+                return
+            }
+        }
+    }
+
     @Test func anErrorStatusIsNotADecodingAttempt() async throws {
         try await withRig(.testing(attempts: 1)) { (rig) async throws in
             rig.transport.on(.get("/users/42"), respond: [.status(404)])
@@ -257,6 +302,24 @@ struct HTTPFailureTests {
         try await withRig(.testing(attempts: 1)) { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [.status(429, headers: ["Retry-After": "120"])])
             #expect(await rig.httpError(of: rig.start(.get("/a"))) == .status(429, excerpt: "", retryAfter: .seconds(120), attempts: 1))
+        }
+    }
+
+    @Test func aBusyHostsBreakerOutlivesMoreThanTheLimitOfOtherHosts() async throws {
+        try await withRig(.testing(attempts: 1)) { (rig) async throws in
+            rig.transport.on(.get("/ping"), respond: [], then: .status(200))
+            rig.transport.on(.get("/hot"), respond: [], then: .status(200))
+            _ = try await rig.start(.get("/hot")).value
+            let hot = try #require(rig.api.breaker(forHost: "api.example.com"))
+            hot.forceOpen()
+            for index in 0..<(HostTable.limit + 100) {
+                if index % 100 == 0 { _ = await rig.httpError(of: rig.start(.get("/hot"))) }   // still in use
+                let other = try #require(URL(string: "https://host\(index).example.com/ping"))
+                _ = try await rig.start(.get(other)).value
+            }
+            let error = try #require(await rig.httpError(of: rig.start(.get("/hot"))))
+            #expect(error.rejection?.reason == .circuitOpen, "the hot host was not forgotten")
+            #expect(rig.api.breaker(forHost: "api.example.com") === hot)
         }
     }
 }

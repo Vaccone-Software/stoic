@@ -83,15 +83,19 @@ public final class HTTPClient: Sendable {
     /// that does not match is ``HTTPError/decoding(_:attempts:)`` with every
     /// issue, and is not retried. Asks for `application/json` unless the
     /// request names an `Accept` itself.
+    ///
+    /// - Parameter options: How to decode, instead of the policy's
+    ///   ``HTTPPolicy/decodeOptions``.
     public func send<Value: Sendable>(
         _ request: HTTPRequest,
         idempotencyKey: IdempotencyKey? = nil,
-        decoding schema: Schema<Value>
+        decoding schema: Schema<Value>,
+        options: DecodeOptions? = nil
     ) async throws -> Value {
         var request = request
         if !request.headers.contains("Accept") { request.headers["Accept"] = "application/json" }
         let delivered = try await deliver(request, key: idempotencyKey)
-        let decoded = schema.decodeReporting(delivered.response.body)
+        let decoded = schema.decodeReporting(delivered.response.body, options: options ?? policy.responseDecodeOptions)
         guard let value = decoded.value else {
             let failure = ValidationFailure(issues: decoded.issues)
             Ambient.record(Event("http.decoding_failed", level: .notice, label: label, fields: [
@@ -115,7 +119,7 @@ public final class HTTPClient: Sendable {
         } catch {
             return 0
         }
-        return flights.waiterCount(for: FlightKey(prepared.request, varying: policy.varyHeaders))
+        return flights.waiterCount(for: FlightKey(prepared.request, ignoring: policy.ignoreHeadersForCoalescing))
     }
 
     /// The breaker for `host` (as `host` or `host:port`), once the client has
@@ -165,7 +169,7 @@ public final class HTTPClient: Sendable {
     /// deadline, and finds the flight ended by the starter's, starts a new
     /// flight instead of inheriting someone else's timeout.
     private func coalesced(_ prepared: PreparedRequest) async throws -> Delivered {
-        let key = FlightKey(prepared.request, varying: policy.varyHeaders)
+        let key = FlightKey(prepared.request, ignoring: policy.ignoreHeadersForCoalescing)
         let led = LedFlag()
         while true {
             let lent = Deadline.current
@@ -393,7 +397,7 @@ public final class HTTPClient: Sendable {
     private func hostState(for prepared: PreparedRequest) -> HostState {
         let key = prepared.hostKey
         return hosts.withLock { table in
-            if let existing = table.existing(key) { return existing }
+            if let existing = table.use(key) { return existing }
             let label = "\(self.label) \(key)"
             let clock = Ambient.current.clock
             let breaker = policy.breaker.map { configuration -> CircuitBreaker in
