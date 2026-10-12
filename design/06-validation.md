@@ -202,6 +202,7 @@ schema and throws one `DecodingError` listing every issue.
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
 | an enumeration with an unknown case meets a value it does not know | Read as that case; an `unknown_case` warning naming the value and the case, with the nearest known spelling; the document is still accepted |
 | an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
+| a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
 
 ## Testing
@@ -698,7 +699,7 @@ member `schema`". Every diagnostic has a test with its line and column.
 | Where | Mistake |
 | --- | --- |
 | the type | not a struct or enum; generic; an enum with no cases; already declares `schema`; initialisers but no `init()` |
-| a property | a `let` in form (a) or one with a value (fix-it: `var`); an `@Ignored` property with no default when the value is built by the initialiser; type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
+| a property | `@Lossy` on anything but an array, `@Codable` on a type that has a schema of its own (fix-it removes it); a `let` in form (a) or one with a value (fix-it: `var`); an `@Ignored` property with no default when the value is built by the initialiser; type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
 | use of markers | any marker on a static or computed property, on an `@Ignored` property, or outside a `@Schema` type; the same marker twice (fix-it removes the second); `@Key("")`; a non-literal key, alias or deprecation message |
 | keys | a key or alias used twice (the runtime precondition, moved to compile time); an alias equal to its own key; the version key used by a field |
 | constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
@@ -884,6 +885,27 @@ the order it was built.
   element (and leaves the element alone where the list would fall under its
   minimum); because a JSON Schema validator rejects the element, such
   mutations are marked `isTolerated` and the agreement check skips them.
+
+### A Codable leaf
+
+- **`Schema.codable(T.self, examples:, decoding:, encoding:)`** and `@Codable`
+  on a property whose type is a name the macro cannot look into (through an
+  optional, array or dictionary). The JSON is handed to a fresh
+  `JSONDecoder` as text, so numbers keep their digits; a fresh `JSONEncoder`
+  writes the value, and the bytes are parsed back to JSON. `decoding:` and
+  `encoding:` configure the two (date strategy, key strategy).
+- **The price is stated.** A failure is *one* `invalid_value` issue at the
+  field: the decoder stops at its first problem and says it in words, with
+  the coding path inside the value, so there is no path of the schema's kind
+  below the field and no accumulation. Inside a secret the reason is dropped,
+  since it is made of the value. There are no constraints, no documentation
+  of the inside, and the export is `{}` (accepts anything; the transform
+  annotation is left out because there is nothing on the wire to describe).
+- **Generation needs help.** The node is a `.transformed` over any JSON whose
+  `examples` are the encoded `examples:`. Without them a generator draws
+  arbitrary JSON, which a typed value refuses, so `SchemaSuite` on a schema
+  with a Codable leaf wants examples (the macro cannot supply them; write the
+  field by hand for the suite, or leave the leaf out of it).
 
 ### Decisions
 

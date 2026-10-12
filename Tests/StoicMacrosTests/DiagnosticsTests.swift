@@ -800,4 +800,30 @@ struct LossyDiagnosticTests {
                 """)
     }
 }
+
+@Suite("@Schema: diagnostics about @Codable")
+struct CodableDiagnosticTests {
+    @Test func codableIsForTypesWithoutASchema() {
+        expand(
+            """
+            @Schema
+            struct Held {
+                @Codable var one: Int = 1
+                @Codable var many: [Date] = []
+                @Codable var fine: [Meta] = []
+            }
+            """,
+            diagnostics: [
+                problem("@Codable reads a named type with `JSONDecoder` in place of a schema, and `one` is `Int`, which has a schema of its own", 3, 5, fixIts: ["remove @Codable"]),
+                problem("@Codable reads a named type with `JSONDecoder` in place of a schema, and `many` is `[Date]`, which has a schema of its own", 4, 5, fixIts: ["remove @Codable"]),
+            ],
+            to: """
+                struct Held {
+                    var one: Int = 1
+                    var many: [Date] = []
+                    var fine: [Meta] = []
+                }
+                """)
+    }
+}
 #endif

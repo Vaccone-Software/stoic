@@ -17,7 +17,7 @@ let library = "StoicSchema::"
 ///     as written, for the leaf it is about.
 func schemaExpression(
     _ type: ValueType, scalar: [String] = [], collection: [String] = [], nullable: Bool = false, format: String = "",
-    lossy: Bool = false
+    lossy: Bool = false, codable: Bool = false
 ) -> String {
     func join(_ parts: [String]) -> String { parts.joined(separator: ", ") }
     switch type {
@@ -47,18 +47,19 @@ func schemaExpression(
         default: return scalar.isEmpty ? ".integer(\(name).self)" : ".integer(\(name).self, [\(join(scalar))])"
         }
     case .array(let element):
-        let inner = schemaExpression(element, scalar: scalar, format: format)
+        let inner = schemaExpression(element, scalar: scalar, format: format, codable: codable)
         return ".\(lossy ? "lossyArray" : "array")(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
     case .dictionary(let value):
-        let inner = schemaExpression(value, scalar: scalar, format: format)
+        let inner = schemaExpression(value, scalar: scalar, format: format, codable: codable)
         return ".dictionary(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
     case .optional(let wrapped):
-        let inner = schemaExpression(wrapped, scalar: scalar, collection: collection, format: format, lossy: lossy)
+        let inner = schemaExpression(wrapped, scalar: scalar, collection: collection, format: format, lossy: lossy, codable: codable)
         return ".optional(\(inner)\(nullable ? ", nullable: true" : ""))"
     case .secret(let inner):
-        let base = schemaExpression(inner, scalar: scalar, collection: collection, format: format, lossy: lossy)
+        let base = schemaExpression(inner, scalar: scalar, collection: collection, format: format, lossy: lossy, codable: codable)
         return ".transform(base: \(base), decode: { Secret($0) }, encode: { $0.reveal() }, describe: \"a secret value\")"
     case .named(let text, let isSelf):
+        if codable { return ".codable(\(text).self)" }
         return isSelf ? ".lazy { \(text).schema }" : "\(text).schema"
     }
 }

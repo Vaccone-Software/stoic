@@ -318,5 +318,36 @@ struct StructExpansionTests {
                 }
                 """)
     }
+
+    @Test func codableTypesAreReadByJSONDecoder() {
+        expand(
+            """
+            @Schema
+            struct Holder {
+                @Codable var payload: Payload
+                @Codable var many: [Payload]? = nil
+                @Codable var byName: [String: Payload] = [:]
+            }
+            """,
+            to: """
+                struct Holder {
+                    var payload: Payload
+                    var many: [Payload]? = nil
+                    var byName: [String: Payload] = [:]
+
+                    static let schema: StoicSchema::Schema<Holder> = StoicSchema::Schema.object(Holder.self) { f in
+                        let slot0 = f.field("payload", \\.payload, .codable(Payload.self))
+                        let slot1 = f.field("many", \\.many, .optional(.array(of: .codable(Payload.self))), default: nil)
+                        let slot2 = f.field("byName", \\.byName, .dictionary(of: .codable(Payload.self)), default: [:])
+                        return f.build { v in
+                            Holder(payload: v[slot0], many: v[slot1], byName: v[slot2])
+                        }
+                    }
+                }
+
+                extension Holder: StoicSchema::Schematic {
+                }
+                """)
+    }
 }
 #endif

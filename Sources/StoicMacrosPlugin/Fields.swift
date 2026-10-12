@@ -24,6 +24,8 @@ struct FieldModel {
     var isNullable = false
     /// `@Lossy`: the outermost array drops the elements that do not decode.
     var isLossy = false
+    /// `@Codable`: the named type inside is read by `JSONDecoder`, not by a schema.
+    var isCodable = false
     var scalar: [Marker] = []
     var collection: [Marker] = []
     /// `@DateFormat`, `@URLFormat` or `@DataFormat`: it reaches the innermost value.
@@ -315,6 +317,8 @@ private func readMarkers(
             field.isNullable = true
         case .lossy:
             field.isLossy = true
+        case .codable:
+            field.isCodable = true
         case .ignored:
             break
         case .unknownCase:
@@ -358,6 +362,13 @@ private func checkMarkersAgainstType(_ found: [Marker], type: ValueType, field: 
                     id: "nullable-not-optional",
                     message: "@Nullable says that `nil` is written as `null`, and `\(field.property)` is not optional"),
                 fixIts: [.removing(marker.node, "remove @Nullable")])
+        case .codable where type.leaf != .named:
+            reporter.error(
+                marker.node,
+                Problem(
+                    id: "codable-not-named",
+                    message: "@Codable reads a named type with `JSONDecoder` in place of a schema, and `\(field.property)` is `\(field.typeText)`, which has a schema of its own"),
+                fixIts: marker.removalFixIts)
         case .lossy where type.collection?.isArray != true:
             reporter.error(
                 marker.node,

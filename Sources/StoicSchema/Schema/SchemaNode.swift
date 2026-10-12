@@ -153,6 +153,10 @@ public struct TransformNode: Sendable {
     /// warning, and a JSON Schema validator, which has no such tolerance,
     /// is not asked to agree about it.
     public var dropsInvalidElements: Bool
+    /// Whether the export names the conversion (`x-stoic-transform`). A
+    /// Codable leaf turns any JSON value into a type and has nothing on the
+    /// wire to describe, so it is exported as `{}` and nothing more.
+    public var isAnnotated: Bool
 
     /// A value the base accepts and the conversion refuses.
     public struct Counterexample: Sendable, Hashable {
@@ -169,7 +173,7 @@ public struct TransformNode: Sendable {
     public init(
         base: SchemaNode, name: String, description: String, examples: [JSONValue] = [], format: String? = nil,
         keywords: JSONObject = JSONObject(), counterexamples: [Counterexample] = [], readsNumberDigits: Bool = false,
-        dropsInvalidElements: Bool = false
+        dropsInvalidElements: Bool = false, isAnnotated: Bool = true
     ) {
         self.base = base
         self.name = name
@@ -180,6 +184,7 @@ public struct TransformNode: Sendable {
         self.counterexamples = counterexamples
         self.readsNumberDigits = readsNumberDigits
         self.dropsInvalidElements = dropsInvalidElements
+        self.isAnnotated = isAnnotated
     }
 }
 

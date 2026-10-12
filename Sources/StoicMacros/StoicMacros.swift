@@ -75,6 +75,13 @@ public macro UnknownCase() = #externalMacro(module: "StoicMacrosPlugin", type: "
 @attached(peer)
 public macro Lossy() = #externalMacro(module: "StoicMacrosPlugin", type: "LossyMacro")
 
+/// Reads the property's type with `JSONDecoder` and writes it with
+/// `JSONEncoder`, for a `Codable` type that has no schema: `Schema.codable`.
+/// A failure is one issue at the property, and its JSON Schema is `{}`.
+/// Reaches the named type inside an optional, array or dictionary.
+@attached(peer)
+public macro Codable() = #externalMacro(module: "StoicMacrosPlugin", type: "CodableMacro")
+
 /// Marks the `JSONObject` property that keeps the keys the schema does not
 /// declare and writes them back, so that an older release never destroys
 /// what a newer one wrote.

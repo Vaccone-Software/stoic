@@ -114,9 +114,11 @@ struct JSONSchemaExporter {
             out = export(transform.base, location: location)
             if let format = transform.format { out["format"] = .string(format) }
             for member in transform.keywords { out[member.key] = member.value }
-            out["x-stoic-transform"] = .object([
-                "name": .string(transform.name), "description": .string(transform.description),
-            ])
+            if transform.isAnnotated {
+                out["x-stoic-transform"] = .object([
+                    "name": .string(transform.name), "description": .string(transform.description),
+                ])
+            }
 
         case .array(let element, let constraints):
             out["type"] = "array"

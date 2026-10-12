@@ -221,7 +221,9 @@ fields too. An enumeration a server may extend names the case that stands for
 what it does not know: `@UnknownCase case unknown` (or `case unknown(String)`)
 reads an unfamiliar value as that case, with a warning instead of an error,
 and `@Lossy` on an array drops the elements that do not decode, one warning
-each, instead of failing the list.
+each, instead of failing the list. A `Codable` type you do not want to write a
+schema for is `@Codable var payload: Payload` (or `.codable(Payload.self)`):
+read by `JSONDecoder`, one issue on failure, `{}` in the JSON Schema.
 
 The macro only writes calls to the `StoicSchema` API you could write by hand
 (`Schema.object(…) { Field(…) }`), the same schema with the same behaviour;

@@ -21,6 +21,7 @@ let allMacros: [String: MacroSpec] = [
     "Ignored": MacroSpec(type: IgnoredMacro.self),
     "UnknownCase": MacroSpec(type: UnknownCaseMacro.self),
     "Lossy": MacroSpec(type: LossyMacro.self),
+    "Codable": MacroSpec(type: CodableMacro.self),
     "PreserveUnknownKeys": MacroSpec(type: PreserveUnknownKeysMacro.self),
     "DateFormat": MacroSpec(type: DateFormatMacro.self),
     "URLFormat": MacroSpec(type: URLFormatMacro.self),
