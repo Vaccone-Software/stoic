@@ -393,7 +393,7 @@ public final class HTTPClient: Sendable {
     private func hostState(for prepared: PreparedRequest) -> HostState {
         let key = prepared.hostKey
         return hosts.withLock { table in
-            if let existing = table.existing(key) { return existing }
+            if let existing = table.use(key) { return existing }
             let label = "\(self.label) \(key)"
             let clock = Ambient.current.clock
             let breaker = policy.breaker.map { configuration -> CircuitBreaker in

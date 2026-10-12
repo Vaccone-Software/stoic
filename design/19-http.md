@@ -208,7 +208,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   Breaker and bulkhead are `nil`able fields (`breaker: nil`,
   `maxConcurrentPerHost: nil`) for a client that wants neither.
 - **Per-host state** is keyed by host (and port, if the URL names one) and
-  bounded at 256 hosts, oldest forgotten first. Breakers measure time on the
+  bounded at 256 hosts, least recently used forgotten first. Breakers measure time on the
   ambient clock in force when a host is first used.
 - **Default headers** (`HTTPClient(headers:)`) go only to the base URL's origin.
   An absolute URL on another host never receives the app's token.

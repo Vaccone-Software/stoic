@@ -259,6 +259,24 @@ struct HTTPFailureTests {
             #expect(await rig.httpError(of: rig.start(.get("/a"))) == .status(429, excerpt: "", retryAfter: .seconds(120), attempts: 1))
         }
     }
+
+    @Test func aBusyHostsBreakerOutlivesMoreThanTheLimitOfOtherHosts() async throws {
+        try await withRig(.testing(attempts: 1)) { (rig) async throws in
+            rig.transport.on(.get("/ping"), respond: [], then: .status(200))
+            rig.transport.on(.get("/hot"), respond: [], then: .status(200))
+            _ = try await rig.start(.get("/hot")).value
+            let hot = try #require(rig.api.breaker(forHost: "api.example.com"))
+            hot.forceOpen()
+            for index in 0..<(HostTable.limit + 100) {
+                if index % 100 == 0 { _ = await rig.httpError(of: rig.start(.get("/hot"))) }   // still in use
+                let other = try #require(URL(string: "https://host\(index).example.com/ping"))
+                _ = try await rig.start(.get(other)).value
+            }
+            let error = try #require(await rig.httpError(of: rig.start(.get("/hot"))))
+            #expect(error.rejection?.reason == .circuitOpen, "the hot host was not forgotten")
+            #expect(rig.api.breaker(forHost: "api.example.com") === hot)
+        }
+    }
 }
 
 /// A transport that returns its response whatever limit it is given.

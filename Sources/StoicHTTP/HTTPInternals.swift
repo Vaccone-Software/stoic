@@ -49,18 +49,30 @@ final class HostState: Sendable {
 }
 
 /// The hosts a client has talked to, bounded: a client that follows
-/// absolute URLs to arbitrary hosts forgets the oldest rather than grow
-/// without limit.
+/// absolute URLs to arbitrary hosts forgets the least recently used rather
+/// than grow without limit, so a busy host's breaker survives a flood of
+/// one-off hosts.
 struct HostTable {
     static let limit = 256
 
     private var hosts: [String: HostState] = [:]
+    /// Keys from least to most recently used.
     private var order: [String] = []
 
+    /// The state for `key`, without counting as a use.
     func existing(_ key: String) -> HostState? { hosts[key] }
+
+    /// The state for `key`, marked as just used.
+    mutating func use(_ key: String) -> HostState? {
+        guard let state = hosts[key] else { return nil }
+        if let index = order.lastIndex(of: key) { order.remove(at: index) }
+        order.append(key)
+        return state
+    }
 
     mutating func insert(_ state: HostState, for key: String) {
         hosts[key] = state
+        if let index = order.lastIndex(of: key) { order.remove(at: index) }
         order.append(key)
         if order.count > Self.limit {
             hosts[order.removeFirst()] = nil
