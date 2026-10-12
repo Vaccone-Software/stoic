@@ -225,5 +225,107 @@ struct EnumExpansionTests {
                 }
                 """)
     }
+
+    @Test func anUnknownCaseOnRawValues() {
+        expand(
+            """
+            @Schema
+            enum Standing: String {
+                case good, late
+                @UnknownCase case unknown
+            }
+            """,
+            to: """
+                enum Standing: String {
+                    case good, late
+                    case unknown
+
+                    static let schema: StoicSchema::Schema<Standing> = StoicSchema::Schema.enumeration(Standing.self, unknownCase: .unknown)
+                }
+
+                extension Standing: StoicSchema::Schematic, CaseIterable {
+                }
+                """)
+    }
+
+    @Test func anUnknownCaseThatCarriesTheValue() {
+        expand(
+            """
+            @Schema
+            enum Plan {
+                case free
+                @Key("pro_plan") case pro
+                @UnknownCase case other(String)
+            }
+            """,
+            to: """
+                enum Plan {
+                    case free
+                    case pro
+                    case other(String)
+
+                    static let schema: StoicSchema::Schema<Plan> = StoicSchema::Schema.openEnumeration(Plan.self, cases: ["free", "pro_plan"], fallback: "other", read: {
+                            switch $0 {
+                            case "free":
+                                Plan.free;
+                            case "pro_plan":
+                                Plan.pro;
+                            default:
+                                Plan.other($0)
+                            }
+                        }, write: {
+                            switch $0 {
+                            case .free:
+                                "free";
+                            case .pro:
+                                "pro_plan";
+                            case .other(let raw):
+                                raw
+                            }
+                        })
+                }
+
+                extension Plan: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func aPlainUnknownCaseWithoutARawType() {
+        expand(
+            """
+            @Schema
+            enum Mood {
+                case calm
+                @UnknownCase case unclear
+            }
+            """,
+            to: """
+                enum Mood {
+                    case calm
+                    case unclear
+
+                    static let schema: StoicSchema::Schema<Mood> = StoicSchema::Schema.openEnumeration(Mood.self, cases: ["calm", "unclear"], fallback: "unclear", read: {
+                            switch $0 {
+                            case "calm":
+                                Mood.calm;
+                            case "unclear":
+                                Mood.unclear;
+                            default:
+                                Mood.unclear
+                            }
+                        }, write: {
+                            switch $0 {
+                            case .calm:
+                                "calm";
+                            case .unclear:
+                                "unclear"
+                            }
+                        })
+                }
+
+                extension Mood: StoicSchema::Schematic {
+                }
+                """)
+    }
 }
 #endif

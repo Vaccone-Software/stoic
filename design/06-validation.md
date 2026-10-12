@@ -200,6 +200,10 @@ schema and throws one `DecodingError` listing every issue.
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
+| an enumeration with an unknown case meets a value it does not know | Read as that case; an `unknown_case` warning naming the value and the case, with the nearest known spelling; the document is still accepted |
+| an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
+| a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
+| a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
 
 ## Testing
 
@@ -242,7 +246,11 @@ above left open:
   .warn`, form (b) to `.reject`.
 - **Respelled keys** (case and snake_case, plus declared aliases) are
   accepted with a `deprecated_key` warning; the same field under two
-  spellings is `duplicate_key`.
+  spellings is `duplicate_key`. The table of normalised
+  spellings that finds them is built per object, and only when a field's
+  key is missing *and* some member has a key the object does not declare;
+  a document that merely leaves out keys whose defaults it accepts never
+  pays for it (20,000 rows missing six of nine keys: 124 ms to 104 ms, release).
 - **Encoding.** `EncodeStyle.sparse` leaves out secrets unless asked; `.full`
   includes them. Sparse compares encoded JSON, not values. Deprecated
   fields are written only when they differ from their default.
@@ -579,12 +587,28 @@ declaration order, and `extension Settings: Schematic {}` (added only if the
 type does not conform already), so `Settings.schema` is what other schemas
 write when they hold a `Settings`.
 
-- **Form (a) only.** The default instance is `Settings()`, so every property
-  needs a default (an optional `var` has one), and a type that declares
-  initialisers must declare `init()`. The macro does not read defaults to
-  copy them (the instance is the single source of every default, which is the
-  point of form (a)); it reads them to check them, below. Form (b), for types
-  without defaults, is not emitted (see open problems).
+- **Form (a) when every property has a default.** The default instance is
+  `Settings()`, so a type that declares initialisers must declare `init()`.
+  The macro does not read defaults to copy them (the instance is the single
+  source of every default, which is the point of form (a)); it reads them to
+  check them, below.
+- **Form (b) when any property has none.** A stored property with no default
+  is *required*: the key must be there, and a missing key is a `missing_key`
+  issue beside the rest, not a zero. The macro then emits the reader form,
+  `Schema.object(T.self) { f in … }`, one `f.field(…)` per property, and
+  builds the value with the memberwise initialiser, `T(id: v[slot0], …)`.
+  Properties that have defaults keep them: the default is copied, as
+  written, into the field's `default:`, and the property is optional on the
+  wire. A `T?` with nothing written is "none" whether its key is missing or
+  `null` (the schema is `.optional(…, nullable: true)`, so `nil` is written
+  as `null` in full output and left out of sparse output). Properties left
+  out with `@Ignored` keep their default, so they need one; a `let` is
+  allowed, since the initialiser fills it (a `let` with a value is not a
+  parameter, so it is refused). The memberwise initialiser exists only while
+  the type declares no initialiser, so form (b) needs the type to declare
+  none (put initialisers in an extension). Unknown keys default to `.reject`
+  as in the hand-written form (b); `@Schema(unknownKeys: .ignore)` is the
+  usual choice for a model of someone else's API.
 - **Types are read as written.** The macro sees syntax. `Bool`, `Int`,
   `Int64`, `UInt64`, `Double`, `String`, `JSONValue` and the other fixed-width
   integers (`.integer(Int32.self)`) are the library's primitives; `[T]` and
@@ -679,13 +703,13 @@ member `schema`". Every diagnostic has a test with its line and column.
 | Where | Mistake |
 | --- | --- |
 | the type | not a struct or enum; generic; an enum with no cases; already declares `schema`; initialisers but no `init()` |
-| a property | no default (fix-it adds `0`, `""`, `false`, `[]`, `[:]`); a `let` (fix-it: `var`); type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
+| a property | `@Lossy` on anything but an array, `@Codable` on a type that has a schema of its own (fix-it removes it); a `let` in form (a) or one with a value (fix-it: `var`); an `@Ignored` property with no default when the value is built by the initialiser; type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
 | use of markers | any marker on a static or computed property, on an `@Ignored` property, or outside a `@Schema` type; the same marker twice (fix-it removes the second); `@Key("")`; a non-literal key, alias or deprecation message |
 | keys | a key or alias used twice (the runtime precondition, moved to compile time); an alias equal to its own key; the version key used by a field |
 | constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
 | nullable and secret | `@Nullable` on a non-optional (fix-it removes); `@Secret` on a `Secret<T>` (warning) |
 | arguments | `discriminator:` or `valueKey:` on a struct, `unknownKeys:` or `version:` on an enum (fix-it removes); `migrations:`, `versionKey:` or `missingVersion:` without `version:`; a version below 1; `unknownKeys:` together with `@PreserveUnknownKeys`; `.preserve` with no preserving property; a preserving property that is not a `JSONObject`, or a second one |
-| an enum | no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
+| an enum | `@UnknownCase` twice, in a tagged union, or on a case carrying anything but one `String` (or any value, with a raw type); on a property; no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
 | `@Refined` | on anything but an enum or struct; no base type or constraints; a base that is not `T.self`; a constraint that does not fit the base, an empty range, contradictions |
 
 A non-literal default is *not* an error: the default instance carries it, and
@@ -723,11 +747,11 @@ trait.
 
 ### Open problems
 
-- **Form (b) is not emitted.** A struct without defaults needs the reader
-  over the memberwise initialiser; the macro refuses it instead. The
-  generated `build { v in T(a: v[a], …) }` is mechanical, but the memberwise
-  initialiser's labels and access level are not visible from the declaration
-  when it is not written out.
+- **Form (b) relies on the memberwise initialiser.** A type that declares
+  an initialiser has none, so it must give every property a default and
+  declare `init()`. An initialiser written in an extension is invisible to
+  the macro and does not suppress the memberwise one, which is what it
+  calls.
 - **Mutual recursion** (`A` holds `[B]`, `B` holds `A?`) is not detected;
   both `static let`s then wait for each other and trap on first use. Only a
   type's own name is made lazy. A `@Recursive` marker that wraps a field in
@@ -821,6 +845,71 @@ the order it was built.
   tells the mutator that 2^53 + 1 and 1e400, which a `Double` refuses, are
   not refused here; the conversion's own `counterexamples` (`1e200`, a
   39-digit number, the bad strings) say what is.
+
+### Enumerations a server may extend
+
+- **`Schema.enumeration(T.self, unknownCase: .unknown)`** (raw values of
+  `String` or `Int`) and **`Schema.openEnumeration(T.self, cases:, fallback:,
+  read:, write:)`** (for a case that keeps the string it did not understand,
+  `case unknown(String)`). A string that names no known case is read as the
+  unknown case and reported as an `unknown_case` *warning* with the value,
+  the case it was read as and the nearest known spelling; so a response
+  that mentions a case added after this client shipped decodes, and the
+  warning is how the app finds out. A value of the wrong kind (a number
+  where a string belongs) is still a `type_mismatch` error. The unknown
+  case is a case like another when it is written: a plain one is written as
+  its raw value (the original is not kept), `unknown(String)` as what it
+  holds.
+- **Representation.** The node is a `.transformed` over a plain string (or
+  integer), whose examples are the known cases, so exporters, generators and
+  the suite need no case of their own. The export is `{"type": "string",
+  "examples": […]}`: it accepts any string, because the schema does, and
+  says which ones are known.
+- **`@UnknownCase`** marks the case, on an enumeration with a raw type
+  (plain case) or without one (plain cases, with the unknown case plain or
+  carrying one `String`). A tagged union has no unknown case yet: an unknown
+  discriminator stays an error.
+
+### Lossy arrays
+
+- **`Schema.lossyArray(of:_:)`** (and `@Lossy` on an array property). Each
+  element that does not decode is left out and answered with one
+  `dropped_element` warning at its place in the *input* (`$.ids[3]` is the
+  fourth element the server sent), with the `index` and the first reason in
+  its parameters; the errors the element would have raised are removed, so
+  an object element with three problems is one warning. Warnings the element
+  raised are removed with them. Everything outside the array is read as
+  before, and an array that is not an array is still a `type_mismatch`.
+- **The array's own constraints** (`.count`, `.unique`) are checked on what
+  is kept, so a list that falls under its minimum after dropping is an error.
+- **Representation.** A `.transformed` node over the array, with
+  `dropsInvalidElements` set and the keyword `x-stoic-lossy` exported; the
+  element schema stays in `items`, as documentation of what is kept. The
+  mutator expects the warning, not the error, for a mutation inside an
+  element (and leaves the element alone where the list would fall under its
+  minimum); because a JSON Schema validator rejects the element, such
+  mutations are marked `isTolerated` and the agreement check skips them.
+
+### A Codable leaf
+
+- **`Schema.codable(T.self, examples:, decoding:, encoding:)`** and `@Codable`
+  on a property whose type is a name the macro cannot look into (through an
+  optional, array or dictionary). The JSON is handed to a fresh
+  `JSONDecoder` as text, so numbers keep their digits; a fresh `JSONEncoder`
+  writes the value, and the bytes are parsed back to JSON. `decoding:` and
+  `encoding:` configure the two (date strategy, key strategy).
+- **The price is stated.** A failure is *one* `invalid_value` issue at the
+  field: the decoder stops at its first problem and says it in words, with
+  the coding path inside the value, so there is no path of the schema's kind
+  below the field and no accumulation. Inside a secret the reason is dropped,
+  since it is made of the value. There are no constraints, no documentation
+  of the inside, and the export is `{}` (accepts anything; the transform
+  annotation is left out because there is nothing on the wire to describe).
+- **Generation needs help.** The node is a `.transformed` over any JSON whose
+  `examples` are the encoded `examples:`. Without them a generator draws
+  arbitrary JSON, which a typed value refuses, so `SchemaSuite` on a schema
+  with a Codable leaf wants examples (the macro cannot supply them; write the
+  field by hand for the suite, or leave the leaf out of it).
 
 ### Decisions
 

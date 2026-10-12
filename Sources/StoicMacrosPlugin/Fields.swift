@@ -17,9 +17,15 @@ struct FieldModel {
     var aliases: [(value: String, source: String, node: Syntax)] = []
     /// The default value as written, if there is one.
     var defaultValue: ExprSyntax?
+    /// Whether the property is a `let`, which only the reader form can fill.
+    var isConstant = false
     var deprecation: String?
     var isSecret = false
     var isNullable = false
+    /// `@Lossy`: the outermost array drops the elements that do not decode.
+    var isLossy = false
+    /// `@Codable`: the named type inside is read by `JSONDecoder`, not by a schema.
+    var isCodable = false
     var scalar: [Marker] = []
     var collection: [Marker] = []
     /// `@DateFormat`, `@URLFormat` or `@DataFormat`: it reaches the innermost value.
@@ -33,6 +39,10 @@ struct FieldModel {
 /// What the struct's members came to.
 struct StructModel {
     var fields: [FieldModel] = []
+    /// Whether some property has no default, so the schema cannot start from
+    /// a default instance and builds the value from the memberwise
+    /// initialiser instead (form (b)).
+    var usesReader = false
     /// The property that receives unknown keys, if one is marked.
     var preserving: String?
     var preservingNode: Syntax?
@@ -48,12 +58,21 @@ func readFields(of declaration: StructDeclSyntax, enclosing: String, reporter: R
         if let initializer = member.decl.as(InitializerDeclSyntax.self) {
             hasInit = true
             if initializer.signature.parameterClause.parameters.isEmpty { hasPlainInit = true }
-            continue
         }
+    }
+    // A property with no default means there is no `init()` to start from,
+    // unless the type writes one. The memberwise initialiser is what builds
+    // the value, and it exists only while the type declares no initialiser.
+    model.usesReader = !hasInit && declaration.memberBlock.members.contains { member in
+        guard let variable = member.decl.as(VariableDeclSyntax.self), !isStatic(variable),
+            !markers(in: variable.attributes).contains(where: { $0.kind == .ignored })
+        else { return false }
+        return variable.bindings.contains { !isComputed($0) && $0.initializer == nil && $0.pattern.is(IdentifierPatternSyntax.self) }
+    }
+    for member in declaration.memberBlock.members {
         guard let variable = member.decl.as(VariableDeclSyntax.self) else { continue }
-        let isStatic = variable.modifiers.contains { $0.name.text == "static" || $0.name.text == "class" }
         let found = markers(in: variable.attributes)
-        if isStatic {
+        if isStatic(variable) {
             for marker in found {
                 reporter.error(
                     marker.node,
@@ -64,7 +83,7 @@ func readFields(of declaration: StructDeclSyntax, enclosing: String, reporter: R
             continue
         }
         if found.contains(where: { $0.kind == .ignored }) {
-            readIgnored(variable, markers: found, reporter: reporter)
+            readIgnored(variable, markers: found, model: model, reporter: reporter)
             continue
         }
         for binding in variable.bindings {
@@ -83,14 +102,45 @@ func readFields(of declaration: StructDeclSyntax, enclosing: String, reporter: R
     return model
 }
 
+private func isStatic(_ variable: VariableDeclSyntax) -> Bool {
+    variable.modifiers.contains { $0.name.text == "static" || $0.name.text == "class" }
+}
+
+/// Whether a binding computes its value, so that it stores nothing.
+private func isComputed(_ binding: PatternBindingSyntax) -> Bool {
+    guard let accessors = binding.accessorBlock else { return false }
+    switch accessors.accessors {
+    case .getter:
+        return true
+    case .accessors(let list):
+        return !list.allSatisfy { ["willSet", "didSet"].contains($0.accessorSpecifier.text) }
+    }
+}
+
 /// A property marked `@Ignored` is not a field, so it takes no other marker.
-private func readIgnored(_ variable: VariableDeclSyntax, markers found: [Marker], reporter: Reporter) {
+/// The memberwise initialiser still has a parameter for it, which the schema
+/// leaves to its default, so in form (b) it needs one.
+private func readIgnored(
+    _ variable: VariableDeclSyntax, markers found: [Marker], model: StructModel, reporter: Reporter
+) {
     for marker in found where marker.kind != .ignored {
         reporter.error(
             marker.node,
             Problem(
                 id: "ignored-with-marker",
                 message: "\(marker.name) has no meaning on a property marked `@Ignored`, which the schema leaves out"))
+    }
+    guard model.usesReader else { return }
+    for binding in variable.bindings where !isComputed(binding) && binding.initializer == nil {
+        guard let pattern = binding.pattern.as(IdentifierPatternSyntax.self) else { continue }
+        let optional = variable.bindingSpecifier.text == "var" && binding.typeAnnotation?.type.is(OptionalTypeSyntax.self) == true
+        if !optional {
+            reporter.error(
+                pattern,
+                Problem(
+                    id: "ignored-without-default",
+                    message: "`\(pattern.identifier.text)` is left out of the schema, so the value is built without it: give it a default"))
+        }
     }
 }
 
@@ -109,30 +159,23 @@ private func readField(
         return nil
     }
     // Computed properties are not stored, so they are not part of the value.
-    if let accessors = binding.accessorBlock {
-        var computed = false
-        switch accessors.accessors {
-        case .getter:
-            computed = true
-        case .accessors(let list):
-            computed = !list.allSatisfy { ["willSet", "didSet"].contains($0.accessorSpecifier.text) }
+    if isComputed(binding) {
+        for marker in found {
+            reporter.error(
+                marker.node,
+                Problem(
+                    id: "marker-on-computed",
+                    message: "\(marker.name) on a computed property: a schema describes stored properties, and `\(pattern.identifier.text)` stores nothing"),
+                fixIts: marker.node.is(AttributeSyntax.self) ? [.removing(marker.node, "remove \(marker.name)")] : [])
         }
-        if computed {
-            for marker in found {
-                reporter.error(
-                    marker.node,
-                    Problem(
-                        id: "marker-on-computed",
-                        message: "\(marker.name) on a computed property: a schema describes stored properties, and `\(pattern.identifier.text)` stores nothing"),
-                    fixIts: marker.node.is(AttributeSyntax.self) ? [.removing(marker.node, "remove \(marker.name)")] : [])
-            }
-            return nil
-        }
+        return nil
     }
     let name = pattern.identifier.text
     let isConstant = variable.bindingSpecifier.text == "let"
     let startErrors = reporter.errorCount
-    if isConstant {
+    // A constant is filled by the initialiser, which is how the reader form
+    // builds the value; the default instance form writes to the property.
+    if isConstant && (!model.usesReader || binding.initializer != nil) {
         reporter.error(
             pattern,
             Problem(
@@ -172,28 +215,10 @@ private func readField(
         }
     }
 
-    // A default, so the type has an `init()`.
-    if binding.initializer == nil && !isConstant {
-        let optional = type?.isOptional ?? false
-        if !optional {
-            var fixIts: [FixIt] = []
-            if let type, let suggestion = defaultSuggestion(for: type) {
-                let anchor: Syntax = binding.typeAnnotation.map { Syntax($0) } ?? Syntax(binding.pattern)
-                fixIts = [.inserting(" = \(suggestion)", after: anchor, "give `\(name)` the default `\(suggestion)`")]
-            }
-            reporter.error(
-                pattern,
-                Problem(
-                    id: "missing-default",
-                    message: "`\(name)` has no default value, and the schema's default instance is `\(enclosing)()`; give it one"),
-                fixIts: fixIts)
-        }
-    }
-
     var field = FieldModel(
         property: name, key: name.trimmingBackticks, keyLiteral: swiftLiteral(name.trimmingBackticks),
         type: type ?? .bool, typeText: typeText ?? "", doc: documentation(of: variable),
-        defaultValue: binding.initializer?.value, node: Syntax(binding), keyNode: Syntax(pattern))
+        defaultValue: binding.initializer?.value, isConstant: isConstant, node: Syntax(binding), keyNode: Syntax(pattern))
     readMarkers(found, into: &field, model: &model, reporter: reporter)
     if let type {
         checkMarkersAgainstType(found, type: type, field: field, reporter: reporter)
@@ -239,24 +264,6 @@ private func literalType(of expression: ExprSyntax) -> String? {
         return literalType(of: prefix.expression)
     }
     return nil
-}
-
-/// A default that satisfies the compiler for the types where there is an
-/// obvious one: the "empty" value, not a guess at what the author meant.
-private func defaultSuggestion(for type: ValueType) -> String? {
-    switch type {
-    case .bool: "false"
-    case .double: "0"
-    case .string: "\"\""
-    case .integer: "0"
-    case .array: "[]"
-    case .dictionary: "[:]"
-    case .optional: "nil"
-    case .decimal: "0"
-    case .data: "Data()"
-    case .uuid: "UUID()"
-    default: nil
-    }
 }
 
 private func readMarkers(
@@ -308,8 +315,17 @@ private func readMarkers(
             }
         case .nullable:
             field.isNullable = true
+        case .lossy:
+            field.isLossy = true
+        case .codable:
+            field.isCodable = true
         case .ignored:
             break
+        case .unknownCase:
+            reporter.error(
+                marker.node,
+                Problem(id: "unknown-case-on-property", message: "@UnknownCase goes on a case of an enumeration, not on a property"),
+                fixIts: marker.removalFixIts)
         case .preserveUnknownKeys:
             if model.preserving != nil {
                 reporter.error(
@@ -346,6 +362,20 @@ private func checkMarkersAgainstType(_ found: [Marker], type: ValueType, field: 
                     id: "nullable-not-optional",
                     message: "@Nullable says that `nil` is written as `null`, and `\(field.property)` is not optional"),
                 fixIts: [.removing(marker.node, "remove @Nullable")])
+        case .codable where type.leaf != .named:
+            reporter.error(
+                marker.node,
+                Problem(
+                    id: "codable-not-named",
+                    message: "@Codable reads a named type with `JSONDecoder` in place of a schema, and `\(field.property)` is `\(field.typeText)`, which has a schema of its own"),
+                fixIts: marker.removalFixIts)
+        case .lossy where type.collection?.isArray != true:
+            reporter.error(
+                marker.node,
+                Problem(
+                    id: "lossy-not-array",
+                    message: "@Lossy drops the invalid elements of an array, and `\(field.property)` is `\(field.typeText)`"),
+                fixIts: marker.removalFixIts)
         case .dateFormat, .urlFormat, .dataFormat:
             let subject = marker.kind.formatSubject
             let leaf = type.leaf

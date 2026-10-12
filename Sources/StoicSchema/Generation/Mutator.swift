@@ -126,7 +126,11 @@ struct Mutator {
         case .transformed(let transform):
             var inner = context
             if transform.readsNumberDigits { inner.doubleLimits = false }
-            collect(transform.base, value, path, inner, &out)
+            if transform.dropsInvalidElements, case .array(let element, let constraints) = transform.base {
+                collectArray(element, constraints, value, path, inner, &out, lossy: true)
+            } else {
+                collect(transform.base, value, path, inner, &out)
+            }
             for counterexample in transform.counterexamples where counterexample.value != value {
                 out.add(replacement(
                         .refusedByConversion, context, at: path, with: counterexample.value, expect: counterexample.code,
@@ -396,7 +400,8 @@ struct Mutator {
         _ value: JSONValue,
         _ path: JSONPath,
         _ context: Context,
-        _ out: inout [Mutation]
+        _ out: inout [Mutation],
+        lossy: Bool = false
     ) {
         guard case .array(let items) = value else { return }
         let unique = constraints.contains { $0.kind == .unique }
@@ -452,6 +457,28 @@ struct Mutator {
         var inner = context
         inner.genericDone = false
         if unique { inner.unit = context.unit ?? path }
+        if lossy {
+            // A broken element is dropped with one warning, whatever was wrong
+            // with it. Dropping shortens the list, so the array is a unit
+            // when a minimum count could be crossed, and no element is
+            // broken where the list has none to spare.
+            if low != nil { inner.unit = context.unit ?? path }
+            guard items.count > (low ?? 0) else { return }
+            for (index, item) in items.enumerated().prefix(3) {
+                let elementPath = path.appending(index: index)
+                var found: [Mutation] = []
+                collect(element, item, elementPath, inner, &found)
+                for var mutation in found {
+                    // A violation that is only a warning leaves the element in place.
+                    if mutation.expected.contains(where: { $0.severity == .error }) {
+                        mutation.expected = [ExpectedIssue(path: elementPath, code: .droppedElement, severity: .warning)]
+                        mutation.isTolerated = true
+                    }
+                    out.append(mutation)
+                }
+            }
+            return
+        }
         for (index, item) in items.enumerated().prefix(3) {
             collect(element, item, path.appending(index: index), inner, &out)
         }

@@ -14,7 +14,7 @@ struct StructExpansionTests {
                 var theme: Theme = .dark
                 var network = Network()
                 var hosts: [String] = []
-                var title: String?
+                var title: String? = nil
             }
             """,
             to: """
@@ -25,7 +25,7 @@ struct StructExpansionTests {
                     var theme: Theme = .dark
                     var network = Network()
                     var hosts: [String] = []
-                    var title: String?
+                    var title: String? = nil
 
                     static let schema: StoicSchema::Schema<Settings> = StoicSchema::Schema.object(Settings.self, default: Settings(), doc: "Application settings.") {
                         StoicSchema::Field("scrollSpeed", \\.scrollSpeed, .double(), doc: "Pixels per second.", unit: "px/s")
@@ -213,6 +213,139 @@ struct StructExpansionTests {
                 }
 
                 extension Mixed: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func aPropertyWithoutADefaultIsRequired() {
+        expand(
+            """
+            @Schema
+            struct Account {
+                /// The number.
+                var id: Int
+                @Key("created_at") var createdAt: Date
+                var email: String?
+                @Nullable var phone: String?
+                var plan: String = "free"
+                var friends: [Account] = []
+                @Ignored var cache: [String: Int] = [:]
+                @PreserveUnknownKeys var extra: JSONObject = [:]
+            }
+            """,
+            to: """
+                struct Account {
+                    /// The number.
+                    var id: Int
+                    var createdAt: Date
+                    var email: String?
+                    var phone: String?
+                    var plan: String = "free"
+                    var friends: [Account] = []
+                    var cache: [String: Int] = [:]
+                    var extra: JSONObject = [:]
+
+                    static let schema: StoicSchema::Schema<Account> = StoicSchema::Schema.object(Account.self) { f in
+                        let slot0 = f.field("id", \\.id, .int(), doc: "The number.")
+                        let slot1 = f.field("created_at", \\.createdAt, .date())
+                        let slot2 = f.field("email", \\.email, .optional(.string(), nullable: true))
+                        let slot3 = f.field("phone", \\.phone, .optional(.string(), nullable: true))
+                        let slot4 = f.field("plan", \\.plan, .string(), default: "free")
+                        let slot5 = f.field("friends", \\.friends, .array(of: .lazy {
+                                    Account.schema
+                                }), default: [])
+                        let preserved = f.unknownKeys(\\Account.extra)
+                        return f.build { v in
+                            Account(id: v[slot0], createdAt: v[slot1], email: v[slot2], phone: v[slot3], plan: v[slot4], friends: v[slot5], extra: v[preserved])
+                        }
+                    }
+                }
+
+                extension Account: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func constantsAreFilledByTheInitialiser() {
+        expand(
+            """
+            @Schema
+            struct Frozen {
+                let id: Int
+                let tags: [String]
+            }
+            """,
+            to: """
+                struct Frozen {
+                    let id: Int
+                    let tags: [String]
+
+                    static let schema: StoicSchema::Schema<Frozen> = StoicSchema::Schema.object(Frozen.self) { f in
+                        let slot0 = f.field("id", \\.id, .int())
+                        let slot1 = f.field("tags", \\.tags, .array(of: .string()))
+                        return f.build { v in
+                            Frozen(id: v[slot0], tags: v[slot1])
+                        }
+                    }
+                }
+
+                extension Frozen: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func lossyArraysDropTheirBadElements() {
+        expand(
+            """
+            @Schema
+            struct Page {
+                @Lossy @Range(0...9) @Count(...4) var ids: [Int] = []
+                @Lossy var maybe: [[String]]? = nil
+            }
+            """,
+            to: """
+                struct Page {
+                    var ids: [Int] = []
+                    var maybe: [[String]]? = nil
+
+                    static let schema: StoicSchema::Schema<Page> = StoicSchema::Schema.object(Page.self, default: Page()) {
+                        StoicSchema::Field("ids", \\.ids, .lossyArray(of: .int(.range(0 ... 9)), .count(...4)))
+                        StoicSchema::Field("maybe", \\.maybe, .optional(.lossyArray(of: .array(of: .string()))))
+                    }
+                }
+
+                extension Page: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func codableTypesAreReadByJSONDecoder() {
+        expand(
+            """
+            @Schema
+            struct Holder {
+                @Codable var payload: Payload
+                @Codable var many: [Payload]? = nil
+                @Codable var byName: [String: Payload] = [:]
+            }
+            """,
+            to: """
+                struct Holder {
+                    var payload: Payload
+                    var many: [Payload]? = nil
+                    var byName: [String: Payload] = [:]
+
+                    static let schema: StoicSchema::Schema<Holder> = StoicSchema::Schema.object(Holder.self) { f in
+                        let slot0 = f.field("payload", \\.payload, .codable(Payload.self))
+                        let slot1 = f.field("many", \\.many, .optional(.array(of: .codable(Payload.self))), default: nil)
+                        let slot2 = f.field("byName", \\.byName, .dictionary(of: .codable(Payload.self)), default: [:])
+                        return f.build { v in
+                            Holder(payload: v[slot0], many: v[slot1], byName: v[slot2])
+                        }
+                    }
+                }
+
+                extension Holder: StoicSchema::Schematic {
                 }
                 """)
     }

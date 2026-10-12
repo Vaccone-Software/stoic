@@ -95,7 +95,6 @@ struct DeclarationDiagnosticTests {
             }
             """,
             diagnostics: [
-                problem("`x` has no default value, and the schema's default instance is `Custom()`; give it one", 3, 9, fixIts: ["give `x` the default `0`"]),
                 problem("`Custom` declares initializers but no `init()`, and the schema builds its default instance with `Custom()`; add `init() {}` (every property needs a default)", 2, 8),
             ],
             to: """
@@ -121,40 +120,24 @@ struct DeclarationDiagnosticTests {
 
 @Suite("@Schema: diagnostics about a property")
 struct PropertyDiagnosticTests {
-    @Test func everyPropertyNeedsADefault() {
+    @Test func anIgnoredPropertyNeedsADefaultWhenTheValueIsBuiltWithoutADefaultInstance() {
         expand(
             """
             @Schema
-            struct Missing {
-                var count: Int
-                var name: String
-                var ratio: Double
-                var flag: Bool
-                var list: [Int]
-                var map: [String: Int]
-                var inner: Inner
-                var maybe: Int?
+            struct Built {
+                var id: Int
+                @Ignored var cache: [String: Int]
+                @Ignored var note: String?
             }
             """,
             diagnostics: [
-                problem("`count` has no default value, and the schema's default instance is `Missing()`; give it one", 3, 9, fixIts: ["give `count` the default `0`"]),
-                problem("`name` has no default value, and the schema's default instance is `Missing()`; give it one", 4, 9, fixIts: ["give `name` the default `\"\"`"]),
-                problem("`ratio` has no default value, and the schema's default instance is `Missing()`; give it one", 5, 9, fixIts: ["give `ratio` the default `0`"]),
-                problem("`flag` has no default value, and the schema's default instance is `Missing()`; give it one", 6, 9, fixIts: ["give `flag` the default `false`"]),
-                problem("`list` has no default value, and the schema's default instance is `Missing()`; give it one", 7, 9, fixIts: ["give `list` the default `[]`"]),
-                problem("`map` has no default value, and the schema's default instance is `Missing()`; give it one", 8, 9, fixIts: ["give `map` the default `[:]`"]),
-                problem("`inner` has no default value, and the schema's default instance is `Missing()`; give it one", 9, 9),
+                problem("`cache` is left out of the schema, so the value is built without it: give it a default", 4, 18),
             ],
             to: """
-                struct Missing {
-                    var count: Int
-                    var name: String
-                    var ratio: Double
-                    var flag: Bool
-                    var list: [Int]
-                    var map: [String: Int]
-                    var inner: Inner
-                    var maybe: Int?
+                struct Built {
+                    var id: Int
+                    var cache: [String: Int]
+                    var note: String?
                 }
                 """)
     }
@@ -170,7 +153,6 @@ struct PropertyDiagnosticTests {
             """,
             diagnostics: [
                 problem("`id` is a constant, and a schema writes to the properties it decodes into; declare it `var`, or mark it `@Ignored`", 3, 9, fixIts: ["declare `id` with `var`"]),
-                problem("`name` is a constant, and a schema writes to the properties it decodes into; declare it `var`, or mark it `@Ignored`", 4, 9, fixIts: ["declare `name` with `var`"]),
             ],
             to: """
                 struct Constants {
@@ -694,6 +676,152 @@ struct EnumDiagnosticTests {
                     case pair(Int, Int)
                     case mixed(Int, second: Int)
                     case set(Set<Int>)
+                }
+                """)
+    }
+
+    @Test func aTaggedUnionHasNoUnknownCase() {
+        expand(
+            """
+            @Schema
+            enum Mixed {
+                case circle(Int)
+                @UnknownCase case other(String)
+            }
+            """,
+            diagnostics: [
+                problem("@UnknownCase is for an enumeration of plain values; `Mixed` has cases that carry values, so it is a tagged union, which has no unknown case yet", 4, 5)
+            ],
+            to: """
+                enum Mixed {
+                    case circle(Int)
+                    case other(String)
+                }
+                """)
+    }
+
+    @Test func thereIsOneUnknownCase() {
+        expand(
+            """
+            @Schema
+            enum Twice {
+                @UnknownCase case a
+                @UnknownCase case b
+            }
+            """,
+            diagnostics: [problem("only one case can stand for the values the schema does not know", 3, 5)],
+            to: """
+                enum Twice {
+                    case a
+                    case b
+                }
+                """)
+    }
+
+    @Test func theUnknownCaseCarriesNothingOrOneString() {
+        expand(
+            """
+            @Schema
+            enum Odd {
+                case a
+                @UnknownCase case other(Int)
+            }
+            """,
+            diagnostics: [
+                problem("the unknown case is a plain case, or carries the value it did not understand as one `String`: `case other(String)`", 4, 23)
+            ],
+            to: """
+                enum Odd {
+                    case a
+                    case other(Int)
+                }
+                """)
+    }
+
+    @Test func aRawValueCannotCarryTheUnknownValue() {
+        expand(
+            """
+            @Schema
+            enum Raw: String {
+                case a
+                @UnknownCase case other(String)
+            }
+            """,
+            diagnostics: [
+                problem("an enumeration with a raw type cannot have a case that carries a value; make `other` a plain case", 4, 23)
+            ],
+            to: """
+                enum Raw: String {
+                    case a
+                    case other(String)
+                }
+                """)
+    }
+
+    @Test func theUnknownCaseIsNotForProperties() {
+        expand(
+            """
+            @Schema
+            struct Held {
+                @UnknownCase var x = 1
+            }
+            """,
+            diagnostics: [problem("@UnknownCase goes on a case of an enumeration, not on a property", 3, 5, fixIts: ["remove @UnknownCase"])],
+            to: """
+                struct Held {
+                    var x = 1
+                }
+                """)
+    }
+}
+
+@Suite("@Schema: diagnostics about @Lossy")
+struct LossyDiagnosticTests {
+    @Test func lossyIsAboutArrays() {
+        expand(
+            """
+            @Schema
+            struct Held {
+                @Lossy var one: Int = 1
+                @Lossy var map: [String: Int] = [:]
+                @Lossy var fine: [Int]? = nil
+            }
+            """,
+            diagnostics: [
+                problem("@Lossy drops the invalid elements of an array, and `one` is `Int`", 3, 5, fixIts: ["remove @Lossy"]),
+                problem("@Lossy drops the invalid elements of an array, and `map` is `[String: Int]`", 4, 5, fixIts: ["remove @Lossy"]),
+            ],
+            to: """
+                struct Held {
+                    var one: Int = 1
+                    var map: [String: Int] = [:]
+                    var fine: [Int]? = nil
+                }
+                """)
+    }
+}
+
+@Suite("@Schema: diagnostics about @Codable")
+struct CodableDiagnosticTests {
+    @Test func codableIsForTypesWithoutASchema() {
+        expand(
+            """
+            @Schema
+            struct Held {
+                @Codable var one: Int = 1
+                @Codable var many: [Date] = []
+                @Codable var fine: [Meta] = []
+            }
+            """,
+            diagnostics: [
+                problem("@Codable reads a named type with `JSONDecoder` in place of a schema, and `one` is `Int`, which has a schema of its own", 3, 5, fixIts: ["remove @Codable"]),
+                problem("@Codable reads a named type with `JSONDecoder` in place of a schema, and `many` is `[Date]`, which has a schema of its own", 4, 5, fixIts: ["remove @Codable"]),
+            ],
+            to: """
+                struct Held {
+                    var one: Int = 1
+                    var many: [Date] = []
+                    var fine: [Meta] = []
                 }
                 """)
     }

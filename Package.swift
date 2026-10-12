@@ -69,7 +69,7 @@ let macroTargets: [Target] = [
     // same schemas written by hand, and run through SchemaSuite.
     .testTarget(
         name: "StoicMacrosUsageTests",
-        dependencies: ["StoicMacros", "StoicSchema", "StoicSchemaTesting", "StoicJSON", "Stoic"],
+        dependencies: ["StoicMacros", "StoicSchema", "StoicSchemaTesting", "StoicJSON", "Stoic", "StoicTesting"],
         swiftSettings: strict + [macrosDefine]),
 ]
 

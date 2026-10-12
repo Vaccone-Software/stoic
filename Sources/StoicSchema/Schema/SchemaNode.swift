@@ -147,6 +147,16 @@ public struct TransformNode: Sendable {
     /// or 1e400 as values the number refuses: whether the conversion does is
     /// for its own ``counterexamples`` to say.
     public var readsNumberDigits: Bool
+    /// Whether the conversion drops the elements of an array base that do
+    /// not decode, with a warning each, instead of failing. A generator's
+    /// mutation that breaks an element is then expected to cause that
+    /// warning, and a JSON Schema validator, which has no such tolerance,
+    /// is not asked to agree about it.
+    public var dropsInvalidElements: Bool
+    /// Whether the export names the conversion (`x-stoic-transform`). A
+    /// Codable leaf turns any JSON value into a type and has nothing on the
+    /// wire to describe, so it is exported as `{}` and nothing more.
+    public var isAnnotated: Bool
 
     /// A value the base accepts and the conversion refuses.
     public struct Counterexample: Sendable, Hashable {
@@ -162,7 +172,8 @@ public struct TransformNode: Sendable {
 
     public init(
         base: SchemaNode, name: String, description: String, examples: [JSONValue] = [], format: String? = nil,
-        keywords: JSONObject = JSONObject(), counterexamples: [Counterexample] = [], readsNumberDigits: Bool = false
+        keywords: JSONObject = JSONObject(), counterexamples: [Counterexample] = [], readsNumberDigits: Bool = false,
+        dropsInvalidElements: Bool = false, isAnnotated: Bool = true
     ) {
         self.base = base
         self.name = name
@@ -172,6 +183,8 @@ public struct TransformNode: Sendable {
         self.keywords = keywords
         self.counterexamples = counterexamples
         self.readsNumberDigits = readsNumberDigits
+        self.dropsInvalidElements = dropsInvalidElements
+        self.isAnnotated = isAnnotated
     }
 }
 

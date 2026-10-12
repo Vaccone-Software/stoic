@@ -60,6 +60,28 @@ public macro Nullable() = #externalMacro(module: "StoicMacrosPlugin", type: "Nul
 @attached(peer)
 public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "IgnoredMacro")
 
+/// Names the case that stands for every value of an enumeration that the
+/// schema does not know: an API that adds a case does not break a client
+/// that has not heard of it. Decoding succeeds with an `unknown_case`
+/// warning. The case may be plain (`case unknown`) or keep what it read
+/// (`case unknown(String)`, on an enumeration of plain cases).
+@attached(peer)
+public macro UnknownCase() = #externalMacro(module: "StoicMacrosPlugin", type: "UnknownCaseMacro")
+
+/// An array that survives its bad elements: each one that does not decode
+/// is left out, with a `dropped_element` warning, and the rest are kept.
+/// Applies to the outermost array (through an optional); `@Count` and
+/// `@Unique` are checked on what is kept.
+@attached(peer)
+public macro Lossy() = #externalMacro(module: "StoicMacrosPlugin", type: "LossyMacro")
+
+/// Reads the property's type with `JSONDecoder` and writes it with
+/// `JSONEncoder`, for a `Codable` type that has no schema: `Schema.codable`.
+/// A failure is one issue at the property, and its JSON Schema is `{}`.
+/// Reaches the named type inside an optional, array or dictionary.
+@attached(peer)
+public macro Codable() = #externalMacro(module: "StoicMacrosPlugin", type: "CodableMacro")
+
 /// Marks the `JSONObject` property that keeps the keys the schema does not
 /// declare and writes them back, so that an older release never destroys
 /// what a newer one wrote.

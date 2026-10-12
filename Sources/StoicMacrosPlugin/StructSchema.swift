@@ -1,7 +1,9 @@
 #if STOIC_MACROS
 import SwiftSyntax
 
-/// `@Schema` on a struct: form (a), an object with a default instance.
+/// `@Schema` on a struct: form (a), an object with a default instance, when
+/// every property has a default; otherwise form (b), built by the memberwise
+/// initialiser.
 func expandStruct(
     _ declaration: StructDeclSyntax, attribute: AttributeSyntax, access: String, reporter: Reporter
 ) -> String? {
@@ -19,20 +21,13 @@ func expandStruct(
     checkKeys(of: model, arguments: arguments, reporter: reporter)
     guard !reporter.hasErrors else { return nil }
 
+    if model.usesReader { return readerSchema(of: declaration, model: model, arguments: arguments, access: access) }
+
     var lines: [String] = []
     for field in model.fields {
         var arguments = [field.keyLiteral, "\\.\(field.property)"]
-        let scalar = field.scalar.map(\.constraintCode)
-        let collection = field.collection.map(\.constraintCode)
-        arguments.append(
-            schemaExpression(
-                field.type, scalar: scalar, collection: collection, nullable: field.isNullable,
-                format: field.format?.arguments.first?.expression.trimmedDescription ?? ""))
-        if let doc = field.doc { arguments.append("doc: \(swiftLiteral(doc))") }
-        if let unit = field.unit { arguments.append("unit: \(unit)") }
-        if !field.aliases.isEmpty { arguments.append("aliases: [\(field.aliases.map(\.source).joined(separator: ", "))]") }
-        if field.isSecret { arguments.append("secret: true") }
-        if let deprecation = field.deprecation { arguments.append("deprecated: \(deprecation)") }
+        arguments.append(schemaExpression(of: field, nullable: field.isNullable))
+        arguments += field.descriptionArguments
         lines.append("    \(library)Field(\(arguments.joined(separator: ", ")))")
     }
 
@@ -47,6 +42,66 @@ func expandStruct(
     return """
         \(access)static let schema: \(library)Schema<\(name)> = \(library)Schema.object(\(options.joined(separator: ", "))) {\(body)}
         """
+}
+
+/// Form (b): some property has no default, so the value is built by the
+/// memberwise initialiser from fields read one by one. A property without a
+/// default is required; an optional one may also be `null`; the rest keep
+/// the default they were written with.
+private func readerSchema(
+    of declaration: StructDeclSyntax, model: StructModel, arguments: SchemaArguments, access: String
+) -> String {
+    let name = declaration.name.text
+    var lines: [String] = []
+    var labels: [String] = []
+    for (index, field) in model.fields.enumerated() {
+        let slot = "slot\(index)"
+        var parts = [field.keyLiteral, "\\.\(field.property)"]
+        // `T?` with nothing written is "none", whether the key is missing or null.
+        let implicitNone = field.defaultValue == nil && field.type.isOptional
+        parts.append(schemaExpression(of: field, nullable: field.isNullable || implicitNone))
+        if let value = field.defaultValue { parts.append("default: \(value.trimmedDescription)") }
+        parts += field.descriptionArguments
+        lines.append("    let \(slot) = f.field(\(parts.joined(separator: ", ")))")
+        labels.append("\(field.property): v[\(slot)]")
+    }
+    if let preserving = model.preserving {
+        lines.append("    let preserved = f.unknownKeys(\\\(name).\(preserving))")
+        labels.append("\(preserving): v[preserved]")
+    }
+    lines.append("    return f.build { v in \(name)(\(labels.joined(separator: ", "))) }")
+
+    var options = ["\(name).self"]
+    options += arguments.passed(["name", "unknownKeys"])
+    if let doc = documentation(of: declaration) { options.append("doc: \(swiftLiteral(doc))") }
+    options += arguments.passed(["version", "versionKey", "missingVersion", "migrations"])
+    return """
+        \(access)static let schema: \(library)Schema<\(name)> = \(library)Schema.object(\(options.joined(separator: ", "))) { f in
+        \(lines.joined(separator: "\n"))
+        }
+        """
+}
+
+extension FieldModel {
+    /// The arguments after the schema, in the order the library's `Field` and
+    /// `ObjectReader.field` share.
+    var descriptionArguments: [String] {
+        var arguments: [String] = []
+        if let doc { arguments.append("doc: \(swiftLiteral(doc))") }
+        if let unit { arguments.append("unit: \(unit)") }
+        if !aliases.isEmpty { arguments.append("aliases: [\(aliases.map(\.source).joined(separator: ", "))]") }
+        if isSecret { arguments.append("secret: true") }
+        if let deprecation { arguments.append("deprecated: \(deprecation)") }
+        return arguments
+    }
+}
+
+/// The schema expression of a field, with its constraints and format.
+private func schemaExpression(of field: FieldModel, nullable: Bool) -> String {
+    schemaExpression(
+        field.type, scalar: field.scalar.map(\.constraintCode), collection: field.collection.map(\.constraintCode),
+        nullable: nullable, format: field.format?.arguments.first?.expression.trimmedDescription ?? "",
+        lossy: field.isLossy, codable: field.isCodable)
 }
 
 /// Everything about the keys that would otherwise trap when the schema is

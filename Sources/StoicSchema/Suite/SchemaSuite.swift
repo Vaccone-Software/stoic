@@ -249,7 +249,7 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
                         seed: seed, document: mutation.document)
                 }
             }
-            if !caveats.skips(mutation.kind) {
+            if !caveats.skips(mutation.kind) && !mutation.isTolerated {
                 recorder.run(.jsonSchema)
                 let exported = validator.accepts(mutation.document)
                 if exported != (result.value != nil) {
