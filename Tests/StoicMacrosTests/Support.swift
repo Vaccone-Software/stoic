@@ -19,6 +19,7 @@ let allMacros: [String: MacroSpec] = [
     "Deprecated": MacroSpec(type: DeprecatedMacro.self),
     "Nullable": MacroSpec(type: NullableMacro.self),
     "Ignored": MacroSpec(type: IgnoredMacro.self),
+    "UnknownCase": MacroSpec(type: UnknownCaseMacro.self),
     "PreserveUnknownKeys": MacroSpec(type: PreserveUnknownKeysMacro.self),
     "DateFormat": MacroSpec(type: DateFormatMacro.self),
     "URLFormat": MacroSpec(type: URLFormatMacro.self),

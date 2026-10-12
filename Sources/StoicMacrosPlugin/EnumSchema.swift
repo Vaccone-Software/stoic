@@ -50,8 +50,21 @@ func expandEnum(
         return nil
     }
 
-    let hasPayloads = written.contains { ($0.element.parameterClause?.parameters.isEmpty ?? true) == false }
+    let unknownCases = written.filter { item in
+        markers(in: item.declaration.attributes).contains { $0.kind == .unknownCase }
+    }
+    let hasPayloads = written.contains { item in
+        !unknownCases.contains { $0.element.name.text == item.element.name.text }
+            && (item.element.parameterClause?.parameters.isEmpty ?? true) == false
+    }
     let rawType = rawType(of: declaration, reporter: reporter)
+
+    if let unknown = unknownCases.first {
+        return expandOpenEnum(
+            declaration, written: written.map(\.element), unknown: unknown.element, count: unknownCases.count,
+            marker: markers(in: unknown.declaration.attributes).first { $0.kind == .unknownCase }!,
+            hasPayloads: hasPayloads, rawType: rawType, arguments: arguments, access: access, reporter: reporter)
+    }
 
     if hasPayloads {
         arguments.check(allowed: SchemaArguments.unionLabels, kind: "an enum with associated values", reporter: reporter)
@@ -100,6 +113,72 @@ func expandEnum(
     return "\(access)static let schema: \(library)Schema<\(name)> = \(library)Schema.enumeration(\(name).self)"
 }
 
+/// `@Schema` on an enumeration with an `@UnknownCase`: a string or integer
+/// enumeration that reads a value it does not know as that case.
+private func expandOpenEnum(
+    _ declaration: EnumDeclSyntax, written: [EnumCaseElementSyntax], unknown: EnumCaseElementSyntax, count: Int,
+    marker: Marker, hasPayloads: Bool, rawType: String?, arguments: SchemaArguments, access: String,
+    reporter: Reporter
+) -> String? {
+    let name = declaration.name.text
+    arguments.check(allowed: [], kind: "an enumeration of raw values", reporter: reporter)
+    if count > 1 {
+        reporter.error(
+            marker.node,
+            Problem(id: "second-unknown-case", message: "only one case can stand for the values the schema does not know"))
+    }
+    if hasPayloads {
+        reporter.error(
+            marker.node,
+            Problem(
+                id: "unknown-case-in-union",
+                message: "@UnknownCase is for an enumeration of plain values; `\(name)` has cases that carry values, so it is a tagged union, which has no unknown case yet"))
+        return nil
+    }
+    let parameters = unknown.parameterClause?.parameters
+    let carriesString = parameters?.count == 1 && parameters?.first?.firstName == nil
+        && ["String", "Swift.String"].contains(parameters?.first?.type.trimmedDescription ?? "")
+    if let parameters, !parameters.isEmpty, !carriesString {
+        reporter.error(
+            unknown,
+            Problem(
+                id: "unknown-case-payload",
+                message: "the unknown case is a plain case, or carries the value it did not understand as one `String`: `case \(unknown.name.text)(String)`"))
+    }
+    if carriesString && rawType != nil {
+        reporter.error(
+            unknown,
+            Problem(
+                id: "unknown-case-raw",
+                message: "an enumeration with a raw type cannot have a case that carries a value; make `\(unknown.name.text)` a plain case"))
+    }
+    var models: [CaseModel] = []
+    for element in written {
+        let declarationOfElement = element.parent?.parent?.as(EnumCaseDeclSyntax.self)
+        if let model = readUnionCase(element, declarationOfElement, enclosing: name, reporter: reporter) { models.append(model) }
+    }
+    checkTags(models, arguments: arguments, written: written, reporter: reporter)
+    guard !reporter.hasErrors else { return nil }
+
+    if let rawType {
+        _ = rawType
+        return "\(access)static let schema: \(library)Schema<\(name)> = \(library)Schema.enumeration(\(name).self, unknownCase: .\(unknown.name.text))"
+    }
+    let fallback = unknown.name.text
+    let known = models.filter { $0.name != fallback || !carriesString }
+    var reads = known.map { "case \($0.tagLiteral): \(name).\($0.name)" }
+    var writes = known.map { "case .\($0.name): \($0.tagLiteral)" }
+    if carriesString {
+        reads.append("default: \(name).\(fallback)($0)")
+        writes.append("case .\(fallback)(let raw): raw")
+    } else {
+        reads.append("default: \(name).\(fallback)")
+    }
+    return """
+        \(access)static let schema: \(library)Schema<\(name)> = \(library)Schema.openEnumeration(\(name).self, cases: [\(known.map(\.tagLiteral).joined(separator: ", "))], fallback: \(swiftLiteral(fallback.trimmingBackticks)), read: { switch $0 { \(reads.joined(separator: "; ")) } }, write: { switch $0 { \(writes.joined(separator: "; ")) } })
+        """
+}
+
 /// `String` or `Int` if the enumeration says so; otherwise `nil`, with a
 /// diagnostic if it names a raw type the schema cannot use.
 private func rawType(of declaration: EnumDeclSyntax, reporter: Reporter) -> String? {
@@ -124,13 +203,14 @@ private func rawType(of declaration: EnumDeclSyntax, reporter: Reporter) -> Stri
 }
 
 private func readUnionCase(
-    _ element: EnumCaseElementSyntax, _ declaration: EnumCaseDeclSyntax, enclosing: String, reporter: Reporter
+    _ element: EnumCaseElementSyntax, _ declaration: EnumCaseDeclSyntax?, enclosing: String, reporter: Reporter
 ) -> CaseModel? {
     let caseName = element.name.text
     var tag = caseName.trimmingBackticks
     var tagLiteral = swiftLiteral(tag)
     var seen: Set<MarkerKind> = []
-    for marker in markers(in: declaration.attributes) {
+    for marker in markers(in: declaration?.attributes ?? AttributeListSyntax([])) {
+        if marker.kind == .unknownCase { continue }
         guard marker.kind == .key else {
             reporter.error(
                 marker.node,
@@ -181,7 +261,7 @@ private func readUnionCase(
         }
     }
     return CaseModel(
-        name: caseName, tag: tag, tagLiteral: tagLiteral, doc: documentation(of: declaration), payload: payload)
+        name: caseName, tag: tag, tagLiteral: tagLiteral, doc: declaration.flatMap { documentation(of: $0) }, payload: payload)
 }
 
 private func checkTags(
@@ -260,12 +340,19 @@ private func unionDeclaration(
 #if STOIC_MACROS
 extension EnumDeclSyntax {
     /// Whether any case carries a value, which makes the enumeration a union
-    /// rather than a list of raw values.
+    /// rather than a list of raw values. (The unknown case may carry the
+    /// value it did not understand, and that does not make a union.)
     var isUnion: Bool {
         memberBlock.members.contains { member in
             guard let caseDeclaration = member.decl.as(EnumCaseDeclSyntax.self) else { return false }
+            if markers(in: caseDeclaration.attributes).contains(where: { $0.kind == .unknownCase }) { return false }
             return caseDeclaration.elements.contains { $0.parameterClause?.parameters.isEmpty == false }
         }
+    }
+
+    /// Whether the enumeration has a `String` or `Int` raw type.
+    var hasRawType: Bool {
+        inheritanceClause?.inheritedTypes.contains { ["String", "Int"].contains($0.type.trimmedDescription) } ?? false
     }
 }
 #endif

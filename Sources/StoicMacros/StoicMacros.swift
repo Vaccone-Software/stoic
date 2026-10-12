@@ -60,6 +60,14 @@ public macro Nullable() = #externalMacro(module: "StoicMacrosPlugin", type: "Nul
 @attached(peer)
 public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "IgnoredMacro")
 
+/// Names the case that stands for every value of an enumeration that the
+/// schema does not know: an API that adds a case does not break a client
+/// that has not heard of it. Decoding succeeds with an `unknown_case`
+/// warning. The case may be plain (`case unknown`) or keep what it read
+/// (`case unknown(String)`, on an enumeration of plain cases).
+@attached(peer)
+public macro UnknownCase() = #externalMacro(module: "StoicMacrosPlugin", type: "UnknownCaseMacro")
+
 /// Marks the `JSONObject` property that keeps the keys the schema does not
 /// declare and writes them back, so that an older release never destroys
 /// what a newer one wrote.

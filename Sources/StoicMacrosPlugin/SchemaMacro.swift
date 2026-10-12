@@ -38,7 +38,7 @@ struct SchemaMacro: MemberMacro, ExtensionMacro {
         // `Schematic` for every kind; `CaseIterable` too for an enumeration of
         // raw values, whose `allCases` the library reads. (A union is not
         // `CaseIterable`: its cases carry values.)
-        let rawEnumeration = declaration.as(EnumDeclSyntax.self).map { !$0.isUnion } ?? false
+        let rawEnumeration = declaration.as(EnumDeclSyntax.self).map { !$0.isUnion && $0.hasRawType } ?? false
         let wanted = protocols.compactMap { protocolType -> String? in
             let name = protocolType.trimmedDescription
             if name.hasSuffix("Schematic") { return "\(library)Schematic" }

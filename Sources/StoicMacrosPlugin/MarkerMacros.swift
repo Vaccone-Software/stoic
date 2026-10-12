@@ -50,6 +50,7 @@ struct AliasesMacro: MarkerMacro { static let kind = MarkerKind.aliases }
 struct DeprecatedMacro: MarkerMacro { static let kind = MarkerKind.deprecated }
 struct NullableMacro: MarkerMacro { static let kind = MarkerKind.nullable }
 struct IgnoredMacro: MarkerMacro { static let kind = MarkerKind.ignored }
+struct UnknownCaseMacro: MarkerMacro { static let kind = MarkerKind.unknownCase }
 
 struct PreserveUnknownKeysMacro: MarkerMacro { static let kind = MarkerKind.preserveUnknownKeys }
 struct DateFormatMacro: MarkerMacro { static let kind = MarkerKind.dateFormat }

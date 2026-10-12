@@ -313,6 +313,11 @@ private func readMarkers(
             field.isNullable = true
         case .ignored:
             break
+        case .unknownCase:
+            reporter.error(
+                marker.node,
+                Problem(id: "unknown-case-on-property", message: "@UnknownCase goes on a case of an enumeration, not on a property"),
+                fixIts: marker.removalFixIts)
         case .preserveUnknownKeys:
             if model.preserving != nil {
                 reporter.error(

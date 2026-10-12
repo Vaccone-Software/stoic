@@ -200,6 +200,7 @@ schema and throws one `DecodingError` listing every issue.
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
+| an enumeration with an unknown case meets a value it does not know | Read as that case; an `unknown_case` warning naming the value and the case, with the nearest known spelling; the document is still accepted |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
 
 ## Testing
@@ -702,7 +703,7 @@ member `schema`". Every diagnostic has a test with its line and column.
 | constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
 | nullable and secret | `@Nullable` on a non-optional (fix-it removes); `@Secret` on a `Secret<T>` (warning) |
 | arguments | `discriminator:` or `valueKey:` on a struct, `unknownKeys:` or `version:` on an enum (fix-it removes); `migrations:`, `versionKey:` or `missingVersion:` without `version:`; a version below 1; `unknownKeys:` together with `@PreserveUnknownKeys`; `.preserve` with no preserving property; a preserving property that is not a `JSONObject`, or a second one |
-| an enum | no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
+| an enum | `@UnknownCase` twice, in a tagged union, or on a case carrying anything but one `String` (or any value, with a raw type); on a property; no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
 | `@Refined` | on anything but an enum or struct; no base type or constraints; a base that is not `T.self`; a constraint that does not fit the base, an empty range, contradictions |
 
 A non-literal default is *not* an error: the default instance carries it, and
@@ -838,6 +839,30 @@ the order it was built.
   tells the mutator that 2^53 + 1 and 1e400, which a `Double` refuses, are
   not refused here; the conversion's own `counterexamples` (`1e200`, a
   39-digit number, the bad strings) say what is.
+
+### Enumerations a server may extend
+
+- **`Schema.enumeration(T.self, unknownCase: .unknown)`** (raw values of
+  `String` or `Int`) and **`Schema.openEnumeration(T.self, cases:, fallback:,
+  read:, write:)`** (for a case that keeps the string it did not understand,
+  `case unknown(String)`). A string that names no known case is read as the
+  unknown case and reported as an `unknown_case` *warning* with the value,
+  the case it was read as and the nearest known spelling; so a response
+  that mentions a case added after this client shipped decodes, and the
+  warning is how the app finds out. A value of the wrong kind (a number
+  where a string belongs) is still a `type_mismatch` error. The unknown
+  case is a case like another when it is written: a plain one is written as
+  its raw value (the original is not kept), `unknown(String)` as what it
+  holds.
+- **Representation.** The node is a `.transformed` over a plain string (or
+  integer), whose examples are the known cases, so exporters, generators and
+  the suite need no case of their own. The export is `{"type": "string",
+  "examples": […]}`: it accepts any string, because the schema does, and
+  says which ones are known.
+- **`@UnknownCase`** marks the case, on an enumeration with a raw type
+  (plain case) or without one (plain cases, with the unknown case plain or
+  carrying one `String`). A tagged union has no unknown case yet: an unknown
+  discriminator stays an error.
 
 ### Decisions
 

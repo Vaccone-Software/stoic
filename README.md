@@ -217,7 +217,9 @@ A property with no default is a required field, which is what an API's model
 wants: `var id: Int` makes a missing `id` an issue instead of a `0`, `var
 email: String?` may be missing or `null`, and the schema builds the value with
 the memberwise initializer. `Date`, `URL`, `UUID`, `Data` and `Decimal` are
-fields too.
+fields too. An enumeration a server may extend names the case that stands for
+what it does not know: `@UnknownCase case unknown` (or `case unknown(String)`)
+reads an unfamiliar value as that case, with a warning instead of an error.
 
 The macro only writes calls to the `StoicSchema` API you could write by hand
 (`Schema.object(…) { Field(…) }`), the same schema with the same behaviour;

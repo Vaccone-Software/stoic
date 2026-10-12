@@ -16,6 +16,7 @@ enum MarkerKind: String, CaseIterable {
     case deprecated = "Deprecated"
     case nullable = "Nullable"
     case ignored = "Ignored"
+    case unknownCase = "UnknownCase"
     case preserveUnknownKeys = "PreserveUnknownKeys"
     case dateFormat = "DateFormat"
     case urlFormat = "URLFormat"

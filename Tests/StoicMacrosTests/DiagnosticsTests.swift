@@ -679,5 +679,99 @@ struct EnumDiagnosticTests {
                 }
                 """)
     }
+
+    @Test func aTaggedUnionHasNoUnknownCase() {
+        expand(
+            """
+            @Schema
+            enum Mixed {
+                case circle(Int)
+                @UnknownCase case other(String)
+            }
+            """,
+            diagnostics: [
+                problem("@UnknownCase is for an enumeration of plain values; `Mixed` has cases that carry values, so it is a tagged union, which has no unknown case yet", 4, 5)
+            ],
+            to: """
+                enum Mixed {
+                    case circle(Int)
+                    case other(String)
+                }
+                """)
+    }
+
+    @Test func thereIsOneUnknownCase() {
+        expand(
+            """
+            @Schema
+            enum Twice {
+                @UnknownCase case a
+                @UnknownCase case b
+            }
+            """,
+            diagnostics: [problem("only one case can stand for the values the schema does not know", 3, 5)],
+            to: """
+                enum Twice {
+                    case a
+                    case b
+                }
+                """)
+    }
+
+    @Test func theUnknownCaseCarriesNothingOrOneString() {
+        expand(
+            """
+            @Schema
+            enum Odd {
+                case a
+                @UnknownCase case other(Int)
+            }
+            """,
+            diagnostics: [
+                problem("the unknown case is a plain case, or carries the value it did not understand as one `String`: `case other(String)`", 4, 23)
+            ],
+            to: """
+                enum Odd {
+                    case a
+                    case other(Int)
+                }
+                """)
+    }
+
+    @Test func aRawValueCannotCarryTheUnknownValue() {
+        expand(
+            """
+            @Schema
+            enum Raw: String {
+                case a
+                @UnknownCase case other(String)
+            }
+            """,
+            diagnostics: [
+                problem("an enumeration with a raw type cannot have a case that carries a value; make `other` a plain case", 4, 23)
+            ],
+            to: """
+                enum Raw: String {
+                    case a
+                    case other(String)
+                }
+                """)
+    }
+
+    @Test func theUnknownCaseIsNotForProperties() {
+        expand(
+            """
+            @Schema
+            struct Held {
+                @UnknownCase var x = 1
+            }
+            """,
+            diagnostics: [problem("@UnknownCase goes on a case of an enumeration, not on a property", 3, 5, fixIts: ["remove @UnknownCase"])],
+            to: """
+                struct Held {
+                    var x = 1
+                }
+                """)
+    }
 }
 #endif
