@@ -50,6 +50,11 @@ struct ObjectScan {
     private let known: Set<ExactKey>
     private var claimed: Set<Int> = []
     private var byNormalizedKey: [String: [Int]]?
+    /// Whether some member has a key the object does not declare. A
+    /// respelling can only be one of those, so without any the table below
+    /// is never needed: the common document that simply leaves out the keys
+    /// whose defaults it accepts costs no more than the keys it has.
+    private var hasUndeclaredMember: Bool?
 
     init(object: JSONObject, known: Set<ExactKey>) {
         self.object = object
@@ -73,7 +78,12 @@ struct ObjectScan {
             }
         }
         // Spellings that differ only by case or separators. Built once per
-        // object, and only if some field is missing its exact key.
+        // object, and only if some field is missing its exact key and some
+        // member could be a respelling of it.
+        if hasUndeclaredMember == nil {
+            hasUndeclaredMember = object.contains { !known.contains(ExactKey($0.key)) }
+        }
+        guard hasUndeclaredMember == true else { return nil }
         if byNormalizedKey == nil {
             var table: [String: [Int]] = [:]
             for index in object.indices {

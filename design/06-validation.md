@@ -246,7 +246,11 @@ above left open:
   .warn`, form (b) to `.reject`.
 - **Respelled keys** (case and snake_case, plus declared aliases) are
   accepted with a `deprecated_key` warning; the same field under two
-  spellings is `duplicate_key`.
+  spellings is `duplicate_key`. The table of normalised
+  spellings that finds them is built per object, and only when a field's
+  key is missing *and* some member has a key the object does not declare;
+  a document that merely leaves out keys whose defaults it accepts never
+  pays for it (20,000 rows missing six of nine keys: 124 ms to 104 ms, release).
 - **Encoding.** `EncodeStyle.sparse` leaves out secrets unless asked; `.full`
   includes them. Sparse compares encoded JSON, not values. Deprecated
   fields are written only when they differ from their default.
