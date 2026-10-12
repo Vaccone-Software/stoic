@@ -1,5 +1,7 @@
 public import Foundation
 public import Stoic
+public import StoicSchema
+internal import StoicJSON
 
 /// Every number the client's resilience is made of.
 ///
@@ -57,6 +59,18 @@ public struct HTTPPolicy: Sendable {
     /// The most body bytes read from one response. Default 10 MB.
     public var maxResponseBytes: Int
 
+    /// How responses are decoded by ``HTTPClient/send(_:idempotencyKey:decoding:options:)``;
+    /// a call can pass its own. `nil` (the default) means strict decoding of
+    /// strict JSON, with the parser's input limit raised to
+    /// ``maxResponseBytes`` so that a response the client was willing to read
+    /// is not refused by the decoder for being over 8 MiB. Set a value to
+    /// use it exactly as given, limits included.
+    ///
+    /// Unknown keys are not an option here: each object schema carries its
+    /// own ``UnknownKeyPolicy``, and the default (`warn`) ignores a field the
+    /// server added; a schema declared `reject` rejects it.
+    public var decodeOptions: DecodeOptions?
+
     /// How much of an error response's body is kept in
     /// ``HTTPError/status(_:excerpt:retryAfter:attempts:)``. Default 512.
     public var errorExcerptBytes: Int
@@ -90,6 +104,7 @@ public struct HTTPPolicy: Sendable {
         queueLimitPerHost: Int = 64,
         maxResponseBytes: Int = 10_000_000,
         errorExcerptBytes: Int = 512,
+        decodeOptions: DecodeOptions? = nil,
         coalesceGETs: Bool = true,
         ignoreHeadersForCoalescing: [String] = [],
         wallClock: @escaping @Sendable () -> Date = { Date() }
@@ -108,6 +123,7 @@ public struct HTTPPolicy: Sendable {
         self.queueLimitPerHost = queueLimitPerHost
         self.maxResponseBytes = maxResponseBytes
         self.errorExcerptBytes = errorExcerptBytes
+        self.decodeOptions = decodeOptions
         self.coalesceGETs = coalesceGETs
         self.ignoreHeadersForCoalescing = ignoreHeadersForCoalescing
         self.wallClock = wallClock
@@ -127,4 +143,14 @@ public struct HTTPPolicy: Sendable {
     public static let standardBreaker = CircuitBreaker.Configuration(minimumCalls: 20, failureRateThreshold: 0.5)
 
     public static let defaultRetryStatuses: Set<Int> = [408, 429, 500, 502, 503, 504]
+}
+
+extension HTTPPolicy {
+    /// The options a response is decoded with when the call names none.
+    var responseDecodeOptions: DecodeOptions {
+        if let decodeOptions { return decodeOptions }
+        var options = DecodeOptions.strict
+        options.parse.maxBytes = max(options.parse.maxBytes, maxResponseBytes)
+        return options
+    }
 }

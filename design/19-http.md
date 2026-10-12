@@ -231,7 +231,16 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   (it left before the flight reported). The request is cancelled when the last
   caller leaves.
 - **Decoding** uses `Schema.decodeReporting`; only errors fail it (warnings
-  and repairs are dropped). `send(_:decoding:)` adds `Accept: application/json`
+  and repairs are dropped). The options are `HTTPPolicy.decodeOptions`
+  (client-wide) or `send(_:decoding:options:)` (per call). Unknown keys are not
+  a `DecodeOptions` setting but each object schema's `UnknownKeyPolicy`, whose
+  default `warn` ignores a field the server added; a schema declared `reject`
+  still rejects it, which is that schema's choice. The default options
+  (`decodeOptions == nil`) are strict JSON with the parser's `maxBytes`
+  raised to `maxResponseBytes`, so a 9 MB response the client agreed to read is
+  not refused with `size_limit` by an 8 MiB parser default; options set
+  explicitly are used exactly as given. The parser's per-string (1 MiB) and
+  per-container limits stay. `send(_:decoding:)` adds `Accept: application/json`
   unless the request names an `Accept`. An empty body fails a schema that
   wants an object.
 - **`HTTPError: Retryable`** classifies the *failure* with the default

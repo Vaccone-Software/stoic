@@ -83,15 +83,19 @@ public final class HTTPClient: Sendable {
     /// that does not match is ``HTTPError/decoding(_:attempts:)`` with every
     /// issue, and is not retried. Asks for `application/json` unless the
     /// request names an `Accept` itself.
+    ///
+    /// - Parameter options: How to decode, instead of the policy's
+    ///   ``HTTPPolicy/decodeOptions``.
     public func send<Value: Sendable>(
         _ request: HTTPRequest,
         idempotencyKey: IdempotencyKey? = nil,
-        decoding schema: Schema<Value>
+        decoding schema: Schema<Value>,
+        options: DecodeOptions? = nil
     ) async throws -> Value {
         var request = request
         if !request.headers.contains("Accept") { request.headers["Accept"] = "application/json" }
         let delivered = try await deliver(request, key: idempotencyKey)
-        let decoded = schema.decodeReporting(delivered.response.body)
+        let decoded = schema.decodeReporting(delivered.response.body, options: options ?? policy.responseDecodeOptions)
         guard let value = decoded.value else {
             let failure = ValidationFailure(issues: decoded.issues)
             Ambient.record(Event("http.decoding_failed", level: .notice, label: label, fields: [
