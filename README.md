@@ -213,10 +213,16 @@ struct Settings {
 try Settings.schema.decode(text)   // every issue, with its line and column
 ```
 
+A property with no default is a required field, which is what an API's model
+wants: `var id: Int` makes a missing `id` an issue instead of a `0`, `var
+email: String?` may be missing or `null`, and the schema builds the value with
+the memberwise initializer. `Date`, `URL`, `UUID`, `Data` and `Decimal` are
+fields too.
+
 The macro only writes calls to the `StoicSchema` API you could write by hand
 (`Schema.object(…) { Field(…) }`), the same schema with the same behaviour;
 without the trait, write that. Mistakes are compile errors at the line that is
-wrong: a property with no default, a `@Length` on an `Int`, a default that
+wrong: a `@Length` on an `Int`, a default that
 breaks its own `@Range`, a key used twice. See
 [design/06](design/06-validation.md#as-built-layer-4-stoicmacros).
 

@@ -95,7 +95,6 @@ struct DeclarationDiagnosticTests {
             }
             """,
             diagnostics: [
-                problem("`x` has no default value, and the schema's default instance is `Custom()`; give it one", 3, 9, fixIts: ["give `x` the default `0`"]),
                 problem("`Custom` declares initializers but no `init()`, and the schema builds its default instance with `Custom()`; add `init() {}` (every property needs a default)", 2, 8),
             ],
             to: """
@@ -121,40 +120,24 @@ struct DeclarationDiagnosticTests {
 
 @Suite("@Schema: diagnostics about a property")
 struct PropertyDiagnosticTests {
-    @Test func everyPropertyNeedsADefault() {
+    @Test func anIgnoredPropertyNeedsADefaultWhenTheValueIsBuiltWithoutADefaultInstance() {
         expand(
             """
             @Schema
-            struct Missing {
-                var count: Int
-                var name: String
-                var ratio: Double
-                var flag: Bool
-                var list: [Int]
-                var map: [String: Int]
-                var inner: Inner
-                var maybe: Int?
+            struct Built {
+                var id: Int
+                @Ignored var cache: [String: Int]
+                @Ignored var note: String?
             }
             """,
             diagnostics: [
-                problem("`count` has no default value, and the schema's default instance is `Missing()`; give it one", 3, 9, fixIts: ["give `count` the default `0`"]),
-                problem("`name` has no default value, and the schema's default instance is `Missing()`; give it one", 4, 9, fixIts: ["give `name` the default `\"\"`"]),
-                problem("`ratio` has no default value, and the schema's default instance is `Missing()`; give it one", 5, 9, fixIts: ["give `ratio` the default `0`"]),
-                problem("`flag` has no default value, and the schema's default instance is `Missing()`; give it one", 6, 9, fixIts: ["give `flag` the default `false`"]),
-                problem("`list` has no default value, and the schema's default instance is `Missing()`; give it one", 7, 9, fixIts: ["give `list` the default `[]`"]),
-                problem("`map` has no default value, and the schema's default instance is `Missing()`; give it one", 8, 9, fixIts: ["give `map` the default `[:]`"]),
-                problem("`inner` has no default value, and the schema's default instance is `Missing()`; give it one", 9, 9),
+                problem("`cache` is left out of the schema, so the value is built without it: give it a default", 4, 18),
             ],
             to: """
-                struct Missing {
-                    var count: Int
-                    var name: String
-                    var ratio: Double
-                    var flag: Bool
-                    var list: [Int]
-                    var map: [String: Int]
-                    var inner: Inner
-                    var maybe: Int?
+                struct Built {
+                    var id: Int
+                    var cache: [String: Int]
+                    var note: String?
                 }
                 """)
     }
@@ -170,7 +153,6 @@ struct PropertyDiagnosticTests {
             """,
             diagnostics: [
                 problem("`id` is a constant, and a schema writes to the properties it decodes into; declare it `var`, or mark it `@Ignored`", 3, 9, fixIts: ["declare `id` with `var`"]),
-                problem("`name` is a constant, and a schema writes to the properties it decodes into; declare it `var`, or mark it `@Ignored`", 4, 9, fixIts: ["declare `name` with `var`"]),
             ],
             to: """
                 struct Constants {

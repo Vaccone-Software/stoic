@@ -200,6 +200,7 @@ schema and throws one `DecodingError` listing every issue.
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
+| a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
 
 ## Testing
 
@@ -579,12 +580,28 @@ declaration order, and `extension Settings: Schematic {}` (added only if the
 type does not conform already), so `Settings.schema` is what other schemas
 write when they hold a `Settings`.
 
-- **Form (a) only.** The default instance is `Settings()`, so every property
-  needs a default (an optional `var` has one), and a type that declares
-  initialisers must declare `init()`. The macro does not read defaults to
-  copy them (the instance is the single source of every default, which is the
-  point of form (a)); it reads them to check them, below. Form (b), for types
-  without defaults, is not emitted (see open problems).
+- **Form (a) when every property has a default.** The default instance is
+  `Settings()`, so a type that declares initialisers must declare `init()`.
+  The macro does not read defaults to copy them (the instance is the single
+  source of every default, which is the point of form (a)); it reads them to
+  check them, below.
+- **Form (b) when any property has none.** A stored property with no default
+  is *required*: the key must be there, and a missing key is a `missing_key`
+  issue beside the rest, not a zero. The macro then emits the reader form,
+  `Schema.object(T.self) { f in … }`, one `f.field(…)` per property, and
+  builds the value with the memberwise initialiser, `T(id: v[slot0], …)`.
+  Properties that have defaults keep them: the default is copied, as
+  written, into the field's `default:`, and the property is optional on the
+  wire. A `T?` with nothing written is "none" whether its key is missing or
+  `null` (the schema is `.optional(…, nullable: true)`, so `nil` is written
+  as `null` in full output and left out of sparse output). Properties left
+  out with `@Ignored` keep their default, so they need one; a `let` is
+  allowed, since the initialiser fills it (a `let` with a value is not a
+  parameter, so it is refused). The memberwise initialiser exists only while
+  the type declares no initialiser, so form (b) needs the type to declare
+  none (put initialisers in an extension). Unknown keys default to `.reject`
+  as in the hand-written form (b); `@Schema(unknownKeys: .ignore)` is the
+  usual choice for a model of someone else's API.
 - **Types are read as written.** The macro sees syntax. `Bool`, `Int`,
   `Int64`, `UInt64`, `Double`, `String`, `JSONValue` and the other fixed-width
   integers (`.integer(Int32.self)`) are the library's primitives; `[T]` and
@@ -679,7 +696,7 @@ member `schema`". Every diagnostic has a test with its line and column.
 | Where | Mistake |
 | --- | --- |
 | the type | not a struct or enum; generic; an enum with no cases; already declares `schema`; initialisers but no `init()` |
-| a property | no default (fix-it adds `0`, `""`, `false`, `[]`, `[:]`); a `let` (fix-it: `var`); type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
+| a property | a `let` in form (a) or one with a value (fix-it: `var`); an `@Ignored` property with no default when the value is built by the initialiser; type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
 | use of markers | any marker on a static or computed property, on an `@Ignored` property, or outside a `@Schema` type; the same marker twice (fix-it removes the second); `@Key("")`; a non-literal key, alias or deprecation message |
 | keys | a key or alias used twice (the runtime precondition, moved to compile time); an alias equal to its own key; the version key used by a field |
 | constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
@@ -723,11 +740,11 @@ trait.
 
 ### Open problems
 
-- **Form (b) is not emitted.** A struct without defaults needs the reader
-  over the memberwise initialiser; the macro refuses it instead. The
-  generated `build { v in T(a: v[a], …) }` is mechanical, but the memberwise
-  initialiser's labels and access level are not visible from the declaration
-  when it is not written out.
+- **Form (b) relies on the memberwise initialiser.** A type that declares
+  an initialiser has none, so it must give every property a default and
+  declare `init()`. An initialiser written in an extension is invisible to
+  the macro and does not suppress the memberwise one, which is what it
+  calls.
 - **Mutual recursion** (`A` holds `[B]`, `B` holds `A?`) is not detected;
   both `static let`s then wait for each other and trap on first use. Only a
   type's own name is made lazy. A `@Recursive` marker that wraps a field in
