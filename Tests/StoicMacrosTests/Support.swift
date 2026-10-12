@@ -20,6 +20,7 @@ let allMacros: [String: MacroSpec] = [
     "Nullable": MacroSpec(type: NullableMacro.self),
     "Ignored": MacroSpec(type: IgnoredMacro.self),
     "UnknownCase": MacroSpec(type: UnknownCaseMacro.self),
+    "Lossy": MacroSpec(type: LossyMacro.self),
     "PreserveUnknownKeys": MacroSpec(type: PreserveUnknownKeysMacro.self),
     "DateFormat": MacroSpec(type: DateFormatMacro.self),
     "URLFormat": MacroSpec(type: URLFormatMacro.self),

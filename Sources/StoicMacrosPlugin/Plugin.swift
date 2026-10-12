@@ -15,6 +15,7 @@ struct StoicMacrosPlugin: CompilerPlugin {
         NullableMacro.self,
         IgnoredMacro.self,
         UnknownCaseMacro.self,
+        LossyMacro.self,
         PreserveUnknownKeysMacro.self,
         DateFormatMacro.self,
         URLFormatMacro.self,

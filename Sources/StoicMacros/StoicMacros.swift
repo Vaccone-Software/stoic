@@ -68,6 +68,13 @@ public macro Ignored() = #externalMacro(module: "StoicMacrosPlugin", type: "Igno
 @attached(peer)
 public macro UnknownCase() = #externalMacro(module: "StoicMacrosPlugin", type: "UnknownCaseMacro")
 
+/// An array that survives its bad elements: each one that does not decode
+/// is left out, with a `dropped_element` warning, and the rest are kept.
+/// Applies to the outermost array (through an optional); `@Count` and
+/// `@Unique` are checked on what is kept.
+@attached(peer)
+public macro Lossy() = #externalMacro(module: "StoicMacrosPlugin", type: "LossyMacro")
+
 /// Marks the `JSONObject` property that keeps the keys the schema does not
 /// declare and writes them back, so that an older release never destroys
 /// what a newer one wrote.

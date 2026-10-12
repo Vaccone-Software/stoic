@@ -173,6 +173,20 @@ struct DecodeState {
     }
 }
 
+extension DecodeState {
+    /// Replaces what was recorded for an element, from `mark` on, with one
+    /// warning that the element at `index` was dropped. The reason is the
+    /// first error it caused, in words.
+    mutating func dropElement(at index: Int, since mark: Int, errorsBefore: Int) {
+        let reason = issues[mark...].first { $0.severity == .error }?.message
+        issues.removeSubrange(mark...)
+        errorCount = errorsBefore
+        var parameters: JSONObject = ["index": .number(JSONNumber(index))]
+        if let reason { parameters["reason"] = .string(reason) }
+        report(.droppedElement, severity: .warning, parameters: parameters)
+    }
+}
+
 /// What an encode carries: how to write, and what could not be written.
 struct EncodeState {
     var style: EncodeStyle

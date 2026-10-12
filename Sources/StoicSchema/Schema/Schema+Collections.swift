@@ -63,6 +63,58 @@ extension Schema {
             })
     }
 
+    /// An array that survives its bad elements: one that does not decode is
+    /// left out, and the rest are kept.
+    ///
+    /// For a response from a server you do not control, where one malformed
+    /// element should cost that element and not the whole list. Each dropped
+    /// element is one `dropped_element` warning at its place in the input
+    /// (so the index is the one the server sent), carrying the `index` and
+    /// the first reason as parameters; the element's own errors are not
+    /// reported. A value that is not an array at all is still a
+    /// `type_mismatch`.
+    ///
+    /// The array's own constraints (`.count`, `.unique`) are checked on what
+    /// is kept, so a list that falls below its minimum after dropping is
+    /// still an error, and an element that repeats an earlier one is
+    /// reported at its place among the kept ones.
+    public static func lossyArray<Element: Sendable>(
+        of element: Schema<Element>,
+        _ constraints: Constraint...
+    ) -> Schema<[Element]> where Value == [Element] {
+        let strict = arraySchema(of: element, constraints)
+        let inner = strict.node
+        return Schema<[Element]>(
+            node: .transformed(
+                TransformNode(
+                    base: inner, name: "lossy array",
+                    description: "an array whose invalid elements are dropped",
+                    keywords: ["x-stoic-lossy": true], dropsInvalidElements: true)),
+            decoder: { json, state in
+                guard case .array(let items) = json else {
+                    state.typeMismatch(expected: "an array", found: json)
+                    return nil
+                }
+                var values: [Element] = []
+                var kept: [JSONValue] = []
+                values.reserveCapacity(items.count)
+                for (index, item) in items.enumerated() {
+                    let mark = state.issues.count
+                    let errorsBefore = state.errorCount
+                    state.push(index: index)
+                    if let value = element.decoder(item, &state) {
+                        values.append(value)
+                        kept.append(item)
+                    } else {
+                        state.dropElement(at: index, since: mark, errorsBefore: errorsBefore)
+                    }
+                    state.pop()
+                }
+                return state.apply(constraints, to: .array(kept)) ? values : nil
+            },
+            encoder: strict.encoder)
+    }
+
     /// An object with arbitrary string keys, every value following `value`.
     ///
     /// Constraints are about the entries: `.count(1...100)`. Keys are

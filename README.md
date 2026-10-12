@@ -219,7 +219,9 @@ email: String?` may be missing or `null`, and the schema builds the value with
 the memberwise initializer. `Date`, `URL`, `UUID`, `Data` and `Decimal` are
 fields too. An enumeration a server may extend names the case that stands for
 what it does not know: `@UnknownCase case unknown` (or `case unknown(String)`)
-reads an unfamiliar value as that case, with a warning instead of an error.
+reads an unfamiliar value as that case, with a warning instead of an error,
+and `@Lossy` on an array drops the elements that do not decode, one warning
+each, instead of failing the list.
 
 The macro only writes calls to the `StoicSchema` API you could write by hand
 (`Schema.object(…) { Field(…) }`), the same schema with the same behaviour;

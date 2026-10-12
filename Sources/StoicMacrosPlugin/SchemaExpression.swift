@@ -16,7 +16,8 @@ let library = "StoicSchema::"
 ///   - format: the argument of `@DateFormat`, `@URLFormat` or `@DataFormat`
 ///     as written, for the leaf it is about.
 func schemaExpression(
-    _ type: ValueType, scalar: [String] = [], collection: [String] = [], nullable: Bool = false, format: String = ""
+    _ type: ValueType, scalar: [String] = [], collection: [String] = [], nullable: Bool = false, format: String = "",
+    lossy: Bool = false
 ) -> String {
     func join(_ parts: [String]) -> String { parts.joined(separator: ", ") }
     switch type {
@@ -47,15 +48,15 @@ func schemaExpression(
         }
     case .array(let element):
         let inner = schemaExpression(element, scalar: scalar, format: format)
-        return ".array(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
+        return ".\(lossy ? "lossyArray" : "array")(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
     case .dictionary(let value):
         let inner = schemaExpression(value, scalar: scalar, format: format)
         return ".dictionary(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
     case .optional(let wrapped):
-        let inner = schemaExpression(wrapped, scalar: scalar, collection: collection, format: format)
+        let inner = schemaExpression(wrapped, scalar: scalar, collection: collection, format: format, lossy: lossy)
         return ".optional(\(inner)\(nullable ? ", nullable: true" : ""))"
     case .secret(let inner):
-        let base = schemaExpression(inner, scalar: scalar, collection: collection, format: format)
+        let base = schemaExpression(inner, scalar: scalar, collection: collection, format: format, lossy: lossy)
         return ".transform(base: \(base), decode: { Secret($0) }, encode: { $0.reveal() }, describe: \"a secret value\")"
     case .named(let text, let isSelf):
         return isSelf ? ".lazy { \(text).schema }" : "\(text).schema"

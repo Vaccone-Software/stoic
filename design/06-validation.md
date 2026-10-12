@@ -201,6 +201,7 @@ schema and throws one `DecodingError` listing every issue.
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
 | an enumeration with an unknown case meets a value it does not know | Read as that case; an `unknown_case` warning naming the value and the case, with the nearest known spelling; the document is still accepted |
+| an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
 
 ## Testing
@@ -863,6 +864,26 @@ the order it was built.
   (plain case) or without one (plain cases, with the unknown case plain or
   carrying one `String`). A tagged union has no unknown case yet: an unknown
   discriminator stays an error.
+
+### Lossy arrays
+
+- **`Schema.lossyArray(of:_:)`** (and `@Lossy` on an array property). Each
+  element that does not decode is left out and answered with one
+  `dropped_element` warning at its place in the *input* (`$.ids[3]` is the
+  fourth element the server sent), with the `index` and the first reason in
+  its parameters; the errors the element would have raised are removed, so
+  an object element with three problems is one warning. Warnings the element
+  raised are removed with them. Everything outside the array is read as
+  before, and an array that is not an array is still a `type_mismatch`.
+- **The array's own constraints** (`.count`, `.unique`) are checked on what
+  is kept, so a list that falls under its minimum after dropping is an error.
+- **Representation.** A `.transformed` node over the array, with
+  `dropsInvalidElements` set and the keyword `x-stoic-lossy` exported; the
+  element schema stays in `items`, as documentation of what is kept. The
+  mutator expects the warning, not the error, for a mutation inside an
+  element (and leaves the element alone where the list would fall under its
+  minimum); because a JSON Schema validator rejects the element, such
+  mutations are marked `isTolerated` and the agreement check skips them.
 
 ### Decisions
 

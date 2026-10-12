@@ -293,5 +293,30 @@ struct StructExpansionTests {
                 }
                 """)
     }
+
+    @Test func lossyArraysDropTheirBadElements() {
+        expand(
+            """
+            @Schema
+            struct Page {
+                @Lossy @Range(0...9) @Count(...4) var ids: [Int] = []
+                @Lossy var maybe: [[String]]? = nil
+            }
+            """,
+            to: """
+                struct Page {
+                    var ids: [Int] = []
+                    var maybe: [[String]]? = nil
+
+                    static let schema: StoicSchema::Schema<Page> = StoicSchema::Schema.object(Page.self, default: Page()) {
+                        StoicSchema::Field("ids", \\.ids, .lossyArray(of: .int(.range(0 ... 9)), .count(...4)))
+                        StoicSchema::Field("maybe", \\.maybe, .optional(.lossyArray(of: .array(of: .string()))))
+                    }
+                }
+
+                extension Page: StoicSchema::Schematic {
+                }
+                """)
+    }
 }
 #endif

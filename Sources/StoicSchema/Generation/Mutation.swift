@@ -66,6 +66,10 @@ public struct Mutation: Sendable {
     /// The part of the document the mutation changed. Two mutations whose
     /// locations are not nested in one another are independent.
     public var location: JSONPath
+    /// Whether the decoder tolerates the violation (a bad element of a lossy
+    /// array is dropped with a warning) although the exported JSON Schema,
+    /// which has no such tolerance, rejects the document.
+    public var isTolerated = false
 
     /// Makes the change to another document that has the same shape.
     let edit: @Sendable (JSONValue) -> JSONValue?

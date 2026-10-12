@@ -22,6 +22,8 @@ struct FieldModel {
     var deprecation: String?
     var isSecret = false
     var isNullable = false
+    /// `@Lossy`: the outermost array drops the elements that do not decode.
+    var isLossy = false
     var scalar: [Marker] = []
     var collection: [Marker] = []
     /// `@DateFormat`, `@URLFormat` or `@DataFormat`: it reaches the innermost value.
@@ -311,6 +313,8 @@ private func readMarkers(
             }
         case .nullable:
             field.isNullable = true
+        case .lossy:
+            field.isLossy = true
         case .ignored:
             break
         case .unknownCase:
@@ -354,6 +358,13 @@ private func checkMarkersAgainstType(_ found: [Marker], type: ValueType, field: 
                     id: "nullable-not-optional",
                     message: "@Nullable says that `nil` is written as `null`, and `\(field.property)` is not optional"),
                 fixIts: [.removing(marker.node, "remove @Nullable")])
+        case .lossy where type.collection?.isArray != true:
+            reporter.error(
+                marker.node,
+                Problem(
+                    id: "lossy-not-array",
+                    message: "@Lossy drops the invalid elements of an array, and `\(field.property)` is `\(field.typeText)`"),
+                fixIts: marker.removalFixIts)
         case .dateFormat, .urlFormat, .dataFormat:
             let subject = marker.kind.formatSubject
             let leaf = type.leaf

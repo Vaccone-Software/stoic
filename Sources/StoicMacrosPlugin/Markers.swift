@@ -17,6 +17,7 @@ enum MarkerKind: String, CaseIterable {
     case nullable = "Nullable"
     case ignored = "Ignored"
     case unknownCase = "UnknownCase"
+    case lossy = "Lossy"
     case preserveUnknownKeys = "PreserveUnknownKeys"
     case dateFormat = "DateFormat"
     case urlFormat = "URLFormat"

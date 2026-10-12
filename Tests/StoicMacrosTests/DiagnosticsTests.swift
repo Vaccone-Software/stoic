@@ -774,4 +774,30 @@ struct EnumDiagnosticTests {
                 """)
     }
 }
+
+@Suite("@Schema: diagnostics about @Lossy")
+struct LossyDiagnosticTests {
+    @Test func lossyIsAboutArrays() {
+        expand(
+            """
+            @Schema
+            struct Held {
+                @Lossy var one: Int = 1
+                @Lossy var map: [String: Int] = [:]
+                @Lossy var fine: [Int]? = nil
+            }
+            """,
+            diagnostics: [
+                problem("@Lossy drops the invalid elements of an array, and `one` is `Int`", 3, 5, fixIts: ["remove @Lossy"]),
+                problem("@Lossy drops the invalid elements of an array, and `map` is `[String: Int]`", 4, 5, fixIts: ["remove @Lossy"]),
+            ],
+            to: """
+                struct Held {
+                    var one: Int = 1
+                    var map: [String: Int] = [:]
+                    var fine: [Int]? = nil
+                }
+                """)
+    }
+}
 #endif
