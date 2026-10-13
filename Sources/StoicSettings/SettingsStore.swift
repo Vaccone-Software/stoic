@@ -1,5 +1,5 @@
 public import Observation
-internal import Stoic
+public import Stoic
 public import StoicSchema
 public import StoicStore
 internal import StoicJSON
@@ -98,6 +98,21 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         case drop
     }
 
+    /// How the store is opened beyond what the file means.
+    public struct Options: Sendable, Hashable {
+        /// Hold an advisory lock on `<path>.lock` while the store is open, so
+        /// two processes cannot both write the file: a second `open` throws
+        /// `.busy` (or waits, with `open(…lockTimeout:)`). The OS releases the
+        /// lock when the process dies. Off by default. It keeps out only
+        /// writers that take the lock too, and may not work over a network
+        /// volume (see ``FileLock``).
+        public var crossProcessLock: Bool
+
+        public init(crossProcessLock: Bool = false) {
+            self.crossProcessLock = crossProcessLock
+        }
+    }
+
     private struct Current {
         var value: Value
         var issues: [Issue]
@@ -113,6 +128,8 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     public let format: Format
     public let unknownKeys: UnknownKeysOnSave
     private let file: AtomicFile
+    /// The cross-process lock, held for the store's lifetime.
+    private let lock: FileLock?
     private let decodeOptions: DecodeOptions
     private let current: Mutex<Current>
     // Serialises updates end to end — validate, write, publish — without
@@ -134,19 +151,60 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///   - unknownKeys: Whether a write keeps the keys the schema does not
     ///     declare. Kept by default.
     ///   - fileSystem: Where the file lives; a simulated one in tests.
+    ///   - options: With ``Options/crossProcessLock``, throws `.busy` if
+    ///     another process has the store open.
     public static func open(
         at path: String,
         schema: Schema<Value>,
         format: Format = .appOwned,
         unknownKeys: UnknownKeysOnSave = .keep,
-        fileSystem: any FileSystem = PosixFileSystem()
+        fileSystem: any FileSystem = PosixFileSystem(),
+        options: Options = Options()
     ) throws(StoreError) -> SettingsStore {
-        try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem)
+        var lock: FileLock?
+        if options.crossProcessLock {
+            let candidate = FileLock(path: path + ".lock", fileSystem: fileSystem)
+            guard try candidate.tryAcquire() else {
+                throw StoreError(kind: .busy, operation: "flock", path: path + ".lock", detail: "another process has the settings open")
+            }
+            lock = candidate
+        }
+        return try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem, lock: lock)
+    }
+
+    /// ``open(at:schema:format:unknownKeys:fileSystem:options:)``, waiting up
+    /// to `lockTimeout` for another process to let go of the store.
+    ///
+    /// The wait polls the ambient clock and honours cancellation and
+    /// ``Deadline/current``; it never blocks a thread. Without
+    /// ``Options/crossProcessLock`` there is nothing to wait for.
+    public static func open(
+        at path: String,
+        schema: Schema<Value>,
+        format: Format = .appOwned,
+        unknownKeys: UnknownKeysOnSave = .keep,
+        fileSystem: any FileSystem = PosixFileSystem(),
+        options: Options = Options(),
+        lockTimeout: Duration
+    ) async throws(PolicyError<StoreError>) -> SettingsStore {
+        var lock: FileLock?
+        if options.crossProcessLock {
+            let candidate = FileLock(path: path + ".lock", fileSystem: fileSystem)
+            try await candidate.acquire(timeout: lockTimeout)
+            lock = candidate
+        }
+        do throws(StoreError) {
+            return try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem, lock: lock)
+        } catch {
+            throw .failed(error)
+        }
     }
 
     private init(
-        path: String, schema: Schema<Value>, format: Format, unknownKeys: UnknownKeysOnSave, fileSystem: any FileSystem
+        path: String, schema: Schema<Value>, format: Format, unknownKeys: UnknownKeysOnSave, fileSystem: any FileSystem,
+        lock: FileLock?
     ) throws(StoreError) {
+        self.lock = lock
         guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
             preconditionFailure("SettingsStore \(path): the schema must decode an empty object, so every setting needs a default")
         }

@@ -46,7 +46,8 @@ internal import Stoic
 ///   keep a settings file behind a link. `read` follows it too, and the
 ///   previous generation and quarantined copies live beside the target.
 /// - **One writer per path.** Concurrent writers to the same path race on
-///   the temporary name. Cross-process locking is out of scope.
+///   the temporary name. `write` takes no lock: processes that share a path
+///   keep each other out with a ``FileLock``.
 /// - **Cancellation and threads.** Calls are synchronous and blocking, and
 ///   not cancellation points. Run them off the main actor if latency matters.
 /// - **Errors.** Every failure is a ``StoreError``; a failed write leaves the

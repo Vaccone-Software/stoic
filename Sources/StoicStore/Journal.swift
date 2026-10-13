@@ -1,4 +1,4 @@
-internal import Stoic
+public import Stoic
 internal import Synchronization
 
 /// An append-only log of records that survives a crash.
@@ -56,7 +56,8 @@ internal import Synchronization
 /// ## Contract
 ///
 /// Safe to call from many threads; calls are serialised and blocking. One
-/// `Journal` per path per process. The log is read whole at open and by
+/// `Journal` per path per process, and one process per path unless
+/// ``Options/crossProcessLock`` is set. The log is read whole at open and by
 /// `replay`, so compact when it grows: the journal is for small, important
 /// state, not for a database's worth of data.
 public final class Journal: Sendable {
@@ -80,9 +81,21 @@ public final class Journal: Sendable {
         /// What `open` does with damage in the middle of the log.
         public var middleDamage: MiddleDamage
 
-        public init(maxRecordSize: Int = 16 * 1024 * 1024, middleDamage: MiddleDamage = .skipAndReport) {
+        /// Hold an advisory lock on `<path>.lock` for as long as the journal
+        /// is open, so a second process cannot open it for writing: its `open`
+        /// throws `.busy` (or waits, with `open(at:fileSystem:options:lockTimeout:)`).
+        /// The OS frees the lock when the process dies. Off by default. See
+        /// ``FileLock`` for what an advisory lock does not protect (network
+        /// volumes, writers that do not take it).
+        public var crossProcessLock: Bool
+
+        public init(
+            maxRecordSize: Int = 16 * 1024 * 1024, middleDamage: MiddleDamage = .skipAndReport,
+            crossProcessLock: Bool = false
+        ) {
             self.maxRecordSize = maxRecordSize
             self.middleDamage = middleDamage
+            self.crossProcessLock = crossProcessLock
         }
     }
 
@@ -159,10 +172,13 @@ public final class Journal: Sendable {
     }
 
     private let state: Mutex<State>
+    /// The cross-process lock, held from `open` until `close` (or deinit).
+    private let lock: FileLock?
 
     private var snapshotPath: String { path + ".snapshot" }
 
-    private init(path: String, fileSystem: any FileSystem, options: Options, report: OpenReport, state: State) {
+    private init(path: String, fileSystem: any FileSystem, options: Options, report: OpenReport, state: State, lock: FileLock?) {
+        self.lock = lock
         self.path = path
         self.fileSystem = fileSystem
         self.options = options
@@ -185,10 +201,68 @@ public final class Journal: Sendable {
 
     /// Opens the journal at `path`, repairing a torn tail and finishing an
     /// interrupted compaction.
+    ///
+    /// With ``Options/crossProcessLock``, throws `.busy` if another process
+    /// (or journal) holds the lock; nothing is read or changed.
     public static func open(
         at path: String,
         fileSystem: any FileSystem = PosixFileSystem(),
         options: Options = Options()
+    ) throws(StoreError) -> Journal {
+        var lock: FileLock?
+        if options.crossProcessLock {
+            let candidate = FileLock(path: path + ".lock", fileSystem: fileSystem)
+            guard try candidate.tryAcquire() else {
+                throw StoreError(kind: .busy, operation: "flock", path: path + ".lock", detail: "another process holds the journal")
+            }
+            lock = candidate
+        }
+        return try open(at: path, fileSystem: fileSystem, options: options, holding: lock)
+    }
+
+    /// ``open(at:fileSystem:options:)``, waiting up to `lockTimeout` for
+    /// another process to let go of the journal's lock.
+    ///
+    /// The wait polls the ambient clock and honours cancellation and
+    /// ``Deadline/current``; it never blocks a thread. Without
+    /// ``Options/crossProcessLock`` there is nothing to wait for.
+    public static func open(
+        at path: String,
+        fileSystem: any FileSystem = PosixFileSystem(),
+        options: Options = Options(),
+        lockTimeout: Duration
+    ) async throws(PolicyError<StoreError>) -> Journal {
+        var lock: FileLock?
+        if options.crossProcessLock {
+            let candidate = FileLock(path: path + ".lock", fileSystem: fileSystem)
+            try await candidate.acquire(timeout: lockTimeout)
+            lock = candidate
+        }
+        do throws(StoreError) {
+            return try open(at: path, fileSystem: fileSystem, options: options, holding: lock)
+        } catch {
+            throw .failed(error)
+        }
+    }
+
+    /// Opens with `lock` (already held, or `nil`); releases it if the open fails.
+    private static func open(
+        at path: String, fileSystem: any FileSystem, options: Options, holding lock: FileLock?
+    ) throws(StoreError) -> Journal {
+        do throws(StoreError) {
+            return try openLocked(at: path, fileSystem: fileSystem, options: options, lock: lock)
+        } catch {
+            do throws(StoreError) {
+                try lock?.release()
+            } catch {
+                // The open's failure is the one worth reporting.
+            }
+            throw error
+        }
+    }
+
+    private static func openLocked(
+        at path: String, fileSystem: any FileSystem, options: Options, lock: FileLock?
     ) throws(StoreError) -> Journal {
         let directory = StorePath.directory(of: path)
         let snapshot = try loadSnapshot(path + ".snapshot", fileSystem: fileSystem)
@@ -246,7 +320,7 @@ public final class Journal: Sendable {
                 lastSequence: max(through, scan.records.last?.sequence ?? 0),
                 snapshot: snapshot, poison: nil, corruption: end == 0 ? [] : scan.corruption
             )
-            return Journal(path: path, fileSystem: fileSystem, options: options, report: report, state: state)
+            return Journal(path: path, fileSystem: fileSystem, options: options, report: report, state: state, lock: lock)
         } catch {
             do throws(StoreError) {
                 try fileSystem.close(file)
@@ -524,12 +598,21 @@ public final class Journal: Sendable {
         try compact { _ in snapshot }
     }
 
-    /// Releases the file. Further calls throw.
+    /// Releases the file, and the cross-process lock if it holds one.
+    /// Further calls throw.
     public func close() throws(StoreError) {
         try state.withLock { (state) throws(StoreError) in
             guard let file = state.file else { return }
             state.file = nil
-            try fileSystem.close(file)
+            do throws(StoreError) {
+                try fileSystem.close(file)
+            } catch {
+                do throws(StoreError) {
+                    try lock?.release()
+                } catch {}
+                throw error
+            }
+            try lock?.release()
         }
     }
 }

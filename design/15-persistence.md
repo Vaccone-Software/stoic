@@ -68,9 +68,10 @@ type, `StoreError`.
 
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSystem`                     | The 17 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, and `open` in four modes. |
+| `FileSystem`                     | The 19 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, `tryLock`/`unlock`, and `open` in four modes. |
 | `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
+| `FileLock`                       | An advisory `flock` on a sidecar file, held across processes: `tryAcquire`, `acquire(timeout:)`, `release`, `withLock`. Opt-in for `Journal` and `SettingsStore` (`Options.crossProcessLock`). |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine.                                                                                                   |
 | `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot.                                                                       |
 | `Outbox<Item>` (actor)           | Durable at-least-once delivery over a `Journal`, under `retry`, with an `IdempotencyKey` per entry.                                                                         |
@@ -103,7 +104,7 @@ type, `StoreError`.
   cases.
 - **Temporary name is `<path>.tmp`**, one writer per path. A stale temporary
   from a crash is removed (`store.temp_removed`) before the next write.
-  Cross-process locking is out of scope.
+  Keeping two processes apart is opt-in: see Cross-process lock.
 
 ### The durability model the tests rely on
 
@@ -235,6 +236,76 @@ what the key is for.
 | the ack cannot be written                             | `deliverPending` throws the `StoreError`; the entry stays pending and will be redelivered        |
 | the log passes `compactionThreshold` after a run      | Pending entries are folded into a snapshot; a failure to do so is reported, never thrown          |
 
+### Cross-process lock
+
+`AtomicFile`, `Journal` and the settings store assume one writer per path.
+Within a process that is the caller's discipline; between processes (an app
+and its helper tool, two launches of a command-line program) it is
+nothing, and two writers corrupt each other. `FileLock` is the opt-in
+enforcement, and `Journal.Options.crossProcessLock` and
+`SettingsStore.Options.crossProcessLock` use it.
+
+- **`flock(LOCK_EX | LOCK_NB)` on a sidecar `<path>.lock`.** Advisory, and
+  per *open file*, not per process: two `FileLock`s on one path conflict even
+  in one process (which is also how the tests exercise it without a child
+  process). `fcntl` record locks were rejected for exactly that reason: they
+  belong to the process, do not conflict within it, and are dropped when
+  *any* descriptor for the file closes. The lock file is never removed, since
+  deleting it would let two processes lock two files of one name.
+- **Freed by the OS.** `release()`, dropping the `FileLock` and the process
+  dying all close the descriptor, and the kernel drops the lock with it. There
+  is no stale-lock detection because there is no stale lock.
+- **Never blocks a thread.** `tryAcquire()` is one non-blocking system call.
+  `acquire(timeout:pollInterval:)` calls it, and while the lock is held
+  sleeps on the *ambient clock* (25 ms by default), so a test clock drives it
+  and the wait costs no cooperative thread. It ends when the lock is taken,
+  when `timeout` or `Deadline.current` (the earlier) passes
+  (`.rejected(.deadlineExceeded)`), or when the task is cancelled
+  (`.rejected(.cancelled)`, a refusal, not a failure); an I/O error is
+  `.failed(StoreError)`. A caller that is already cancelled never touches the
+  file. A holder that releases is noticed within one poll interval; there is
+  no queue, so waiters are not served in order.
+- **Held for the store's life.** A journal or settings store opened with
+  `crossProcessLock` takes the lock in `open` and keeps it until `close()`
+  (journal) or until it is deallocated. A second process's `open` throws
+  `.busy` (a `Retryable` `retry`), or waits with
+  `open(…lockTimeout:)`. This makes the second process unable to open the
+  store at all, not merely unable to write: a read-only reader of a settings
+  file should read it with `AtomicFile`, which needs no lock.
+- **Not reentrant.** Acquiring a lock the same instance already holds is
+  `.invalidArgument`, not a second hold.
+- **A `FileSystem` decides what a lock means.** `PosixFileSystem` uses
+  `flock`; `SimulatedFileSystem` models the same exclusion, drops a lock
+  when its file closes, and forgets all of them at a crash (a dead process
+  holds nothing); a `FileSystem` with neither throws `.unsupported`.
+
+**What it does not protect.**
+
+- **Network and FUSE volumes.** `flock` on NFS, SMB or a FUSE mount may be
+  local to the client, emulated, or refused. Two machines sharing a volume
+  can both hold the lock. Use a store on a local disk.
+- **Writers that do not take the lock**: another program, a backup tool that
+  rewrites the file, a person with an editor. It is advisory.
+- **Readers.** They are not excluded; an `AtomicFile` reader sees the old or
+  the new file, never a mix.
+- **A path the file system reaches under two names it does not unify** (a
+  bind mount in another namespace).
+- **A process that holds the lock and hangs.** The lock outlives only the
+  process, not its usefulness; a supervisor decides when to kill it.
+
+| What happens if…                                                      | Behaviour                                                                                                   |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| another process holds the lock                                        | `tryAcquire` returns `false`; `acquire` polls the ambient clock until it is freed, its timeout or deadline passes, or the task is cancelled |
+| the holder dies without releasing                                     | The OS drops the lock with its descriptor; the next `tryAcquire` succeeds                                   |
+| `acquire` times out                                                   | `.rejected(.deadlineExceeded)`; the lock is not held                                                        |
+| the waiting task is cancelled                                         | `.rejected(.cancelled)`, not a failure; the lock is not held, and a task cancelled before it asks never touches the file |
+| `withLock`'s body throws                                              | The lock is released first, then the error is thrown as `.body`; an unavailable lock is `.acquire` and the body never runs |
+| the lock is acquired twice on one instance                            | `.invalidArgument`; the first hold is untouched                                                             |
+| the file system has no advisory locks                                 | `.unsupported`                                                                                              |
+| a journal is opened with `crossProcessLock` while another holds it    | `open` throws `.busy` and reads nothing; `open(…lockTimeout:)` waits                                        |
+| settings are opened with `crossProcessLock` while another holds them  | `open` throws `.busy` and writes nothing; `open(…lockTimeout:)` waits                                       |
+| an open fails after it took the lock                                  | The lock is released before the error is thrown                                                             |
+
 ### Error classification (`StoreError.retryDecision`)
 
 - **Stop:** `ENOSPC`, `EROFS`, `EDQUOT`, `EACCES`, `EPERM`, `ENOENT`,
@@ -252,7 +323,7 @@ what the key is for.
 `store.corrupt_quarantined`, `store.recovered_previous`, `store.temp_removed`,
 `store.fullsync_unavailable`, `store.journal_corruption`, `store.journal_truncated`,
 `store.journal_compacted`, `store.outbox_delivered`,
-`store.outbox_delivery_failed`, `store.outbox_maintenance_failed`. All are in
+`store.outbox_delivery_failed`, `store.outbox_maintenance_failed`. The lock reports no events: a refusal is a thrown error. All are in
 `EventCatalog`; the catalog test now scans for the `store.` prefix too.
 
 ### Crash-consistency tests
@@ -322,8 +393,15 @@ acknowledgement that is never written) each fail the suite.
   functionally against a temp directory; the durability claims rest on the
   simulated model being no more generous than hardware, and on `F_FULLFSYNC`
   doing what Apple documents. A hardware fault-injection rig is out of reach.
-- **One writer per path, one process.** There is no lock file, so two
-  processes sharing a journal or an `AtomicFile` path can corrupt each other.
+- **One writer per path; one process unless asked.** Without
+  `crossProcessLock`, two processes sharing a journal or an `AtomicFile` path
+  can corrupt each other. `AtomicFile.write` takes no lock of its own: a
+  caller that shares a path wraps its writes in a `FileLock.withLock`. The
+  lock is advisory, local-disk only, and does not queue its waiters (see
+  Cross-process lock). A child-process test of the OS releasing a dead
+  holder's lock is not in the suite (no test here starts a process); the
+  release is the kernel's documented `flock` behaviour and is tested as
+  descriptor close.
 - **Linux is untested.** The `Glibc` branch compiles in principle but this
   package has only been built on macOS; directory `fsync` is `fsync` there.
 - **No disk-space check on the journal.** Only `AtomicFile` preflights;

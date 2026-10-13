@@ -86,6 +86,8 @@ public enum EventCatalog {
         Entry(name: "singleflight.joined", level: .debug, meaning: "A caller joined a flight already in progress."),
         Entry(name: "slot.superseded", level: .debug, meaning: "A task slot's work was superseded by newer work."),
         Entry(name: "slot.superseded_late", level: .info, meaning: "Superseded work finished anyway; its result was dropped."),
+        Entry(name: "span.ended", level: .debug, meaning: "A span ended; reports its duration on the ambient clock and its status (ok, error, cancelled)."),
+        Entry(name: "span.started", level: .debug, meaning: "A span began; reports its id, its trace, its parent and its attributes."),
         Entry(name: "statemachine.invalid", level: .error, meaning: "An event arrived in a state that declares it invalid."),
         Entry(name: "statemachine.stale_event", level: .info, meaning: "An event from an earlier visit to a state was dropped."),
         Entry(name: "statemachine.transition", level: .debug, meaning: "A state machine changed state."),

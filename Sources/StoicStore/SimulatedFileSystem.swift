@@ -275,6 +275,22 @@ public final class SimulatedFileSystem: FileSystem {
         }
     }
 
+    public func tryLock(_ file: OpenFile) throws(StoreError) -> Bool {
+        try state.withLock { (state) throws(StoreError) in
+            let ino = try state.inode(for: file)
+            if let holder = state.locks[ino], holder != file.rawValue { return false }
+            state.locks[ino] = file.rawValue
+            return true
+        }
+    }
+
+    public func unlock(_ file: OpenFile) throws(StoreError) {
+        try state.withLock { (state) throws(StoreError) in
+            let ino = try state.inode(for: file)
+            if state.locks[ino] == file.rawValue { state.locks[ino] = nil }
+        }
+    }
+
     public func createDirectory(_ path: String) throws(StoreError) {
         state.withLock { state in
             var prefix = ""
@@ -365,6 +381,9 @@ extension SimulatedFileSystem {
         var directories: Set<String> = []
         var links: [String: String] = [:]
         var descriptors: [Int32: Int] = [:]
+        /// The open file (descriptor) holding each inode's advisory lock.
+        /// Closing the file drops it; a crash starts with none, as a reboot does.
+        var locks: [Int: Int32] = [:]
         var nextInode = 1
         var nextDescriptor: Int32 = 3
         var operations: [Operation] = []
@@ -547,7 +566,8 @@ extension SimulatedFileSystem {
         }
 
         mutating func close(_ file: OpenFile) throws(StoreError) {
-            _ = try inode(for: file)
+            let ino = try inode(for: file)
+            if locks[ino] == file.rawValue { locks[ino] = nil }
             descriptors[file.rawValue] = nil
         }
 
