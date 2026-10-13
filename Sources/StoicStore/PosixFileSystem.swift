@@ -20,6 +20,9 @@ internal import Glibc
 ///
 /// Calls restart on `EINTR`. A short write is continued until the whole
 /// buffer is down or the system reports why not.
+///
+/// `tryLock` is `flock(LOCK_EX | LOCK_NB)`: advisory, per open file, and
+/// dropped by the kernel when the descriptor closes or the process dies.
 public final class PosixFileSystem: FileSystem {
     private let reportedFallback = Atomic<Bool>(false)
 
@@ -193,6 +196,22 @@ public final class PosixFileSystem: FileSystem {
         return target
     }
 
+    public func tryLock(_ file: OpenFile) throws(StoreError) -> Bool {
+        while CSys.lockFile(file.rawValue, operation: LOCK_EX | LOCK_NB) != 0 {
+            let failure = errno
+            if failure == EINTR { continue }
+            if failure == EWOULDBLOCK { return false }
+            throw StoreError(errno: failure, operation: "flock")
+        }
+        return true
+    }
+
+    public func unlock(_ file: OpenFile) throws(StoreError) {
+        while CSys.lockFile(file.rawValue, operation: LOCK_UN) != 0 {
+            if errno != EINTR { throw StoreError(errno: errno, operation: "flock(LOCK_UN)") }
+        }
+    }
+
     public func createDirectory(_ path: String) throws(StoreError) {
         var prefix = path.hasPrefix("/") ? "/" : ""
         for component in path.split(separator: "/", omittingEmptySubsequences: true) {
@@ -282,6 +301,10 @@ private enum CSys {
 
     static func fsyncFile(_ descriptor: Int32) -> Int32 {
         fsync(descriptor)
+    }
+
+    static func lockFile(_ descriptor: Int32, operation: Int32) -> Int32 {
+        flock(descriptor, operation)
     }
 
     static func closeFile(_ descriptor: Int32) -> Int32 {

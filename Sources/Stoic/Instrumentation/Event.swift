@@ -21,13 +21,20 @@ public struct Event: Sendable, CustomStringConvertible {
     public let fileID: String
     public let line: UInt
 
+    /// The span the event happened in (``withSpan(_:_:fileID:line:operation:)``),
+    /// so a sink can tie a decision to the operation it was part of. `nil`
+    /// outside any span. A span's own `span.started` and `span.ended` events
+    /// carry the span they describe.
+    public let span: SpanContext?
+
     public init(
         _ name: EventName,
         level: Level = .info,
         label: String? = nil,
         fields: [Field] = [],
         fileID: String = #fileID,
-        line: UInt = #line
+        line: UInt = #line,
+        span: SpanContext? = Span.current?.context
     ) {
         self.name = name
         self.level = level
@@ -35,6 +42,7 @@ public struct Event: Sendable, CustomStringConvertible {
         self.fields = fields
         self.fileID = fileID
         self.line = line
+        self.span = span
     }
 
     /// The value of the first field named `key`.

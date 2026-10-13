@@ -113,10 +113,29 @@ public protocol FileSystem: Sendable {
     /// the link names rather than the link. The default returns `nil` ("no
     /// links here").
     func readLink(_ path: String) throws(StoreError) -> String?
+
+    /// Takes an exclusive advisory lock on an open file, without waiting.
+    /// Returns `false` if another open file already holds it. ``FileLock``
+    /// builds on this.
+    ///
+    /// The lock belongs to the *open file* (`flock`), not the process, so two
+    /// opens of one path conflict even in one process; it is released by
+    /// ``unlock(_:)``, by ``close(_:)``, and by the process dying. The default
+    /// throws `.unsupported`, for a file system with no locks.
+    func tryLock(_ file: OpenFile) throws(StoreError) -> Bool
+
+    /// Releases the lock ``tryLock(_:)`` took; harmless if the file holds none.
+    func unlock(_ file: OpenFile) throws(StoreError)
 }
 
 extension FileSystem {
     public func readLink(_ path: String) throws(StoreError) -> String? { nil }
+
+    public func tryLock(_ file: OpenFile) throws(StoreError) -> Bool {
+        throw StoreError(kind: .unsupported, operation: "flock", detail: "this file system has no advisory locks")
+    }
+
+    public func unlock(_ file: OpenFile) throws(StoreError) {}
 
     public func permissions(of path: String) throws(StoreError) -> UInt16? { nil }
 
