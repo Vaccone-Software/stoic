@@ -40,6 +40,8 @@ public enum EventCatalog {
         Entry(name: "http.coalesced", level: .debug, meaning: "An identical GET was already in flight; this caller shares its response instead of making another request."),
         Entry(name: "http.decoding_failed", level: .notice, meaning: "A response body did not match its schema; reports the number of errors, never the body."),
         Entry(name: "http.failed", level: .warning, meaning: "A request ended in failure after its attempts; reports the error kind and the attempts made."),
+        Entry(name: "http.reauthenticate_failed", level: .warning, meaning: "The reauthenticate hook failed after a 401; the request is not replayed. Reports the failure kind, never the credentials."),
+        Entry(name: "http.reauthenticated", level: .info, meaning: "The reauthenticate hook succeeded after a 401 and the request is being replayed once."),
         Entry(name: "http.request", level: .debug, meaning: "One attempt reached the transport; reports method, host, path, status or outcome, duration and attempt number."),
         Entry(name: "http.response_too_large", level: .warning, meaning: "A response body passed the byte limit and the transfer was cancelled."),
         Entry(name: "http.retry", level: .info, meaning: "A request is being retried; reports the attempt number, the wait since the last attempt and why that one failed."),
