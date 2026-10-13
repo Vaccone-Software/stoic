@@ -27,8 +27,10 @@ public enum EventCatalog {
         Entry(name: "breaker.rejected", level: .info, meaning: "A circuit breaker refused a call while open or out of probe permits."),
         Entry(name: "breaker.reset", level: .info, meaning: "A circuit breaker was reset or forced into a state."),
         Entry(name: "bulkhead.rejected", level: .info, meaning: "A bulkhead refused a call: every slot and queue place was taken."),
+        Entry(name: "cache.refresh_failed", level: .warning, meaning: "A cache's background refresh failed; the stale value was kept."),
         Entry(name: "channel.dropped", level: .debug, meaning: "A channel's overflow policy discarded an element."),
         Entry(name: "deadline.expired", level: .notice, meaning: "A deadline passed before its operation finished; reports the budget, the overrun and how the operation ended."),
+        Entry(name: "debounce.dropped", level: .debug, meaning: "A debounced call did not run: a newer call replaced it, or it fell inside a burst that lets none run."),
         Entry(name: "hedge.all_failed", level: .notice, meaning: "Every attempt of a hedged call failed; the first failure was thrown."),
         Entry(name: "hedge.attempt_failed", level: .debug, meaning: "One attempt of a hedged call failed."),
         Entry(name: "hedge.budget_exhausted", level: .notice, meaning: "A hedge was not started because the retry budget had no token."),
@@ -106,6 +108,7 @@ public enum EventCatalog {
         Entry(name: "supervisor.child_started", level: .debug, meaning: "A supervised child started."),
         Entry(name: "supervisor.escalated", level: .error, meaning: "Restarts exceeded the supervisor's intensity; it stopped every child and gave up."),
         Entry(name: "supervisor.stopped", level: .info, meaning: "A supervisor stopped: all children finished, or it was cancelled."),
+        Entry(name: "throttle.dropped", level: .debug, meaning: "A throttled call did not run: a newer call replaced it, or it fell inside a window that lets none run."),
     ]
 
     /// The entry for `name`, if Stoic emits it.
