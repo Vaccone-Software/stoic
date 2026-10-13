@@ -210,6 +210,12 @@ instead. A waiter that leaves never consumes what it was waiting for. Once the
 operation is running, the policy's job is only bookkeeping; cancellation is
 the operation's to honour and its error passes through.
 
+`.rejected(.cancelled)` is how a policy's typed error spells "the caller was
+cancelled" (a `PolicyError` cannot be a `CancellationError`). Stoic treats it
+as cancellation everywhere it classifies an error — retry, breakers, reports,
+scopes — and `Rejection.isCancellation` / `PolicyError.isCancellation` let a
+caller do the same (design/03).
+
 ### CircuitBreaker
 
 **Admission is a synchronous check.** State lives in one `Mutex`; `execute`

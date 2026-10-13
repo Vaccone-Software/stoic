@@ -9,6 +9,17 @@ internal import Synchronization
 /// that has been released. A fork that finishes is forgotten at once, so a
 /// scope that lives long and forks per event holds only what is running.
 ///
+/// Waiting for forks is bounded. Cancellation is cooperative: a fork that
+/// never looks at it (a blocked call, a loop without a suspension point)
+/// would otherwise hold the scope, and every finalizer behind it, forever.
+/// Forks get `forkTimeout` after the body ends to stop; any still running
+/// then are *abandoned*, as an overrunning finalizer is: the scope goes on,
+/// the fork keeps running unwatched but listed in ``AbandonedWork/current``
+/// and ``TaskLedger/current`` until it ends, `scope.fork_abandoned` is
+/// reported, and the scope's ``abandonedWork`` counts it — so a release
+/// declared `ifWorkAbandoned: .quarantine` is skipped rather than run under a
+/// fork that may still be using the resource.
+///
 /// A fork that fails cancels the body and every other fork
 /// (``CancellationCause/siblingFailed``): one broken part stops the whole.
 /// The scope then throws a ``ConcurrentFailure`` with every fork failure, in
@@ -32,10 +43,11 @@ public struct TaskScope: ~Copyable {
         label: String = #function,
         shielded: Bool = false,
         timeout: Duration? = nil,
+        ifWorkAbandoned: IfWorkAbandoned = .release,
         _ acquire: nonisolated(nonsending) () async throws(Failure) -> R,
         release: @escaping @Sendable (R, Exit) async throws -> Void
     ) async throws(Failure) -> R {
-        try await Scope(state: resources).acquire(label: label, shielded: shielded, timeout: timeout, acquire, release: release)
+        try await Scope(state: resources).acquire(label: label, shielded: shielded, timeout: timeout, ifWorkAbandoned: ifWorkAbandoned, acquire, release: release)
     }
 
     /// Acquires a ``Resource``, released after every fork has stopped.
@@ -44,25 +56,37 @@ public struct TaskScope: ~Copyable {
     }
 
     /// Registers a finalizer, run after every fork has stopped.
-    public func onExit(label: String = #function, timeout: Duration? = nil, _ finalizer: @escaping @Sendable (Exit) async throws -> Void) {
-        Scope(state: resources).onExit(label: label, timeout: timeout, finalizer)
+    public func onExit(label: String = #function, timeout: Duration? = nil, ifWorkAbandoned: IfWorkAbandoned = .release, _ finalizer: @escaping @Sendable (Exit) async throws -> Void) {
+        Scope(state: resources).onExit(label: label, timeout: timeout, ifWorkAbandoned: ifWorkAbandoned, finalizer)
+    }
+
+    /// How many operations and forks started inside this scope (or a scope
+    /// inside it) have been abandoned so far.
+    public var abandonedWork: Int {
+        resources.watch.count
     }
 }
 
 /// Runs `body` with a ``TaskScope``. See ``TaskScope``.
+///
+/// - Parameter forkTimeout: How long forks get to stop, once the body has
+///   ended and cancelled them, before they are abandoned (see ``TaskScope``).
 public nonisolated(nonsending) func withTaskScope<R: Sendable>(
     exitBudget: Duration = .seconds(10),
     finalizerTimeout: Duration = .seconds(5),
+    forkTimeout: Duration = .seconds(5),
     label: String? = nil,
     @_inheritActorContext _ body: sending @escaping @isolated(any) (borrowing TaskScope) async throws -> R
 ) async throws -> R {
     let resources = ScopeState(label: label, exitBudget: exitBudget, finalizerTimeout: finalizerTimeout)
-    let tasks = TaskScopeState(label: label)
+    let tasks = TaskScopeState(label: label, watch: resources.watch)
     let bodyTask = TaskLedger.task(.scopeBody, label: label) { () async -> Result<R, any Error> in
         do {
-            return .success(try await CancellationCauseBox.$current.withValue(tasks.cause) {
-                let scope = TaskScope(resources: resources, tasks: tasks)
-                return try await body(scope)
+            return .success(try await AbandonmentWatch.$current.withValue(resources.watch) {
+                try await CancellationCauseBox.$current.withValue(tasks.cause) {
+                    let scope = TaskScope(resources: resources, tasks: tasks)
+                    return try await body(scope)
+                }
             })
         } catch {
             return .failure(error)
@@ -79,7 +103,7 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
     }
 
     // The body has ended: no new forks; stop and await the running ones.
-    await tasks.close()
+    await tasks.close(within: forkTimeout)
     let forkFailures = tasks.failures
 
     let exit: Exit
@@ -92,7 +116,7 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
 
     if !forkFailures.isEmpty {
         var all = forkFailures
-        if case .failure(let error) = bodyResult, !(error is CancellationError) {
+        if case .failure(let error) = bodyResult, !containsCancellation(error) {
             all.append(error)
         }
         throw ConcurrentFailure(all)
@@ -109,6 +133,7 @@ final class TaskScopeState: Sendable {
         var body: Task<Void, Never>?
         var bodyCancel: (@Sendable () -> Void)?
         var forks: [UInt64: Task<Void, Never>] = [:]
+        var forkLabels: [UInt64: String] = [:]
         var nextID: UInt64 = 0
         var failures: [any Error] = []
         var closed = false
@@ -119,8 +144,12 @@ final class TaskScopeState: Sendable {
 
     private let state = Mutex(State())
 
-    init(label: String?) {
+    /// Counts the forks abandoned at close, for the scope's finalizers.
+    private let watch: AbandonmentWatch?
+
+    init(label: String?, watch: AbandonmentWatch? = nil) {
         self.label = label
+        self.watch = watch
     }
 
     var failures: [any Error] {
@@ -154,8 +183,10 @@ final class TaskScopeState: Sendable {
         let task = TaskLedger.task(.fork, label: label) {
             guard let id = await registered.value else { return }
             do {
-                try await CancellationCauseBox.$current.withValue(forkCause) {
-                    try await work()
+                try await AbandonmentWatch.$current.withValue(self.watch) {
+                    try await CancellationCauseBox.$current.withValue(forkCause) {
+                        try await work()
+                    }
                 }
             } catch {
                 self.failed(error, label: label)
@@ -169,6 +200,7 @@ final class TaskScopeState: Sendable {
             guard !state.closed else { return nil }
             defer { state.nextID += 1 }
             state.forks[state.nextID] = task
+            state.forkLabels[state.nextID] = label
             return state.nextID
         }
         registered.resolve(id)
@@ -179,7 +211,10 @@ final class TaskScopeState: Sendable {
     }
 
     private func finished(_ id: UInt64) {
-        state.withLock { _ = $0.forks.removeValue(forKey: id) }
+        state.withLock { state in
+            state.forks.removeValue(forKey: id)
+            state.forkLabels.removeValue(forKey: id)
+        }
     }
 
     /// Forked after the body ended (from work the body left behind): a scope
@@ -193,7 +228,7 @@ final class TaskScopeState: Sendable {
     private func failed(_ error: any Error, label: String) {
         // A fork cancelled by the scope itself is not a failure.
         let scopeCancelled = cause.cause != nil
-        if error is CancellationError, scopeCancelled { return }
+        if containsCancellation(error), scopeCancelled { return }
         let (isFirst, bodyCancel) = state.withLock { state -> (Bool, (@Sendable () -> Void)?) in
             state.failures.append(error)
             guard state.failures.count == 1 else { return (false, nil) }
@@ -220,17 +255,54 @@ final class TaskScopeState: Sendable {
         for fork in forks { fork.cancel() }
     }
 
-    /// Refuses new forks, cancels the running ones, and waits for them.
+    /// Refuses new forks, cancels the running ones, and waits for them — up
+    /// to `limit`; any still running then are abandoned.
     /// A fork that is not in the table any more has finished its work.
-    func close() async {
+    func close(within limit: Duration = .seconds(5), clock: AnyClock? = nil) async {
         let forks = state.withLock { state -> [Task<Void, Never>] in
             state.closed = true
             return state.forks.valuesInKeyOrder
         }
-        if !forks.isEmpty {
-            cause.record(.scopeEnded)
-            for fork in forks { fork.cancel() }
+        guard !forks.isEmpty else { return }
+        cause.record(.scopeEnded)
+        for fork in forks { fork.cancel() }
+        let clock = clock ?? Ambient.current.clock
+        let allStopped = Task.stoic {
+            for fork in forks { await fork.value }
         }
-        for fork in forks { await fork.value }
+        guard case .timedOut = await waitForTask(allStopped, within: limit, clock: clock) else { return }
+        abandonRunningForks(allowed: limit, clock: clock)
+    }
+
+    /// Accounts for the forks that outlived their time: listed until they
+    /// end, counted against the scope, reported, and not waited for.
+    private func abandonRunningForks(allowed: Duration, clock: AnyClock) {
+        let running = state.withLock { state in
+            state.forks.keys.sorted().compactMap { id in
+                state.forks[id].map { (task: $0, label: state.forkLabels[id] ?? "") }
+            }
+        }
+        let ledger = AbandonedWork.ledger
+        for (task, forkLabel) in running {
+            let start = clock.now
+            let id = ledger.admit(label: "scope \(label.map { "\($0) " } ?? "")fork \(forkLabel)")
+            _ = ledger.abandon(id, deadline: start, clock: clock)
+            watch?.record()
+            Ambient.record(Event("scope.fork_abandoned", level: .error, label: label, fields: [
+                .init("fork", .string(forkLabel), privacy: .public),
+                .init("allowed", .duration(allowed)),
+            ]))
+            let scopeLabel = label
+            Task.stoic {
+                await task.value
+                if let lateness = ledger.finish(id) {
+                    Ambient.record(Event("abandoned.completed", level: .notice, label: scopeLabel, fields: [
+                        .init("fork", .string(forkLabel), privacy: .public),
+                        .init("ran_for", .duration(start.duration(to: clock.now))),
+                        .init("late_by", .duration(lateness)),
+                    ]))
+                }
+            }
+        }
     }
 }

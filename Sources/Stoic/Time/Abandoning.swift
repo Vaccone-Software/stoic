@@ -26,7 +26,9 @@ internal import Synchronization
 ///   (`abandoned.wedged`, error level) — a system framework that has stopped
 ///   answering will not start answering because it is asked again, and the
 ///   cure (restarting the process) belongs to whatever supervises the app.
-///   A label's limit is fixed by its first call.
+///   A label's limit is fixed by its first call while the label is live; the
+///   last call or operation under a label retires its slots, so labels built at
+///   runtime leave nothing behind.
 /// - **Counted.** Every abandoned operation is listed in a process-wide
 ///   ledger (``AbandonedWork/current``) with its label and age, and its
 ///   eventual completion is reported with how late it was.
@@ -61,7 +63,8 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
     if deadline.hasPassed {
         throw .rejected(Rejection(.deadlineExceeded, label: label))
     }
-    let slots = ledger.slots(for: label, limit: limit)
+    let slots = ledger.lease(label: label, limit: limit)
+    defer { ledger.returnLease(label: label) }
     if ledger.abandonedCount(label: label) >= limit {
         ambient.instrumentation.record(Event("abandoned.wedged", level: .error, label: label, fields: [
             .init("limit", .int(limit)),
@@ -85,6 +88,9 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
     let ambientClock = ambient.clock
     let tag = ambient.ledgerTag
     ExternalWork.begin(tag: tag)
+    // The operation keeps the label's slots for as long as it runs, however
+    // long after this call returns that is.
+    ledger.addLease(label: label)
     DispatchQueue.global(qos: qos).async {
         let result = Result<R, Failure> { () throws(Failure) -> R in try operation() }
         ExternalWork.end(tag: tag)
@@ -95,6 +101,7 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
             ], fileID: fileID, line: line))
         }
         slots.releasePermit()
+        ledger.returnLease(label: label)
         outcome.resolve(.some(result))
     }
 
@@ -170,27 +177,59 @@ final class AbandonmentLedger: Sendable {
         var status: Status
     }
 
+    /// A label's thread budget, and how many calls and operations hold it.
+    private struct Slots {
+        let semaphore: AsyncSemaphore
+        /// Calls in progress plus operations still running on a thread
+        /// (abandoned ones included). Only at zero is the entry idle.
+        var leases: Int
+    }
+
     private struct State {
         var nextID: UInt64 = 0
         var records: [UInt64: Record] = [:]
-        // One per label, created on first use and kept: labels name call
-        // sites, so there are as many as the app has kinds of blocking work.
-        var slots: [String: AsyncSemaphore] = [:]
+        // One per label with a call or an operation in flight, and gone when
+        // the last of them ends: a label built at runtime (a device name, a
+        // path) must not leave an entry behind for every value it takes.
+        var slots: [String: Slots] = [:]
     }
 
     private let state = Mutex(State())
 
-    /// The semaphore bounding `label`'s threads. The first call's `limit`
-    /// fixes it; a later call with another limit is a programming error.
-    func slots(for label: String, limit: Int) -> AsyncSemaphore {
+    /// The semaphore bounding `label`'s threads, with a lease on it: pair
+    /// every call with ``returnLease(label:)``. The limit is fixed by the
+    /// first call while the label is live — that is, while any call or
+    /// operation under it is in flight; a concurrent call with another limit
+    /// is a programming error.
+    func lease(label: String, limit: Int) -> AsyncSemaphore {
         let slots = state.withLock { state in
-            if let existing = state.slots[label] { return existing }
-            let created = AsyncSemaphore(permits: limit, label: label)
-            state.slots[label] = created
-            return created
+            var entry = state.slots[label] ?? Slots(semaphore: AsyncSemaphore(permits: limit, label: label), leases: 0)
+            entry.leases += 1
+            state.slots[label] = entry
+            return entry.semaphore
         }
         assert(slots.capacity == limit, "abandoningAfter \(label): called with limit \(limit), but its limit is \(slots.capacity)")
         return slots
+    }
+
+    /// Another lease on a label already leased: held by the operation that
+    /// outlives its call.
+    func addLease(label: String) {
+        state.withLock { $0.slots[label]?.leases += 1 }
+    }
+
+    /// Ends a lease; the last one retires the label's semaphore.
+    func returnLease(label: String) {
+        state.withLock { state in
+            guard var entry = state.slots[label] else { return }
+            entry.leases -= 1
+            state.slots[label] = entry.leases > 0 ? entry : nil
+        }
+    }
+
+    /// Whether `label` holds a thread budget now.
+    func holdsSlots(label: String) -> Bool {
+        state.withLock { $0.slots[label] != nil }
     }
 
     /// Registers a new running operation.

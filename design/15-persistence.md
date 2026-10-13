@@ -306,6 +306,25 @@ enforcement, and `Journal.Options.crossProcessLock` and
 | settings are opened with `crossProcessLock` while another holds them  | `open` throws `.busy` and writes nothing; `open(…lockTimeout:)` waits                                       |
 | an open fails after it took the lock                                  | The lock is released before the error is thrown                                                             |
 
+### LaunchGuard
+
+A crash-loop marker for the process: `beginLaunch()` counts launches that
+neither became stable (`markStable`) nor ended cleanly (`markCleanExit`), and
+answers `.safeMode` at `uncleanLimit`. Not every unfinished launch is a crash,
+and on iOS most are not, so three endings are told apart from one: the app
+went to the background first (`markBackgrounded()`, called on the background
+transition: the system or the user may end a suspended process without a word),
+the device restarted (the boot session differs), or a different build is
+running (an update is the way out of a loop, so the count starts over). Each
+is reported as `launch.interrupted` with its reason. The state is one small
+file, versioned (`v1` files are still read).
+
+| What happens if…                                      | Behaviour                                                                                   |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| the app is backgrounded before the launch is stable   | Not counted as unclean, not counted as stable; `launch.interrupted` (`backgrounded`)         |
+| the device restarts during a launch                   | The unfinished launch is not counted; `launch.interrupted` (`restart`)                       |
+| a different build launches after an unfinished one    | The count starts over; `launch.interrupted` (`new_build`)                                    |
+
 ### Error classification (`StoreError.retryDecision`)
 
 - **Stop:** `ENOSPC`, `EROFS`, `EDQUOT`, `EACCES`, `EPERM`, `ENOENT`,

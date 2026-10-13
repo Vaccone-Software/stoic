@@ -1,5 +1,11 @@
 internal import Stoic
 
+#if canImport(Darwin)
+internal import Darwin
+#elseif canImport(Glibc)
+internal import Glibc
+#endif
+
 /// Notices when the app keeps dying during launch, and says so before it
 /// dies again.
 ///
@@ -24,6 +30,25 @@ internal import Stoic
 /// (three by default), ``beginLaunch()`` answers ``Verdict/safeMode(uncleanLaunches:)``.
 /// A stable launch resets the count. The state is a tiny file written with
 /// ``AtomicFile``, so the guard itself survives the crashes it is counting.
+///
+/// Not every launch that fails to finish is a crash, and counting those
+/// would put a healthy iOS app into safe mode. Three kinds of ending are
+/// told apart from a crash:
+///
+/// - **The app was sent to the background** before it became stable. The
+///   system may suspend and later kill a background app without a word, and
+///   so does the user swiping it away. Call ``markBackgrounded()`` when the
+///   app enters the background: the launch is no longer judged, and its
+///   count is kept as it was.
+/// - **The device restarted** (a battery that ran flat, an OS update, a
+///   reboot) while a launch was in progress. The guard compares the boot
+///   session of the two launches; a different one is not counted.
+/// - **A different build** is running. A crash of the previous build says
+///   nothing about this one, and an update is the way out of a loop, so a
+///   new `build` starts the count over.
+///
+/// Anything else that ends a launch before it is marked stable — a crash,
+/// a watchdog kill, a jetsam while in the foreground — counts.
 public final class LaunchGuard: Sendable {
     /// What the launch should do.
     public enum Verdict: Sendable, Hashable {
@@ -34,39 +59,101 @@ public final class LaunchGuard: Sendable {
 
     public let path: String
     public let uncleanLimit: Int
+    /// Identifies the running build; a launch of another build starts the count over.
+    public let build: String?
+    /// Identifies this boot of the device; an unfinished launch from another boot is not counted.
+    public let bootSession: String?
     private let file: AtomicFile
 
-    public init(path: String, uncleanLimit: Int = 3, file: AtomicFile = AtomicFile(options: .init(keepPrevious: true))) {
+    /// - Parameters:
+    ///   - path: Where the state is kept.
+    ///   - uncleanLimit: How many unclean launches in a row mean safe mode.
+    ///   - build: The running build's identity (`CFBundleVersion`, say). The
+    ///     core is Foundation-free, so the app supplies it. `nil` disables
+    ///     the new-build reset.
+    ///   - bootSession: The device's boot identity: the system's boot
+    ///     session on Apple platforms by default; `nil` disables the check.
+    public init(
+        path: String,
+        uncleanLimit: Int = 3,
+        build: String? = nil,
+        bootSession: String? = LaunchGuard.currentBootSession,
+        file: AtomicFile = AtomicFile(options: .init(keepPrevious: true))
+    ) {
         precondition(uncleanLimit >= 1, "the unclean-launch limit must be at least one")
+        precondition(build.map { !$0.contains(" ") } ?? true, "the build identity cannot contain a space")
+        precondition(bootSession.map { !$0.contains(" ") } ?? true, "the boot session cannot contain a space")
         self.path = path
         self.uncleanLimit = uncleanLimit
+        self.build = build
+        self.bootSession = bootSession
         self.file = file
+    }
+
+    /// The system's identifier for this boot of the device, or `nil` where
+    /// there is none.
+    public static var currentBootSession: String? {
+        #if canImport(Darwin)
+        var size = 0
+        guard unsafe sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 1 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard unsafe sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
+        // The value is NUL-terminated.
+        return String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
+        #else
+        return nil
+        #endif
     }
 
     private struct Record: Equatable {
         var inProgress: Bool
         var unclean: Int
+        var build: String?
+        var bootSession: String?
 
         var bytes: [UInt8] {
-            Array("stoic.launch v1 in-progress=\(inProgress ? 1 : 0) unclean=\(unclean)".utf8)
+            Array("stoic.launch v2 in-progress=\(inProgress ? 1 : 0) unclean=\(unclean) build=\(build ?? "-") boot=\(bootSession ?? "-")".utf8)
         }
 
-        init(inProgress: Bool, unclean: Int) {
+        init(inProgress: Bool, unclean: Int, build: String?, bootSession: String?) {
             self.inProgress = inProgress
             self.unclean = unclean
+            self.build = build
+            self.bootSession = bootSession
         }
 
+        /// Reads the current format, and the first one (which had no build or boot).
         init?(_ bytes: [UInt8]) {
             let text = String(decoding: bytes, as: UTF8.self)
             let fields = text.split(separator: " ")
-            guard fields.count == 4, fields[0] == "stoic.launch", fields[1] == "v1",
+            guard fields.count >= 4, fields[0] == "stoic.launch",
                   fields[2].hasPrefix("in-progress="), fields[3].hasPrefix("unclean="),
                   let progress = Int(fields[2].dropFirst("in-progress=".count)),
                   let unclean = Int(fields[3].dropFirst("unclean=".count)), unclean >= 0
             else { return nil }
+            func value(_ field: Substring, _ name: String) -> String?? {
+                guard field.hasPrefix(name) else { return .none }
+                let text = field.dropFirst(name.count)
+                return .some(text == "-" ? nil : String(text))
+            }
+            switch fields[1] {
+            case "v1" where fields.count == 4:
+                self.build = nil
+                self.bootSession = nil
+            case "v2" where fields.count == 6:
+                guard let build = value(fields[4], "build="), let boot = value(fields[5], "boot=") else { return nil }
+                self.build = build
+                self.bootSession = boot
+            default:
+                return nil
+            }
             self.inProgress = progress == 1
             self.unclean = unclean
         }
+    }
+
+    private func record(inProgress: Bool, unclean: Int) -> [UInt8] {
+        Record(inProgress: inProgress, unclean: unclean, build: build, bootSession: bootSession).bytes
     }
 
     /// Records that a launch has begun and judges the launches before it.
@@ -82,11 +169,25 @@ public final class LaunchGuard: Sendable {
             previous = nil
         }
         var unclean = previous?.unclean ?? 0
-        if previous?.inProgress == true {
-            unclean += 1
-            Ambient.current.instrumentation.record(Event("launch.unclean_detected", level: .warning, fields: [.init("unclean", .int(unclean))]))
+        if let previous, let build, let before = previous.build, before != build {
+            // A new build: what went wrong with the last one is not evidence about this one.
+            unclean = 0
+            Ambient.current.instrumentation.record(Event("launch.interrupted", level: .info, fields: [
+                .init("reason", .string("new_build"), privacy: .public),
+            ]))
+        } else if previous?.inProgress == true {
+            if let bootSession, let before = previous?.bootSession, before != bootSession {
+                // The device restarted under the previous launch: not a crash.
+                Ambient.current.instrumentation.record(Event("launch.interrupted", level: .info, fields: [
+                    .init("reason", .string("restart"), privacy: .public),
+                    .init("unclean", .int(unclean)),
+                ]))
+            } else {
+                unclean += 1
+                Ambient.current.instrumentation.record(Event("launch.unclean_detected", level: .warning, fields: [.init("unclean", .int(unclean))]))
+            }
         }
-        try file.write(Record(inProgress: true, unclean: unclean).bytes, to: path)
+        try file.write(record(inProgress: true, unclean: unclean), to: path)
         if unclean >= uncleanLimit {
             Ambient.current.instrumentation.record(Event("launch.safe_mode", level: .error, fields: [
                 .init("unclean", .int(unclean)),
@@ -99,7 +200,7 @@ public final class LaunchGuard: Sendable {
 
     /// Records that this launch survived: the unclean count starts over.
     public func markStable() throws(StoreError) {
-        try file.write(Record(inProgress: false, unclean: 0).bytes, to: path)
+        try file.write(record(inProgress: false, unclean: 0), to: path)
         Ambient.current.instrumentation.record(Event("launch.stable", level: .info))
     }
 
@@ -120,6 +221,28 @@ public final class LaunchGuard: Sendable {
 
     /// Records a deliberate, clean exit (the user quit): not a crash.
     public func markCleanExit() throws(StoreError) {
-        try file.write(Record(inProgress: false, unclean: 0).bytes, to: path)
+        try file.write(record(inProgress: false, unclean: 0), to: path)
+    }
+
+    /// Records that the app went to the background before its launch was
+    /// marked stable (iOS: `sceneDidEnterBackground`). From then on the
+    /// system or the user may end the process without any code running, so
+    /// the launch is no longer judged: it is not counted as unclean, and it
+    /// does not reset the count either — it proved nothing about stability.
+    /// Call it from the app's background transition.
+    public func markBackgrounded() throws(StoreError) {
+        let current: Record?
+        do {
+            current = try file.read(path).flatMap { Record($0.bytes) }
+        } catch {
+            current = nil
+        }
+        // A launch already settled (stable, or a clean exit) stays settled.
+        guard let current, current.inProgress else { return }
+        try file.write(record(inProgress: false, unclean: current.unclean), to: path)
+        Ambient.current.instrumentation.record(Event("launch.interrupted", level: .info, fields: [
+            .init("reason", .string("backgrounded"), privacy: .public),
+            .init("unclean", .int(current.unclean)),
+        ]))
     }
 }

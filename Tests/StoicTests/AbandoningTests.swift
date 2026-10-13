@@ -213,4 +213,47 @@ struct AbandoningTests {
             #expect(error.rejection?.reason == .cancelled)
         }
     }
+
+    @Test func aLabelsSlotsAreReclaimedWhenItsLastOperationEnds() async throws {
+        // Labels built at runtime (a device name) must not accumulate.
+        let labels = (0..<50).map { Self.uniqueLabel("dynamic.\($0)") }
+        for label in labels {
+            _ = try await abandoningAfter(.seconds(5), label: label) { () throws(Failure) -> Int in 1 }
+        }
+        #expect(labels.allSatisfy { !AbandonedWork.ledger.holdsSlots(label: $0) })
+
+        // A failing operation releases them too.
+        let failing = Self.uniqueLabel("dynamic.failing")
+        _ = try? await abandoningAfter(.seconds(5), label: failing) { () throws(Failure) -> Int in throw .boom }
+        #expect(!AbandonedWork.ledger.holdsSlots(label: failing))
+    }
+
+    @Test func anAbandonedOperationKeepsItsLabelsSlotsUntilItReturns() async throws {
+        let clock = TestClock()
+        let wedge = Wedge()
+        defer { wedge.release() }
+        let label = Self.uniqueLabel("dynamic.wedged")
+        try await withTestAmbient(clock: clock) {
+            async let attempt: Int = abandoningAfter(.seconds(1), label: label, limit: 1) { () throws(Failure) -> Int in
+                wedge.block()
+                return 1
+            }
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(1))
+            _ = try? await attempt
+            // Abandoned, still on its thread: the budget it occupies must stay.
+            #expect(AbandonedWork.ledger.holdsSlots(label: label))
+            do {
+                _ = try await abandoningAfter(.seconds(1), label: label, limit: 1) { () throws(Failure) -> Int in 2 }
+                Issue.record("expected the wedged label to refuse")
+            } catch let error as PolicyError<Failure> {
+                #expect(error.rejection?.reason == .abandonmentLimit)
+            }
+        }
+        wedge.release()
+        for _ in 0..<1_000 where AbandonedWork.ledger.holdsSlots(label: label) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(!AbandonedWork.ledger.holdsSlots(label: label))
+    }
 }

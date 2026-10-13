@@ -77,7 +77,10 @@ a dependency by a circuit breaker, reported at error level.
 
 **Privacy.** Frame messages and metadata are data the app chose to write;
 in events, a report travels as an error value, whose description is private
-by default.
+by default. `description` (the form fit for a log) applies the same rule
+to the report: a private metadata value and the root error's description
+print as `<private>`, the root's type name stays, and suppressed errors are
+left out. `debugDescription` prints everything.
 
 ## Failure modes
 

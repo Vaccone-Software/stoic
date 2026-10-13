@@ -80,7 +80,17 @@ its siblings (`siblingFailed`); the scope then throws `ConcurrentFailure`
 with every fork failure followed by the body's own error if it failed for
 another reason. The body runs as a child task — the only way a fork's
 failure can cancel it without cancelling the caller — so, like `Task {}`, it
-inherits the caller's actor and returns a `Sendable` result. A fork that
+inherits the caller's actor and returns a `Sendable` result. Waiting for forks is
+bounded, as waiting for finalizers is: a fork that ignores cancellation (a
+blocked call, a loop with no suspension point) gets `forkTimeout` (five
+seconds by default) after the body ends, and is then *abandoned* — the scope
+goes on, the fork keeps running unwatched, is listed in `AbandonedWork` and the
+task ledger until it ends, is reported (`scope.fork_abandoned`, then
+`abandoned.completed`), and counts toward `abandonedWork`, so a release
+declared `ifWorkAbandoned: .quarantine` is skipped rather than run under a fork
+that may still be using the resource. Cancellation of a fork or the body that
+ends as `.rejected(.cancelled)` (a cancelled policy wait; design/03) is
+cancellation, not a failure. A fork that
 finishes is forgotten at once, its failure (if any) already recorded: the
 scope holds only the forks still running, so one that lives as long as an
 app and forks per event does not grow with every event it has handled.
@@ -111,6 +121,7 @@ returned to the body and kept by the release closure).
 | a finalizer hangs                                 | Abandoned after its timeout, listed in `AbandonedWork`; `scope.finalizer_abandoned`        |
 | the acquire throws                                | Nothing registered; error rethrown; earlier acquisitions are released                      |
 | a forked child throws                             | Body and siblings cancelled; after cleanup, `ConcurrentFailure` with every child error     |
+| a fork ignores cancellation                       | Abandoned after `forkTimeout`; `scope.fork_abandoned`; counted in `abandonedWork`; finalizers run |
 | a long-lived scope forks many short tasks         | Each fork is forgotten when it finishes; the scope holds only the running ones             |
 | the enclosing deadline has already passed at exit | Finalizers still get `exitDeadlineFloor` each                                              |
 | someone tries to keep the `Scope`                 | Compile error                                                                              |
@@ -118,7 +129,7 @@ returned to the body and kept by the release closure).
 ## Events
 
 `scope.finalizer_failed`, `scope.finalizer_abandoned`, `scope.finalizer_slow`, `scope.release_quarantined`
-(over half its allowance), `scope.child_failed`, `scope.fork_after_exit`,
+(over half its allowance), `scope.child_failed`, `scope.fork_abandoned`, `scope.fork_after_exit`,
 `saga.compensation_failed` (a saga's compensation threw; the scope event is
 not also emitted), and `abandoned.completed` when an abandoned finalizer
 finally ends (it is listed in `AbandonedWork` until then).

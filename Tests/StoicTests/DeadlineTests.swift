@@ -46,6 +46,37 @@ struct DeadlineTests {
         #expect(expired.first?.label == "fetch")
     }
 
+    /// The Mac sleeps with a thirty-second timeout pending and wakes an hour
+    /// later: the continuous clock counted the sleep, so the clock "jumps".
+    @Test(.failureMode("design/01", "the Mac sleeps past the deadline")) func aClockJumpPastTheDeadlineFiresItAtOnce() async throws {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let observed = SendableBox<CancellationCause?>(nil)
+        let deadline = await withTestAmbient(clock: clock) { Deadline.after(.seconds(30)) }
+        #expect(!deadline.hasPassed)
+        let task = Task {
+            try await withTestAmbient(clock: clock, events: events) {
+                try await withTimeout(.seconds(30), label: "sleepy") {
+                    do {
+                        try await Ambient.sleep(for: .seconds(3600))
+                    } catch {
+                        observed.mutate { $0 = CancellationCause.current }
+                        throw error
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(3600))   // one jump: no tick in between
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(observed.value == .deadline)
+        #expect(deadline.hasPassed)
+        #expect(deadline.remaining == .zero)
+        let expired = events.events(named: "deadline.expired")
+        #expect(expired.count == 1)
+        #expect(clock.sleeperCount == 0)
+    }
+
     @Test(.failureMode("design/01", "the deadline passes, operation ignores cancellation (cooperative)")) func anOperationThatIgnoresCancellationIsAwaited() async throws {
         let clock = TestClock()
         let gate = AsyncGate()

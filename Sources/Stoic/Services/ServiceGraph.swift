@@ -214,7 +214,7 @@ public struct ServiceGraph: Sendable {
                             // Cancellation passes through as itself; a start
                             // cut short by its own timeout is a deadline
                             // rejection, not a mysterious CancellationError.
-                            if error is CancellationError {
+                            if containsCancellation(error) {
                                 if Task.isCancelled { throw error }
                                 throw ServiceGraphError.startFailed(
                                     service: key,
@@ -261,7 +261,7 @@ public struct ServiceGraph: Sendable {
             if let firstFailure {
                 // A failure caused by the caller's own cancellation is
                 // reported as cancellation, unwrapped.
-                if Task.isCancelled, case ServiceGraphError.startFailed(_, let underlying) = firstFailure, underlying is CancellationError {
+                if Task.isCancelled, case ServiceGraphError.startFailed(_, let underlying) = firstFailure, containsCancellation(underlying) {
                     throw CancellationError()
                 }
                 throw firstFailure

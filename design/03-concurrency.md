@@ -132,6 +132,20 @@ priority any waiting caller has: a caller waits on a continuation, which
 escalates nothing, so the flight escalates the task itself when a
 higher-priority caller joins or a waiting caller is escalated.
 
+**Cancellation of the caller.** These primitives throw `PolicyError` (or
+`Rejection`), whose type cannot hold a `CancellationError`: a typed throw has
+exactly the cases it declares. So the caller's own cancellation reaches the
+caller as `.rejected(.cancelled)` — the library's spelling of cancellation,
+the same one every policy uses (design/10). It is cancellation in every way
+that matters, and Stoic reads it so: `retry` stops on it, a breaker does not
+count it, a scope whose body (or fork) ends with it is `Exit.cancelled`, not a
+failure, and `Rejection.isCancellation` / `PolicyError.isCancellation` ask
+the question that `error is CancellationError` asks elsewhere. It is never
+`.deadlineExceeded` (the caller's own deadline) and never a failure of the
+operation. Where the error type is not a policy's — `mapConcurrent` with an
+`any Error` failure, `Channel.receive()` (which returns `nil`), a supervisor
+— cancellation is a plain `CancellationError`, or the documented `nil`.
+
 **Channel.** A bounded queue between any number of producers and
 consumers; each element reaches exactly one consumer, in order. The
 producer chooses what a full channel means: `suspend` (backpressure — FIFO,
@@ -155,7 +169,7 @@ that keeps the promise, and the lint rule against
 | a racer ignores cancellation after another won          | `race` waits for it (structured); give such work its own timeout                                                                                      |
 | the hedge budget is empty                               | No further hedges; the attempts already running continue                                                                                              |
 | `mapConcurrent` caller is cancelled                     | No further element starts; children cancelled and awaited; `CancellationError` if `Failure` allows, else the started (leading) results               |
-| a semaphore waiter is cancelled while queued            | Removed from the queue; no permit consumed; `CancellationError`                                                                                       |
+| a semaphore waiter is cancelled while queued            | Removed from the queue; no permit consumed; `.rejected(.cancelled)` (`isCancellation`; see Cancellation of the caller)                                |
 | a semaphore waiter's deadline passes while queued       | Removed; `.rejected(.deadlineExceeded)`                                                                                                               |
 | a body inside `withPermit` throws                       | Permit returned; error passed through as `.failed`                                                                                                    |
 | two single-flight waiters, the first cancels            | The operation continues for the second                                                                                                                |

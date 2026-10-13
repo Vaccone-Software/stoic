@@ -136,6 +136,12 @@ design answers each:
   deadline has passed, is refused before anything is dispatched; otherwise
   the work would start only to be abandoned at once.
 
+A label's slots exist only while a call or an operation under that label is
+in flight (a call holds a lease, and so does an operation until it returns,
+abandoned or not); the last lease retires them. A label built at runtime
+(a device name, a path) therefore leaves nothing behind, and "a label's limit
+is fixed by its first call" means its first call *while the label is live*.
+
 Abandoned work is listed in a process-wide ledger (label, age, call site)
 and appears in diagnostics until it finishes; a late finish is reported with
 its lateness. Built: `abandoningAfter(_:label:limit:clock:qos:operation:)`, and its scope

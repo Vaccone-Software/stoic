@@ -1,15 +1,3 @@
 # Failure-mode rows not yet proved by a test marked .failureMode(document, row).
 # This list may only shrink: FailureModeCoverageTests fails when a row here gains a test.
-design/01 | the Mac sleeps past the deadline
-design/02 | the schedule is unbounded
-design/04 | someone tries to keep the Scope
-design/08 | a factory reads a service it did not declare
-design/13 | a file is not valid UTF-8
-design/13 | a finding sits in generated code
-design/13 | a path does not exist
-design/13 | a source file has syntax errors
 design/13 | a target has no Swift sources
-design/13 | the baseline file is missing or invalid
-design/13 | the plugin is attached but the Lint trait is off
-design/13 | the same file is passed twice, or a directory and a file in it
-design/13 | the tool fails after writing nothing
