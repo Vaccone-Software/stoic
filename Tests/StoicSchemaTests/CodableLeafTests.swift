@@ -22,6 +22,12 @@ struct Unwritable: Codable, Sendable, Equatable {
     }
 }
 
+/// A model whose Codable leaves can only ever be absent.
+struct Bag: Sendable, Equatable {
+    var name = ""
+    var spot: Geo?
+}
+
 /// A model holding a Codable payload beside an ordinary field.
 struct Place: Sendable, Equatable {
     var name: String
@@ -105,5 +111,35 @@ struct CodableLeafTests {
     @Test func aSchemaHoldingTheLeafPassesItsSuite() {
         let report = SchemaSuite(Place.schema).report(seed: 8, cases: 100)
         #expect(report.isClean, "\(report)")
+    }
+
+    // Row: SchemaSuite meets a Codable leaf that has no examples.
+    @Test(.failureMode("design/06", "SchemaSuite meets a Codable leaf that has no examples"))
+    func aSuiteOnALeafWithoutExamplesSaysSoInsteadOfPassingOrCrashing() {
+        let bare = Schema.codable(Geo.self)
+        let report = SchemaSuite(bare).report(seed: 1, cases: 20)
+        #expect(!report.isClean, "a suite that checked nothing is not clean")
+        #expect(report.skipped == 20)
+        let messages = report.findings.map(\.message)
+        #expect(messages.contains { $0.contains("Codable leaf with no examples") && $0.contains("$ (Geo)") && $0.contains("examples:") })
+        #expect(messages.contains { $0.contains("no case could be generated") && $0.contains("$ (Geo) has no examples") })
+        #expect(throws: SchemaSuiteFailure.self) { try SchemaSuite(bare).run(seed: 1, cases: 5) }
+    }
+
+    @Test func aLeafWithoutExamplesInsideAModelIsAWarningWhenTheRestCanStillBeChecked() {
+        let schema = Schema.object(Bag.self, default: Bag()) {
+            Field("name", \.name, .string(.length(0...10)), doc: "A name.")
+            Field("spot", \.spot, .optional(.codable(Geo.self)), doc: "Maybe.")
+        }
+        let report = SchemaSuite(schema).report(seed: 2, cases: 20)
+        #expect(report.isClean, "\(report)")
+        #expect(report.findings.contains { $0.severity == .warning && $0.message.contains("Codable leaf with no examples") })
+    }
+
+    @Test func theExamplesAreWhatTheGeneratorUsesAndWhatTheyEncodeTo() throws {
+        let leaf = Schema.codable(Geo.self, examples: [Geo(lat: 1, lon: 2, label: "x")])
+        let samples = try leaf.generator.samples(count: 5, seed: 1)
+        #expect(samples.allSatisfy { $0.value == Geo(lat: 1, lon: 2, label: "x") })
+        #expect(SchemaSuite(leaf).report(seed: 1, cases: 20).isClean)
     }
 }

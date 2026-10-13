@@ -349,5 +349,33 @@ struct StructExpansionTests {
                 }
                 """)
     }
+
+    @Test func codableExamplesAreHandedToTheLeaf() {
+        expand(
+            """
+            @Schema
+            struct Holder {
+                @Codable(examples: [Payload(kind: "a")]) var payload: Payload
+                @Codable(examples: [Payload(kind: "b")]) var many: [Payload]? = nil
+            }
+            """,
+            to: """
+                struct Holder {
+                    var payload: Payload
+                    var many: [Payload]? = nil
+
+                    static let schema: StoicSchema::Schema<Holder> = StoicSchema::Schema.object(Holder.self) { f in
+                        let slot0 = f.field("payload", \\.payload, .codable(Payload.self, examples: [Payload(kind: "a")]))
+                        let slot1 = f.field("many", \\.many, .optional(.array(of: .codable(Payload.self, examples: [Payload(kind: "b")]))), default: nil)
+                        return f.build { v in
+                            Holder(payload: v[slot0], many: v[slot1])
+                        }
+                    }
+                }
+
+                extension Holder: StoicSchema::Schematic {
+                }
+                """)
+    }
 }
 #endif

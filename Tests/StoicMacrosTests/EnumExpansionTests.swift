@@ -327,5 +327,122 @@ struct EnumExpansionTests {
                 }
                 """)
     }
+
+    @Test func aTaggedUnionWithAnUnknownCaseThatKeepsTheTagAndPayload() {
+        expand(
+            """
+            @Schema
+            enum Event {
+                case created(Int)
+                case deleted
+                @UnknownCase case other(tag: String, payload: JSONObject)
+            }
+            """,
+            to: """
+                enum Event {
+                    case created(Int)
+                    case deleted
+                    case other(tag: String, payload: JSONObject)
+
+                    static let schema: StoicSchema::Schema<Event> = StoicSchema::Schema.union(Event.self, unknown: StoicSchema::UnknownTag.keepingPayload(name: "other", Event.other) {
+                            if case .other(let tag, let payload) = $0 {
+                                (tag: tag, payload: payload)
+                            } else {
+                                nil
+                            }
+                        }) {
+                        StoicSchema::Case("created", StoicSchema::Schema<Int>.int(), Event.created) {
+                            if case .created(let payload) = $0 {
+                                payload
+                            } else {
+                                nil
+                            }
+                        }
+                        StoicSchema::Case("deleted", Event.deleted) {
+                            if case .deleted = $0 {
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                }
+
+                extension Event: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func aTaggedUnionWithAPlainUnknownCaseAndOptions() {
+        expand(
+            """
+            @Schema(discriminator: "kind")
+            enum Event {
+                case created(Int)
+                @UnknownCase case unclear
+            }
+            """,
+            to: """
+                enum Event {
+                    case created(Int)
+                    case unclear
+
+                    static let schema: StoicSchema::Schema<Event> = StoicSchema::Schema.union(Event.self, discriminator: "kind", unknown: StoicSchema::UnknownTag.plain(Event.unclear, name: "unclear") {
+                            if case .unclear = $0 {
+                                true
+                            } else {
+                                false
+                            }
+                        }) {
+                        StoicSchema::Case("created", StoicSchema::Schema<Int>.int(), Event.created) {
+                            if case .created(let payload) = $0 {
+                                payload
+                            } else {
+                                nil
+                            }
+                        }
+                    }
+                }
+
+                extension Event: StoicSchema::Schematic {
+                }
+                """)
+    }
+
+    @Test func aTaggedUnionWithAnUnknownCaseThatKeepsTheTag() {
+        expand(
+            """
+            @Schema
+            enum Event {
+                case created(Int)
+                @UnknownCase case other(String)
+            }
+            """,
+            to: """
+                enum Event {
+                    case created(Int)
+                    case other(String)
+
+                    static let schema: StoicSchema::Schema<Event> = StoicSchema::Schema.union(Event.self, unknown: StoicSchema::UnknownTag.keepingTag(name: "other", Event.other) {
+                            if case .other(let tag) = $0 {
+                                tag
+                            } else {
+                                nil
+                            }
+                        }) {
+                        StoicSchema::Case("created", StoicSchema::Schema<Int>.int(), Event.created) {
+                            if case .created(let payload) = $0 {
+                                payload
+                            } else {
+                                nil
+                            }
+                        }
+                    }
+                }
+
+                extension Event: StoicSchema::Schematic {
+                }
+                """)
+    }
 }
 #endif

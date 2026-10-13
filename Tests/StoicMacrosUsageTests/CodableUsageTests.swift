@@ -23,6 +23,17 @@ struct Envelope2: Equatable {
     @Codable var note: Payload? = nil
 }
 
+/// The same payload, with examples for the suite.
+@Schema
+struct Parcel: Equatable {
+    /// Who sent it.
+    var sender: String
+    /// The payload.
+    @Codable(examples: [Payload(kind: "a", weight: 1), Payload(kind: "b", weight: 2.5)]) var payload: Payload
+    /// More payloads.
+    @Codable(examples: [Payload(kind: "c", weight: 3)]) var extras: [Payload] = []
+}
+
 extension Envelope2 {
     static let byHand = Schema.object(
         Envelope2.self
@@ -67,6 +78,20 @@ struct CodableUsageTests {
             sender: "s", payload: Payload(kind: "k", weight: 1), extras: [Payload(kind: "e", weight: 2)],
             note: Payload(kind: "n", weight: 3))
         #expect(Envelope2.schema.decode(Envelope2.schema.encode(value)).value == value)
+    }
+
+    @Test func theExamplesAreWhatTheSuiteGeneratesFrom() {
+        let report = SchemaSuite(Parcel.schema).report(seed: 5, cases: 60)
+        #expect(report.isClean, "\(report)")
+        #expect(report.skipped == 0)
+        let hand = Schema.codable(Payload.self, examples: [Payload(kind: "a", weight: 1)])
+        #expect(String(describing: hand.node) != String(describing: Schema.codable(Payload.self).node))
+    }
+
+    @Test func withoutExamplesTheSuiteSaysSo() {
+        let report = SchemaSuite(Envelope2.schema).report(seed: 5, cases: 20)
+        #expect(!report.isClean)
+        #expect(report.findings.contains { $0.message.contains("$.payload (Payload) is a Codable leaf with no examples") })
     }
 }
 #endif

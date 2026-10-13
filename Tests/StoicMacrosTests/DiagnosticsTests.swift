@@ -680,22 +680,42 @@ struct EnumDiagnosticTests {
                 """)
     }
 
-    @Test func aTaggedUnionHasNoUnknownCase() {
+    @Test func theUnknownCaseOfAUnionCarriesNothingTheTagOrTheTagAndPayload() {
         expand(
             """
             @Schema
             enum Mixed {
                 case circle(Int)
-                @UnknownCase case other(String)
+                @UnknownCase case other(Int)
             }
             """,
             diagnostics: [
-                problem("@UnknownCase is for an enumeration of plain values; `Mixed` has cases that carry values, so it is a tagged union, which has no unknown case yet", 4, 5)
+                problem("the unknown case of a union is a plain case, or carries the tag it did not understand as one `String` (`case other(String)`), or the tag and every other member as `case other(tag: String, payload: JSONObject)`", 4, 23)
             ],
             to: """
                 enum Mixed {
                     case circle(Int)
-                    case other(String)
+                    case other(Int)
+                }
+                """)
+    }
+
+    @Test func aUnionHasOneUnknownCase() {
+        expand(
+            """
+            @Schema
+            enum Twice {
+                case circle(Int)
+                @UnknownCase case a
+                @UnknownCase case b
+            }
+            """,
+            diagnostics: [problem("only one case can stand for the tags the schema does not know", 4, 5)],
+            to: """
+                enum Twice {
+                    case circle(Int)
+                    case a
+                    case b
                 }
                 """)
     }

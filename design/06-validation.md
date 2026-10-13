@@ -201,8 +201,10 @@ schema and throws one `DecodingError` listing every issue.
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |
 | an enumeration with an unknown case meets a value it does not know | Read as that case; an `unknown_case` warning naming the value and the case, with the nearest known spelling; the document is still accepted |
+| a tagged union with an unknown case meets a tag it does not know | The object is read as that case; an `unknown_case` warning at the discriminator naming the tag and the case, with the nearest known tag; the payload is handed over unread (kept, if the case holds it, and written back as it came); the document is still accepted |
 | an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
+| SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
 
 ## Testing
@@ -309,7 +311,8 @@ the order it was built:
   nothing else can be: not an object is `type_mismatch`; absent is
   `missing_key` at `$.type`; a non-string is `type_mismatch` there; an
   unknown tag is `not_one_of` there with the tags listed and the nearest
-  suggested. The payload then decodes as any schema does, accumulating, and
+  suggested (unless the union has an unknown case; see "Enumerations a
+  server may extend"). The payload then decodes as any schema does, accumulating, and
   sees the object without its discriminator, so a payload that rejects
   unknown keys does not reject `type`.
 - **Export** is `oneOf` with one branch per case, each pinning the
@@ -709,7 +712,7 @@ member `schema`". Every diagnostic has a test with its line and column.
 | constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
 | nullable and secret | `@Nullable` on a non-optional (fix-it removes); `@Secret` on a `Secret<T>` (warning) |
 | arguments | `discriminator:` or `valueKey:` on a struct, `unknownKeys:` or `version:` on an enum (fix-it removes); `migrations:`, `versionKey:` or `missingVersion:` without `version:`; a version below 1; `unknownKeys:` together with `@PreserveUnknownKeys`; `.preserve` with no preserving property; a preserving property that is not a `JSONObject`, or a second one |
-| an enum | `@UnknownCase` twice, in a tagged union, or on a case carrying anything but one `String` (or any value, with a raw type); on a property; no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
+| an enum | `@UnknownCase` twice, or on a case carrying anything but one `String` (in a union also `(tag: String, payload: JSONObject)`; with a raw type, nothing); on a property; no raw type and no values (fix-it adds `: String`); a raw type other than `String` or `Int`; a marker on a raw-valued case; a marker other than `@Key` on a union case; a tag used twice; the discriminator equal to the value key; several associated values without labels; an associated value of a type with no schema |
 | `@Refined` | on anything but an enum or struct; no base type or constraints; a base that is not `T.self`; a constraint that does not fit the base, an empty range, contradictions |
 
 A non-literal default is *not* an error: the default instance carries it, and
@@ -867,8 +870,33 @@ the order it was built.
   says which ones are known.
 - **`@UnknownCase`** marks the case, on an enumeration with a raw type
   (plain case) or without one (plain cases, with the unknown case plain or
-  carrying one `String`). A tagged union has no unknown case yet: an unknown
-  discriminator stays an error.
+  carrying one `String`), and on a tagged union (below).
+
+**Tagged unions** take the same answer: `Schema.union(…, unknown:)` with an
+`UnknownTag`, and `@UnknownCase` on one case of a union written with `@Schema`.
+
+- **Reading.** A tag that names no case reads as the unknown case, with one
+  `unknown_case` *warning* at the discriminator (`$.type`: the tag, the case it
+  was read as, the nearest known tag; the same code and wording as an
+  enumeration's). The rest of the object is not read at all: nothing is known
+  about its shape, so it raises no issue, and it is handed to the case as a
+  `JSONObject` (the discriminator removed). A tag of the wrong kind, or a
+  missing one, is still an error, and a known tag keeps its payload's rules.
+- **Three forms,** by how much the case keeps, which is how much comes back out:
+  `UnknownTag.plain(value, name:, matches:)` (`case unknown`: keeps nothing, is
+  written as `{"type": "unknown"}`, like an enumeration's plain case writes its
+  own raw value); `.keepingTag` (`case unknown(String)`: the tag, no other
+  member); `.keepingPayload` (`case unknown(tag: String, payload: JSONObject)`:
+  the tag and every other member, written back with the discriminator first, so
+  a record the client only half understands passes through intact). `@UnknownCase`
+  recognises exactly these three shapes.
+- **Representation.** `UnionNode.unknownCase` holds the case's name (`nil` for a
+  closed union). The export gains one `oneOf` branch, an object whose
+  discriminator is a string that `not` any known tag (`x-stoic-unknown-case`), so
+  the branches stay mutually exclusive and `oneOf` still means exactly one; the
+  small validator in the suite learned `not`. The mutator's `badUnionTag` and
+  `typoUnionTag` expect the warning where the union is open, not `not_one_of`.
+  The generator never draws an unknown tag.
 
 ### Lossy arrays
 
@@ -908,8 +936,13 @@ the order it was built.
 - **Generation needs help.** The node is a `.transformed` over any JSON whose
   `examples` are the encoded `examples:`. Without them a generator draws
   arbitrary JSON, which a typed value refuses, so `SchemaSuite` on a schema
-  with a Codable leaf wants examples (the macro cannot supply them; write the
-  field by hand for the suite, or leave the leaf out of it).
+  with a Codable leaf wants examples: `Schema.codable(T.self, examples:)`, or
+  `@Codable(examples: [T(…)])` (the values are handed to the leaf as written,
+  and are values of the named type, also inside an optional, array or
+  dictionary). Without them the suite does not crash and does not pass quietly:
+  it warns at each such leaf (`$.geo (Geo) is a Codable leaf with no examples`,
+  with the remedy), skips the cases whose value reached it, and *fails* if that
+  was every case, since a suite that checked nothing is not clean.
 
 ### Decisions
 

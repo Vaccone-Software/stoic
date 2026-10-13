@@ -17,6 +17,17 @@ struct PreparedRequest: Sendable {
     /// The query string, which events record only as a private field.
     var query: String?
     var safeToRepeat: Bool
+    /// What the call changed about the policy.
+    var overrides: HTTPOverrides
+    /// The request as the caller gave it, and its key, to prepare again with
+    /// fresh credentials.
+    var source: HTTPRequest
+    var sourceKey: IdempotencyKey?
+    /// The credentials generation the request was prepared with.
+    var generation: Int
+    /// Whether the client's own headers went into the request (it is for the
+    /// base URL's origin), which is what makes a `401` the client's to repair.
+    var carriesClientHeaders: Bool
 
     /// The fields every event about this request carries: method, host and
     /// path are public; nothing else about the request is recorded.
@@ -35,17 +46,33 @@ struct Delivered: Sendable {
     var attempts: Int
 }
 
-/// The breaker and bulkhead the client keeps for one host.
+/// The breaker, rate limiter and bulkhead the client keeps for one host.
 final class HostState: Sendable {
     let label: String
     let breaker: CircuitBreaker?
+    let limiter: RateLimiter?
     let bulkhead: Bulkhead?
 
-    init(label: String, breaker: CircuitBreaker?, bulkhead: Bulkhead?) {
+    init(label: String, breaker: CircuitBreaker?, limiter: RateLimiter?, bulkhead: Bulkhead?) {
         self.label = label
         self.breaker = breaker
+        self.limiter = limiter
         self.bulkhead = bulkhead
     }
+}
+
+/// The headers the reauthentication hook last returned, and how many times it
+/// has returned: a request prepared before a refresh knows, by its generation,
+/// that the refresh has already happened.
+struct Credentials: Sendable {
+    var generation = 0
+    var headers = HTTPHeaders()
+}
+
+/// Why the reauthentication hook did not produce credentials.
+struct ReauthenticationFailure: Error, Sendable {
+    /// The type of the hook's error, for the event; never its text.
+    var kind: String
 }
 
 /// The hosts a client has talked to, bounded: a client that follows
@@ -171,9 +198,19 @@ final class LedFlag: Sendable {
 struct FlightKey: Hashable, Sendable {
     var url: String
     var headers: [String]
+    /// What else makes a pipeline behave differently: the overrides that can
+    /// be compared, so a call with a longer timeout does not join a flight
+    /// that will cut it short.
+    var variant: String
 
-    init(_ request: HTTPRequest, ignoring ignored: [String]) {
+    init(_ request: HTTPRequest, ignoring ignored: [String], overrides: HTTPOverrides = .none) {
         url = request.url?.absoluteString ?? ""
+        var variant: [String] = []
+        if let timeout = overrides.attemptTimeout { variant.append("timeout=\(timeout)") }
+        if let schedule = overrides.schedule { variant.append("schedule=\(schedule.hashValue)") }
+        if overrides.bypassBreaker { variant.append("bypass") }
+        if !overrides.reauthenticate { variant.append("noreauth") }
+        self.variant = variant.joined(separator: ";")
         let skipped = Set(ignored.map { $0.lowercased() })
         headers = request.headers.fields
             .map { (name: $0.name.lowercased(), value: $0.value) }

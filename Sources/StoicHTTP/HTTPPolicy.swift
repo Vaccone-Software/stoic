@@ -41,11 +41,45 @@ public struct HTTPPolicy: Sendable {
     /// deadline). Default 60 s.
     public var maxRetryAfter: Duration
 
+    /// Decides, for each response the server sent, whether to ask again: the
+    /// way to retry on what came back rather than on what was thrown.
+    /// `nil` (the default) leaves it to ``retryStatuses``.
+    ///
+    /// The closure sees every response that arrived whole, whatever its
+    /// status, and answers with a ``RetryDecision``, or `nil` to defer to
+    /// ``retryStatuses``:
+    ///
+    /// - `.retry` asks again after the schedule's delay, or after the
+    ///   response's `Retry-After` when it has one. A `202` that says
+    ///   `Retry-After: 2` is polled; a `200` whose body says `"pending"` is
+    ///   asked again.
+    /// - `.retryAfter(wait)` asks again after `wait`.
+    /// - `.stop` makes the response final, even a status in
+    ///   ``retryStatuses``: a `503` that says `Retry-After: 3600` is not
+    ///   worth waiting for.
+    ///
+    /// Every wait is capped at ``maxRetryAfter`` and bound by the caller's
+    /// deadline, the schedule's attempts and the retry budget, and nothing
+    /// unsafe to repeat is asked again (an unkeyed `POST` is not). When the
+    /// attempts run out while the closure still asks for another, the call
+    /// fails with ``HTTPError/status(_:excerpt:retryAfter:attempts:)`` for the
+    /// last response, whatever its status. A call can pass its own through
+    /// ``HTTPOverrides``.
+    public var retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)?
+
     /// The circuit breaker kept for each host; `nil` for none. Default: opens
     /// when half of at least 20 calls in the last minute failed. Its
     /// `recordWhen` is replaced: the client decides what counts (5xx,
     /// timeouts and transport failures, never a 4xx).
     public var breaker: CircuitBreaker.Configuration?
+
+    /// The rate at which requests may be sent to one host, as a token bucket
+    /// kept for each host (``HTTPRateLimit``); `nil` (the default) for none.
+    /// Every attempt takes a permit, retries included. A request waits for
+    /// its turn, in order, unless the wait would outlast the caller's
+    /// deadline or the queue is full: then it is refused at once with
+    /// `.rejected(rate_limited)`, carrying how long to wait.
+    public var rateLimit: HTTPRateLimit?
 
     /// The most requests in flight to one host; `nil` for no limit.
     /// Default 8.
@@ -61,10 +95,13 @@ public struct HTTPPolicy: Sendable {
 
     /// How responses are decoded by ``HTTPClient/send(_:idempotencyKey:decoding:options:)``;
     /// a call can pass its own. `nil` (the default) means strict decoding of
-    /// strict JSON, with the parser's input limit raised to
-    /// ``maxResponseBytes`` so that a response the client was willing to read
-    /// is not refused by the decoder for being over 8 MiB. Set a value to
-    /// use it exactly as given, limits included.
+    /// strict JSON, with the parser's input, string and container limits
+    /// raised to what a response of ``maxResponseBytes`` can legitimately
+    /// hold, so that a response the client was willing to read is not refused
+    /// by the decoder for being over 8 MiB, for one string over 1 MiB, or for
+    /// an array of over 100,000 elements. (Limits are only raised, never
+    /// lowered; the depth limit stays.) Set a value to use it exactly as
+    /// given, limits included.
     ///
     /// Unknown keys are not an option here: each object schema carries its
     /// own ``UnknownKeyPolicy``, and the default (`warn`) ignores a field the
@@ -102,11 +139,13 @@ public struct HTTPPolicy: Sendable {
         breaker: CircuitBreaker.Configuration? = HTTPPolicy.standardBreaker,
         maxConcurrentPerHost: Int? = 8,
         queueLimitPerHost: Int = 64,
+        rateLimit: HTTPRateLimit? = nil,
         maxResponseBytes: Int = 10_000_000,
         errorExcerptBytes: Int = 512,
         decodeOptions: DecodeOptions? = nil,
         coalesceGETs: Bool = true,
         ignoreHeadersForCoalescing: [String] = [],
+        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil,
         wallClock: @escaping @Sendable () -> Date = { Date() }
     ) {
         precondition(attemptTimeout > .zero, "an attempt needs a positive timeout")
@@ -119,6 +158,7 @@ public struct HTTPPolicy: Sendable {
         self.retryStatuses = retryStatuses
         self.maxRetryAfter = maxRetryAfter
         self.breaker = breaker
+        self.rateLimit = rateLimit
         self.maxConcurrentPerHost = maxConcurrentPerHost
         self.queueLimitPerHost = queueLimitPerHost
         self.maxResponseBytes = maxResponseBytes
@@ -126,6 +166,7 @@ public struct HTTPPolicy: Sendable {
         self.decodeOptions = decodeOptions
         self.coalesceGETs = coalesceGETs
         self.ignoreHeadersForCoalescing = ignoreHeadersForCoalescing
+        self.retryOnResponse = retryOnResponse
         self.wallClock = wallClock
     }
 
@@ -150,7 +191,46 @@ extension HTTPPolicy {
     var responseDecodeOptions: DecodeOptions {
         if let decodeOptions { return decodeOptions }
         var options = DecodeOptions.strict
+        // Raise the parser's limits to what a response of `maxResponseBytes`
+        // can legitimately hold, as `maxBytes` is raised to it. A string
+        // cannot be longer than the body; an array cannot have more elements
+        // than two bytes each (`0,`) allow, nor an object more members than
+        // five (`"":0,`). The limits stop a small document from costing a
+        // lot; the client's byte limit already bounds how big this one is.
         options.parse.maxBytes = max(options.parse.maxBytes, maxResponseBytes)
+        options.parse.maxStringBytes = max(options.parse.maxStringBytes, maxResponseBytes)
+        options.parse.maxContainerCount = max(options.parse.maxContainerCount, maxResponseBytes / 2 + 1)
         return options
+    }
+}
+
+/// How fast requests may be sent to one host: a token bucket.
+///
+/// The bucket holds up to ``burst`` permits and gains ``rate`` permits per
+/// ``interval``; it starts full, so a quiet app can send a burst and then
+/// settles to the steady rate. It is a Stoic ``RateLimiter`` per host, on the
+/// ambient clock in force when the host is first used, so a test's clock
+/// decides when permits come back.
+public struct HTTPRateLimit: Sendable, Hashable {
+    /// Permits added per ``interval``. At least 1.
+    public var rate: Int
+    /// The period ``rate`` is measured over. Positive.
+    public var interval: Duration
+    /// The bucket's size; `nil` for one interval's worth (``rate``).
+    public var burst: Int?
+    /// The most requests that may wait for a permit (default 100); `nil` for
+    /// no limit beyond cancellation and the caller's deadline. Past it a
+    /// request is refused with `.rejected(rate_limited)`.
+    public var queueLimit: Int?
+
+    public init(rate: Int, per interval: Duration = .seconds(1), burst: Int? = nil, queueLimit: Int? = 100) {
+        precondition(rate >= 1, "a rate limit needs a rate of at least one request")
+        precondition(interval > .zero, "a rate limit's interval must be positive")
+        precondition(burst.map { $0 >= 1 } ?? true, "a rate limit's burst must be at least one request")
+        precondition(queueLimit.map { $0 >= 0 } ?? true, "a rate limit's queue cannot have a negative size")
+        self.rate = rate
+        self.interval = interval
+        self.burst = burst
+        self.queueLimit = queueLimit
     }
 }

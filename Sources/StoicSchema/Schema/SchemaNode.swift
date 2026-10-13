@@ -198,21 +198,28 @@ public struct UnionNode: Sendable {
     /// The key under which a payload that is not an object is written.
     public var valueKey: String
     public var cases: [UnionCaseNode]
+    /// The name of the case a tag that names no case is read as, if the
+    /// union has one (``UnknownTag``); `nil` for a closed union.
+    public var unknownCase: String?
 
     public init(
-        name: String, doc: String? = nil, discriminator: String, valueKey: String, cases: [UnionCaseNode]
+        name: String, doc: String? = nil, discriminator: String, valueKey: String, cases: [UnionCaseNode],
+        unknownCase: String? = nil
     ) {
         self.name = name
         self.doc = doc
         self.discriminator = discriminator
         self.valueKey = valueKey
         self.cases = cases
+        self.unknownCase = unknownCase
     }
 
     /// The tags, in declaration order.
     public var tags: [String] { cases.map(\.tag) }
 
-    var tagExpectation: String { "one of " + tags.map { "\"\($0)\"" }.joined(separator: ", ") }
+    var tagExpectation: String {
+        "one of " + tags.map { "\"\($0)\"" }.joined(separator: ", ") + (unknownCase == nil ? "" : ", or any other string")
+    }
 
     var expectation: String { "an object whose \"\(discriminator)\" is \(tagExpectation)" }
 }

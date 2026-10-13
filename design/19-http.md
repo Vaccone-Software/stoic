@@ -38,8 +38,8 @@ let api = HTTPClient(base: url, transport: transport)
 ## Semantics
 
 **The policy, per host, in a fixed order** — overall deadline (the caller's
-ambient deadline) → retry → circuit breaker → bulkhead → attempt timeout →
-transport. `HTTPPolicy.standard`: 10 s per attempt; 3 attempts with
+ambient deadline) → retry → circuit breaker → rate limit (if the policy has
+one) → bulkhead → attempt timeout → transport. `HTTPPolicy.standard`: 10 s per attempt; 3 attempts with
 jittered exponential backoff from 200 ms, capped at 10 s, drawing on a
 retry budget; a breaker that opens after half of at least 20 calls fail;
 at most 8 requests in flight to one host. Every number is a field.
@@ -58,6 +58,38 @@ deadline: a wait that would outlast the deadline is not started. Other 4xx
 are the caller's fault and are not retried; other 5xx are not retried
 either. Transport errors are classified by `URLError` code (design/05).
 A breaker counts 5xx, timeouts and transport failures, never 4xx.
+
+**Retrying on what came back.** `HTTPPolicy.retryOnResponse` (or a call's own,
+below) sees every response that arrived whole, whatever its status, and answers
+with a `RetryDecision` or `nil` to leave it to the status list: `.retry` asks
+again (after the response's `Retry-After` when it has one), `.retryAfter(d)`
+after `d`, `.stop` makes the response final even if its status is on the list.
+A `202` that says `Retry-After: 2` can be polled; a `200` whose body says
+`"pending"` can be asked again; a `503` that says `Retry-After: 3600` can be
+given up on. Every wait is capped by `maxRetryAfter` and bound by the deadline,
+the schedule and the budget as for any retry; a request that is not safe to
+repeat is never asked again (an unkeyed `POST` that was answered is answered).
+
+**Per-call overrides.** `send(_:overrides:)` takes an `HTTPOverrides`: the
+attempt timeout, the retry schedule, whether `GET`s coalesce, whether the
+call passes the host's breaker, whether a `401` may run the reauthentication
+hook, and a `retryOnResponse` of its own. Everything not named is the policy's;
+the budget, bulkhead, rate limit and byte limits stay the client's, because
+they protect the host.
+
+**Reauthentication.** `HTTPClient(…, reauthenticate:)` takes a hook that
+returns the headers to send from then on. When a request to the base URL's own
+origin is answered `401`, the hook runs, the request is sent once more with the
+renewed headers, and that answer is the answer. Concurrent requests refused for
+the same credentials share one run of the hook; a request refused with
+credentials that were renewed since it was prepared replays without running it.
+A hook that throws is `.reauthenticationFailed`, and the request is not replayed.
+
+**Rate limit.** `HTTPPolicy.rateLimit` is a token bucket for each host (a Stoic
+`RateLimiter` on the ambient clock): every attempt, retries included, takes a
+permit, waiting in order for one; a wait that would outlast the caller's
+deadline, or a full queue, is `.rejected(rate_limited)` with the wait in
+`retryAfter`.
 
 **Responses are bounded.** At most `maxResponseBytes` (10 MB by default)
 are read; past that the request fails with `.responseTooLarge` and the
@@ -78,7 +110,8 @@ answer (`X-Request-Id`, `traceparent`) would defeat sharing; list it in
 **Errors are one typed value.** `HTTPError`: `.status(code, body
 excerpt, retryAfter)`, `.transport(URLError.Code)`, `.timedOut(attempt:)`,
 `.responseTooLarge`, `.decoding(ValidationFailure)`, `.rejected(Rejection)`
-(breaker open, bulkhead full, budget exhausted, deadline). Each says
+(breaker open, bulkhead full, rate limited, budget exhausted, deadline),
+`.reauthenticationFailed(status:)`. Each says
 whether it was retried and how many attempts were made.
 
 **Privacy.** Events carry the method, host, path and status; the query
@@ -107,13 +140,25 @@ inside a simulation.
 | the body does not match the schema            | `.decoding` with every issue; not retried                                  |
 | ten identical `GET`s at once                  | One request; ten results                                                   |
 | the caller is cancelled                       | The request is cancelled; `CancellationError`                              |
+| a response within the cap has one string over 1 MiB or an array over 100,000 elements | Decoded: the parser's string and container limits are raised to what `maxResponseBytes` can hold |
+| a call asks for its own attempt timeout and retry schedule | That call uses them; the next call uses the policy's |
+| a call opts out of the breaker while it is open | It is sent; what it sees is not counted against the host |
+| a 2xx response says to ask again | Asked again after its `Retry-After` (capped) or the backoff, if the request is safe to repeat; out of attempts, `.status` for the last response |
+| the server answers 401 and the client can reauthenticate | The hook runs once; the request is replayed with the renewed headers, which later requests use too |
+| ten requests get 401 at once | One run of the hook; all ten are replayed |
+| the reauthentication hook fails | `.reauthenticationFailed`; the request is not replayed; the next 401 runs the hook again |
+| the replayed request gets 401 too | `.status(401)` after two attempts; the hook runs at most once per request |
+| a host's rate limit is spent | The request waits its turn for a permit, in order; retries wait too |
+| a request would wait longer than its deadline or the queue allows | `.rejected(rate_limited)` at once, with the wait in `retryAfter`; nothing is sent |
+| a caller waiting for a rate-limit permit is cancelled | It leaves with `CancellationError`, takes no permit, and the next caller gets it |
 
 ## Events
 
 `http.request` (debug: method, host, path, status, duration, attempt),
 `http.retry` (delay, reason), `http.failed`, `http.coalesced`,
-`http.response_too_large`, `http.decoding_failed`; the breaker, bulkhead
-and budget emit their own.
+`http.response_too_large`, `http.decoding_failed`, `http.reauthenticated`,
+`http.reauthenticate_failed` (the type of the hook's error, never its text);
+the breaker, rate limiter, bulkhead and budget emit their own.
 
 ## As built
 
@@ -239,8 +284,13 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   (`decodeOptions == nil`) are strict JSON with the parser's `maxBytes`
   raised to `maxResponseBytes`, so a 9 MB response the client agreed to read is
   not refused with `size_limit` by an 8 MiB parser default; options set
-  explicitly are used exactly as given. The parser's per-string (1 MiB) and
-  per-container limits stay. `send(_:decoding:)` adds `Accept: application/json`
+  explicitly are used exactly as given. The per-string (1 MiB) and
+  per-container (100,000) limits are raised the same way: to `maxResponseBytes`
+  for a string (it cannot be longer than the body) and to `maxResponseBytes / 2
+  + 1` for an array or object (two bytes an element is the least JSON takes),
+  never lowered, so a legitimate response up to the cap is not refused by the
+  decoder for what it holds; the depth limit is not about size and stays.
+  `send(_:decoding:)` adds `Accept: application/json`
   unless the request names an `Accept`. An empty body fails a schema that
   wants an object.
 - **`HTTPError: Retryable`** classifies the *failure* with the default
@@ -259,12 +309,49 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   type prints as `status_503`, not with the body excerpt that
   `HTTPError.status` holds.
 
-**Not built.** Per-request policy overrides; a rate limiter or hedging stage
-(both exist as `Policy` values and would slot into the pipeline); streaming
-uploads and downloads; authentication refresh; delivering through the outbox
-(`StoicStore.Outbox` can call `send` with its entry's `IdempotencyKey`).
+**Overrides, response retry, reauthentication and the rate limit** (built after
+the first version, on the same pipeline):
 
-**Tests** (`Tests/StoicHTTPTests`): one per row above, on a `TestClock` and a
+- **`HTTPOverrides`** is a struct of optionals (`attemptTimeout`, `schedule`,
+  `coalesce`) and flags (`bypassBreaker`, `reauthenticate`), plus
+  `retryOnResponse`. A call only shares a coalesced flight with calls that ask
+  for the same timeout, schedule, bypass and reauthentication (the flight runs
+  the starter's pipeline); a call with its own `retryOnResponse` is never
+  coalesced, since a closure cannot be compared. A bypassing call skips the
+  breaker stage entirely: it is sent while the breaker is open and its outcome
+  is not recorded.
+- **`retryOnResponse` was the one gap.** A status list with `Retry-After`,
+  capped, already existed; what was missing was a decision about a response
+  that is not a failure (2xx), or about a status the list does not know, or
+  about a listed status that should not be waited for. The predicate's verdict
+  rides on the pipeline's internal status error, so `Retry-After` handling,
+  capping, the budget and the deadline are the existing ones. A success is only
+  turned into a failure to ask again if the request is safe to repeat.
+- **Reauthentication** replays any method, keyed or not: a `401` means the
+  server did not act on the request. It applies only to requests that carry the
+  client's own headers (the base URL's origin), so another host's `401` is
+  never the client's to repair and the app's token never goes there. The hook
+  returns `HTTPHeaders` that replace the same-named ones among the client's
+  default headers for every later request; a request's own headers still win.
+  The renewal is a `SingleFlight` keyed by the credentials generation that was
+  refused, so concurrent `401`s run the hook once, a late arrival replays
+  without it, and the flight is cancelled when the last waiter leaves. The
+  hook's request must pass `HTTPOverrides(reauthenticate: false)` if it goes
+  through the same client. The replay is a full run of the pipeline (its own
+  retries) sharing the attempt count, so `HTTPError.attempts` counts both.
+- **Rate limit.** One `RateLimiter` per host, created on the ambient clock in
+  force when the host is first used; it sits inside the breaker (a call the
+  breaker refuses takes no permit) and outside the bulkhead (waiting for a
+  permit holds no slot). Refusals are `Rejection(.rateLimited)`, never retried:
+  like an open breaker, "fail fast" means fail. `HTTPClient.rateLimiter(forHost:)`
+  exposes it as `breaker(forHost:)` does.
+
+**Not built.** A hedging stage (it exists as a `Policy` value and would slot
+into the pipeline); streaming uploads and downloads; delivering through the
+outbox (`StoicStore.Outbox` can call `send` with its entry's `IdempotencyKey`).
+
+**Tests** (`Tests/StoicHTTPTests`; overrides, response retry, reauthentication,
+rate limit and decoding limits each have a file): one per row above, on a `TestClock` and a
 `ScriptedTransport` with no real sleeps (they wait on events and
 `waitForSleepers`); `URLSessionTransport` against a `URLProtocol` stub on a
 real `URLSession`; and `simulate(seeds:)` runs of seventeen concurrent callers

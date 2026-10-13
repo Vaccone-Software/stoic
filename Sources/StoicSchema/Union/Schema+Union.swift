@@ -23,7 +23,10 @@ extension Schema {
     /// - a missing discriminator is `missing_key` at `$.type`;
     /// - a discriminator that is not a string is a `type_mismatch` there;
     /// - one that names no case is `not_one_of` there, listing the tags and
-    ///   suggesting the nearest by spelling, as for an enumeration.
+    ///   suggesting the nearest by spelling, as for an enumeration; unless
+    ///   the union has an ``UnknownTag``: then the object is read as that
+    ///   case, with an `unknown_case` *warning* there (the same nearest-tag
+    ///   suggestion), and its other members are handed over unread.
     ///
     /// Once the case is known, its payload is decoded as any schema is,
     /// accumulating: a `circle` with a bad radius and a stray key reports
@@ -34,8 +37,9 @@ extension Schema {
     /// **Encoding** finds the case the value is, writes its payload, and
     /// puts the discriminator first so a person reading the file sees what
     /// kind of thing it is before the details. A value that is none of the
-    /// declared cases is a mistake in the declaration and is reported by
-    /// ``validate(_:)``.
+    /// declared cases (nor the unknown case) is a mistake in the declaration
+    /// and is reported by ``validate(_:)``. The unknown case writes the tag
+    /// and members it holds, none if it kept none.
     ///
     /// **A payload that is not an object** is written under `valueKey`:
     /// `{"type": "label", "value": "Hello"}`. (A `lazy` payload counts as
@@ -53,6 +57,10 @@ extension Schema {
     ///   - name: The type's name in the export; defaults to `Value`'s.
     ///   - doc: Documentation of the union.
     ///   - valueKey: Where a payload that is not an object is written.
+    ///   - unknown: What a tag that names no case is read as; `nil` (the
+    ///     default) keeps the union closed. A plain unknown case is written
+    ///     under its name, so the name should not be a declared tag; see
+    ///     ``UnknownTag``.
     ///   - cases: The alternatives, in the order they are documented.
     public static func union(
         _ type: Value.Type? = nil,
@@ -60,6 +68,7 @@ extension Schema {
         name: String? = nil,
         doc: String? = nil,
         valueKey: String = "value",
+        unknown: UnknownTag<Value>? = nil,
         @CasesBuilder<Value> cases makeCases: () -> [Case<Value>]
     ) -> Schema<Value> {
         let name = name ?? String(describing: Value.self)
@@ -81,7 +90,8 @@ extension Schema {
         let lookup = byTag
         let node = UnionNode(
             name: name, doc: doc, discriminator: discriminator, valueKey: valueKey,
-            cases: cases.map { UnionCaseNode(tag: $0.tag, doc: $0.doc, node: $0.node, isFlat: $0.isFlat) })
+            cases: cases.map { UnionCaseNode(tag: $0.tag, doc: $0.doc, node: $0.node, isFlat: $0.isFlat) },
+            unknownCase: unknown?.name)
         let tags = node.tags
         let tagExpectation = node.tagExpectation
         return Schema(
@@ -104,6 +114,20 @@ extension Schema {
                     return nil
                 }
                 guard let index = lookup[ExactKey(tag)] else {
+                    if let unknown {
+                        // The shape of what follows is unknown, so none of it
+                        // is read: it is handed over as it came.
+                        state.report(
+                            .unknownCase, severity: .warning, parameters: ["fallback": .string(unknown.name)],
+                            expected: tagExpectation, actual: tagJSON.briefDescription,
+                            suggestions: Suggestions.nearest(to: tag, among: tags))
+                        state.pop()
+                        var rest = JSONObject()
+                        for member in object where !ExactKey(member.key).isEqual(to: discriminator) {
+                            rest[member.key] = member.value
+                        }
+                        return unknown.read(tag, rest)
+                    }
                     state.report(
                         .notOneOf, parameters: ["tags": .array(tags.map { .string($0) })],
                         expected: tagExpectation, actual: tagJSON.briefDescription,
@@ -135,6 +159,11 @@ extension Schema {
                     } else if let payload = written {
                         members.append(JSONObject.Member(key: valueKey, value: payload))
                     }
+                    return .object(JSONObject(members))
+                }
+                if let (tag, payload) = unknown?.write(value) {
+                    var members: [JSONObject.Member] = [JSONObject.Member(key: discriminator, value: .string(tag))]
+                    members.append(contentsOf: payload.filter { !ExactKey($0.key).isEqual(to: discriminator) })
                     return .object(JSONObject(members))
                 }
                 state.problems.append(

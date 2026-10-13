@@ -39,6 +39,7 @@ public struct JSONSchemaValidator: Sendable {
         if let branches = schema["anyOf"]?.array {
             guard branches.contains(where: { accepts(instance, against: $0) }) else { return false }
         }
+        if let excluded = schema["not"], accepts(instance, against: excluded) { return false }
         if let branches = schema["oneOf"]?.array {
             // Exactly one branch: the discriminator makes that decidable.
             guard branches.filter({ accepts(instance, against: $0) }).count == 1 else { return false }

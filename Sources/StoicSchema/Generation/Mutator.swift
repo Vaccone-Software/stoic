@@ -650,15 +650,21 @@ struct Mutator {
         // be read, so the whole union is one unit.
         let whole = Context(root: context.root, unit: context.unit ?? path, genericDone: true)
 
-        out.add(replacement(
-                .badUnionTag, whole, at: tagPath, with: .string("zzz-not-a-tag"), expect: .notOneOf,
-                summary: "replaced the tag with one that names no case"))
+        // A union with an unknown case reads a tag it does not know as that
+        // case, and says so with a warning instead of an error.
+        let unknownCode: IssueCode = union.unknownCase == nil ? .notOneOf : .unknownCase
+        let unknownSeverity: Issue.Severity = union.unknownCase == nil ? .error : .warning
+        out.add(make(
+                .badUnionTag, whole, location: tagPath,
+                expected: [ExpectedIssue(path: tagPath, code: unknownCode, severity: unknownSeverity)],
+                summary: "replaced the tag with one that names no case at \(tagPath)",
+                edit: { $0.replacing(tagPath, with: .string("zzz-not-a-tag")) }))
         if let typo = Self.typo(of: tag, avoiding: union.tags),
             Suggestions.nearest(to: typo, among: union.tags).contains(tag)
         {
             out.add(make(
                     .typoUnionTag, whole, location: tagPath,
-                    expected: [ExpectedIssue(path: tagPath, code: .notOneOf, suggestion: tag)],
+                    expected: [ExpectedIssue(path: tagPath, code: unknownCode, severity: unknownSeverity, suggestion: tag)],
                     summary: "misspelt the tag \(tag) as \(typo)",
                     edit: { $0.replacing(tagPath, with: .string(typo)) }))
         }
