@@ -213,7 +213,10 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
   way Effect 4 flattened it.
 - **Cancellation is not a failure.** `CancellationError` is never retried,
   never counted by a breaker, never reported as an error event, and never
-  wrapped. It propagates as itself.
+  wrapped. It propagates as itself. Where an error type cannot hold one — a
+  policy's `PolicyError` — the caller's cancellation is `.rejected(.cancelled)`,
+  and everything that classifies errors reads it as cancellation
+  (`isCancellation`).
 - **Defects.** An error type conforming to `Defect` is a programming error:
   never retried, never handled by a fallback, always reported at error
   level. Swift traps cannot be caught in-process; the defect protocol is for

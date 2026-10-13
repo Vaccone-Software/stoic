@@ -26,6 +26,21 @@ public enum PolicyError<Failure: Error>: Error, CustomStringConvertible {
         return nil
     }
 
+    /// Whether the caller's cancellation ended this: a rejection for
+    /// `.cancelled`, or an operation that failed with a cancellation.
+    ///
+    /// A policy's error type is `PolicyError`, which cannot be a
+    /// `CancellationError`, so cancellation of the caller reaches it as
+    /// `.rejected(.cancelled)`. Test with this where you would test
+    /// `error is CancellationError`; Stoic's own classification (retry, scopes,
+    /// breakers, reports) already does.
+    public var isCancellation: Bool {
+        switch self {
+        case .rejected(let rejection): rejection.isCancellation
+        case .failed(let failure): containsCancellation(failure)
+        }
+    }
+
     public var description: String {
         switch self {
         case .rejected(let rejection): "rejected: \(rejection)"
@@ -53,6 +68,14 @@ public struct Rejection: Error, Hashable, Sendable, CustomStringConvertible {
         self.reason = reason
         self.label = label
         self.retryAfter = retryAfter
+    }
+
+    /// Whether this is the caller's cancellation (`.cancelled`): the
+    /// library's spelling of `CancellationError` where the error type is
+    /// ``PolicyError`` or ``Rejection`` and cannot be one. A wait ended by an
+    /// enclosing deadline is `.deadlineExceeded`, not this.
+    public var isCancellation: Bool {
+        reason == .cancelled
     }
 
     /// A refusal's kind.

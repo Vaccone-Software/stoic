@@ -1,3 +1,4 @@
+import Foundation
 @testable import Stoic
 import StoicTesting
 import Testing
@@ -31,6 +32,26 @@ struct ServiceGraphTests {
         }
         #expect(name == "main")
         #expect(log.values == ["start database", "start sync", "body", "stop sync", "stop database"])
+    }
+
+    /// A trap cannot be caught in-process, so the check runs in a child
+    /// process that must die on it.
+    @Test(.failureMode("design/08", "a factory reads a service it did not declare")) func aFactoryReadingAnUndeclaredServiceIsAProgrammingError() async {
+        await #expect(processExitsWith: .failure) {
+            let database = ServiceKey<Database>("database")
+            let sync = ServiceKey<Sync>("sync")
+            do {
+                let graph = try ServiceGraph(label: "app") {
+                    // Reads `database` without `needs: [database.any]`.
+                    Provide(sync) { services in Sync(database: services[database]) }
+                    Provide(database) { _ in Database(name: "main") }
+                }
+                try await graph.run { _ in }
+            } catch {
+                // Any other way out is a pass for the child, a failure for the test.
+                exit(0)
+            }
+        }
     }
 
     @Test func twoServicesOfTheSameTypeCoexist() async throws {

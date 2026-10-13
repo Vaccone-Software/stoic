@@ -77,6 +77,13 @@ equivalent is a background task whose expiration handler cancels the
 shutdown scope with cause `systemExpiring`. Both bridges are small, and live
 in integration products so the core stays free of UI frameworks.
 
+`GracefulTermination` runs the shutdown *off* the main actor and keeps the
+deadline on it, so a step that blocks its thread (a synchronous call into a
+framework that stopped answering) cannot hold the timer and the reply
+hostage; at the deadline the app quits and `lifecycle.terminate_overran`
+names what was left running (`abandoned_work`, `tasks_running`, and the
+labels of both). Work that needs the main actor hops there itself.
+
 Built: `GracefulTermination` (AppKit) and `BackgroundWork.run(named:)`
 (UIKit). The iOS bridge is a thin shell over `ExpiringWork`, in the core so
 it is tested on every platform: the work runs under a deadline of the time

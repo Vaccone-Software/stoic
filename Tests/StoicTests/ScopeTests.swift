@@ -76,6 +76,53 @@ struct ScopeTests {
         #expect(exitSeen.value == "failure(boom)")
     }
 
+    /// Policies cannot throw `CancellationError` (their error type is
+    /// `PolicyError`), so a cancelled wait is `.rejected(.cancelled)`: the
+    /// library's spelling of cancellation. A scope must read it as one.
+    @Test func aCancelledPolicyWaitEndsAScopeAsCancelledNotFailed() async throws {
+        let exitSeen = SendableBox<String?>(nil)
+        let rejected = SendableBox<Rejection.Reason?>(nil)
+        let semaphore = AsyncSemaphore(permits: 1, label: "pool")
+        let held = AsyncGate()
+        let release = AsyncGate()
+        let holder = Task { try await semaphore.withPermit { held.open(); await release.wait() } }
+        await held.wait()
+        let waiter = Task {
+            do throws(PolicyError<Failure>) {
+                try await withScope { (scope: borrowing Scope) async throws(PolicyError<Failure>) -> Void in
+                    scope.onExit { exit in exitSeen.mutate { $0 = "\(exit)" } }
+                    try await semaphore.withPermit { () async throws(Failure) -> Void in }
+                }
+            } catch {
+                rejected.mutate { $0 = error.rejection?.reason }
+            }
+        }
+        while semaphore.waiterCount == 0 { await Task.yield() }
+        waiter.cancel()
+        await waiter.value
+        release.open()
+        try await holder.value
+        #expect(rejected.value == .cancelled)
+        #expect(exitSeen.value == "cancelled")
+    }
+
+    @Test func aForkCancelledInAPolicyWaitIsNotAFailureOfTheScope() async throws {
+        let semaphore = AsyncSemaphore(permits: 1, label: "pool")
+        let held = AsyncGate()
+        let release = AsyncGate()
+        let holder = Task { try await semaphore.withPermit { held.open(); await release.wait() } }
+        await held.wait()
+        // The body ends while the fork waits for the permit: the scope cancels
+        // the fork, whose wait ends `.rejected(.cancelled)`. That is the scope
+        // stopping it, not the fork failing.
+        try await withTaskScope { scope in
+            scope.fork(label: "waiter") { try await semaphore.withPermit {} }
+            while semaphore.waiterCount == 0 { await Task.yield() }
+        }
+        release.open()
+        try await holder.value
+    }
+
     @Test func aFailingFinalizerIsReportedAndDoesNotChangeTheOutcome() async throws {
         let events = RecordingInstrumentation()
         let log = OrderLog()
@@ -289,6 +336,39 @@ struct ScopeTests {
             Issue.record("unexpected \(error)")
         }
         #expect(bodyCause.value == .siblingFailed)
+    }
+
+    @Test(.failureMode("design/04", "a fork ignores cancellation")) func aForkThatIgnoresCancellationIsAbandonedAtTheForkTimeout() async throws {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let log = OrderLog()
+        let hung = AsyncGate()
+        let label = "stubborn-\(UInt64.random(in: 0...UInt64.max))"
+        let task = Task {
+            try await withTestAmbient(clock: clock, events: events) {
+                try await withTaskScope(forkTimeout: .seconds(2), label: "forks") { scope in
+                    _ = await scope.acquire(label: "quarantined", { 1 }, release: { _, _ in log.append("released") })
+                    scope.onExit(label: "unsafe to release", ifWorkAbandoned: .quarantine) { _ in log.append("quarantine ran") }
+                    scope.fork(label: label) { await hung.wait() }   // never looks at cancellation
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        #expect(!events.names.contains("scope.fork_abandoned"), "the fork gets its time first")
+        await clock.advance(by: .seconds(2))
+        // The scope ends (it did not wait forever) and its finalizers run,
+        // except the one that must not run under work that may still be using it.
+        try await task.value
+        #expect(log.values == ["released"])
+        let abandoned = events.events(named: "scope.fork_abandoned")
+        #expect(abandoned.count == 1)
+        #expect(abandoned.first?.fields.contains { $0.key == "fork" && $0.value.description == label } == true)
+        #expect(AbandonedWork.current.contains { $0.label.contains(label) })
+        #expect(TaskLedger.current.contains { $0.label == label }, "the task ledger still names it")
+
+        hung.open()
+        #expect(await eventually { !AbandonedWork.current.contains { $0.label.contains(label) } })
+        #expect(await eventually { events.names.contains("abandoned.completed") })
     }
 
     @Test @MainActor func theTaskScopeBodyRunsOnTheCallersActor() async throws {

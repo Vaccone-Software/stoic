@@ -113,13 +113,16 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
         containsDefect(root)
     }
 
-    /// The report as it may appear in a log: frames' private metadata is
-    /// redacted (`<private>`), and suppressed errors are left out.
+    /// The report as it may appear in a log: frames' private metadata and the
+    /// root error's description are redacted (`<private>`; the root's type
+    /// name stays, as it does for an error in an event), and suppressed
+    /// errors are left out.
     public var description: String {
         render(includePrivate: false)
     }
 
-    /// Everything: private metadata values and the suppressed errors.
+    /// Everything: private metadata values, the root's description and the
+    /// suppressed errors.
     public var debugDescription: String {
         render(includePrivate: true)
     }
@@ -132,7 +135,9 @@ public struct Report: Error, CustomStringConvertible, CustomDebugStringConvertib
             lines.append(lines.isEmpty ? text : indent + "╰─ " + text)
             if lines.count > 1 { indent += "   " }
         }
-        let rootLine = "\(String(reflecting: type(of: root))): \(root)"
+        // An error's description is private by default (``Event/Value/error(_:)``):
+        // it may carry a path, a URL or a name the frames' metadata took care to hide.
+        let rootLine = "\(String(reflecting: type(of: root))): \(includePrivate ? "\(root)" : "<private>")"
         lines.append(lines.isEmpty ? rootLine : indent + "╰─ " + rootLine)
         if includePrivate {
             for error in suppressed {

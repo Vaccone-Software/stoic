@@ -6,6 +6,32 @@ import Testing
 struct SemaphoreTests {
     enum Failure: Error, Equatable { case boom }
 
+    /// A policy's error type cannot be `CancellationError`, so the caller's
+    /// cancellation is `.rejected(.cancelled)`; `isCancellation` is how a
+    /// caller asks the question `error is CancellationError` asks elsewhere.
+    @Test func aCancelledWaiterIsCancellationByTheLibrarysConvention() async throws {
+        let semaphore = AsyncSemaphore(permits: 1, label: "convention")
+        let held = TestGate()
+        let release = TestGate()
+        let holder = Task { try await semaphore.withPermit { held.open(); await release.wait() } }
+        await held.wait()
+        let waiter = Task { try await semaphore.withPermit { () async throws(Failure) -> Void in } }
+        #expect(await eventually { semaphore.waiterCount == 1 })
+        waiter.cancel()
+        let result = await waiter.result
+        release.open()
+        try await holder.value
+        guard case .failure(let thrown) = result, let error = thrown as? PolicyError<Failure> else {
+            Issue.record("expected a rejection")
+            return
+        }
+        #expect(error.isCancellation)
+        #expect(error.rejection?.isCancellation == true)
+        #expect(!PolicyError<Failure>.rejected(Rejection(.deadlineExceeded)).isCancellation)
+        #expect(!PolicyError<Failure>.failed(.boom).isCancellation)
+        #expect(PolicyError<any Error>.failed(CancellationError()).isCancellation)
+    }
+
     @Test func neverRunsMoreBodiesThanPermits() async throws {
         let semaphore = AsyncSemaphore(permits: 3, label: "test")
         let gauge = SendableBox((current: 0, peak: 0))

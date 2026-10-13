@@ -24,7 +24,8 @@ struct ReportTests {
             #expect(report.description.hasPrefix("loading settings"))
             #expect(report.description.contains("╰─ reading settings.json"))
             #expect(report.description.contains("╰─ opening the file"))
-            #expect(report.description.contains("FileError: missing"))
+            #expect(report.description.contains("FileError: <private>"))
+            #expect(report.debugDescription.contains("FileError: missing"))
         } catch {
             Issue.record("unexpected \(error)")
         }
@@ -136,6 +137,17 @@ struct ReportTests {
         let defaulted = Report(FileError.missing).adding(.init("opening", metadata: [.init("path", .string("/Users/ada/secret"))]))
         #expect(!defaulted.description.contains("/Users/ada"))
         #expect(defaulted.debugDescription.contains("/Users/ada/secret"))
+    }
+
+    @Test func descriptionRedactsTheRootErrorsDescription() {
+        struct PathError: Error, CustomStringConvertible {
+            var description: String { "cannot open /Users/ada/secret.txt" }
+        }
+        let report = Report(PathError().context("loading"))
+        #expect(report.description.contains("PathError: <private>"))
+        #expect(!report.description.contains("/Users/ada"))
+        #expect(!"\(report)".contains("/Users/ada"))
+        #expect(report.debugDescription.contains("cannot open /Users/ada/secret.txt"))
     }
 
     @Test func framesCarryMetadataAndLocation() {
