@@ -37,18 +37,28 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     case decoding(ValidationFailure, attempts: Int)
 
     /// A policy turned the request away: the breaker is open
-    /// (`circuit_open`), the bulkhead is full (`bulkhead_full`), the retry
-    /// budget is spent (`budget_exhausted`), or the deadline passed, or would
-    /// pass before the next attempt could finish (`deadline_exceeded`). A
-    /// rejection that carries a ``Rejection/retryAfter`` says when to try
-    /// again.
+    /// (`circuit_open`), the bulkhead is full (`bulkhead_full`), the host's
+    /// rate limit would make the request wait too long or the queue is full
+    /// (`rate_limited`), the retry budget is spent (`budget_exhausted`), or
+    /// the deadline passed, or would pass before the next attempt could
+    /// finish (`deadline_exceeded`). A rejection that carries a
+    /// ``Rejection/retryAfter`` says when to try again.
     case rejected(Rejection, attempts: Int)
+
+    /// The server answered `401` and the client's reauthentication hook
+    /// (``HTTPClient/init(base:policy:transport:headers:label:reauthenticate:)``)
+    /// failed, so the request was not replayed. `status` is the 401; the
+    /// hook's own error is not kept (it may hold a credential), only its type
+    /// is recorded, in the `http.reauthenticate_failed` event. A `401` that
+    /// the *replay* got is an ordinary ``status(_:excerpt:retryAfter:attempts:)``:
+    /// the hook runs at most once per request.
+    case reauthenticationFailed(status: Int, attempts: Int)
 
     /// How many requests reached the transport before this failure.
     public var attempts: Int {
         switch self {
         case .status(_, _, _, let attempts), .transport(_, let attempts), .responseTooLarge(_, let attempts),
-             .decoding(_, let attempts), .rejected(_, let attempts):
+             .decoding(_, let attempts), .rejected(_, let attempts), .reauthenticationFailed(_, let attempts):
             attempts
         case .timedOut(let attempt):
             attempt
@@ -78,6 +88,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
         case .responseTooLarge(let limit, _): return "response larger than \(limit) bytes after \(tries)"
         case .decoding(let failure, _): return "response did not match its schema (\(failure.errors.count) errors) after \(tries)"
         case .rejected(let rejection, _): return "rejected: \(rejection) after \(tries)"
+        case .reauthenticationFailed(let status, _): return "HTTP \(status), and reauthenticating failed, after \(tries)"
         }
     }
 }
@@ -100,7 +111,7 @@ extension HTTPError: Retryable {
             return URLError(code).retryDecision
         case .timedOut:
             return .retry
-        case .responseTooLarge, .decoding:
+        case .responseTooLarge, .decoding, .reauthenticationFailed:
             return .stop
         case .rejected(let rejection, _):
             switch rejection.reason {
@@ -118,7 +129,9 @@ extension HTTPError: Retryable {
 /// only this, which is what keeps "what counts against a host" and "what is
 /// retried" in one place.
 enum AttemptError: Error, Sendable, CustomStringConvertible {
-    case status(code: Int, excerpt: String, retryAfter: Duration?)
+    /// `verdict` is what the response predicate (``HTTPPolicy/retryOnResponse``)
+    /// said about this response, if it said anything.
+    case status(code: Int, excerpt: String, retryAfter: Duration?, verdict: RetryDecision?)
     case transport(URLError.Code)
     case timedOut
     case tooLarge(limit: Int)
@@ -135,7 +148,7 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
     /// device is back.
     var countsAgainstHost: Bool {
         switch self {
-        case .status(let code, _, _):
+        case .status(let code, _, _, _):
             return code >= 500
         case .timedOut:
             return true
@@ -157,8 +170,17 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
     func decision(policy: HTTPPolicy, safeToRepeat: Bool) -> RetryDecision {
         guard safeToRepeat else { return .stop }
         switch self {
-        case .status(let code, _, let retryAfter):
-            guard policy.retryStatuses.contains(code) else { return .stop }
+        case .status(let code, _, let retryAfter, let verdict):
+            switch verdict {
+            case .stop?:
+                return .stop
+            case .retryAfter(let wait)?:
+                return .retryAfter(min(wait, policy.maxRetryAfter))
+            case .retry?:
+                break
+            case nil:
+                guard policy.retryStatuses.contains(code) else { return .stop }
+            }
             if let retryAfter { return .retryAfter(min(retryAfter, policy.maxRetryAfter)) }
             return .retry
         case .transport(let code):
@@ -177,7 +199,7 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
     /// A short, public name for the failure, for events.
     var reason: String {
         switch self {
-        case .status(let code, _, _): "status_\(code)"
+        case .status(let code, _, _, _): "status_\(code)"
         case .transport(let code): "transport_\(code.rawValue)"
         case .timedOut: "timed_out"
         case .tooLarge: "too_large"

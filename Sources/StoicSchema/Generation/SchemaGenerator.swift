@@ -101,6 +101,21 @@ public struct SchemaGenerator<Value: Sendable>: Sendable {
         return found
     }
 
+    /// The same, for the transforms that are a Codable leaf
+    /// (``Schema/codable(_:examples:decoding:encoding:)``): a typed value
+    /// refuses almost any JSON a generator draws, so for them examples are
+    /// not an improvement but the only way to generate anything.
+    var codableLeavesWithoutExamples: [String] {
+        var found: [String] = []
+        var seen: Set<String> = []
+        Self.walk(schema.node, path: "$", seen: &seen) { node, path in
+            if case .transformed(let transform) = node, transform.examples.isEmpty, !transform.isAnnotated {
+                found.append("\(path) (\(transform.name))")
+            }
+        }
+        return found
+    }
+
     static func walk(_ node: SchemaNode, path: String, seen: inout Set<String>, visit: (SchemaNode, String) -> Void) {
         visit(node, path)
         switch node {

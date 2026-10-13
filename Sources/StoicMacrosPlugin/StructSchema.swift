@@ -101,7 +101,7 @@ private func schemaExpression(of field: FieldModel, nullable: Bool) -> String {
     schemaExpression(
         field.type, scalar: field.scalar.map(\.constraintCode), collection: field.collection.map(\.constraintCode),
         nullable: nullable, format: field.format?.arguments.first?.expression.trimmedDescription ?? "",
-        lossy: field.isLossy, codable: field.isCodable)
+        lossy: field.isLossy, codable: field.isCodable, codableExamples: field.codableExamples)
 }
 
 /// Everything about the keys that would otherwise trap when the schema is

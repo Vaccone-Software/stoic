@@ -76,7 +76,14 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
 
         checkDocumentation(into: &recorder)
         checkDefaults(into: &recorder)
-        for name in generator.transformsWithoutExamples {
+        let codableLeaves = generator.codableLeavesWithoutExamples
+        for leaf in codableLeaves {
+            recorder.warn(
+                .generation,
+                "\(leaf) is a Codable leaf with no examples, so no value can be generated for it: give `examples:` (`.codable(T.self, examples: [...])`, or `@Codable(examples: [...])`)"
+            )
+        }
+        for name in generator.transformsWithoutExamples where !codableLeaves.contains(name) {
             recorder.warn(
                 .generation,
                 "\(name) declares no examples, so the generator can only try values of its base and the conversion may refuse them; give `examples:`"
@@ -114,6 +121,17 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
                 sample, generator: generator, validator: validator, caveats: caveats, seed: caseSeed, random: &random,
                 into: &recorder)
             checkAccumulation(sample, generator: generator, seed: caseSeed, random: &random, into: &recorder)
+        }
+
+        // A suite that skipped every case checked nothing, and must not say
+        // it is clean.
+        if cases > 0, recorder.skipped == cases {
+            recorder.fail(
+                .generation,
+                "no case could be generated, so nothing was checked"
+                    + (codableLeaves.isEmpty
+                        ? ": the schema's conversions declare no examples, and every value the generator tried was refused"
+                        : ": \(codableLeaves.joined(separator: ", ")) \(codableLeaves.count == 1 ? "has" : "have") no examples"))
         }
 
         if case .object(let node) = schema.node, node.versioning != nil {

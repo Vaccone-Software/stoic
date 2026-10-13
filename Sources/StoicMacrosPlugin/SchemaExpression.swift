@@ -15,9 +15,11 @@ let library = "StoicSchema::"
 ///   - nullable: whether an optional is written as `null`.
 ///   - format: the argument of `@DateFormat`, `@URLFormat` or `@DataFormat`
 ///     as written, for the leaf it is about.
+///   - codableExamples: the `examples:` of `@Codable` as written, for the
+///     named type it reads.
 func schemaExpression(
     _ type: ValueType, scalar: [String] = [], collection: [String] = [], nullable: Bool = false, format: String = "",
-    lossy: Bool = false, codable: Bool = false
+    lossy: Bool = false, codable: Bool = false, codableExamples: String? = nil
 ) -> String {
     func join(_ parts: [String]) -> String { parts.joined(separator: ", ") }
     switch type {
@@ -47,19 +49,21 @@ func schemaExpression(
         default: return scalar.isEmpty ? ".integer(\(name).self)" : ".integer(\(name).self, [\(join(scalar))])"
         }
     case .array(let element):
-        let inner = schemaExpression(element, scalar: scalar, format: format, codable: codable)
+        let inner = schemaExpression(element, scalar: scalar, format: format, codable: codable, codableExamples: codableExamples)
         return ".\(lossy ? "lossyArray" : "array")(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
     case .dictionary(let value):
-        let inner = schemaExpression(value, scalar: scalar, format: format, codable: codable)
+        let inner = schemaExpression(value, scalar: scalar, format: format, codable: codable, codableExamples: codableExamples)
         return ".dictionary(of: \(inner)\(collection.isEmpty ? "" : ", " + join(collection)))"
     case .optional(let wrapped):
-        let inner = schemaExpression(wrapped, scalar: scalar, collection: collection, format: format, lossy: lossy, codable: codable)
+        let inner = schemaExpression(wrapped, scalar: scalar, collection: collection, format: format, lossy: lossy, codable: codable, codableExamples: codableExamples)
         return ".optional(\(inner)\(nullable ? ", nullable: true" : ""))"
     case .secret(let inner):
-        let base = schemaExpression(inner, scalar: scalar, collection: collection, format: format, lossy: lossy, codable: codable)
+        let base = schemaExpression(inner, scalar: scalar, collection: collection, format: format, lossy: lossy, codable: codable, codableExamples: codableExamples)
         return ".transform(base: \(base), decode: { Secret($0) }, encode: { $0.reveal() }, describe: \"a secret value\")"
     case .named(let text, let isSelf):
-        if codable { return ".codable(\(text).self)" }
+        if codable {
+            return codableExamples.map { ".codable(\(text).self, examples: \($0))" } ?? ".codable(\(text).self)"
+        }
         return isSelf ? ".lazy { \(text).schema }" : "\(text).schema"
     }
 }

@@ -213,6 +213,10 @@ struct JSONSchemaExporter {
     /// with a `const`, so exactly one branch can match a document. A flat
     /// case is its payload's object schema with the discriminator added as
     /// a required property; any other payload goes under the value key.
+    ///
+    /// A union with an unknown case has one branch more: any object whose
+    /// discriminator is a string that no other branch names, so the branches
+    /// stay mutually exclusive and `oneOf` still means exactly one.
     private mutating func export(_ union: UnionNode, location: String) -> JSONObject {
         var out = JSONObject()
         out["title"] = .string(union.name)
@@ -241,6 +245,19 @@ struct JSONSchemaExporter {
             }
             branch["title"] = .string(entry.tag)
             if let doc = entry.doc { branch["description"] = .string(doc) }
+            branches.append(.object(branch))
+        }
+        if let unknown = union.unknownCase {
+            var branch = JSONObject()
+            branch["title"] = .string(unknown)
+            branch["description"] = .string("Any other tag, read as `\(unknown)`.")
+            branch["type"] = "object"
+            var tag = JSONObject()
+            tag["type"] = "string"
+            tag["not"] = .object(["enum": .array(union.tags.map { .string($0) })])
+            branch["properties"] = .object([union.discriminator: .object(tag)])
+            branch["required"] = .array([.string(union.discriminator)])
+            branch["x-stoic-unknown-case"] = true
             branches.append(.object(branch))
         }
         out["oneOf"] = .array(branches)

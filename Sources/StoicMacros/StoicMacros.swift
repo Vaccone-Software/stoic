@@ -79,8 +79,16 @@ public macro Lossy() = #externalMacro(module: "StoicMacrosPlugin", type: "LossyM
 /// `JSONEncoder`, for a `Codable` type that has no schema: `Schema.codable`.
 /// A failure is one issue at the property, and its JSON Schema is `{}`.
 /// Reaches the named type inside an optional, array or dictionary.
+///
+/// `SchemaSuite` can only generate values for the property from `examples`
+/// (`@Codable(examples: [Payload(kind: "a", weight: 1)])`, values of the named
+/// type); without them it says so and skips the cases that reach the property.
 @attached(peer)
 public macro Codable() = #externalMacro(module: "StoicMacrosPlugin", type: "CodableMacro")
+
+/// ``Codable()``, with values of the named type for `SchemaSuite` to generate from.
+@attached(peer)
+public macro Codable<Element>(examples: [Element]) = #externalMacro(module: "StoicMacrosPlugin", type: "CodableMacro")
 
 /// Marks the `JSONObject` property that keeps the keys the schema does not
 /// declare and writes them back, so that an older release never destroys

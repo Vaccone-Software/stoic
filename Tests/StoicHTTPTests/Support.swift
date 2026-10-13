@@ -60,6 +60,8 @@ extension HTTPPolicy {
         maxResponseBytes: Int = 10_000_000,
         retryBudget: RetryBudget = .unlimited,
         coalesce: Bool = true,
+        rateLimit: HTTPRateLimit? = nil,
+        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil,
         wallClock: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 0) }
     ) -> HTTPPolicy {
         HTTPPolicy(
@@ -69,8 +71,10 @@ extension HTTPPolicy {
             breaker: breaker,
             maxConcurrentPerHost: maxConcurrent,
             queueLimitPerHost: queueLimit,
+            rateLimit: rateLimit,
             maxResponseBytes: maxResponseBytes,
             coalesceGETs: coalesce,
+            retryOnResponse: retryOnResponse,
             wallClock: wallClock
         )
     }
@@ -86,14 +90,14 @@ final class Rig: Sendable {
     let transport = ScriptedTransport()
     let api: HTTPClient
 
-    init(policy: HTTPPolicy, headers: HTTPHeaders) {
-        api = HTTPClient(base: apiBase, policy: policy, transport: transport, headers: headers)
+    init(policy: HTTPPolicy, headers: HTTPHeaders, reauthenticate: (@Sendable () async throws -> HTTPHeaders)? = nil) {
+        api = HTTPClient(base: apiBase, policy: policy, transport: transport, headers: headers, reauthenticate: reauthenticate)
     }
 
     /// Starts a request on its own task, which inherits the test's ambient context.
-    func start(_ request: HTTPRequest, key: IdempotencyKey? = nil) -> Sending {
+    func start(_ request: HTTPRequest, key: IdempotencyKey? = nil, overrides: HTTPOverrides = .none) -> Sending {
         let api = api
-        return Task { try await api.send(request, idempotencyKey: key) }
+        return Task { try await api.send(request, idempotencyKey: key, overrides: overrides) }
     }
 
     /// Waits until the `count`-th failed attempt is waiting out its backoff.
@@ -133,9 +137,10 @@ final class Rig: Sendable {
 func withRig<R>(
     _ policy: HTTPPolicy = .testing(),
     headers: HTTPHeaders = [:],
+    reauthenticate: (@Sendable () async throws -> HTTPHeaders)? = nil,
     _ body: (Rig) async throws -> R
 ) async throws -> R {
-    let rig = Rig(policy: policy, headers: headers)
+    let rig = Rig(policy: policy, headers: headers, reauthenticate: reauthenticate)
     return try await withTestAmbient(clock: rig.clock, seed: 7, events: rig.events) { () async throws -> R in
         try await body(rig)
     }
@@ -148,5 +153,17 @@ struct User: Sendable, Equatable {
     static let schema = Schema.object(User.self, default: User()) {
         Field("id", \.id, .int(.range(1...1_000_000)))
         Field("name", \.name, .string(.length(0...40)))
+    }
+}
+
+/// A body with a long string and a long array: the two things the parser's
+/// per-string and per-container limits count.
+struct Blob: Sendable, Equatable {
+    var text = ""
+    var values: [Int] = []
+
+    static let schema = Schema.object(Blob.self, default: Blob()) {
+        Field("text", \.text, .string())
+        Field("values", \.values, .array(of: .int()))
     }
 }

@@ -26,6 +26,8 @@ struct FieldModel {
     var isLossy = false
     /// `@Codable`: the named type inside is read by `JSONDecoder`, not by a schema.
     var isCodable = false
+    /// The `examples:` argument of `@Codable` as written, if it has one.
+    var codableExamples: String?
     var scalar: [Marker] = []
     var collection: [Marker] = []
     /// `@DateFormat`, `@URLFormat` or `@DataFormat`: it reaches the innermost value.
@@ -319,6 +321,7 @@ private func readMarkers(
             field.isLossy = true
         case .codable:
             field.isCodable = true
+            field.codableExamples = marker.arguments.first?.expression.trimmedDescription
         case .ignored:
             break
         case .unknownCase:

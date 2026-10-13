@@ -60,10 +60,15 @@ func expandEnum(
     let rawType = rawType(of: declaration, reporter: reporter)
 
     if let unknown = unknownCases.first {
+        let marker = markers(in: unknown.declaration.attributes).first { $0.kind == .unknownCase }!
+        if hasPayloads {
+            return expandUnionWithUnknown(
+                declaration, written: written.map { ($0.element, $0.declaration) }, unknown: unknown.element,
+                count: unknownCases.count, marker: marker, arguments: arguments, access: access, reporter: reporter)
+        }
         return expandOpenEnum(
             declaration, written: written.map(\.element), unknown: unknown.element, count: unknownCases.count,
-            marker: markers(in: unknown.declaration.attributes).first { $0.kind == .unknownCase }!,
-            hasPayloads: hasPayloads, rawType: rawType, arguments: arguments, access: access, reporter: reporter)
+            marker: marker, rawType: rawType, arguments: arguments, access: access, reporter: reporter)
     }
 
     if hasPayloads {
@@ -117,7 +122,7 @@ func expandEnum(
 /// enumeration that reads a value it does not know as that case.
 private func expandOpenEnum(
     _ declaration: EnumDeclSyntax, written: [EnumCaseElementSyntax], unknown: EnumCaseElementSyntax, count: Int,
-    marker: Marker, hasPayloads: Bool, rawType: String?, arguments: SchemaArguments, access: String,
+    marker: Marker, rawType: String?, arguments: SchemaArguments, access: String,
     reporter: Reporter
 ) -> String? {
     let name = declaration.name.text
@@ -126,14 +131,6 @@ private func expandOpenEnum(
         reporter.error(
             marker.node,
             Problem(id: "second-unknown-case", message: "only one case can stand for the values the schema does not know"))
-    }
-    if hasPayloads {
-        reporter.error(
-            marker.node,
-            Problem(
-                id: "unknown-case-in-union",
-                message: "@UnknownCase is for an enumeration of plain values; `\(name)` has cases that carry values, so it is a tagged union, which has no unknown case yet"))
-        return nil
     }
     let parameters = unknown.parameterClause?.parameters
     let carriesString = parameters?.count == 1 && parameters?.first?.firstName == nil
@@ -177,6 +174,70 @@ private func expandOpenEnum(
     return """
         \(access)static let schema: \(library)Schema<\(name)> = \(library)Schema.openEnumeration(\(name).self, cases: [\(known.map(\.tagLiteral).joined(separator: ", "))], fallback: \(swiftLiteral(fallback.trimmingBackticks)), read: { switch $0 { \(reads.joined(separator: "; ")) } }, write: { switch $0 { \(writes.joined(separator: "; ")) } })
         """
+}
+
+/// `@Schema` on a tagged union with an `@UnknownCase`: a union that reads a
+/// tag it does not know as that case. The case is plain (nothing is kept),
+/// carries the tag (`case other(String)`), or carries the tag and every other
+/// member the server sent (`case other(tag: String, payload: JSONObject)`).
+private func expandUnionWithUnknown(
+    _ declaration: EnumDeclSyntax, written: [(element: EnumCaseElementSyntax, declaration: EnumCaseDeclSyntax)],
+    unknown: EnumCaseElementSyntax, count: Int, marker: Marker, arguments: SchemaArguments, access: String,
+    reporter: Reporter
+) -> String? {
+    let name = declaration.name.text
+    arguments.check(allowed: SchemaArguments.unionLabels, kind: "an enum with associated values", reporter: reporter)
+    if count > 1 {
+        reporter.error(
+            marker.node,
+            Problem(id: "second-unknown-case", message: "only one case can stand for the tags the schema does not know"))
+    }
+
+    enum Shape { case plain, tag, tagAndPayload }
+    var shape = Shape.plain
+    if let parameters = unknown.parameterClause?.parameters, !parameters.isEmpty {
+        let types = parameters.map { $0.type.trimmedDescription }
+        if types == ["String"] || types == ["Swift.String"], parameters.first?.firstName == nil {
+            shape = .tag
+        } else if types.count == 2, ["String", "Swift.String"].contains(types[0]),
+            ["JSONObject", "StoicJSON.JSONObject"].contains(types[1])
+        {
+            shape = .tagAndPayload
+        } else {
+            reporter.error(
+                unknown,
+                Problem(
+                    id: "unknown-case-payload",
+                    message: "the unknown case of a union is a plain case, or carries the tag it did not understand as one `String` (`case \(unknown.name.text)(String)`), or the tag and every other member as `case \(unknown.name.text)(tag: String, payload: JSONObject)`"))
+        }
+    }
+
+    var cases: [CaseModel] = []
+    var kept: [EnumCaseElementSyntax] = []
+    for item in written where item.element.name.text != unknown.name.text {
+        if let model = readUnionCase(item.element, item.declaration, enclosing: name, reporter: reporter) {
+            cases.append(model)
+            kept.append(item.element)
+        }
+    }
+    checkTags(cases, arguments: arguments, written: kept, reporter: reporter)
+    guard !reporter.hasErrors else { return nil }
+
+    let caseName = unknown.name.text
+    let label = swiftLiteral(caseName.trimmingBackticks)
+    let reference = "\(name).\(caseName)"
+    let fallback: String
+    switch shape {
+    case .plain:
+        fallback = "\(library)UnknownTag.plain(\(reference), name: \(label)) { if case .\(caseName) = $0 { true } else { false } }"
+    case .tag:
+        fallback = "\(library)UnknownTag.keepingTag(name: \(label), \(reference)) { if case .\(caseName)(let tag) = $0 { tag } else { nil } }"
+    case .tagAndPayload:
+        fallback = "\(library)UnknownTag.keepingPayload(name: \(label), \(reference)) { if case .\(caseName)(let tag, let payload) = $0 { (tag: tag, payload: payload) } else { nil } }"
+    }
+    return unionDeclaration(
+        name: name, cases: cases, arguments: arguments, doc: documentation(of: declaration), access: access,
+        unknown: fallback)
 }
 
 /// `String` or `Int` if the enumeration says so; otherwise `nil`, with a
@@ -290,12 +351,13 @@ private func checkTags(
 }
 
 private func unionDeclaration(
-    name: String, cases: [CaseModel], arguments: SchemaArguments, doc: String?, access: String
+    name: String, cases: [CaseModel], arguments: SchemaArguments, doc: String?, access: String, unknown: String? = nil
 ) -> String {
     var options = ["\(name).self"]
     options += arguments.passed(["discriminator", "name"])
     if let doc { options.append("doc: \(swiftLiteral(doc))") }
     options += arguments.passed(["valueKey"])
+    if let unknown { options.append("unknown: \(unknown)") }
 
     var lines: [String] = []
     for model in cases {
