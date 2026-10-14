@@ -58,6 +58,13 @@ program beneath runs on virtual time with a fixed seed.
 - ``SingleFlight``
 - ``Channel``
 
+### Shaping calls and sharing results
+
+- ``Debouncer``
+- ``Throttler``
+- ``ExpiringCache``
+- ``Broadcast``
+
 ### Scopes and resources
 
 - ``Scope``
@@ -115,6 +122,10 @@ program beneath runs on virtual time with a fixed seed.
 - ``SystemConditionsSource``
 - ``FixedConditions``
 - ``Event``
+- ``Span``
+- ``SpanContext``
+- ``SpanID``
+- ``SpanStatus``
 - ``EventName``
 - ``EventCatalog``
 - ``Instrumentation``

@@ -24,6 +24,9 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `AsyncSemaphore(permits:label:).withPermit { … }`, `AsyncMutex(label:).withLock { … }`: FIFO, cancellation/deadline aware; throw `PolicyError`.
 - `SingleFlight<K, V, F>(label:).run(key) { … }`: shared execution, refcounted cancellation.
 - `Channel<T>(capacity:, overflow: .suspend/.dropOldest/.dropNewest/.reject, label:)`: bounded; `send`, `trySend`, `receive`, `finish`, `for await`.
+- `Debouncer` / `Throttler`: `Policy` types (`execute { … }`, `submit(in: scope)`); a dropped call is `.rejected(.superseded)` / `.rejected(.suppressed)`, never a hang. design/20.
+- `ExpiringCache.make(in: scope, ttl:, staleWindow:, maxEntries:, negativeTTL:) { key in … }`: LRU, loads single-flighted, stale-while-revalidate in the scope; a failed refresh keeps the stale value.
+- `Broadcast<T>`: N subscribers, each with its own bounded buffer (`.dropOldest`, `.dropNewest`, `.suspend`).
 
 ## Scopes
 - `withScope { scope in let r = try await scope.acquire { … } release: { r, exit in … } }`: LIFO release on success/failure/cancel; shielded; bounded by `exitBudget`/`finalizerTimeout`.
@@ -53,6 +56,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `AtomicFile(options: .init(keepPrevious: true)).write(bytes, to: path)` (temp, F_FULLFSYNC, rename, directory sync; checksum envelope); `.read(path, validate:)` falls back to `.previous`, quarantines corrupt files.
 - `Journal.open(at:)`: framed, checksummed append-only log; `append` durable on return; torn tails cut on open; `compact`.
 - `Outbox<Item>.open(at:codec:)`: `enqueue` (durable, assigns an `IdempotencyKey`), `deliverPending { entry in … }` under retry.
+- `FileLock(path:)`: advisory `flock` on `<path>.lock`; `tryAcquire`, `acquire(timeout:)` (cancellation/deadline aware), `withLock`. `Journal.Options.crossProcessLock` and `SettingsStore.Options.crossProcessLock` refuse a second process (`.busy`).
 - `LaunchGuard(path:).beginLaunch()` → `.normal` / `.safeMode(uncleanLaunches:)`; `markStable(after:)`, `markCleanExit()`.
 - `FlightRecorder(path:)`: an `Instrumentation` that keeps recent events in a fixed-size file; next launch reads `previousRun` (`events`, `endedCleanly`); `markCleanExit()`, `flush()`. Private values stored as `<private>`.
 - `SimulatedFileSystem` + crash-image exploration for crash-consistency tests.
@@ -65,7 +69,15 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `HTTPPolicy.standard` (10 s attempt, 3 attempts, 8 in flight per host, 10 MB), `HTTPError` (`.status`, `.transport`, `.timedOut(attempt:)`, `.responseTooLarge`, `.decoding(ValidationFailure)`, `.rejected(Rejection)`; each says `attempts`); cancellation is `CancellationError`.
 - Tests: `ScriptedTransport().on(.get("/x"), respond: [.status(503), .json("{}")])` (also `.failure(code)`, `.hang`, `.oversized(n)`, `.after(delay)` on the ambient clock); records `requests` with headers. `URLSessionTransport` is the real one.
 
+- `HTTPOverrides` per `send` (timeout, schedule, coalesce, `bypassBreaker`, `retryOnResponse`); `HTTPClient(reauthenticate:)` replays once after a 401 (single-flighted); `HTTPPolicy.rateLimit` per-host token bucket.
+
+## Apple (StoicApple)
+- `PathMonitor` (`SystemPathMonitor`, `FakePathMonitor`): `stablePaths(settle:)`, `waitUntilReachable(until:)`.
+- `BackgroundJob`: BGTask work under the system's expiration (`.systemExpiring`), completed once, rescheduled; `drainingOutbox`.
+- `SecretStore` (`KeychainSecretStore`, `InMemorySecretStore`): errors never contain the key's value.
+
 ## Observability
+- `withSpan("name", [attributes]) { … }`: task-local `Span.current`, parent ids, duration on the ambient clock, cancellation is a status not an error; free when no sink wants debug events.
 - `Ambient.instrumentation` (default OSLog), `Event` (stable names in `EventCatalog`), `RecordingInstrumentation`.
 
 ## Testing

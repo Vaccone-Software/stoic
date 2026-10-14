@@ -273,6 +273,8 @@ incident review is the wrong default.
 | 17  | Diagnostics                                                       | "it hung once, no idea why"                               | Built: event ring, task ledger, snapshot, flight recorder |
 | 18  | [Settings](design/18-settings.md)                                 | `Codable` + `Data.write`, settings lost to crashes and old builds | Built: `StoicSettings`                     |
 | 19  | [HTTP](design/19-http.md)                                         | hand-rolled retry loops around `URLSession`, a `POST` charged twice | Built: `StoicHTTP`                         |
+| 20  | [Time shaping](design/20-time-shaping.md) | search-as-you-type firing per keystroke, a cache that serves nothing while it refetches | Built: `Debouncer`, `Throttler`, `ExpiringCache`, `Broadcast` |
+| 21  | [Platform integration](design/21-platform-integration.md) | requests sent into a dead network, background work killed mid-write, tokens in `UserDefaults` | Built: `StoicApple` |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical
