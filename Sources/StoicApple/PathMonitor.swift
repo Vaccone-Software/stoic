@@ -102,7 +102,7 @@ extension PathMonitor {
     /// - Parameter settle: How long a change must hold. One second by default.
     public func stablePaths(settle: Duration = .seconds(1)) -> AsyncStream<NetworkPath> {
         let source = updates()
-        return AsyncStream(bufferingPolicy: .unbounded) { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingNewest(16)) { continuation in
             let debouncer = Debouncer(settle: settle, continuation: continuation)
             let task = Task { await debouncer.run(source) }
             continuation.onTermination = { _ in

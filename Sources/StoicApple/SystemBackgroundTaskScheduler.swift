@@ -59,6 +59,7 @@ extension BackgroundTaskError {
 /// `BGTask` is not `Sendable`, but the system documents its expiration
 /// handler and completion as callable from any thread, which is all this
 /// touches.
+// stoic:allow(unchecked-sendable): BGTask documents its expiration handler and setTaskCompleted as callable from any thread, and this wrapper touches nothing else
 private final class SystemBackgroundTask: BackgroundTaskHandle, @unsafe @unchecked Sendable {
     private let task: BGTask
 

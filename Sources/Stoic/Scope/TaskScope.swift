@@ -69,8 +69,14 @@ public struct TaskScope: ~Copyable {
 
 /// Runs `body` with a ``TaskScope``. See ``TaskScope``.
 ///
-/// - Parameter forkTimeout: How long forks get to stop, once the body has
-///   ended and cancelled them, before they are abandoned (see ``TaskScope``).
+/// - Parameters:
+///   - exitBudget: How long the exit phase (waiting for forks, running
+///     finalizers) may take in all.
+///   - finalizerTimeout: How long one finalizer may take.
+///   - forkTimeout: How long forks get to stop, once the body has ended and
+///     cancelled them, before they are abandoned (see ``TaskScope``).
+///   - label: Names the scope in events and reports.
+///   - body: The work the scope owns.
 public nonisolated(nonsending) func withTaskScope<R: Sendable>(
     exitBudget: Duration = .seconds(10),
     finalizerTimeout: Duration = .seconds(5),

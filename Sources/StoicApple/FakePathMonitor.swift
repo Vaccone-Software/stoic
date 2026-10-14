@@ -50,7 +50,7 @@ public final class FakePathMonitor: PathMonitor {
     public var totalSubscriptions: Int { state.withLock { $0.totalSubscriptions } }
 
     public func updates() -> AsyncStream<NetworkPath> {
-        AsyncStream(bufferingPolicy: .unbounded) { continuation in
+        AsyncStream(bufferingPolicy: .bufferingNewest(256)) { continuation in
             let (id, ready) = state.withLock { state -> (UInt64, [CheckedContinuation<Void, Never>]) in
                 defer { state.nextID += 1 }
                 let id = state.nextID
