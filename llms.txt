@@ -7,6 +7,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 ## Time
 - `withTimeout(_ duration:) { … }` / `withDeadline(_ deadline:) { … }`: cooperative; operation runs as a child task inheriting the caller's actor; result must be Sendable; error passes through. `Deadline.current` narrows, never widens.
 - `abandoningAfter(_ duration:, label:, limit:) { syncWork() }`: for uncancellable blocking work; runs on Dispatch; throws `PolicyError.rejected(.deadlineExceeded)`; a label never occupies more than `limit` threads, running or abandoned; refuses with `.abandonmentLimit` once every slot is abandoned.
+- `abandoningAsyncAfter(_ duration:, label:, limit:) { await uncancellableStart() }`: the async sibling for work that never checks cancellation (continuation-based starts); same ledger, limit and error; the work is cancelled at the deadline in case it does check.
 - `CancellationCause.current`: `.deadline`, `.userRequested`, `.superseded`, `.siblingFailed`, `.scopeEnded`, `.supervisorStopped`, `.stateExited`.
 - `Ambient.sleep(for:)`: sleep on the ambient (injectable) clock.
 
@@ -54,6 +55,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 
 ## Persistence (StoicStore)
 - `AtomicFile(options: .init(keepPrevious: true)).write(bytes, to: path)` (temp, F_FULLFSYNC, rename, directory sync; checksum envelope); `.read(path, validate:)` falls back to `.previous`, quarantines corrupt files.
+- `AtomicFile().replaceItem(at: dest, withItemAt: staged)`: crash-safe replace of a file or directory (`renamex_np` swap, parent synced, old removed); one volume only.
 - `Journal.open(at:)`: framed, checksummed append-only log; `append` durable on return; torn tails cut on open; `compact`.
 - `Outbox<Item>.open(at:codec:)`: `enqueue` (durable, assigns an `IdempotencyKey`), `deliverPending { entry in … }` under retry.
 - `FileLock(path:)`: advisory `flock` on `<path>.lock`; `tryAcquire`, `acquire(timeout:)` (cancellation/deadline aware), `withLock`. `Journal.Options.crossProcessLock` and `SettingsStore.Options.crossProcessLock` refuse a second process (`.busy`).
