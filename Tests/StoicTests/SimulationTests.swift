@@ -125,12 +125,14 @@ struct SimulationTests {
     }
 
     @Test func aDeadlockInsideTheSimulationIsReportedAtOnce() async throws {
-        // Default limits: two seconds of patience, but nothing from outside
-        // ever took part, so there is nothing to wait for.
+        // A minute of patience for outside work, but nothing from outside
+        // ever took part, so there is nothing to wait for: the quiet limit
+        // answers. The bound is far below the minute and far above a loaded
+        // CI runner's scheduling delays, which a one-second bound was not.
         let clock = ContinuousClock()
         let start = clock.now
         let failure = await #expect(throws: SimulationFailure.self) {
-            _ = try await simulate(seed: 0) { _ in
+            _ = try await simulate(seed: 0, limits: .init(stall: .seconds(60))) { _ in
                 await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
             }
         }
@@ -138,7 +140,7 @@ struct SimulationTests {
             Issue.record("expected a stall, got \(String(describing: failure))")
             return
         }
-        #expect(start.duration(to: clock.now) < .seconds(1))
+        #expect(start.duration(to: clock.now) < .seconds(20))
     }
 
     @Test func onceOutsideWorkHasTakenPartTheWaitIsTheLongOne() async throws {
