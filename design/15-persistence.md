@@ -68,11 +68,11 @@ type, `StoreError`.
 
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSystem`                     | The 19 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `remove`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, `tryLock`/`unlock`, and `open` in four modes. |
+| `FileSystem`                     | The 21 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `exchange`, `remove`, `removeTree`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, `tryLock`/`unlock`, and `open` in four modes. |
 | `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `FileLock`                       | An advisory `flock` on a sidecar file, held across processes: `tryAcquire`, `acquire(timeout:)`, `release`, `withLock`. Opt-in for `Journal` and `SettingsStore` (`Options.crossProcessLock`). |
-| `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine.                                                                                                   |
+| `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine; `replaceItem` swaps in a staged file or directory.                                               |
 | `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot.                                                                       |
 | `Outbox<Item>` (actor)           | Durable at-least-once delivery over a `Journal`, under `retry`, with an `IdempotencyKey` per entry.                                                                         |
 | `StoreError`                     | `Kind` + operation + path + errno. Conforms to `Retryable`.                                                                                                                  |
@@ -128,6 +128,26 @@ leave its target stale. A loop of links is `.invalidArgument`. The simulation
 models links as durable from the moment they exist, since the store never
 creates one.
 
+**Replacing a file or directory (`replaceItem(at:withItemAt:)`).** `write`
+cannot replace a directory, and a document package or model bundle is one. The
+caller builds the new item beside its destination (`staged`, same volume) and
+makes it durable; `replaceItem` then swaps the two names in a single step with
+`renamex_np(RENAME_SWAP)` (`FileSystem.exchange`) when the destination exists,
+so no instant has the destination missing, or half of each. It syncs the parent
+directories, *then* removes the old item, now at `staged`
+(`FileSystem.removeTree`; a directory is emptied entry by entry, links not
+followed), and syncs again. The sync between is needed: without it the
+deletions inside a tree could reach the disk while the swap did not, leaving
+the destination a half-deleted copy of the old item. When the destination does
+not exist it is a plain `rename` and a sync. Failure of the removal after the
+swap is reported (`store.replace_leftover`) and not thrown, since the
+replacement is complete and a retry would swap the old item back in; the caller
+clears the staged path at next launch. Both paths must share a volume, or it is
+`.invalidArgument` with errno `EXDEV` and a message that says so. The
+simulation models files only, so it can swap and crash-test file replacement;
+directory replacement is tested on the real file system. Apple platforms only
+for the swap: elsewhere it is `.unsupported` when the destination exists.
+
 Permissions: the temporary is created, then given the permission bits of the
 file it will replace (`fchmod`, before a byte is written), so a write never
 widens a private file; a path with no file yet gets `Options.newFileMode`
@@ -160,6 +180,12 @@ something was corrupt, `read` throws `.corrupt` once; the next read returns `nil
 | the volume has less free space than the file needs        | `write` throws `.diskFull` before creating anything                                                |
 | a step of `write` fails                                   | The temporary is removed and the old contents are untouched                                        |
 | a stale `.tmp` from a crash is found                      | It is removed and reported (`store.temp_removed`)                                                   |
+| the process dies at any instruction of `replaceItem`      | `destination` is the old item complete or the new item complete; never missing if the old existed  |
+| `replaceItem` has returned, then power is lost            | `destination` is the new item                                                                      |
+| `replaceItem`'s paths are on different volumes            | Throws `.invalidArgument` (`EXDEV`, "different volumes") before anything changes                   |
+| a step of `replaceItem` before the swap fails             | `destination` and the staged item are as they were                                                 |
+| the old item cannot be removed after the swap             | No error (a retry would swap the old item back); `store.replace_leftover`; the old item stays at the staged path |
+| the file system cannot swap                               | `.unsupported`, when `destination` exists                                                          |
 
 ### Journal
 
@@ -328,7 +354,7 @@ file, versioned (`v1` files are still read).
 ### Error classification (`StoreError.retryDecision`)
 
 - **Stop:** `ENOSPC`, `EROFS`, `EDQUOT`, `EACCES`, `EPERM`, `ENOENT`,
-  `EEXIST`, `EINVAL`, corruption, poisoning. Nothing about a retry changes them.
+  `EEXIST`, `EINVAL`, `EXDEV`, corruption, poisoning. Nothing about a retry changes them.
 - **Retry:** `EINTR` (`PosixFileSystem` also restarts it itself), `EAGAIN`,
   `EBUSY`, `EMFILE`, `ENFILE`, `ENOMEM`: momentary conditions.
 - **`EIO` stops.** After a failed `fsync` the kernel may have dropped the dirty
@@ -339,7 +365,7 @@ file, versioned (`v1` files are still read).
 
 ### Events
 
-`store.corrupt_quarantined`, `store.recovered_previous`, `store.temp_removed`,
+`store.corrupt_quarantined`, `store.recovered_previous`, `store.replace_leftover`, `store.temp_removed`,
 `store.fullsync_unavailable`, `store.journal_corruption`, `store.journal_truncated`,
 `store.journal_compacted`, `store.outbox_delivered`,
 `store.outbox_delivery_failed`, `store.outbox_maintenance_failed`. The lock reports no events: a refusal is a thrown error. All are in
@@ -358,6 +384,7 @@ again. Invariants:
   new; after the call returned, the new; a second read agrees; the file can be
   written again. Checked over envelope × previous generation × existing file ×
   small and large payloads.
+- **`AtomicFile.replaceItem`:** the destination is exactly the old item or exactly the new; after the call returned, the new (the staged path may still hold the old). With and without an existing destination.
 - **`Journal`:** recovery yields a prefix of the appended records at least as
   long as the acknowledged ones, in order, with increasing sequences; after
   recovery a further append is readable after another reopen (this is what
@@ -375,7 +402,8 @@ again. Invariants:
 
 The harness is kept honest by tests that must fail: an atomic write without
 `fullSync`, without the directory sync, written in place, and renaming before
-the sync; an enveloped write that skips `fullSync` (the checksum detects the
+the sync; a replace that removes the destination before renaming, and one that
+never syncs the directory; an enveloped write that skips `fullSync` (the checksum detects the
 tear but cannot get back an acknowledged write); a journal that never syncs its
 directory; one that acknowledges before `fullSync`; and an outbox that
 acknowledges before delivering. Separately, three mutations of the real

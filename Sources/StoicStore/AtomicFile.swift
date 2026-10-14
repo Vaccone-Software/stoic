@@ -174,6 +174,66 @@ public struct AtomicFile: Sendable {
         try fileSystem.syncDirectory(directory)
     }
 
+    /// Replaces the file or directory at `destination` with the one at
+    /// `staged`, atomically: whatever instant the machine dies, `destination`
+    /// is the old item complete or the new item complete, and once this has
+    /// returned it is the new one and that is durable.
+    ///
+    /// This is for what ``write(_:to:options:)`` cannot do: a directory (a
+    /// document package, a model bundle) built beside its destination, or a
+    /// file written by something other than the store. Build the new item at
+    /// `staged` first, and make it durable (`fullSync` its files, and sync
+    /// the directories of a tree); this call makes the *swap* durable.
+    ///
+    /// 1. If `destination` exists, swap the two names in one step
+    ///    (`renamex_np` with `RENAME_SWAP`), sync the parent directories,
+    ///    then remove the old item, now at `staged`, and sync again. The
+    ///    first sync comes before the removal so a crash can never keep the
+    ///    deletions of a tree while losing the swap that made it garbage.
+    /// 2. If it does not, rename `staged` to `destination` and sync.
+    ///
+    /// - Both paths must be on one volume; otherwise this throws
+    ///   `.invalidArgument` with errno `EXDEV` and touches nothing.
+    /// - Any failure before the swap leaves `destination` as it was and
+    ///   `staged` where it was, for the caller to remove or retry.
+    /// - Once the swap has happened, the replacement is done. Failing to
+    ///   remove the old item then is not an error (a retry would swap the
+    ///   old item back): it is reported as `store.replace_leftover`, and the
+    ///   old item stays at `staged` for the caller to clear at next launch.
+    /// - A symbolic link at either path is swapped as a link, not followed,
+    ///   and removing one removes the link only. One writer per destination.
+    /// - Needs a file system that can swap (`PosixFileSystem` on Apple
+    ///   platforms); elsewhere it throws `.unsupported` when `destination`
+    ///   exists.
+    public func replaceItem(at destination: String, withItemAt staged: String) throws(StoreError) {
+        guard destination != staged else {
+            throw StoreError(kind: .invalidArgument, operation: "replace", path: destination, detail: "the staged item is the destination")
+        }
+        let destinationDirectory = StorePath.directory(of: destination)
+        let stagedDirectory = StorePath.directory(of: staged)
+        func syncParents() throws(StoreError) {
+            try fileSystem.syncDirectory(destinationDirectory)
+            if stagedDirectory != destinationDirectory { try fileSystem.syncDirectory(stagedDirectory) }
+        }
+
+        guard try fileSystem.exists(destination) else {
+            try fileSystem.rename(from: staged, to: destination)
+            try syncParents()
+            return
+        }
+        try fileSystem.exchange(destination, staged)
+        try syncParents()
+        // The new item is in place and durable. What is left is the old one.
+        do throws(StoreError) {
+            try fileSystem.removeTree(staged)
+            try fileSystem.syncDirectory(stagedDirectory)
+        } catch {
+            StoreEvents.record(Event("store.replace_leftover", level: .warning, fields: [
+                .init("path", .string(staged)), .init("error", .error(error)),
+            ]))
+        }
+    }
+
     // MARK: Reading
 
     /// The bytes last written to `path`, or the generation before if the

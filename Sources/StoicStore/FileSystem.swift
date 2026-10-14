@@ -114,6 +114,20 @@ public protocol FileSystem: Sendable {
     /// links here").
     func readLink(_ path: String) throws(StoreError) -> String?
 
+    /// Atomically swaps two existing items, files or directories alike, so
+    /// each name holds what the other held (`renamex_np` with `RENAME_SWAP`).
+    /// Fails with `EXDEV` if they are on different volumes, and with `ENOENT`
+    /// if either does not exist. Not durable until ``syncDirectory(_:)`` on
+    /// both parent directories. The default throws `.unsupported`, for a file
+    /// system that cannot do it.
+    func exchange(_ first: String, _ second: String) throws(StoreError)
+
+    /// Removes the item at `path`: a file, a symbolic link (not what it
+    /// points to), or a directory and everything in it. Not durable until
+    /// ``syncDirectory(_:)``. The default is ``remove(_:)``, for a file
+    /// system with no directories to empty.
+    func removeTree(_ path: String) throws(StoreError)
+
     /// Takes an exclusive advisory lock on an open file, without waiting.
     /// Returns `false` if another open file already holds it. ``FileLock``
     /// builds on this.
@@ -136,6 +150,12 @@ extension FileSystem {
     }
 
     public func unlock(_ file: OpenFile) throws(StoreError) {}
+
+    public func exchange(_ first: String, _ second: String) throws(StoreError) {
+        throw StoreError(kind: .unsupported, operation: "exchange", path: first, detail: "this file system cannot swap two items atomically")
+    }
+
+    public func removeTree(_ path: String) throws(StoreError) { try remove(path) }
 
     public func permissions(of path: String) throws(StoreError) -> UInt16? { nil }
 

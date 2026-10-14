@@ -59,7 +59,8 @@ public struct StoreError: Error, Retryable, Sendable, CustomStringConvertible {
         case corrupt
         /// The platform cannot do what was asked (`ENOTSUP` that has no fallback).
         case unsupported
-        /// A caller's argument is out of range (`EINVAL`, a record that is too large).
+        /// A caller's argument is out of range (`EINVAL`, a record that is too large,
+        /// `EXDEV`: two paths that must share a volume do not).
         case invalidArgument
         /// An earlier failure left the object in a state that needs reopening.
         case poisoned
@@ -103,11 +104,13 @@ public struct StoreError: Error, Retryable, Sendable, CustomStringConvertible {
         case EAGAIN, EBUSY: kind = .busy
         case EMFILE, ENFILE, ENOMEM: kind = .resourceExhausted
         case EIO: kind = .ioFailure
-        case EINVAL, ENAMETOOLONG, EISDIR, EBADF, EFBIG: kind = .invalidArgument
+        case EINVAL, ENAMETOOLONG, EISDIR, EBADF, EFBIG, EXDEV: kind = .invalidArgument
         case ENOTSUP: kind = .unsupported
         default: kind = .other
         }
-        self.init(kind: kind, operation: operation, path: path, errnoValue: code)
+        // A rename cannot cross volumes, and the bare errno does not say so.
+        let detail = code == EXDEV ? "the two paths are on different volumes" : nil
+        self.init(kind: kind, operation: operation, path: path, errnoValue: code, detail: detail)
     }
 
     public var retryDecision: RetryDecision {

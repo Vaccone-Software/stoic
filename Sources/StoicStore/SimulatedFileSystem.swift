@@ -50,6 +50,7 @@ public final class SimulatedFileSystem: FileSystem {
         case truncate(path: String, size: Int)
         case fullSync(path: String)
         case rename(from: String, to: String)
+        case exchange(String, String)
         case remove(path: String)
         case syncDirectory(path: String)
 
@@ -60,6 +61,7 @@ public final class SimulatedFileSystem: FileSystem {
             case .truncate(let path, let size): "truncate \(path) to \(size)"
             case .fullSync(let path): "fullSync \(path)"
             case .rename(let from, let to): "rename \(from) -> \(to)"
+            case .exchange(let first, let second): "exchange \(first) <-> \(second)"
             case .remove(let path): "remove \(path)"
             case .syncDirectory(let path): "syncDirectory \(path)"
             }
@@ -179,7 +181,7 @@ public final class SimulatedFileSystem: FileSystem {
 
     /// What a scripted fault applies to.
     public enum FaultTarget: Sendable, Hashable {
-        case open, read, write, truncate, fullSync, syncDirectory, rename, remove
+        case open, read, write, truncate, fullSync, syncDirectory, rename, exchange, remove
     }
 
     /// Makes matching calls fail with `errno`, leaving the file system as it
@@ -233,6 +235,10 @@ public final class SimulatedFileSystem: FileSystem {
 
     public func rename(from source: String, to destination: String) throws(StoreError) {
         try state.withLock { (state) throws(StoreError) in try state.rename(from: source, to: destination) }
+    }
+
+    public func exchange(_ first: String, _ second: String) throws(StoreError) {
+        try state.withLock { (state) throws(StoreError) in try state.exchange(first, second) }
     }
 
     public func remove(_ path: String) throws(StoreError) {
@@ -342,12 +348,14 @@ extension SimulatedFileSystem {
     enum DirectoryOperation: Sendable {
         case create(path: String, inode: Int)
         case rename(from: String, to: String, inode: Int)
+        case exchange(first: String, second: String, firstInode: Int, secondInode: Int)
         case remove(path: String)
 
         var directories: [String] {
             switch self {
             case .create(let path, _), .remove(let path): [StorePath.directory(of: path)]
             case .rename(let from, let to, _): [StorePath.directory(of: from), StorePath.directory(of: to)]
+            case .exchange(let first, let second, _, _): [StorePath.directory(of: first), StorePath.directory(of: second)]
             }
         }
 
@@ -361,6 +369,10 @@ extension SimulatedFileSystem {
             case .rename(let from, let to, let inode):
                 if names[from] == inode { names[from] = nil }
                 names[to] = inode
+            case .exchange(let first, let second, let firstInode, let secondInode):
+                // One atomic step: each name now leads to the other's inode.
+                names[first] = secondInode
+                names[second] = firstInode
             case .remove(let path): names[path] = nil
             }
         }
@@ -604,6 +616,20 @@ extension SimulatedFileSystem {
             inodes[ino]!.name = destination
             pendingDirOps.append(.rename(from: source, to: destination, inode: ino))
             record(.rename(from: source, to: destination))
+        }
+
+        mutating func exchange(_ first: String, _ second: String) throws(StoreError) {
+            try checkFault(.exchange, path: first)
+            // Only files are modelled, so only files can be swapped.
+            guard let firstInode = live[first], let secondInode = live[second] else {
+                throw StoreError(errno: ENOENT_, operation: "renamex_np", path: live[first] == nil ? first : second)
+            }
+            live[first] = secondInode
+            live[second] = firstInode
+            inodes[firstInode]!.name = second
+            inodes[secondInode]!.name = first
+            pendingDirOps.append(.exchange(first: first, second: second, firstInode: firstInode, secondInode: secondInode))
+            record(.exchange(first, second))
         }
 
         mutating func remove(_ path: String) throws(StoreError) {

@@ -106,6 +106,7 @@ public enum EventCatalog {
         Entry(name: "store.outbox_delivery_failed", level: .warning, meaning: "An outbox entry used up its attempts or failed permanently; it stays pending."),
         Entry(name: "store.outbox_maintenance_failed", level: .warning, meaning: "An outbox could not compact its log; nothing was lost."),
         Entry(name: "store.recovered_previous", level: .warning, meaning: "A stored file's current generation was missing or corrupt; the previous generation was returned."),
+        Entry(name: "store.replace_leftover", level: .warning, meaning: "An item was replaced atomically, but the old one could not be removed from the staging path; the replacement is in place and the leftover is for the caller to clear."),
         Entry(name: "store.temp_removed", level: .info, meaning: "A temporary file left by an interrupted write was removed before a new write."),
         Entry(name: "supervisor.child_abandoned", level: .error, meaning: "A child ignored its stop and was abandoned after its shutdown timeout."),
         Entry(name: "supervisor.child_exited", level: .info, meaning: "A supervised child stopped, normally or with an error (warning)."),

@@ -42,6 +42,9 @@ internal import Synchronization
 /// The work's result, if it arrives after the deadline, is discarded. Do not
 /// abandon work that holds a resource another part of the app will release
 /// meanwhile.
+///
+/// For async work that cannot be cancelled, see
+/// ``abandoningAsyncAfter(_:label:limit:clock:fileID:line:operation:)``.
 public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>(
     _ duration: Duration,
     label: String,
@@ -52,9 +55,96 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
     line: UInt = #line,
     operation: @escaping @Sendable () throws(Failure) -> R
 ) async throws(PolicyError<Failure>) -> R {
+    try await abandonable(duration, label: label, limit: limit, clock: clock, fileID: fileID, line: line) { ambient, finish in
+        let tag = ambient.ledgerTag
+        ExternalWork.begin(tag: tag)
+        DispatchQueue.global(qos: qos).async {
+            let result = Result<R, Failure> { () throws(Failure) -> R in try operation() }
+            ExternalWork.end(tag: tag)
+            finish(result)
+        }
+        // A blocked thread cannot be told to stop.
+        return { _ in }
+    }
+}
+
+/// Runs async work that may never finish and stops waiting for it at a
+/// deadline, leaving it running, accounted for.
+///
+/// The async sibling of
+/// ``abandoningAfter(_:label:limit:clock:qos:fileID:line:operation:)``, for
+/// work that does not honour cancellation because it is not Swift's to
+/// cancel: a `withCheckedContinuation` around a CoreAudio or Speech start
+/// whose callback may never come. A cooperative timeout would wait for it
+/// forever. This one throws `.rejected(.deadlineExceeded)` (or `.cancelled`,
+/// if the caller was cancelled) at the deadline and *abandons* the work.
+///
+/// Everything about abandoning in the synchronous form holds here, with a
+/// task in place of a thread: the label's `limit` bounds work running or
+/// abandoned, a call holds its slot until its operation actually returns, a
+/// label with every slot abandoned is wedged (`.rejected(.abandonmentLimit)`,
+/// `abandoned.wedged`), abandoned work is listed in ``AbandonedWork/current``,
+/// counted in `scope.abandonedWork`, and reported when it finally finishes
+/// (`abandoned.completed`), and work is never started for a caller that is
+/// already cancelled or past its deadline. Its result, if it arrives late,
+/// is discarded.
+///
+/// At the deadline the work's task is also cancelled, with cause
+/// ``CancellationCause/deadline`` (or the caller's own cause, if the caller
+/// was cancelled), in case it does check. It stays in the ledger until it
+/// returns, cancelled or not.
+///
+/// The operation runs in an unstructured task off the caller's actor, so the
+/// caller may be isolated to the main actor and is never blocked by it. The
+/// task inherits the caller's task-locals and sees the narrowed deadline.
+public nonisolated(nonsending) func abandoningAsyncAfter<R: Sendable, Failure: Error>(
+    _ duration: Duration,
+    label: String,
+    limit: Int = 2,
+    clock: AnyClock? = nil,
+    fileID: String = #fileID,
+    line: UInt = #line,
+    operation: @escaping @concurrent @Sendable () async throws(Failure) -> R
+) async throws(PolicyError<Failure>) -> R {
+    let deadline = Deadline.after(duration, clock: clock).narrowedByCurrent
+    return try await abandonable(duration, label: label, limit: limit, clock: clock, fileID: fileID, line: line, deadline: deadline) { _, finish in
+        let cause = CancellationCauseBox()
+        let task = Task.stoic {
+            await CancellationCauseBox.$current.withValue(cause) {
+                await Deadline.$stored.withValue(deadline) {
+                    let result: Result<R, Failure>
+                    do throws(Failure) {
+                        result = .success(try await operation())
+                    } catch {
+                        result = .failure(error)
+                    }
+                    finish(result)
+                }
+            }
+        }
+        return { reason in
+            if reason == .deadlineExceeded { cause.record(.deadline) }
+            task.cancel()
+        }
+    }
+}
+
+/// What both forms of abandoning share: admission, the ledger, the wait, and
+/// the abandonment. `launch` starts the work, calls `finish` with its result
+/// whenever that comes, and returns how to cancel it.
+private nonisolated(nonsending) func abandonable<R: Sendable, Failure: Error>(
+    _ duration: Duration,
+    label: String,
+    limit: Int,
+    clock: AnyClock?,
+    fileID: String,
+    line: UInt,
+    deadline narrowed: Deadline? = nil,
+    launch: (Ambient, @escaping @Sendable (Result<R, Failure>) -> Void) -> @Sendable (Rejection.Reason) -> Void
+) async throws(PolicyError<Failure>) -> R {
     precondition(limit >= 1, "abandoningAfter \(label): limit must be at least one")
     let ambient = Ambient.current
-    let deadline = Deadline.after(duration, clock: clock).narrowedByCurrent
+    let deadline = narrowed ?? Deadline.after(duration, clock: clock).narrowedByCurrent
     let ledger = AbandonedWork.ledger
 
     if Task.isCancelled {
@@ -86,14 +176,10 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
     let instrumentation = ambient.instrumentation
     let started = ambient.clock.now
     let ambientClock = ambient.clock
-    let tag = ambient.ledgerTag
-    ExternalWork.begin(tag: tag)
     // The operation keeps the label's slots for as long as it runs, however
     // long after this call returns that is.
     ledger.addLease(label: label)
-    DispatchQueue.global(qos: qos).async {
-        let result = Result<R, Failure> { () throws(Failure) -> R in try operation() }
-        ExternalWork.end(tag: tag)
+    let cancelWork = launch(ambient) { result in
         if let lateness = ledger.finish(id) {
             instrumentation.record(Event("abandoned.completed", level: .notice, label: label, fields: [
                 .init("ran_for", .duration(started.duration(to: ambientClock.now))),
@@ -135,6 +221,7 @@ public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>
             .init("reason", .string(reason.rawValue), privacy: .public),
             .init("outstanding", .int(ledger.outstanding(label: label))),
         ], fileID: fileID, line: line))
+        cancelWork(reason)
     }
     throw .rejected(Rejection(reason, label: label))
 }

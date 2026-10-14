@@ -151,6 +151,20 @@ within it) — `scope.abandonedWork` — and a release declared
 (`scope.release_quarantined`) when that count is not zero. The count is not
 a case of `Exit`, which would break every `switch` over it.
 
+**Async work (`abandoningAsyncAfter`).** Some work that ignores cancellation is
+async by signature: a `withCheckedContinuation` around a CoreAudio or Speech
+start whose callback may never come. It is a separate name rather than an
+overload of `abandoningAfter` because a synchronous closure would satisfy both,
+and a blocking call must never be run as "async" on the cooperative pool by
+overload resolution. It shares the admission, ledger, label limit, wedge
+refusal, events and scope accounting of the synchronous form, with a task in
+place of a thread: the operation runs in an unstructured task (off the
+caller's actor, so a main-actor caller is never blocked), holds its slot until
+it returns, and at the deadline is also cancelled with cause `.deadline` in
+case it does check. A simulation does not wait for it: it runs on the
+simulation's executor, and work that never resumes would otherwise stall
+virtual time for ever.
+
 **Clocks.** Deadlines use the ambient continuous clock: if the machine
 sleeps through a deadline, it has passed. A deadline remembers its clock;
 comparing deadlines from different clocks converts through each clock's
@@ -170,6 +184,10 @@ duplicate types are deprecated with one minor version of overlap.
 | the deadline passes, operation honours cancellation               | Operation cancelled with cause `.deadline`; its error passes through; `deadline.expired`   |
 | the deadline passes, operation ignores cancellation (cooperative) | Stoic waits — cooperative means cooperative; `deadline.expired` reports the overrun when it ends |
 | the deadline passes, operation ignores cancellation (abandoning)  | Returns `.rejected(.deadlineExceeded)` at the deadline; operation tracked in the ledger    |
+| the deadline passes, async work ignores cancellation (abandoning) | Returns `.rejected(.deadlineExceeded)` at the deadline; the work keeps running in a tracked task, counted in `scope.abandonedWork` |
+| the deadline passes, async work checks cancellation (abandoning)  | The task is cancelled with cause `.deadline`; it stays in the ledger until it returns            |
+| abandoned async work finishes later                               | `abandoned.completed` with its lateness; its slot is freed; its result is discarded              |
+| an async abandoning call is made from the main actor              | The caller is not blocked; the work runs off the actor; the deadline behaves as above           |
 | a label has `limit` operations running (abandoning)              | Later callers wait for a slot until their deadline: `.rejected(.deadlineExceeded)`         |
 | every slot of a label is held by abandoned work                   | Refuses to start: `.rejected(.abandonmentLimit)`; `abandoned.wedged` event                 |
 | an enclosing deadline cancels an abandoning call                  | `.rejected(.deadlineExceeded)`, not `.cancelled`                                           |
@@ -183,7 +201,7 @@ duplicate types are deprecated with one minor version of overlap.
 ## Events
 
 `deadline.expired` (label, budget, overrun, outcome), `abandoned.started`,
-`abandoned.completed` (lateness), `abandoned.wedged`.
+`abandoned.completed` (lateness), `abandoned.wedged` (both forms).
 
 ## Testing
 

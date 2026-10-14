@@ -147,6 +147,24 @@ public final class PosixFileSystem: FileSystem {
         }
     }
 
+    public func exchange(_ first: String, _ second: String) throws(StoreError) {
+        if CSys.exchangePaths(first, second) != 0 {
+            throw StoreError(errno: errno, operation: "renamex_np", path: first)
+        }
+    }
+
+    public func removeTree(_ path: String) throws(StoreError) {
+        let (isDirectory, failure) = CSys.isDirectory(path)
+        if let failure { throw StoreError(errno: failure, operation: "lstat", path: path) }
+        guard isDirectory else { return try remove(path) }
+        for name in try list(directory: path) {
+            try removeTree(StorePath.join(path, name))
+        }
+        if CSys.removeDirectory(path) != 0 {
+            throw StoreError(errno: errno, operation: "rmdir", path: path)
+        }
+    }
+
     public func remove(_ path: String) throws(StoreError) {
         if CSys.unlinkPath(path) != 0 {
             throw StoreError(errno: errno, operation: "unlink", path: path)
@@ -314,6 +332,29 @@ private enum CSys {
     static func renamePath(_ source: String, to destination: String) -> Int32 {
         // Both C strings live for the call; rename copies them.
         unsafe rename(source, destination)
+    }
+
+    static func exchangePaths(_ first: String, _ second: String) -> Int32 {
+        #if canImport(Darwin)
+        // Both C strings live for the call; renamex_np copies them.
+        unsafe renamex_np(first, second, UInt32(RENAME_SWAP))
+        #else
+        errno = ENOTSUP
+        return -1
+        #endif
+    }
+
+    /// Whether `path` is itself a directory; a symbolic link to one is not.
+    static func isDirectory(_ path: String) -> (isDirectory: Bool, failure: Int32?) {
+        var info = stat()
+        // lstat fills the struct whose address is passed, and copies the C
+        // string of `path`, which lives for the call.
+        if unsafe lstat(path, &info) != 0 { return (false, errno) }
+        return (info.st_mode & S_IFMT == S_IFDIR, nil)
+    }
+
+    static func removeDirectory(_ path: String) -> Int32 {
+        unsafe rmdir(path)
     }
 
     static func unlinkPath(_ path: String) -> Int32 {
