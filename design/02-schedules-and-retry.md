@@ -38,6 +38,11 @@ public struct BoundedSchedule: Sendable, Hashable {   // what retry accepts
     public func worstCase(attemptTimeout: Duration) -> Duration
 }
 
+public struct Attempt: Sendable, Hashable {           // what each attempt is handed
+    public let number: Int, elapsed: Duration
+    public var idempotencyKey: IdempotencyKey             // one per operation: shared by every attempt
+}
+
 public enum RetryDecision { case retry, retryAfter(Duration), stop }
 public protocol Retryable: Error { var retryDecision: RetryDecision { get } }
 public struct RetryClassifier<Failure: Error> { static var standard, transientOnly, never; init(_:) }
@@ -132,6 +137,16 @@ retry but not its bound, its budget or the deadline. The device's conditions
 stretch it as they stretch any delay, and the five-minute cap is the last
 word: whatever the device is going through, the wait is never longer than it.
 
+**Idempotency keys.** `attempt.idempotencyKey` is the key of the operation
+an attempt belongs to: one `retry` call is one operation, so every attempt
+sends the same key, and a key drawn afresh per attempt (the double charge it
+exists to prevent) cannot happen through it. Each run of `recur` is an
+operation of its own and gets its own key. The key is drawn on first read,
+exactly as `IdempotencyKey.random()` would draw it at the `retry`'s call
+site: an operation that never asks draws nothing, so the ambient random
+sequence (and every seeded test) is unchanged by its existence. Attempts
+compare by number and elapsed time; the operation is identity, not value.
+
 **Recur.** `recur` (next) runs an operation on a schedule after *success*
 — polling, periodic refresh — and may be unbounded, but only inside a scope
 or supervisor that can stop it.
@@ -151,6 +166,9 @@ or supervisor that can stop it.
 | a retry runs inside another retry's attempt        | One attempt only, `retry.nested`, unless `nesting: .allow`                     |
 | an attempt's own timeout fires                     | Counted as transient and retried; `timed_out=true` on the event               |
 | the error is a `DecodingError`                     | Not retried (`.standard`): the same bytes fail the same way                   |
+| every attempt sends `attempt.idempotencyKey`       | The same key on every attempt; drawn once, on first read                       |
+| the same call site retries twice                   | Each `retry` is its own operation, with its own key                            |
+| each run of `recur` sends `attempt.idempotencyKey` | A new key per run: each run is its own operation                               |
 
 ## Events
 

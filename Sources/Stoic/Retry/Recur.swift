@@ -59,7 +59,10 @@ public nonisolated(nonsending) func recur<Failure: Error>(
 
     while true {
         if Task.isCancelled { return finish(.cancelled) }
-        let decision = try await operation(Attempt(number: number, elapsed: start.duration(to: clock.now)))
+        // Each run is an operation of its own, with its own idempotency key.
+        let run = Attempt(
+            number: number, elapsed: start.duration(to: clock.now), operation: OperationIdentity(fileID: fileID, line: line))
+        let decision = try await operation(run)
         if case .stop = decision { return finish(.stopped) }
         guard let scheduled = stepper.next(elapsed: start.duration(to: clock.now)) else { return finish(.scheduleEnded) }
         let delay: Duration

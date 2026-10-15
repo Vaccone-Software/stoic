@@ -68,6 +68,8 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
     storage?.deposit()
     let start = clock.now
     let cause = CancellationCauseBox()
+    // Every hedged copy is the same operation, so they share one key.
+    let identity = OperationIdentity(fileID: fileID, line: line)
 
     func report(_ name: EventName, _ fields: [Event.Field], level: Event.Level = .info) {
         ambient.instrumentation.record(Event(name, level: level, label: label, fields: fields, fileID: fileID, line: line))
@@ -82,7 +84,7 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
         func startAttempt() {
             started += 1
             running += 1
-            let attempt = Attempt(number: started, elapsed: start.duration(to: clock.now))
+            let attempt = Attempt(number: started, elapsed: start.duration(to: clock.now), operation: identity)
             group.addTask {
                 await CancellationCauseBox.$current.withValue(cause) {
                     do throws(Failure) {

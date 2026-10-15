@@ -446,6 +446,7 @@ the operation off the caller's task, which is why a timeout is an option of
 | an attempt fails and none is running                                      | Throws that failure now; no further hedge (failure belongs to retry)                                      |
 | every attempt fails                                                       | Throws the first failure in completion order; `hedge.all_failed`                                          |
 | `maxAttempts` attempts have started                                       | No more hedges                                                                                            |
+| hedged attempts send `attempt.idempotencyKey`                             | The same key on every attempt of one hedge, however many ask at once                                      |
 | the caller is cancelled                                                   | Every attempt cancelled and awaited; the first failure returned                                           |
 | the deadline has passed when a hedge is due                               | No hedge; `hedge.deadline_skip`                                                                           |
 | a stage inside a pipeline rejects                                         | The caller sees one `.rejected(r)`, never a nested `PolicyError`                                          |

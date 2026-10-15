@@ -14,6 +14,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 ## Retry
 - `retry(.exponential(base: .milliseconds(200)).attempts(5)) { attempt in … }`: schedule must be bounded (`.attempts(n)`); budget per call site on by default; nested retries make one attempt; never past the deadline; rethrows the last error.
 - `retry(_:attemptTimeout:) { … }`: each attempt bounded; timed-out attempts are retried.
+- `attempt.idempotencyKey`: one key per operation, the same on every attempt of a `retry` (and of a `hedge`), new per `recur` run; drawn on first read from the ambient random source.
 - `Schedule`: `.fixed`, `.linear`, `.exponential` (jittered, capped 5 min by default), `.fibonacci`, `.decorrelated`, `.delays([…])`; `.capped(at:)`, `.jittered()`, `.unjittered()`, `.upTo(elapsed:)`, `.union`, `.intersection`, `.andThen`, `.attempts(n)` → `BoundedSchedule` (`maximumAttempts`, `worstCase(attemptTimeout:)`).
 - `Retryable` (errors classify themselves: `.retry`, `.retryAfter(d)`, `.stop`), `RetryClassifier.standard/.transientOnly/.never`, `RetryBudget.perCallSite/.named(_)/.unlimited`, `RetryNesting.singleAttempt/.allow`.
 - `recur(_ schedule:) { attempt in .continue / .continueAfter(d) / .stop }` → `RecurOutcome`.
@@ -38,7 +39,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 ## Errors
 - `withContext("doing X") { … }`, `error.context("…")` → `Report` (root, frames, suppressed, `first(T.self)`); cancellation never wrapped.
 - `Defect` (never retried), `PolicyError<F>` (`.rejected(Rejection)` / `.failed(F)`), `Rejection.Reason` (`.deadlineExceeded`, `.cancelled`, `.closed`, `.full`, `.abandonmentLimit`, …), `ConcurrentFailure<F>`.
-- `Secret<T>` (`reveal()`), `IdempotencyKey.random()` (create outside retry).
+- `Secret<T>` (`reveal()`), `IdempotencyKey.random()` (create outside retry, or use `attempt.idempotencyKey`).
 
 ## State machines
 - `StateMachine<S, E>(initial:label:) { state, event in .to(next, timeout:) / .stay / .ignore / .invalid("why") }`; `.send(e)`; `.whileIn(state, label:) { sender in … }` (cancelled on exit; stale events dropped); `.states()`.

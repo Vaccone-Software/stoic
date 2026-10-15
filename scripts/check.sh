@@ -20,9 +20,9 @@ swift test
 step "tests under Thread Sanitizer: the concurrency primitives (data races the model tests cannot see)"
 # The suites that exercise shared mutable state across tasks: semaphore,
 # channel, single-flight, TaskSlot, scopes, race/map, supervision, service
-# graph, state machine, simulation, abandoning timeouts and the resilience
-# policies. A few minutes: the instrumented build is separate from the one above.
-swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead'
+# graph, state machine, simulation, abandoning timeouts, the resilience
+# policies and the idempotency key hedged attempts read at once. A few minutes: the instrumented build is separate from the one above.
+swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey'
 
 step "compile-fail: a Scope, TaskScope or Saga handle cannot escape its body (design/04)"
 # Swift Testing cannot assert that code fails to compile, so each file in

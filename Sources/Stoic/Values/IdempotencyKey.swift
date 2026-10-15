@@ -11,10 +11,16 @@
 /// `"7f3a…"`, not an object; decoding refuses an empty string, which no
 /// server would take as a key and a missing value would otherwise hide.
 ///
-/// The one rule that matters: create the key *outside* the retry, so every
-/// attempt carries the same one.
+/// The one rule that matters: every attempt carries the same key. Inside a
+/// `retry`, ``Attempt/idempotencyKey`` is that key; drawn by hand, the key
+/// must be created *outside* the retry (`stoic.key-inside-retry` flags one
+/// drawn inside).
 ///
-///     let key = IdempotencyKey.random()
+///     try await retry(.exponential(base: .seconds(1)).attempts(5)) { attempt in
+///         try await payments.charge(order, idempotencyKey: attempt.idempotencyKey)
+///     }
+///
+///     let key = IdempotencyKey.random()   // the same, by hand: before the retry
 ///     try await retry(.exponential(base: .seconds(1)).attempts(5)) { _ in
 ///         try await payments.charge(order, idempotencyKey: key)
 ///     }

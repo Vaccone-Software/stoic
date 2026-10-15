@@ -29,8 +29,8 @@ Short on purpose: each rule is one you can check.
 1. **Bound every wait.** Every retry has `.attempts(n)`; long operations
    run under a deadline; queues have a capacity.
 2. **Never retry what is not idempotent** unless the server deduplicates:
-   create an `IdempotencyKey` _outside_ the `retry` and send it with every
-   attempt.
+   send `attempt.idempotencyKey`, which is the same on every attempt, or
+   create an `IdempotencyKey` _outside_ the `retry`.
 3. **Retry at one layer.** Nested retries collapse to one attempt by
    default; do not pass `nesting: .allow` unless the layers retry different
    dependencies.

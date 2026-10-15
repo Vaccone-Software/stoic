@@ -11,7 +11,70 @@ public struct Attempt: Sendable, Hashable, CustomStringConvertible {
     /// Whether this is a retry rather than the first attempt.
     public var isRetry: Bool { number > 1 }
 
+    /// The idempotency key of the operation this attempt belongs to: the same
+    /// on every attempt of one `retry`, and on every attempt of one `hedge`.
+    /// Each run of `recur` is an operation of its own and has its own key.
+    ///
+    /// Send it with any request that changes something, and a server that
+    /// deduplicates can recognise a retry as the request it already handled.
+    /// Because `retry` hands it to every attempt, the key cannot be drawn
+    /// afresh per attempt by mistake (the bug `stoic.key-inside-retry`
+    /// catches when the key is drawn by hand):
+    ///
+    ///     try await retry(.exponential(base: .seconds(1)).attempts(5)) { attempt in
+    ///         try await payments.charge(order, idempotencyKey: attempt.idempotencyKey)
+    ///     }
+    ///
+    /// The key is drawn from the ambient random source the first time any
+    /// attempt reads it, as ``IdempotencyKey/random(fileID:line:)`` would draw
+    /// it at the call site of the `retry`: an operation that never asks costs
+    /// nothing, and under a seed the key is reproducible.
+    public var idempotencyKey: IdempotencyKey { operation.idempotencyKey }
+
+    /// What every attempt at one operation shares.
+    let operation: OperationIdentity
+
+    init(number: Int, elapsed: Duration, operation: OperationIdentity) {
+        self.number = number
+        self.elapsed = elapsed
+        self.operation = operation
+    }
+
     public var description: String { "attempt \(number) at +\(elapsed)" }
+
+    /// Attempts are equal when their number and elapsed time are; the
+    /// operation they belong to is identity, not value.
+    public static func == (lhs: Attempt, rhs: Attempt) -> Bool {
+        lhs.number == rhs.number && lhs.elapsed == rhs.elapsed
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(number)
+        hasher.combine(elapsed)
+    }
+}
+
+/// What the attempts at one operation share: its idempotency key, drawn the
+/// first time an attempt asks for it. Attempts of a hedge run concurrently,
+/// so the draw happens under a lock, once.
+final class OperationIdentity: Sendable {
+    private let fileID: String
+    private let line: UInt
+    private let key = Mutex<IdempotencyKey?>(nil)
+
+    init(fileID: String, line: UInt) {
+        self.fileID = fileID
+        self.line = line
+    }
+
+    var idempotencyKey: IdempotencyKey {
+        key.withLock { key in
+            if let key { return key }
+            let drawn = IdempotencyKey.random(fileID: fileID, line: line)
+            key = drawn
+            return drawn
+        }
+    }
 }
 
 /// What to do after an attempt fails.
@@ -420,6 +483,7 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     // Built on the first failure: most calls succeed at once and never need it.
     var stepper: Schedule.Stepper?
     let start = clock.now
+    let operation = OperationIdentity(fileID: fileID, line: line)
     var number = 1
 
     func report(_ name: EventName, _ fields: [Event.Field], level: Event.Level = .info) {
@@ -430,7 +494,7 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
 
     while true {
         let attemptStart = clock.now
-        let attempt = Attempt(number: number, elapsed: start.duration(to: attemptStart))
+        let attempt = Attempt(number: number, elapsed: start.duration(to: attemptStart), operation: operation)
         let (result, timedOut) = await runAttempt(attempt)
 
         let error: Failure

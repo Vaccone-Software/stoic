@@ -28,7 +28,7 @@ repository root lists every entry point.
 ## Rules
 
 1. Every retry ends in `.attempts(n)`; it will not compile otherwise.
-2. Create an `IdempotencyKey` outside `retry` for non-idempotent requests.
+2. For non-idempotent requests, send `attempt.idempotencyKey` (the same on every attempt), or create an `IdempotencyKey` outside `retry`.
 3. Don't nest retries for the same dependency (inner ones make one attempt).
 4. Never catch `CancellationError` to keep going; never wrap it.
 5. Bug-shaped errors conform to `Defect`; dependency errors to `Retryable`.
