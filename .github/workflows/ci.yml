@@ -26,6 +26,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The public API check compares with the newest release tag.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Toolchain
         run: |
@@ -35,3 +39,15 @@ jobs:
 
       - name: Check
         run: ./scripts/check.sh ${{ inputs.stress && '--stress' || '' }}
+
+  linux:
+    name: scripts/linux.sh
+    # The libraries that do not depend on Apple frameworks stay portable.
+    runs-on: ubuntu-latest
+    container: swift:6.4
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build
+        run: ./scripts/linux.sh

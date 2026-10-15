@@ -1,0 +1,10 @@
+{
+  "Ambient.current" : 0,
+  "AsyncSemaphore.withPermit (uncontended)" : 0,
+  "CircuitBreaker.execute (closed, success)" : 1,
+  "Schedule step (exponential, jittered)" : 3,
+  "StateMachine.send" : 6.16,
+  "retry, first attempt succeeds" : 5,
+  "withScope, one finalizer" : 32.54,
+  "withTimeout, completes at once" : 19.86
+}

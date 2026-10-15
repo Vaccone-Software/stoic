@@ -63,8 +63,10 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
 
 ## Working on Stoic
 
-- **Check everything:** `scripts/check.sh` (build, tests, lint tests, self-lint;
-  `--stress` adds 100 repetitions of every suite). Warnings are errors.
+- **Check everything:** `scripts/check.sh` (build, tests, Thread and Address
+  Sanitizer, lint tests, self-lint, the public API check, the allocation
+  gate, macros, iOS, docs; `--stress` adds 100 repetitions of every suite),
+  and `scripts/linux.sh --docker` for the Linux build. Warnings are errors.
   Stress a suite with
   `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`;
   every concurrency test must survive it.
@@ -75,6 +77,11 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
   `stoic:allow` fails until the baseline records it: fix the code first, and
   re-record (`--write-baseline .stoic-lint-baseline.json Sources Plugins
   Package.swift`) only for an escape a reviewer should see.
+- **API and allocations:** a breaking public API change fails `check.sh`
+  unless listed in `api-breakage-allowlist.txt` in the same change. A hot
+  path that allocates more than `Benchmarks/allocations.json` records fails
+  too; one that allocates less, re-record it (`--record`) so the gate
+  tightens.
 - **Macros:** `swift test --traits Macros --filter StoicMacros` runs the
   expansion tests and the usage tests (macro schema against the same schema
   written by hand). The `Macros` trait is the only other way swift-syntax is

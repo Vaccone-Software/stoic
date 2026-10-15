@@ -1,4 +1,10 @@
+#if canImport(os)
 internal import os
+#elseif canImport(Glibc)
+internal import Glibc
+#elseif canImport(Musl)
+internal import Musl
+#endif
 
 /// Where Stoic's events go.
 ///
@@ -26,6 +32,19 @@ public struct NoInstrumentation: Instrumentation {
     public func isEnabled(_ level: Event.Level) -> Bool { false }
 }
 
+/// Where events go when nobody chose: the unified logging system on Apple
+/// platforms, standard error elsewhere. Never nowhere: a decision nobody can
+/// see is a bug (DESIGN.md, principle 7).
+@usableFromInline
+func platformDefaultInstrumentation() -> any Instrumentation {
+    #if canImport(os)
+    OSLogInstrumentation()
+    #else
+    StandardErrorInstrumentation()
+    #endif
+}
+
+#if canImport(os)
 /// Writes events to the unified logging system, subsystem `stoic`.
 ///
 /// Event names, levels, labels and public fields are visible in collected
@@ -73,6 +92,31 @@ extension Event.Level {
         }
     }
 }
+#else
+/// The default sink without unified logging (Linux): one line per event on
+/// standard error, private fields redacted as OSLog would redact them.
+struct StandardErrorInstrumentation: Instrumentation {
+    let minimumLevel: Event.Level = .info
+
+    func isEnabled(_ level: Event.Level) -> Bool {
+        level >= minimumLevel
+    }
+
+    func record(_ event: Event) {
+        guard event.level >= minimumLevel else { return }
+        var parts = ["stoic", "\(event.level)", event.name.rawValue]
+        if let label = event.label { parts.append("label=\(label)") }
+        for field in event.fields {
+            parts.append(field.privacy == .public ? field.description : "\(field.key)=<private>")
+        }
+        let line = parts.joined(separator: " ") + "\n"
+        // `write(2)` rather than `stderr`, a C global Swift 6 cannot prove
+        // safe. Unsafe, justified: the buffer lives for the whole call, and
+        // the count leaves out the C string's terminator.
+        _ = line.utf8CString.withUnsafeBufferPointer { unsafe write(2, $0.baseAddress, $0.count - 1) }
+    }
+}
+#endif
 
 /// Fans one event out to several sinks, in order.
 public struct CompositeInstrumentation: Instrumentation {

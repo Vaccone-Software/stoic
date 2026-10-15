@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 internal import Darwin
+#elseif canImport(Glibc)
+internal import Glibc
+#elseif canImport(Musl)
+internal import Musl
+#endif
 internal import Dispatch
 public import Stoic
 internal import Synchronization
@@ -1089,9 +1095,13 @@ extension SimulationExecutor.PCT {
 
 /// An identifier of the calling thread, stable for its life.
 func currentThreadID() -> UInt64 {
+    #if canImport(Darwin)
     var id: UInt64 = 0
     unsafe pthread_threadid_np(nil, &id)
     return id
+    #else
+    UInt64(pthread_self())
+    #endif
 }
 
 /// SplitMix64: small, fast, and identical on every platform.

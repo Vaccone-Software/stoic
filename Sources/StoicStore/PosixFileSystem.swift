@@ -296,7 +296,9 @@ private enum CSys {
         let length = buffer.withUnsafeMutableBufferPointer { storage in
             // readlink writes at most 4096 bytes into storage (one short of its size)
             // and does not NUL-terminate; the path's C string lives for the call.
-            unsafe readlink(path, storage.baseAddress, storage.count - 1)
+            // The buffer is never empty, so it has a base address (Glibc's
+            // readlink takes a non-optional pointer).
+            unsafe readlink(path, storage.baseAddress!, storage.count - 1)
         }
         if length < 0 { return (nil, errno) }
         let bytes = buffer[..<length].map { UInt8(bitPattern: $0) }

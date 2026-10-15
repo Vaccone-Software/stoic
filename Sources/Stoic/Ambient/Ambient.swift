@@ -55,7 +55,7 @@ public struct Ambient: Sendable {
         clock: AnyClock = .continuous,
         livenessClock: AnyClock = .suspending,
         random: RandomSource = .system,
-        instrumentation: any Instrumentation = OSLogInstrumentation(),
+        instrumentation: any Instrumentation = platformDefaultInstrumentation(),
         budgets: RetryBudgets = .shared,
         conditions: any SystemConditionsSource = FixedConditions()
     ) {
