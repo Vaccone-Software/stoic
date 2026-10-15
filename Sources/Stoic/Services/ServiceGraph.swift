@@ -202,6 +202,7 @@ public struct ServiceGraph: Sendable {
                     guard service.needs.allSatisfy({ started[$0] != nil }) else { continue }
                     running.insert(key)
                     let visible = Services(values: started, visible: Set(service.needs), owner: key.name)
+                    // stoic:allow(unbounded-task-group): an app's few services start as soon as their needs have
                     group.addTask {
                         do {
                             let value = try await withTimeout(service.startTimeout, label: "\(label).\(key).start") {

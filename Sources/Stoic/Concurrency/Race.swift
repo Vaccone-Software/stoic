@@ -81,6 +81,7 @@ public nonisolated(nonsending) func race<R: Sendable, Failure: Error>(
     let failures: [Failure]
     (outcome, failures) = await withTaskGroup(of: (Int, Result<R, Failure>).self) { group in
         for (index, operation) in operations.enumerated() {
+            // stoic:allow(unbounded-task-group): a race runs every racer at once by definition; callers pass a few
             group.addTask {
                 await CancellationCauseBox.$current.withValue(cause) {
                     do throws(Failure) {

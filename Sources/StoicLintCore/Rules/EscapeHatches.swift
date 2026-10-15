@@ -122,6 +122,27 @@ final class BareTaskSleepRule: RuleVisitor {
     }
 }
 
+/// `withUnsafeContinuation` and `withUnsafeThrowingContinuation`: the
+/// checked forms with the checks removed. Resuming twice is undefined
+/// behaviour instead of a trap, and a continuation that is never resumed
+/// hangs its task forever with no message, where the checked form logs the
+/// leak. The saving is a few nanoseconds per call.
+final class UnsafeContinuationRule: RuleVisitor {
+    private static let unsafe: Set<String> = ["withUnsafeContinuation", "withUnsafeThrowingContinuation"]
+
+    override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
+        if let name = node.calledExpression.referencedName, Self.unsafe.contains(name) {
+            reporter.report(
+                .unsafeContinuation, at: node.calledExpression,
+                message:
+                    "An unsafe continuation resumed twice is undefined behaviour, and one never resumed hangs its task with no message.",
+                fixIt:
+                    "use `withCheckedContinuation` / `withCheckedThrowingContinuation`, or justify it with `// stoic:allow(unsafe-continuation): <why>`")
+        }
+        return .visitChildren
+    }
+}
+
 /// `AsyncStream` and `AsyncThrowingStream` with no buffer bound. The default
 /// policy is `.unbounded`: a producer faster than its consumer grows memory
 /// until the app is killed.

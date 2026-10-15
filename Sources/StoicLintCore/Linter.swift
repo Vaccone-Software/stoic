@@ -63,6 +63,10 @@ public struct Linter: Sendable {
         { SwallowedErrorRule(reporter: $0) },
         { BareTaskSleepRule(reporter: $0) },
         { KeyInsideRetryRule(reporter: $0) },
+        { HandRolledRetryRule(reporter: $0) },
+        { KeepAliveLoopRule(reporter: $0) },
+        { UnboundedTaskGroupRule(reporter: $0) },
+        { UnsafeContinuationRule(reporter: $0) },
     ]
 }
 

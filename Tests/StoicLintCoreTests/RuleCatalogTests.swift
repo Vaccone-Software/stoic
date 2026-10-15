@@ -26,6 +26,13 @@ struct RuleCatalogTests {
         .bareTaskSleep: "func f() async throws {\n    try await Task.sleep(for: .seconds(1))\n}\n",
         .keyInsideRetry:
             "func f() async throws {\n    try await retry(schedule) { _ in try await send(IdempotencyKey.random()) }\n}\n",
+        .handRolledRetry:
+            "func f() async throws {\n    for _ in 1...3 {\n        do { return try await fetch() } catch { try await clock.sleep(for: .seconds(1)) }\n    }\n}\n",
+        .keepAliveLoop:
+            "func f() async throws {\n    while true {\n        do { try await run() } catch { try await clock.sleep(for: .seconds(1)) }\n    }\n}\n",
+        .unboundedTaskGroup:
+            "func f() async {\n    await withTaskGroup(of: Void.self) { group in\n        for url in urls { group.addTask { await fetch(url) } }\n    }\n}\n",
+        .unsafeContinuation: "func f() async {\n    await withUnsafeContinuation { $0.resume() }\n}\n",
         .allowWithoutReason: "// stoic:allow(force-try)\nlet x = 1\n",
     ]
 

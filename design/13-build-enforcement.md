@@ -243,6 +243,23 @@ the `do` is the body's last statement, or last in an `if`, `switch`, `do` or
 `catch` that is itself last, outwards. A loop in between is not the end,
 because its next turn runs.
 
+**What a hand-written loop looks like.** The loop rules look inside a
+`for`, `while` or `repeat` body, not inside closures, functions or inner
+loops it contains (each inner loop is judged on its own). A loop _backs off_
+when a `do` in its body has a `catch` that calls something named `sleep` or
+`usleep`; it _leaves on success_ when that `do`'s body `return`s or `break`s
+(an unlabeled `break` inside a `switch` ends the `switch`, not the loop).
+`hand-rolled-retry` is a loop that backs off and leaves on success, whatever
+its condition: `while true { do { return try await f() } catch { … sleep } }`
+is a retry. `keep-alive-loop` is `while true`, `repeat { } while true`, or a
+loop whose condition asks `isCancelled`, that backs off and does not leave on
+success. A loop that sleeps every turn outside a `catch` is pacing, and
+neither rule's business. `unbounded-task-group` flags `addTask` directly in
+the body of a `for … in` over something other than a numeric range
+(`0..<n`, `a...b`, `stride`, the bounded-workers pattern) whose body does not
+wait on `group.next()` (the sliding-window pattern); `for await` is left
+alone.
+
 **Build integration.** The plugin creates one `.buildCommand` per target over
 its Swift sources. The inputs are the sources (and the baseline); the one
 declared output is a stamp file `<Target>.stoic-lint-stamp` in the plugin work
@@ -291,6 +308,10 @@ the right replacement depends on code the linter does not read.
 | `stoic.swallowed-error`      | A catch-all whose body is empty or only prints (above). Not in test code                                                                                                                      | `try?` written longhand: the failure, its cause and what the code was doing vanish; print output goes nowhere in a shipped app                       | Handle it, or `withContext("what I was doing") { … }`; or justify with `stoic:allow`                       |
 | `stoic.bare-task-sleep`      | `Task.sleep(…)` without a `clock:` argument, outside test code                                                                                                                               | Waits on the wall clock, ignoring the ambient one: a test cannot advance it, so a thirty-second backoff takes thirty seconds (principle 6)          | `try await Ambient.sleep(for:)`, or the injected clock's `sleep`                                           |
 | `stoic.key-inside-retry`     | `IdempotencyKey.random(…)` anywhere inside a closure passed to `retry(…)`                                                                                                                     | A new key per attempt is no key: an attempt whose response was lost is performed again by the next, the double charge the key exists to prevent  | `attempt.idempotencyKey`, or draw the key before `retry`                                                   |
+| `stoic.hand-rolled-retry`    | A loop that backs off in a `catch` and leaves on success (above)                                                                                                                              | Retries every error (defects included), ignores the deadline and any budget, sleeps on the wall clock, reports nothing                               | `retry(.exponential(base:).attempts(n))`                                                                   |
+| `stoic.keep-alive-loop`      | `while true` / `repeat … while true` / a loop on `isCancelled` that backs off in a `catch` and does not leave on success (above)                                                              | Restarts forever however often it fails, never gives up loudly, and cannot see a hang                                                                | A `Supervisor` child (restart policy, intensity, heartbeat), or `recur` for periodic work                  |
+| `stoic.unbounded-task-group` | `group.addTask` / `addTaskUnlessCancelled` directly in a `for … in` over a collection (above)                                                                                                 | One child per element: a thousand inputs are a thousand concurrent requests, sockets and buffers (principle 2)                                        | `mapConcurrent(_:limit:)`, or wait on `group.next()` past a limit; or justify with `stoic:allow`           |
+| `stoic.unsafe-continuation`  | `withUnsafeContinuation` / `withUnsafeThrowingContinuation`                                                                                                                                   | A double resume is undefined behaviour instead of a trap; a leaked one hangs its task with no message                                                | `withCheckedContinuation` / `withCheckedThrowingContinuation`; or justify with `stoic:allow`               |
 | `stoic.allow-without-reason` | A `stoic:allow(…)` comment with no reason (or malformed). Not suppressible                                                                                                                    | "Allow" typed as a reflex defeats the rule                                                                                                            | `// stoic:allow(rule): why this is safe here`                                                              |
 
 Known limits, all false negatives by design:
@@ -311,6 +332,15 @@ Known limits, all false negatives by design:
   reports an empty one as a swallowed error.
 - `swallowed-error` leaves a catch that logs through `Logger` alone: the
   author chose where the error goes.
+- `hand-rolled-retry` misses a loop that records the error in its `catch` and
+  sleeps after the `do` instead of inside the `catch`, and a loop that exits
+  through a flag rather than `return` or `break`.
+- `keep-alive-loop` misses a forever loop spelled with a variable
+  (`while running`) unless its condition asks `isCancelled`.
+- `unbounded-task-group` cannot tell a small collection from a large one: a
+  deliberate fan-out over a handful of elements (a race's racers, an app's
+  services) is a finding to justify. It does not see `addTask` in a
+  `forEach` closure or in a loop over an async sequence.
 - `key-inside-retry` does not see a key drawn through an inferred
   `.random()`, or inside `Retrying(…).execute { }` or a `Pipeline`, whose
   retrying the linter cannot see.
@@ -367,7 +397,7 @@ What was found, by building Stoic and two scratch consumers:
   tool behind it is real.
 - **The default `swift build` and `swift test` of the Stoic repo do not need
   swift-syntax**, and pass: 173 and 158 tests, and `StoicLintCoreTests`
-  reports 0 tests. `swift test --traits Lint` runs 157 more.
+  reports 0 tests. `swift test --traits Lint` runs 188 more.
 - **Traits are additive across the graph.** If any package in an app's graph
   enables `Lint` on Stoic, it is on for all of it.
 - **Switching traits in one checkout rebuilds**, and both configurations share
@@ -438,10 +468,9 @@ Package.swift` is clean.
 
 ## Planned
 
-- A rule per primitive as it lands: a `while true` loop that catches and
-  sleeps (`Supervisor`), a retry loop written by hand (`retry`), an
-  unsafe continuation without a reason, `group.addTask` in a loop over a
-  collection (`mapConcurrent(_:limit:)`).
+- A rule per primitive as it lands.
+- A corpus of open-source apps, pinned, whose findings per rule are kept
+  as a golden file, to measure false positives instead of assuming them.
 - A `--format` option for CI systems that want JSON or SARIF.
 - `stoic-doctor`, which audits an app's manifest for layer (b) settings.
 - Exercising the Xcode entry point against a real project.

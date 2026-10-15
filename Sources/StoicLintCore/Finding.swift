@@ -19,6 +19,10 @@ public enum RuleID: String, CaseIterable, Sendable, Codable {
     case swallowedError = "stoic.swallowed-error"
     case bareTaskSleep = "stoic.bare-task-sleep"
     case keyInsideRetry = "stoic.key-inside-retry"
+    case handRolledRetry = "stoic.hand-rolled-retry"
+    case keepAliveLoop = "stoic.keep-alive-loop"
+    case unboundedTaskGroup = "stoic.unbounded-task-group"
+    case unsafeContinuation = "stoic.unsafe-continuation"
     /// A suppression comment that does not say why. Never itself suppressible:
     /// a reason is the whole point of allowing something.
     case allowWithoutReason = "stoic.allow-without-reason"
