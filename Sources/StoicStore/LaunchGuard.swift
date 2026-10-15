@@ -212,7 +212,7 @@ public final class LaunchGuard: Sendable {
             do {
                 try await Ambient.sleep(for: duration)
                 try self.markStable()
-            } catch {
+            } catch {  // stoic:allow(swallowed-error): unconfirmed is the safe outcome (below)
                 // Cancelled, or the write failed: the launch stays unconfirmed,
                 // which is the safe direction to be wrong in.
             }

@@ -193,7 +193,7 @@ public final class Journal: Sendable {
         if let file = state.withLock({ $0.file }) {
             do throws(StoreError) {
                 try fileSystem.close(file)
-            } catch {}
+            } catch {}  // stoic:allow(swallowed-error): nothing can be reported from a deinit (see above)
         }
     }
 

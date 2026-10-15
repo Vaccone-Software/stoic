@@ -58,6 +58,11 @@ public struct Linter: Sendable {
         { BlockingInAsyncRule(reporter: $0) },
         { DiscardedTryRule(reporter: $0) },
         { ForceTryRule(reporter: $0) },
+        { PreconcurrencyRule(reporter: $0) },
+        { SwallowedCancellationRule(reporter: $0) },
+        { SwallowedErrorRule(reporter: $0) },
+        { BareTaskSleepRule(reporter: $0) },
+        { KeyInsideRetryRule(reporter: $0) },
     ]
 }
 

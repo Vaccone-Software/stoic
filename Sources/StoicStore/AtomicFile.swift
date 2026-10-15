@@ -371,17 +371,14 @@ public struct AtomicFile: Sendable {
     private func closeQuietly(_ file: OpenFile) {
         do throws(StoreError) {
             try fileSystem.close(file)
-        } catch {
-            // Already failing; the original error is the one to report.
+        } catch {  // stoic:allow(swallowed-error): already failing; the original error is the one to report
         }
     }
 
     private func removeQuietly(_ path: String) {
         do throws(StoreError) {
             if try fileSystem.exists(path) { try fileSystem.remove(path) }
-        } catch {
-            // The temporary is cleaned up on the next write; the original
-            // error is the one to report.
+        } catch {  // stoic:allow(swallowed-error): the next write cleans up the temporary; the original error is the one to report
         }
     }
 }

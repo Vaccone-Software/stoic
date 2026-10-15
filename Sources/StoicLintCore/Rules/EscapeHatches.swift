@@ -79,6 +79,49 @@ final class SleepForTimeoutRule: RuleVisitor {
     }
 }
 
+/// `@preconcurrency`: on an import, a conformance or a declaration, it
+/// downgrades the Sendable and isolation errors the compiler would report
+/// there to warnings, or to nothing. Sometimes it is the only way to use a
+/// framework that predates strict concurrency; it is never right silently.
+final class PreconcurrencyRule: RuleVisitor {
+    override func visit(_ node: AttributeSyntax) -> SyntaxVisitorContinueKind {
+        if node.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "preconcurrency" {
+            reporter.report(
+                .preconcurrency,
+                at: node,
+                message:
+                    "`@preconcurrency` silences the Sendable and isolation errors the compiler would report here.",
+                fixIt:
+                    "fix the isolation or Sendable gap, or justify it with `// stoic:allow(preconcurrency): <why the unchecked code is safe>`"
+            )
+        }
+        return .visitChildren
+    }
+}
+
+/// `Task.sleep` with no clock: a wait on the wall clock that a test cannot
+/// advance, so a thirty-second backoff takes thirty seconds in CI.
+///
+/// Passing `clock:` is fine: the caller chose the clock, and a test can hand
+/// it a test clock. Test code is exempt, since a test that needs real time
+/// (an abandoned operation, a hang the runtime must notice) has to wait for
+/// it.
+final class BareTaskSleepRule: RuleVisitor {
+    override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
+        guard !reporter.isTestFile, let call = node.memberCall, call.name == "sleep",
+            call.base.referencedName == "Task", node.argument(labeled: "clock") == nil,
+            let member = node.calledExpression.as(MemberAccessExprSyntax.self)
+        else { return .visitChildren }
+        reporter.report(
+            .bareTaskSleep,
+            at: member.declName,
+            message: "`Task.sleep` waits on the wall clock: a test cannot advance it, and the ambient clock is ignored.",
+            fixIt: "use `try await Ambient.sleep(for:)`, or pass the clock you were given (`clock.sleep(for:)`)"
+        )
+        return .visitChildren
+    }
+}
+
 /// `AsyncStream` and `AsyncThrowingStream` with no buffer bound. The default
 /// policy is `.unbounded`: a producer faster than its consumer grows memory
 /// until the app is killed.

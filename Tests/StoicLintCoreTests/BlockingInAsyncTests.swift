@@ -157,7 +157,8 @@ struct BlockingInAsyncTests {
                 sleep(1, 2)
             }
             """
-        #expect(rules(in: source) == [])
+        // `Task.sleep` is `bare-task-sleep`'s business, not this rule's.
+        #expect(rules(in: source) == ["bare-task-sleep"])
     }
 
     @Test func moduleQualifiedCFunctionsAreFlagged() {

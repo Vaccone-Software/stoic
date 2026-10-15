@@ -219,10 +219,29 @@ flagged: a closure, a function with a non-`Void` return, a getter, or an
 a `Task { try? await f() }` that is itself a statement, because nobody can
 read that task's result.
 
-**Test code.** `force-try` skips a file whose path contains `/Tests/` or whose
-name ends in `Tests.swift`: a crash in a test is a failing test. No other
-rule has a test exemption. (A project that lives under a directory named
-`Tests` is not linted by `force-try` at all; keep sources out of it.)
+**Test code.** A file whose path contains `/Tests/` or whose name ends in
+`Tests.swift` is test code, and five rules skip it: `force-try` (a crash in a
+test is a failing test), `discarded-try` and `swallowed-error` (tests discard
+the errors of work they have just torn down), `swallowed-cancellation` (a
+test catches cancellation to assert that it happened) and `bare-task-sleep`
+(a test of real-time behaviour has to wait for real time). Every other rule
+applies to tests too. (A project that lives under a directory named `Tests`
+is not linted by those five at all; keep sources out of it.)
+
+**What "swallowed" means.** `swallowed-error` flags a catch-all (`catch`,
+`catch let error`, `catch _`) whose body is empty or only calls `print`,
+`debugPrint`, `dump` or `NSLog`. A clause that names its error
+(`catch CocoaError.fileNoSuchFile {}`) is handling it, and is not flagged.
+Two catch-alls are not swallowing: one whose `do` only sleeps (a sleep throws
+nothing but cancellation, so that is `swallowed-cancellation`'s business), and
+one nested inside another `catch` that goes on to `throw` (a secondary failure
+while the original error propagates). `swallowed-cancellation` flags a clause
+that names `CancellationError`, or a catch-all over a `do` that only sleeps,
+when the clause neither leaves (`throw`, `return`, `break`, `fatalError`) nor
+ends its function, closure or accessor body by falling off the end of it:
+the `do` is the body's last statement, or last in an `if`, `switch`, `do` or
+`catch` that is itself last, outwards. A loop in between is not the end,
+because its next turn runs.
 
 **Build integration.** The plugin creates one `.buildCommand` per target over
 its Swift sources. The inputs are the sources (and the baseline); the one
@@ -267,6 +286,11 @@ the right replacement depends on code the linter does not read.
 | `stoic.force-try`            | `try!` outside test code. Exempt: `Regex("literal")` and `NSRegularExpression(pattern: "literal")` (a constant pattern fails every time or never)                                             | A crash with no message and no context is the failure handler                                                                                         | Propagate with `try`, or handle; if it cannot fail, `stoic:allow(force-try): why`                          |
 | `stoic.task-detached`        | `Task.detached` (also `Task<A, B>.detached`)                                                                                                                                                  | Loses task-locals: the ambient context, deadlines, cancellation causes. It runs on the wall clock with no bound                                       | `Task {}`, or a structured child (`withTaskGroup`, `withTaskScope`)                                        |
 | `stoic.sleep-for-timeout`    | Any `.asyncAfter(` call                                                                                                                                                                       | A timer no scope owns, no deadline bounds, and a test clock cannot advance                                                                            | `withTimeout` to bound work; `Ambient.sleep(for:)` inside a task the caller owns. Justification is allowed |
+| `stoic.preconcurrency`       | `@preconcurrency` on an import, a conformance or a declaration                                                                                                                                | Downgrades the Sendable and isolation errors the compiler would report there to warnings, or nothing                                                  | Fix the isolation or Sendable gap; or justify with `stoic:allow`                                           |
+| `stoic.swallowed-cancellation` | A `catch` matching `CancellationError` (or a catch-all over a `do` that only sleeps) that neither leaves nor ends its body (above). Not in test code                                        | The work carries on after its owner asked it to stop, and nothing above learns it was cancelled: loops spin, scopes wait                             | Let it propagate; to stop quietly, `return`                                                                |
+| `stoic.swallowed-error`      | A catch-all whose body is empty or only prints (above). Not in test code                                                                                                                      | `try?` written longhand: the failure, its cause and what the code was doing vanish; print output goes nowhere in a shipped app                       | Handle it, or `withContext("what I was doing") { … }`; or justify with `stoic:allow`                       |
+| `stoic.bare-task-sleep`      | `Task.sleep(…)` without a `clock:` argument, outside test code                                                                                                                               | Waits on the wall clock, ignoring the ambient one: a test cannot advance it, so a thirty-second backoff takes thirty seconds (principle 6)          | `try await Ambient.sleep(for:)`, or the injected clock's `sleep`                                           |
+| `stoic.key-inside-retry`     | `IdempotencyKey.random(…)` anywhere inside a closure passed to `retry(…)`                                                                                                                     | A new key per attempt is no key: an attempt whose response was lost is performed again by the next, the double charge the key exists to prevent  | `attempt.idempotencyKey`, or draw the key before `retry`                                                   |
 | `stoic.allow-without-reason` | A `stoic:allow(…)` comment with no reason (or malformed). Not suppressible                                                                                                                    | "Allow" typed as a reflex defeats the rule                                                                                                            | `// stoic:allow(rule): why this is safe here`                                                              |
 
 Known limits, all false negatives by design:
@@ -281,6 +305,15 @@ Known limits, all false negatives by design:
 - `unbounded-stream` trusts a `bufferingPolicy:` passed as a variable.
 - `discarded-try` does not follow `try?` through a closure's inferred
   `Void` return.
+- `swallowed-cancellation` does not see cancellation caught by a catch-all
+  over work other than sleeps (`catch {}` after `try await fetch()`), since
+  the linter cannot tell which errors that work throws; `swallowed-error`
+  reports an empty one as a swallowed error.
+- `swallowed-error` leaves a catch that logs through `Logger` alone: the
+  author chose where the error goes.
+- `key-inside-retry` does not see a key drawn through an inferred
+  `.random()`, or inside `Retrying(…).execute { }` or a `Pipeline`, whose
+  retrying the linter cannot see.
 
 ## Failure modes
 
@@ -334,7 +367,7 @@ What was found, by building Stoic and two scratch consumers:
   tool behind it is real.
 - **The default `swift build` and `swift test` of the Stoic repo do not need
   swift-syntax**, and pass: 173 and 158 tests, and `StoicLintCoreTests`
-  reports 0 tests. `swift test --traits Lint` runs 89 more.
+  reports 0 tests. `swift test --traits Lint` runs 147 more.
 - **Traits are additive across the graph.** If any package in an app's graph
   enables `Lint` on Stoic, it is on for all of it.
 - **Switching traits in one checkout rebuilds**, and both configurations share
@@ -398,12 +431,10 @@ Package.swift` is clean.
 
 ## Planned
 
-- A rule per primitive as it lands: a bare `Task.sleep` in code under test
-  (use `Ambient.sleep`), a `while true` loop that catches and sleeps
-  (`Supervisor`), a `catch { print(error) }` (`Report`), a retry loop written
-  by hand.
-- `@preconcurrency` without a reason, named in AGENTS.md rule 7 and not yet
-  checked.
+- A rule per primitive as it lands: a `while true` loop that catches and
+  sleeps (`Supervisor`), a retry loop written by hand (`retry`), an
+  unsafe continuation without a reason, `group.addTask` in a loop over a
+  collection (`mapConcurrent(_:limit:)`).
 - A `--format` option for CI systems that want JSON or SARIF.
 - `stoic-doctor`, which audits an app's manifest for layer (b) settings.
 - Exercising the Xcode entry point against a real project.

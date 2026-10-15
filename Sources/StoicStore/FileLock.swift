@@ -63,7 +63,7 @@ public final class FileLock: Sendable {
         if let file = held.withLock({ $0 }) {
             do throws(StoreError) {
                 try fileSystem.close(file)
-            } catch {}
+            } catch {}  // stoic:allow(swallowed-error): nothing can be reported from a deinit (see above)
         }
     }
 

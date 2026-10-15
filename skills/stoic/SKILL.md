@@ -33,7 +33,7 @@ repository root lists every entry point.
 4. Never catch `CancellationError` to keep going; never wrap it.
 5. Bug-shaped errors conform to `Defect`; dependency errors to `Retryable`.
 6. Release resources in finalizers; commit in the body.
-7. No `@unchecked Sendable`, `nonisolated(unsafe)` or `try!` without a written reason.
+7. No `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` or `try!` without a written reason (`// stoic:allow(<rule>): <why>`).
 8. Tests: `TestClock` + `waitForSleepers(count:)` + `advance(by:)`; `ImmediateClock` only to record delays; `FaultInjector` for failures; `@Test(.stoic(seed:))` for isolation. No real sleeps. For concurrent logic (caches, sync engines, anything with shared state across tasks), add a `simulate(seeds: 0..<500) { sim in … }` test: it explores interleavings deterministically and a failure names the seed that replays it.
 
 ## Declaring a schema

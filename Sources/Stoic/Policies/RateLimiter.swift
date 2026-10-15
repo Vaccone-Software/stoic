@@ -298,7 +298,7 @@ public final class RateLimiter: Policy, CustomStringConvertible {
             case .sleep(let wait):
                 do {
                     try await clock.sleep(until: now.advanced(by: wait), tolerance: nil)
-                } catch {
+                } catch {  // stoic:allow(swallowed-cancellation): turned into a rejection the next turn returns
                     // Cancelled while sleeping: the cancellation handler is
                     // removing this waiter; collect that on the next turn.
                     leave(id, because: Rejection(.cancelled, label: label))

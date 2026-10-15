@@ -43,7 +43,7 @@ Short on purpose: each rule is one you can check.
    does not change the outcome; a commit's failure must.
 7. **No escape hatches without a reason in a comment:** `@unchecked
 Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`. With the
-`StoicLint` plugin the first three fail the build unless the reason is
+`StoicLint` plugin each fails the build unless the reason is
 written as `// stoic:allow(<rule>): <why>` on that line or the one above
 (`design/13`).
 8. **Test on virtual time.** `TestClock` for anything that races time,
