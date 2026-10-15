@@ -19,6 +19,12 @@ public struct Linter: Sendable {
     /// Lints one file's text. `path` is reported as given; it also decides
     /// whether the file counts as test code (see ``isTestPath(_:)``).
     public func lint(source: String, path: String) -> [Finding] {
+        analyze(source: source, path: path).findings
+    }
+
+    /// Lints one file's text, keeping the findings a `stoic:allow` comment
+    /// suppressed as well as those it did not: the baseline counts escapes.
+    public func analyze(source: String, path: String) -> FileReport {
         let tree = Parser.parse(source: source)
         let converter = SourceLocationConverter(fileName: path, tree: tree)
         let lines = converter.sourceLines
@@ -32,9 +38,10 @@ public struct Linter: Sendable {
         }
         reporter.reportAllowsWithoutReason()
 
-        return reporter.findings.sorted {
+        let order: (Finding, Finding) -> Bool = {
             ($0.line, $0.column, $0.rule.rawValue) < ($1.line, $1.column, $1.rule.rawValue)
         }
+        return FileReport(findings: reporter.findings.sorted(by: order), suppressed: reporter.suppressed.sorted(by: order))
     }
 
     /// Whether `path` is test code, where `try!` and friends are routine.
@@ -70,6 +77,14 @@ public struct Linter: Sendable {
     ]
 }
 
+/// One file's result: what fails, and what a justification suppressed.
+public struct FileReport: Sendable {
+    public var findings: [Finding]
+    /// Findings a `stoic:allow` comment with a reason covered. Each is an
+    /// escape; a baseline records them so new ones cannot appear unseen.
+    public var suppressed: [Finding]
+}
+
 /// The base of every rule: a syntax visitor that reports through a shared
 /// reporter.
 class RuleVisitor: SyntaxVisitor {
@@ -89,6 +104,7 @@ final class Reporter {
     private let lines: [String]
     private let allows: AllowTable
     private(set) var findings: [Finding] = []
+    private(set) var suppressed: [Finding] = []
 
     init(path: String, converter: SourceLocationConverter, lines: [String], allows: AllowTable) {
         self.path = path
@@ -106,18 +122,20 @@ final class Reporter {
             let line = converter.location(for: statement.positionAfterSkippingLeadingTrivia).line
             if line != location.line { anchors.append(line) }
         }
-        guard !allows.permits(rule, anchoredAt: anchors) else { return }
-        findings.append(
-            Finding(
-                rule: rule,
-                file: path,
-                line: location.line,
-                column: location.column,
-                message: message,
-                fixIt: fixIt,
-                sourceLine: sourceLine(location.line)
-            )
+        let finding = Finding(
+            rule: rule,
+            file: path,
+            line: location.line,
+            column: location.column,
+            message: message,
+            fixIt: fixIt,
+            sourceLine: sourceLine(location.line)
         )
+        if allows.permits(rule, anchoredAt: anchors) {
+            suppressed.append(finding)
+        } else {
+            findings.append(finding)
+        }
     }
 
     /// A suppression with no reason suppresses nothing and is reported.
@@ -139,8 +157,14 @@ final class Reporter {
         }
     }
 
+    /// The line as a finding's identity. Source lines keep their newline, and
+    /// baselines have always hashed it; the last line of a file without one
+    /// gets one here, so appending a line after it does not change a
+    /// finding's identity.
     private func sourceLine(_ line: Int) -> String {
-        lines.indices.contains(line - 1) ? lines[line - 1].trimmingSpaces() : ""
+        guard lines.indices.contains(line - 1) else { return "" }
+        let text = lines[line - 1].trimmingSpaces()
+        return text.hasSuffix("\n") ? text : text + "\n"
     }
 
     /// The innermost statement or member declaration holding `node`. A

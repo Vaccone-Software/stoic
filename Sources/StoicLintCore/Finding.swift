@@ -26,6 +26,10 @@ public enum RuleID: String, CaseIterable, Sendable, Codable {
     /// A suppression comment that does not say why. Never itself suppressible:
     /// a reason is the whole point of allowing something.
     case allowWithoutReason = "stoic.allow-without-reason"
+    /// A suppression the baseline has not recorded: an escape added since the
+    /// baseline was written. Decided across the whole run, not in a file, so
+    /// no comment can suppress it.
+    case unrecordedSuppression = "stoic.unrecorded-suppression"
 
     /// The identifier without its `stoic.` prefix, the form comments use.
     public var shortName: String { String(rawValue.dropFirst(Self.prefix.count)) }

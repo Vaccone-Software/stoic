@@ -21,6 +21,10 @@ public struct LintOutcome: Sendable {
     /// Baseline entries that no finding matched: fixed since the baseline
     /// was written.
     public var stale: [Baseline.Entry]
+    /// Every finding a `stoic:allow` comment suppressed, recorded or not.
+    public var suppressed: [Finding] = []
+    /// Recorded suppressions that no longer occur.
+    public var staleSuppressions: [Baseline.Entry] = []
     public var fileCount: Int
     /// Where to attach the stale-entry warning, when a baseline was given.
     public var baselinePath: String?
@@ -44,6 +48,11 @@ public struct LintOutcome: Sendable {
                 "\(baselinePath):1:1: warning: [stoic.baseline] \(stale.count) accepted finding(s) no longer occur. "
                     + "Regenerate the baseline with `stoic-lint --write-baseline` so the ratchet turns down.")
         }
+        if !staleSuppressions.isEmpty, let baselinePath {
+            lines.append(
+                "\(baselinePath):1:1: warning: [stoic.baseline] \(staleSuppressions.count) recorded suppression(s) no longer occur. "
+                    + "Regenerate the baseline with `stoic-lint --write-baseline` so the ratchet turns down.")
+        }
         lines.append(summary)
         return lines.joined(separator: "\n") + "\n"
     }
@@ -52,7 +61,8 @@ public struct LintOutcome: Sendable {
     public var summary: String {
         var parts = ["\(errors.count) error(s)"]
         if !accepted.isEmpty || !stale.isEmpty { parts.append("\(accepted.count) baselined") }
-        if !stale.isEmpty { parts.append("\(stale.count) stale") }
+        if !stale.isEmpty || !staleSuppressions.isEmpty { parts.append("\(stale.count + staleSuppressions.count) stale") }
+        if !suppressed.isEmpty { parts.append("\(suppressed.count) suppressed") }
         return "stoic-lint: " + parts.joined(separator: ", ") + " in \(fileCount) file(s)"
     }
 }
@@ -67,9 +77,12 @@ extension Linter {
         baselineRoot: String = "",
         baselinePath: String? = nil
     ) -> LintOutcome {
-        let all = files.flatMap { lint(source: $0.text, path: $0.path) }
+        let reports = files.map { analyze(source: $0.text, path: $0.path) }
+        let all = reports.flatMap(\.findings)
+        let suppressed = reports.flatMap(\.suppressed)
         guard let baseline else {
-            return LintOutcome(errors: all, accepted: [], stale: [], fileCount: files.count, baselinePath: nil)
+            return LintOutcome(
+                errors: all, accepted: [], stale: [], suppressed: suppressed, fileCount: files.count, baselinePath: nil)
         }
         let split = baseline.partition(all, relativeTo: baselineRoot)
         // A baseline lists a whole project's findings, but a run may cover
@@ -77,9 +90,31 @@ extension Linter {
         // files outside this run are not stale; they are somebody else's.
         let linted = Set(files.map { Baseline.relativePath($0.path, to: baselineRoot) })
         let stale = split.stale.filter { linted.contains($0.file) }
+        var errors = split.new
+        var staleSuppressions: [Baseline.Entry] = []
+        if let escapes = baseline.partitionSuppressions(suppressed, relativeTo: baselineRoot) {
+            errors += escapes.new.map(Self.unrecorded)
+            staleSuppressions = escapes.stale.filter { linted.contains($0.file) }
+        }
+        errors.sort { ($0.file, $0.line, $0.column) < ($1.file, $1.line, $1.column) }
         return LintOutcome(
-            errors: split.new, accepted: split.accepted, stale: stale, fileCount: files.count,
-            baselinePath: baselinePath)
+            errors: errors, accepted: split.accepted, stale: stale, suppressed: suppressed,
+            staleSuppressions: staleSuppressions, fileCount: files.count, baselinePath: baselinePath)
+    }
+
+    /// The error for a suppression the baseline has not recorded, at the
+    /// place of the finding it suppresses.
+    private static func unrecorded(_ suppressed: Finding) -> Finding {
+        Finding(
+            rule: .unrecordedSuppression,
+            file: suppressed.file,
+            line: suppressed.line,
+            column: suppressed.column,
+            message:
+                "`stoic:allow(\(suppressed.rule.shortName))` suppresses a finding the baseline has not recorded: an escape added since the baseline was written.",
+            fixIt:
+                "fix the code instead; if the suppression is right, record it with `stoic-lint --write-baseline`, in a change a reviewer sees",
+            sourceLine: suppressed.sourceLine)
     }
 }
 

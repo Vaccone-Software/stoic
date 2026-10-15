@@ -168,9 +168,19 @@ stoic-lint --write-baseline .stoic-lint-baseline.json Sources
       "rule": "stoic.discarded-try"
     }
   ],
+  "suppressions": [
+    {
+      "file": "Sources/App/Box.swift",
+      "hash": "1b0c6a3d2f8e4a77",
+      "rule": "stoic.unchecked-sendable"
+    }
+  ],
   "version": 1
 }
 ```
+
+`suppressions` lists the findings a `stoic:allow` comment suppressed: the
+escapes. See [The escape budget](#the-escape-budget).
 
 ## Semantics
 
@@ -288,6 +298,29 @@ files outside a run (another target's) are not reported as stale. The hash is
 FNV-1a, not Swift's `Hasher`, which is seeded per process and would make a
 baseline unreadable tomorrow.
 
+**The escape budget.** A `stoic:allow` comment with a reason is the
+cheapest way past any rule, and an agent that has learned a rule's message
+learns that first. A reason requirement alone does not stop it: a
+reason-shaped sentence costs nothing to write. So escapes are counted. Every
+run reports how many findings were suppressed (`stoic-lint: 0 error(s), 14
+suppressed in 202 file(s)`), and `--write-baseline` records each suppressed
+finding under `suppressions`, identified exactly as entries are. With a
+baseline that has the list, a suppression it does not record is
+`stoic.unrecorded-suppression`, an error at the finding it suppresses. An
+escape therefore cannot appear without a change to the baseline, in a diff a
+reviewer sees; moving one is a new escape and a stale one, since the budget
+is per escape, not a number. A recorded suppression that no longer occurs
+is stale and warned about, so the count only falls. The error is decided
+after every file is read, so no comment can suppress it. A baseline written
+before suppressions were recorded has no list, and no budget is enforced
+until it is regenerated; a project that wants the budget and has no
+findings to baseline commits one anyway. Stoic holds itself to it: its
+self-lint runs against `.stoic-lint-baseline.json` at the repository root.
+
+A finding's identity hashes its line with the line's newline, as baselines
+always have; the last line of a file without one is given one, so appending
+a line after it does not make a baselined finding new.
+
 ## Rules
 
 All rules are errors. Fixes are advice in words, never an automatic rewrite:
@@ -312,6 +345,7 @@ the right replacement depends on code the linter does not read.
 | `stoic.keep-alive-loop`      | `while true` / `repeat … while true` / a loop on `isCancelled` that backs off in a `catch` and does not leave on success (above)                                                              | Restarts forever however often it fails, never gives up loudly, and cannot see a hang                                                                | A `Supervisor` child (restart policy, intensity, heartbeat), or `recur` for periodic work                  |
 | `stoic.unbounded-task-group` | `group.addTask` / `addTaskUnlessCancelled` directly in a `for … in` over a collection (above)                                                                                                 | One child per element: a thousand inputs are a thousand concurrent requests, sockets and buffers (principle 2)                                        | `mapConcurrent(_:limit:)`, or wait on `group.next()` past a limit; or justify with `stoic:allow`           |
 | `stoic.unsafe-continuation`  | `withUnsafeContinuation` / `withUnsafeThrowingContinuation`                                                                                                                                   | A double resume is undefined behaviour instead of a trap; a leaked one hangs its task with no message                                                | `withCheckedContinuation` / `withCheckedThrowingContinuation`; or justify with `stoic:allow`               |
+| `stoic.unrecorded-suppression` | A finding suppressed by `stoic:allow` that a baseline with a `suppressions` list does not record. Not suppressible                                                                         | An escape added since the baseline was written: the cheapest way past a rule, taken without anyone seeing                                             | Fix the code; if the escape is right, record it with `--write-baseline` in a reviewed change               |
 | `stoic.allow-without-reason` | A `stoic:allow(…)` comment with no reason (or malformed). Not suppressible                                                                                                                    | "Allow" typed as a reflex defeats the rule                                                                                                            | `// stoic:allow(rule): why this is safe here`                                                              |
 
 Known limits, all false negatives by design:
@@ -355,6 +389,9 @@ Known limits, all false negatives by design:
 | the baseline has a newer `version`                             | Exit 2: "baseline version N is not supported"                                                                    |
 | a baselined finding is fixed                                   | Build passes; warning `[stoic.baseline]` that entries are stale                                                  |
 | a new finding appears with a baseline present                  | Error; baselined ones stay warnings                                                                              |
+| a suppression is added after the baseline was written         | Error `stoic.unrecorded-suppression` at the suppressed finding                                                   |
+| a recorded suppression is removed                              | Build passes; warning `[stoic.baseline]` that recorded suppressions no longer occur                              |
+| the baseline predates suppression records                      | No escape budget; suppressions are counted in the summary only                                                    |
 | a baselined line is edited                                     | New finding (its hash changed); the old entry goes stale                                                         |
 | a suppression has no reason                                    | Suppresses nothing; `stoic.allow-without-reason` plus the original finding                                       |
 | a suppression names an unknown rule                            | Suppresses nothing; the original finding remains                                                                 |

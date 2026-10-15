@@ -68,9 +68,13 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
   Stress a suite with
   `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`;
   every concurrency test must survive it.
-- **Lint:** `swift run --traits Lint stoic-lint Sources Plugins Package.swift`
-  must stay clean; the lint tests are `swift test --traits Lint --filter
-StoicLintCoreTests`. Without the `Lint` trait, swift-syntax is never fetched.
+- **Lint:** `swift run --traits Lint stoic-lint --baseline
+  .stoic-lint-baseline.json Sources Plugins Package.swift` must stay clean;
+  the lint tests are `swift test --traits Lint --filter StoicLintCoreTests`.
+  Without the `Lint` trait, swift-syntax is never fetched. A new
+  `stoic:allow` fails until the baseline records it: fix the code first, and
+  re-record (`--write-baseline .stoic-lint-baseline.json Sources Plugins
+  Package.swift`) only for an escape a reviewer should see.
 - **Macros:** `swift test --traits Macros --filter StoicMacros` runs the
   expansion tests and the usage tests (macro schema against the same schema
   written by hand). The `Macros` trait is the only other way swift-syntax is

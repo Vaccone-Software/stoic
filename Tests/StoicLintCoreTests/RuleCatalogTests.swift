@@ -36,21 +36,26 @@ struct RuleCatalogTests {
         .allowWithoutReason: "// stoic:allow(force-try)\nlet x = 1\n",
     ]
 
+    /// Rules a single file can earn. `unrecorded-suppression` is decided
+    /// across a run against a baseline, and is tested in
+    /// `SuppressionBudgetTests`.
+    static let sourceRules = RuleID.allCases.filter { $0 != .unrecordedSuppression }
+
     static let designDocument = URL(filePath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appending(path: "design/13-build-enforcement.md")
 
     @Test func everyRuleHasAnExample() {
-        #expect(Set(Self.examples.keys) == Set(RuleID.allCases))
+        #expect(Set(Self.examples.keys) == Set(Self.sourceRules))
     }
 
-    @Test(arguments: RuleID.allCases)
+    @Test(arguments: Self.sourceRules)
     func theExampleEarnsExactlyThatRule(_ rule: RuleID) throws {
         let source = try #require(Self.examples[rule])
         #expect(findings(in: source).map(\.rule) == [rule])
     }
 
-    @Test(arguments: RuleID.allCases.filter { $0 != .allowWithoutReason })
+    @Test(arguments: Self.sourceRules.filter { $0 != .allowWithoutReason })
     func everyFindingNamesItsReplacement(_ rule: RuleID) throws {
         let source = try #require(Self.examples[rule])
         let finding = try #require(findings(in: source).first)
@@ -61,7 +66,7 @@ struct RuleCatalogTests {
         #expect(!finding.sourceLine.isEmpty, "the source line is the finding's baseline identity")
     }
 
-    @Test(arguments: RuleID.allCases.filter { $0 != .allowWithoutReason })
+    @Test(arguments: Self.sourceRules.filter { $0 != .allowWithoutReason })
     func everyRuleCanBeJustifiedAboveTheStatement(_ rule: RuleID) throws {
         let source = try #require(Self.examples[rule])
         let finding = try #require(findings(in: source).first)
@@ -72,7 +77,7 @@ struct RuleCatalogTests {
         #expect(findings(in: lines.joined(separator: "\n")).isEmpty)
     }
 
-    @Test(arguments: RuleID.allCases.filter { $0 != .allowWithoutReason })
+    @Test(arguments: Self.sourceRules.filter { $0 != .allowWithoutReason })
     func aJustificationForAnotherRuleDoesNotCover(_ rule: RuleID) throws {
         let source = try #require(Self.examples[rule])
         let other = rule == .forceTry ? RuleID.discardedTry : .forceTry
@@ -108,7 +113,7 @@ struct RuleCatalogTests {
         #expect(RuleID(named: " \(rule.shortName) ") == rule)
     }
 
-    @Test(arguments: RuleID.allCases)
+    @Test(arguments: Self.sourceRules)
     func theExampleIsLintedTheSameWayTwice(_ rule: RuleID) throws {
         // Rules carry state across a walk (scope stacks); a fresh linter per
         // file must give the same answer every time.

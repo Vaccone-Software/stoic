@@ -59,8 +59,9 @@ done
 step "lint rule tests (Lint trait)"
 swift test --traits Lint --filter StoicLintCoreTests
 
-step "self-lint"
-swift run --traits Lint stoic-lint Sources Plugins Package.swift
+step "self-lint, against Stoic's escape budget (design/13)"
+# A new `stoic:allow` fails here until .stoic-lint-baseline.json records it.
+swift run --traits Lint stoic-lint --baseline .stoic-lint-baseline.json Sources Plugins Package.swift
 
 step "macros (Macros trait): expansion tests, usage tests, schemas against their hand-written twins"
 swift build --traits Macros

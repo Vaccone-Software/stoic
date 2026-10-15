@@ -72,14 +72,17 @@ enum StoicLintTool {
     private static func writeBaseline(to path: String, inputs: [String]) throws {
         let files = try sources(from: inputs)
         let absolute = absolutePath(path)
-        let findings = files.flatMap { Linter().lint(source: $0.text, path: $0.path) }
-        let baseline = Baseline(recording: findings, relativeTo: directory(of: absolute))
+        let reports = files.map { Linter().analyze(source: $0.text, path: $0.path) }
+        let findings = reports.flatMap(\.findings)
+        let suppressed = reports.flatMap(\.suppressed)
+        let baseline = Baseline(recording: findings, suppressed: suppressed, relativeTo: directory(of: absolute))
         try FileManager.default.createDirectory(
             atPath: directory(of: absolute), withIntermediateDirectories: true)
         guard FileManager.default.createFile(atPath: absolute, contents: try baseline.jsonData()) else {
             throw ToolError("cannot write baseline \(absolute)")
         }
-        print("stoic-lint: recorded \(findings.count) finding(s) from \(files.count) file(s) in \(absolute)")
+        print(
+            "stoic-lint: recorded \(findings.count) finding(s) and \(suppressed.count) suppression(s) from \(files.count) file(s) in \(absolute)")
     }
 
     // MARK: Files

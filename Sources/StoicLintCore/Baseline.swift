@@ -20,6 +20,15 @@ public import Foundation
 ///
 /// Two identical lines in one file are two entries, and each entry accepts
 /// one finding: a third copy is new.
+///
+/// A baseline also records the findings a `stoic:allow` comment suppressed,
+/// the escapes, identified the same way. With them recorded, a suppression
+/// added later is `stoic.unrecorded-suppression` and fails the build: an
+/// escape cannot appear without a baseline change a reviewer sees. That
+/// matters most when an agent writes the code, since a reason-shaped comment
+/// is the cheapest way past any rule. A baseline written before suppressions
+/// were recorded has no list, and the budget is not enforced until it is
+/// regenerated.
 public struct Baseline: Codable, Sendable, Equatable {
     public struct Entry: Codable, Sendable, Hashable, Comparable {
         public var file: String
@@ -39,21 +48,45 @@ public struct Baseline: Codable, Sendable, Equatable {
 
     public var version: Int
     public var entries: [Entry]
+    /// The suppressions accepted, or nil in a baseline written before they
+    /// were recorded (no budget is enforced then).
+    public var suppressions: [Entry]?
 
-    public init(entries: [Entry] = []) {
+    public init(entries: [Entry] = [], suppressions: [Entry]? = nil) {
         self.version = 1
         self.entries = entries.sorted()
+        self.suppressions = suppressions?.sorted()
     }
 
-    /// Records `findings`, with file paths made relative to `root`.
-    public init(recording findings: [Finding], relativeTo root: String) {
-        self.init(entries: findings.map { Self.entry(for: $0, relativeTo: root) })
+    /// Records `findings` and the `suppressed` ones, with file paths made
+    /// relative to `root`.
+    public init(recording findings: [Finding], suppressed: [Finding] = [], relativeTo root: String) {
+        self.init(
+            entries: findings.map { Self.entry(for: $0, relativeTo: root) },
+            suppressions: suppressed.map { Self.entry(for: $0, relativeTo: root) })
     }
 
     /// Splits `findings` into those the baseline accepts and those it does
     /// not, and lists the entries nothing matched any more.
     public func partition(
         _ findings: [Finding], relativeTo root: String
+    ) -> (new: [Finding], accepted: [Finding], stale: [Entry]) {
+        Self.match(findings, against: entries, relativeTo: root)
+    }
+
+    /// Splits suppressed findings into those recorded and those added since,
+    /// and lists the recorded suppressions that no longer occur. Nil when the
+    /// baseline records no suppressions.
+    public func partitionSuppressions(
+        _ suppressed: [Finding], relativeTo root: String
+    ) -> (new: [Finding], stale: [Entry])? {
+        guard let suppressions else { return nil }
+        let split = Self.match(suppressed, against: suppressions, relativeTo: root)
+        return (split.new, split.stale)
+    }
+
+    private static func match(
+        _ findings: [Finding], against entries: [Entry], relativeTo root: String
     ) -> (new: [Finding], accepted: [Finding], stale: [Entry]) {
         var remaining: [Entry: Int] = [:]
         for entry in entries { remaining[entry, default: 0] += 1 }

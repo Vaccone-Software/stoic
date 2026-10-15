@@ -1,0 +1,113 @@
+{
+  "entries" : [
+
+  ],
+  "suppressions" : [
+    {
+      "file" : "Sources/Stoic/Concurrency/Race.swift",
+      "hash" : "3205a7615662d3d5",
+      "rule" : "stoic.unbounded-task-group"
+    },
+    {
+      "file" : "Sources/Stoic/Policies/RateLimiter.swift",
+      "hash" : "7f7aa0fbcbe13a6a",
+      "rule" : "stoic.swallowed-cancellation"
+    },
+    {
+      "file" : "Sources/Stoic/Retry/Retry.swift",
+      "hash" : "6d091a3033461112",
+      "rule" : "stoic.unchecked-sendable"
+    },
+    {
+      "file" : "Sources/Stoic/Retry/Retry.swift",
+      "hash" : "89cc70c046fe0e28",
+      "rule" : "stoic.unchecked-sendable"
+    },
+    {
+      "file" : "Sources/Stoic/Services/ServiceGraph.swift",
+      "hash" : "3205a7615662d3d5",
+      "rule" : "stoic.unbounded-task-group"
+    },
+    {
+      "file" : "Sources/Stoic/Supervision/SupervisorRun.swift",
+      "hash" : "86f7bb4ab80f36d1",
+      "rule" : "stoic.unbounded-stream"
+    },
+    {
+      "file" : "Sources/StoicAppKit/GracefulTermination.swift",
+      "hash" : "d31eda6f2c288e25",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicApple/SystemBackgroundTaskScheduler.swift",
+      "hash" : "8391b52516458b74",
+      "rule" : "stoic.unchecked-sendable"
+    },
+    {
+      "file" : "Sources/StoicSchema/Versioning/Migration+Apply.swift",
+      "hash" : "f500cbfa35b47239",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicStore/AtomicFile.swift",
+      "hash" : "38b8e2ab8330c48c",
+      "rule" : "stoic.swallowed-error"
+    },
+    {
+      "file" : "Sources/StoicStore/AtomicFile.swift",
+      "hash" : "61c86dff2b9b2c1e",
+      "rule" : "stoic.swallowed-error"
+    },
+    {
+      "file" : "Sources/StoicStore/FileLock.swift",
+      "hash" : "c4876d88fe6057ba",
+      "rule" : "stoic.swallowed-error"
+    },
+    {
+      "file" : "Sources/StoicStore/FlightRecorder.swift",
+      "hash" : "5c042a0203a80dc1",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicStore/FlightRecorder.swift",
+      "hash" : "5c042a0203a80dc1",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicStore/FlightRecorder.swift",
+      "hash" : "5c042a0203a80dc1",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicStore/Journal.swift",
+      "hash" : "c4876d88fe6057ba",
+      "rule" : "stoic.swallowed-error"
+    },
+    {
+      "file" : "Sources/StoicStore/LaunchGuard.swift",
+      "hash" : "eb75746f5cdb5a55",
+      "rule" : "stoic.swallowed-error"
+    },
+    {
+      "file" : "Sources/StoicTesting/Ambient+Testing.swift",
+      "hash" : "6ff2bc58f9e7e16a",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicTesting/Faults.swift",
+      "hash" : "13b5996330ad2255",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicTesting/Faults.swift",
+      "hash" : "34a22ed3453dda96",
+      "rule" : "stoic.discarded-try"
+    },
+    {
+      "file" : "Sources/StoicTesting/TestClock.swift",
+      "hash" : "2cbe762450388a67",
+      "rule" : "stoic.sleep-for-timeout"
+    }
+  ],
+  "version" : 1
+}
