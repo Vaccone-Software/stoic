@@ -1,6 +1,6 @@
 # 08 · Services and app lifecycle
 
-Effect's `Layer`, for apps. Every app has a handful of long-lived services —
+A dependency graph for an app's long-lived services. Every app has a handful of long-lived services —
 a database, a network client, a sync engine, a model — that depend on each
 other, must start in the right order, and must stop in the reverse order
 when the app quits, the user signs out, or a test ends. By hand, startup is

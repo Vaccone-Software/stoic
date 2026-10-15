@@ -25,10 +25,10 @@ never retried), and stays composed under the conditions that break
 hand-written code: cancellation, timeouts, hung dependencies, slow cleanup,
 and the machine going to sleep in the middle of it all.
 
-> **Status:** pre-release (0.x). The API will change before 1.0, and no
-> primitive has yet met the last bar in DESIGN.md: surviving a release in a
-> shipping app. Requires Swift 6.4 and macOS, iOS, tvOS, watchOS or
-> visionOS 27.
+> **Status:** pre-release (0.x). The API will change before 1.0, as
+> Lodestar, the pilot app, takes each primitive into production. Requires
+> Swift 6.4 and macOS, iOS, tvOS, watchOS or visionOS 27; the libraries that
+> need no Apple framework also build on Linux.
 
 ## A tour
 

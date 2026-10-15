@@ -1,6 +1,6 @@
 # 04 · Scopes and resources
 
-A scope is Effect's `Scope` plus `acquireRelease`, built from the parts
+A scope owns what it acquires and what it starts, built from the parts
 Swift 6.4 finally ships. Anything acquired in a scope is released when the
 scope ends — on success, on failure, on cancellation — in reverse order,
 shielded from cancellation, and within a bounded time. Work forked in a

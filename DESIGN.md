@@ -1,11 +1,15 @@
 # Stoic design
 
-Stoic is a robustness library for Swift apps. It gives an app the guarantees
-Effect gives a TypeScript program — resources are always released, failures
-are classified, retries are policy rather than loops, time and randomness are
-injectable, and work never outlives the thing that started it — without
-Effect's wrapper type. Stoic's primitives are ordinary `async` functions,
-structs and actors over Swift's own concurrency runtime.
+Stoic is a robustness framework for Swift apps: a complexity management
+system. The things that make long-lived, asynchronous software dependable —
+resources always released, failures classified, retries as policy rather
+than loops, time and randomness injectable, work that never outlives what
+started it, every decision observable — are hard to get right by hand and
+easy to get subtly wrong. Stoic moves them out of the app and into
+primitives that are specified, tested and enforced once, so an app is built
+on them instead of re-deriving them. The primitives are ordinary `async`
+functions, structs and actors over Swift's own concurrency runtime: there is
+no wrapper type and no new way of writing Swift to learn.
 
 The name is the design. Stoicism separates what you control from what you do
 not, and meets the second with composure. Stoic separates _expected failures_
@@ -39,20 +43,30 @@ whose failures are hangs, leaks and races rather than 500s. Server Swift
 benefits from the same primitives, and integrates through ServiceLifecycle,
 but no decision is made for servers at an app's expense.
 
-Two kinds of author write code against Stoic: people, and coding agents. The
-second changes the design more than it seems. Agents are good at satisfying a
+Two kinds of author write code against Stoic: people, and coding agents, and
+Stoic is designed for the second first. Agents are good at satisfying a
 compiler and following a worked example; they are bad at global reasoning
 about ownership and concurrency, and they reach for escape hatches
 (`@unchecked Sendable`, `try?`, `nonisolated(unsafe)`) when stuck. So Stoic
-puts its safety where a compiler or a build plugin can check it, keeps its
-API shaped like plain Swift, and ships its own guidance (design/14).
+puts its safety where a compiler, a build plugin or a simulation can check
+it, keeps its API shaped like plain Swift, and ships its own guidance
+(design/14). Strictness is the feature: every check is feedback an agent can
+act on, the way TypeScript's compiler made JavaScript tractable, and it pays
+off more as agents grow more capable. Stoic prefers robustness and
+performance to brevity, and one opinionated way to do a common thing to
+several.
+
+Lodestar is the pilot. It demands robustness, and it is where each primitive
+meets production and where its API is refined.
 
 ## Principles
 
-1. **Direct style.** No effect type, no monad, no combinator chains over
+1. **Direct style.** No wrapper type, no monad, no combinator chains over
    wrapped values. An operation is a closure — `() async throws(E) -> T` —
-   and the closure _is_ the lazy, re-runnable description Effect reifies.
-   Stack traces, the debugger and Instruments keep working.
+   and the closure _is_ the lazy, re-runnable description of the work.
+   Values describe policy (a `Schedule` is data; a transition function is
+   pure, so `StateGraph` can explore it); closures do the work. Stack
+   traces, the debugger and Instruments keep working.
 
 2. **Every wait has an end.** No primitive waits without a bound it can
    name: a deadline, a budget, a capacity, or the cancellation of its
@@ -86,15 +100,35 @@ API shaped like plain Swift, and ships its own guidance (design/14).
    handles, typestate, exhaustive transition tables). What it cannot carry,
    the lint plugin checks. What neither can, the docs say plainly.
 
-9. **Align with the standard library, then step aside.** Where Swift
+9. **Build on the standard library, never beside it.** Where Swift
    Evolution has an accepted design (SE-0526 deadlines), Stoic matches its
-   names and semantics, and forwards to the standard library once it ships.
-   Stoic's lasting value is what the standard library is unlikely to absorb:
-   budgets, schedules, breakers, supervisors, scopes, schemas, test tooling.
+   names and semantics, and uses the standard library's types once they
+   ship, so an app never holds two kinds of deadline. Stoic does not step
+   aside when the standard library gains a primitive: it keeps what makes the
+   primitive part of one cohesive system — budgets, schedules, breakers,
+   supervisors, scopes, schemas, simulation and test tooling.
 
-10. **Small core, opt-in edges.** The core depends on the standard library,
-    `Synchronization`, and `os` for its default log sink only. Macros, lint, logging, metrics, tracing and
-    ServiceLifecycle are separate products or traits.
+10. **A framework of separable packages.** The core depends on the standard
+    library, `Synchronization`, and `os` for its default log sink only.
+    Everything else is a package an app adopts on its own (schemas and JSON
+    need no core at all) or a trait: macros, lint, persistence, settings,
+    HTTP, logging, metrics, tracing, ServiceLifecycle. The packages are
+    tested together, so adopting a second one is never an integration
+    project.
+
+11. **Design from the ideal.** A primitive starts from what an idealized
+    robust system would do, not from the hand-rolled code it replaces: not
+    only how to retry, but what the operation being retried is, and what it
+    should declare so the system can decide for it. Each primitive ships with
+    that scenario as a runnable example, which is also what an agent copies.
+
+12. **The compliant path is the easy one; every escape is counted.** Where
+    the API can make the right thing as easy as the wrong one, it does:
+    `attempt.idempotencyKey` instead of a rule about where to create a key.
+    What still needs an escape hatch takes a written reason, and every
+    escape is recorded in the lint baseline, so a new one is a reviewed
+    change, never a quiet one (design/13). An agent that can switch a check
+    off will; one that has to justify it in a diff mostly will not.
 
 ## Architecture
 
@@ -209,8 +243,8 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
 - **Concurrent failures are all kept.** Where several children can fail
   (race, mapConcurrent, scopes with forks), Stoic throws
   `ConcurrentFailure<Failure>`: a non-empty list in completion order, the
-  first being the primary. This is Effect's parallel `Cause`, flattened the
-  way Effect 4 flattened it.
+  first being the primary (the precedent is Effect's parallel `Cause`, as
+  Effect 4 flattened it).
 - **Cancellation is not a failure.** `CancellationError` is never retried,
   never counted by a breaker, never reported as an error event, and never
   wrapped. It propagates as itself. Where an error type cannot hold one — a
@@ -325,18 +359,32 @@ A primitive ships when, and only when, all of these hold.
   failure-mode table. Property-based tests for every piece of arithmetic or
   state (schedule math, token buckets, breaker windows, transition tables).
   A stress suite that runs each concurrency test thousands of times.
+- **Ideal scenario.** Its contract opens with the problem an idealized
+  robust system solves with it, and that scenario exists as a runnable
+  example or test.
 - **Sanitizers.** Clean under Thread Sanitizer and Address Sanitizer in CI.
   `@unchecked Sendable` is forbidden in Stoic's own code; `unsafe`
   expressions (strict memory safety) need a written justification.
 - **Warnings are errors.** In Stoic's own build, always (Package.swift).
 - **Performance.** Hot paths (breaker admission, semaphore acquire,
   `Ambient.current`, schedule step) have benchmarks with allocation counts,
-  and a regression fails CI.
+  and an allocation regression fails CI. Time is reported, not gated: shared
+  CI machines drift more than the regressions worth catching.
 - **API discipline.** Every public symbol is documented with an example
-  that compiles; `swift package diagnose-api-breaking-changes` gates every
-  release; deprecations get one minor version of overlap.
-- **Used in anger.** It has replaced a hand-rolled version in a shipping
-  app and survived a release there.
+  that compiles; `swift package diagnose-api-breaking-changes` against the
+  last release gates every change, and an intentional break is allowed only
+  by listing it in `api-breakage-allowlist.txt` in the same change;
+  deprecations get one minor version of overlap.
+- **Portable where it can be.** A library that needs no Apple framework
+  builds on Linux in CI (`scripts/linux.sh`).
+- **Enforced.** Every item above that a machine can check is checked by
+  `scripts/check.sh` and CI. An item that is written here and not checked is
+  a bug in the bar, not a convention.
+
+Adoption is not a gate. A primitive can encode better architecture than any
+existing app would discover by itself, so "it replaced a hand-rolled
+version" is the wrong test. Lodestar, the pilot, is where primitives meet
+production and their APIs are refined.
 
 ## What apps get wrong today
 
@@ -375,7 +423,8 @@ write wrongly by hand.
 | **M7**    | Circuit breaker, rate limiter, bulkhead, hedging, pipelines                                                            | Done         |
 | **M8**    | `StoicLint` build plugin with a ratchet baseline                                                                       | Done         |
 | **M9**    | Persistence, system conditions, diagnostics                                                                            | Done         |
-| **1.0**   | API freeze after every primitive has shipped in a real app; SSWG incubation application                               | —            |
+| **M10**   | The quality bar enforced: Address Sanitizer, the public API check, the allocation gate, Linux builds, the escape budget | Done         |
+| **1.0**   | Packages split for separate adoption; API freeze once Lodestar runs on every primitive; SSWG incubation application    | —            |
 
 ## Decisions on record
 
@@ -385,11 +434,15 @@ write wrongly by hand.
   source-available license (as Lodestar uses) would protect an app, but
   would keep a library out of the companies and the workgroup it is for.
 
-- **No `Effect<A, E, R>` type.** Swift has no error unions, no higher-kinded
-  types and no do-notation; result builders cannot express monadic bind.
-  Bow and SwiftEffect died of this, and Point-Free's TCA 2.0 moved from
-  effect values to scoped tasks. Closures are the effect value.
-- **No compile-time `R` channel.** Swift cannot express an unordered,
+- **No wrapper type for effects.** Swift has no error unions, no
+  higher-kinded types and no do-notation; result builders cannot express
+  monadic bind. Swift libraries built on a wrapper (Bow, SwiftEffect) died of
+  this, and Point-Free's TCA 2.0 moved from effect values to scoped tasks.
+  Closures are the description of the work.
+- **The quality bar gates shipping; adoption does not.** A primitive ships
+  when its contract, proof, sanitizers, performance and API checks hold.
+  Lodestar validates and refines it in production afterwards.
+- **No compile-time requirements channel.** Swift cannot express an unordered,
   subtractable set of requirements. The service graph is validated at
   compile time by a macro when it is declared in one place, and at startup
   otherwise (design/08).
@@ -410,13 +463,11 @@ write wrongly by hand.
 
 ## Open questions
 
-1. **CI runners.** GitHub's hosted runners must offer macOS 27 with Xcode 27
-   before CI can run Stoic's tests; until then, CI is a self-hosted runner
-   or local `scripts/check.sh`.
-2. **Linux.** Server users will ask. The core is Foundation-free, so the
-   cost is CI and the Linux story for shields (which have no availability
-   gate there).
-3. **Upstreaming.** `retry` with schedules overlaps swift-async-algorithms
+1. **Linux, all the way.** The libraries that need no Apple framework build
+   on Linux in CI. Running their tests there (SwiftPM builds every test
+   target, and the Apple libraries' do not build), `StoicHTTP` over
+   FoundationNetworking, and the story for shields are what remain.
+2. **Upstreaming.** `retry` with schedules overlaps swift-async-algorithms
    PR #364. If it merges, Stoic wraps it; Stoic's budgets, deadline
    awareness and classification are the value on top. Worth a forum post
    once M1 is real.
