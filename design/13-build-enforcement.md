@@ -367,7 +367,7 @@ What was found, by building Stoic and two scratch consumers:
   tool behind it is real.
 - **The default `swift build` and `swift test` of the Stoic repo do not need
   swift-syntax**, and pass: 173 and 158 tests, and `StoicLintCoreTests`
-  reports 0 tests. `swift test --traits Lint` runs 147 more.
+  reports 0 tests. `swift test --traits Lint` runs 157 more.
 - **Traits are additive across the graph.** If any package in an app's graph
   enables `Lint` on Stoic, it is on for all of it.
 - **Switching traits in one checkout rebuilds**, and both configurations share
@@ -387,6 +387,13 @@ the tool (below), and CI runs it as a step.
 Pure rules are tested from inline snippets, with Swift Testing, trait-gated
 like the target: `swift test --traits Lint --filter StoicLintCoreTests`.
 
+- **Every rule, by catalog.** A table of the smallest snippet that earns each
+  rule; parameterized tests check, for every `RuleID`, that its snippet earns
+  exactly that rule, that the finding has a message and a replacement, that a
+  justification above it suppresses it and one for another rule does not,
+  that both spellings of its name resolve, and that it has a row in the table
+  above (and that the table lists no rule that does not exist). A rule added
+  without a snippet or a row fails the build.
 - **Per rule, positive and negative cases.** Including: a synchronous function
   calling `semaphore.wait()` is not flagged; an async closure inside a
   synchronous function is; actor methods are, `nonisolated` ones are not;
