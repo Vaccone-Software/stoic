@@ -280,7 +280,7 @@ struct AtomicFileFailureTests {
         return disk
     }
 
-    @Test(.failureMode("design/15", "a step of write fails"), arguments: [SimulatedFileSystem.FaultTarget.write, .fullSync, .rename, .syncDirectory])
+    @Test(.failureMode("design/15", "a step of write before the rename into place fails"), arguments: [SimulatedFileSystem.FaultTarget.write, .fullSync, .rename])
     func aFailedWriteLeavesTheOldContentsAndNoTemporary(target: SimulatedFileSystem.FaultTarget) throws {
         let disk = try disk()
         let file = AtomicFile(fileSystem: disk, options: .init(keepPrevious: true))
@@ -289,10 +289,39 @@ struct AtomicFileFailureTests {
         let error = #expect(throws: StoreError.self) { try file.write(bytes("new"), to: "/d/s") }
         #expect(error?.kind == .diskFull)
         #expect(error?.retryDecision == .stop)
-        if target != .syncDirectory {   // the rename happened; only its durability is in doubt
-            #expect(try disk.list(directory: "/d").filter { $0.hasSuffix(".tmp") }.isEmpty)
-            #expect(text(try file.read("/d/s")!.bytes) == "old")
-        }
+        #expect(try disk.list(directory: "/d").filter { $0.hasSuffix(".tmp") }.isEmpty)
+        #expect(text(try file.read("/d/s")!.bytes) == "old")
+    }
+
+    /// The second rename (the temporary over the path) failing after the
+    /// first (the old file to `.previous`) leaves no file at the path; the
+    /// read still finds the old contents, as the previous generation.
+    @Test(.failureMode("design/15", "a step of write before the rename into place fails"))
+    func aFailureBetweenTheTwoRenamesStillReadsTheOldContents() throws {
+        let disk = try disk()
+        let file = AtomicFile(fileSystem: disk, options: .init(keepPrevious: true))
+        try file.write(bytes("old"), to: "/d/s")
+        disk.inject(28, on: .rename, skipping: 1)
+        #expect(throws: StoreError.self) { try file.write(bytes("new"), to: "/d/s") }
+        let contents = try #require(try file.read("/d/s"))
+        #expect(text(contents.bytes) == "old")
+        #expect(contents.source == .previous)
+    }
+
+    /// Once the rename has happened, the new bytes are what every reader
+    /// sees: a failure to sync the directory is not "nothing changed".
+    @Test(.failureMode("design/15", "the directory sync after the rename fails"), arguments: [false, true])
+    func aFailedDirectorySyncIsDurabilityUnknownNotFailure(keepPrevious: Bool) throws {
+        let disk = try disk()
+        let file = AtomicFile(fileSystem: disk, options: .init(keepPrevious: keepPrevious))
+        try file.write(bytes("old"), to: "/d/s")
+        disk.inject(EIO, on: .syncDirectory)
+        let error = #expect(throws: StoreError.self) { try file.write(bytes("new"), to: "/d/s") }
+        #expect(error?.kind == .durabilityUnknown)
+        #expect(error?.errnoValue == EIO)
+        #expect(error?.retryDecision == .stop)
+        #expect(text(try file.read("/d/s")!.bytes) == "new")
+        #expect(try disk.list(directory: "/d").filter { $0.hasSuffix(".tmp") }.isEmpty)
     }
 
     @Test(.failureMode("design/15", "the volume has less free space than the file needs")) func aFullDiskIsRefusedBeforeAnythingIsTouched() throws {

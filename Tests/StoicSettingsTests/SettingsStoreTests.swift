@@ -124,6 +124,26 @@ struct SettingsStoreTests {
         #expect(try Self.open(disk).value.speed == 901)
     }
 
+    /// The directory sync after the rename failing is not "nothing changed":
+    /// the file holds the new value, so memory must too.
+    @Test(.failureMode("design/18", "the write lands but cannot be made durable")) func aWriteOfUnknownDurabilityIsPublished() throws {
+        let disk = try Self.disk()
+        let settings = try Self.open(disk)
+        try settings.update { $0.speed = 900 }
+        let observed = Mutex(false)
+        withObservationTracking { _ = settings.value } onChange: { observed.withLock { $0 = true } }
+        disk.inject(EIO, on: .syncDirectory)
+        do {
+            try settings.update { $0.speed = 1200 }
+            Issue.record("the update did not report its doubtful durability")
+        } catch SettingsStore<Prefs>.UpdateError.durabilityUnknown(let error) {
+            #expect(error.kind == .durabilityUnknown)
+        }
+        #expect(settings.value.speed == 1200)
+        #expect(observed.withLock { $0 })
+        #expect(try Self.open(disk).value.speed == 1200, "memory and the next launch agree")
+    }
+
     @Test(.failureMode("design/18", "one field is invalid")) func oneInvalidFieldFallsBackAloneAndIsReported() throws {
         let disk = try Self.disk()
         try Self.place(#"{"version": 2, "speed": 99999, "name": "kept"}"#, on: disk, format: .appOwned)

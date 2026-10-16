@@ -77,7 +77,10 @@ An app that wants only what its schema declares opens with
 against the schema (a value the schema would never have decoded is refused
 with every issue, and nothing changes), writes it sparsely — only what
 differs from the defaults, plus the carried keys — atomically and durably, and only then publishes
-it. A failed write leaves the value and the file as they were. Updates are
+it. A failed write leaves the value and the file as they were — unless the
+file was replaced and only its durability is in doubt (the directory sync
+after the rename failed): then the new value is published, since it is what
+the file holds, and `update` throws `.durabilityUnknown`. Updates are
 serialised; observers see each committed value. `reload()` takes the same
 lock for its read *and* its publication, so an update can never commit in the
 gap and then be overwritten in memory by the older value the reload read.
@@ -117,6 +120,7 @@ comments — say so in the UI that offers both.
 | the document is a newer version               | Read-only; never overwritten; `update` throws `.newerFormat`                  |
 | an update produces an invalid value           | Refused with every issue; value and file unchanged                            |
 | the write fails (disk full, read-only volume) | `update` throws `.storage`; value and file unchanged                          |
+| the write lands but cannot be made durable    | `update` throws `.durabilityUnknown`; the new value is in the file *and* published, so memory never disagrees with what the next launch reads; a power loss may bring back the old one |
 | two updates race                              | Serialised; each sees the other's result                                      |
 | the file is created or replaced                | Created `0600`; a replacement keeps the mode the file had; secret fields are in it in plain text |
 | a reload races an update                      | Serialised with it end to end; the update is never lost from memory or disk   |

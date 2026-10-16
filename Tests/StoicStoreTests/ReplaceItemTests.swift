@@ -93,19 +93,26 @@ struct ReplaceItemFailureTests {
         #expect(disk.files == before)
     }
 
-    @Test(.failureMode("design/15", "a step of `replaceItem` before the swap fails"), arguments: [SimulatedFileSystem.FaultTarget.exchange, .syncDirectory])
-    func aFailedStepLeavesTheDestinationAndTheStagedItemAsTheyWere(target: SimulatedFileSystem.FaultTarget) throws {
+    @Test(.failureMode("design/15", "a step of `replaceItem` before the swap fails"))
+    func aFailedStepLeavesTheDestinationAndTheStagedItemAsTheyWere() throws {
         let (disk, file) = try disk()
-        disk.inject(ENOSPC, on: target)
+        disk.inject(ENOSPC, on: .exchange)
         let error = #expect(throws: StoreError.self) { try file.replaceItem(at: Self.path, withItemAt: Self.staged) }
         #expect(error?.kind == .diskFull)
-        if target == .exchange {
-            #expect(text(disk.contents(of: Self.path)!) == "old")
-            #expect(text(disk.contents(of: Self.staged)!) == "new")
-        } else {
-            // The swap happened; only its durability is in doubt. Never both new, never neither.
-            #expect(Set([text(disk.contents(of: Self.path)!), text(disk.contents(of: Self.staged)!)]) == ["old", "new"])
-        }
+        #expect(text(disk.contents(of: Self.path)!) == "old")
+        #expect(text(disk.contents(of: Self.staged)!) == "new")
+    }
+
+    @Test(.failureMode("design/15", "the directory sync after `replaceItem`'s swap fails"))
+    func aFailedSyncAfterTheSwapIsDurabilityUnknown() throws {
+        let (disk, file) = try disk()
+        disk.inject(ENOSPC, on: .syncDirectory)
+        let error = #expect(throws: StoreError.self) { try file.replaceItem(at: Self.path, withItemAt: Self.staged) }
+        #expect(error?.kind == .durabilityUnknown)
+        // The swap happened; only its durability is in doubt. The old item
+        // waits at the staged path, as after a failed removal.
+        #expect(text(disk.contents(of: Self.path)!) == "new")
+        #expect(text(disk.contents(of: Self.staged)!) == "old")
     }
 
     @Test(.failureMode("design/15", "the old item cannot be removed after the swap"))

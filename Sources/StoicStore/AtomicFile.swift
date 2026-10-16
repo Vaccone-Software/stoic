@@ -50,8 +50,11 @@ internal import Stoic
 ///   keep each other out with a ``FileLock``.
 /// - **Cancellation and threads.** Calls are synchronous and blocking, and
 ///   not cancellation points. Run them off the main actor if latency matters.
-/// - **Errors.** Every failure is a ``StoreError``; a failed write leaves the
-///   previous contents in place and removes its temporary file.
+/// - **Errors.** Every failure is a ``StoreError``. A failed write leaves the
+///   previous contents in place and removes its temporary file, with one
+///   exception: when the final directory sync fails, the new file is already
+///   in place, and the error is `.durabilityUnknown` (readers see the new
+///   bytes; a power loss may undo them).
 public struct AtomicFile: Sendable {
     public struct Options: Sendable, Hashable {
         /// Wrap the bytes in a checksum envelope, so a reader can tell a
@@ -156,7 +159,12 @@ public struct AtomicFile: Sendable {
                 throw error
             }
             try fileSystem.close(file)
+        } catch {
+            removeQuietly(temporary)
+            throw error
+        }
 
+        do throws(StoreError) {
             if options.keepPrevious, try fileSystem.exists(path) {
                 if try isIntact(path, options: options) {
                     try fileSystem.rename(from: path, to: path + ".previous")
@@ -168,10 +176,26 @@ public struct AtomicFile: Sendable {
             }
             try fileSystem.rename(from: temporary, to: path)
         } catch {
+            // If the old file was already demoted, `read` finds it as the
+            // previous generation: the old contents are still what is read.
             removeQuietly(temporary)
             throw error
         }
-        try fileSystem.syncDirectory(directory)
+        // From here the new bytes are what every reader sees. A failure now
+        // is not "nothing changed", and must not be reported as if it were.
+        do throws(StoreError) {
+            try fileSystem.syncDirectory(directory)
+        } catch {
+            throw Self.durabilityUnknown(error, path: path)
+        }
+    }
+
+    /// The error for a change that was made but could not be made durable.
+    static func durabilityUnknown(_ error: StoreError, path: String) -> StoreError {
+        StoreError(
+            kind: .durabilityUnknown, operation: error.operation, path: path, errnoValue: error.errnoValue,
+            detail: "the change is made and readers see it, but it could not be made durable (\(error.kind)); a power loss may undo it"
+        )
     }
 
     /// Replaces the file or directory at `destination` with the one at
@@ -218,11 +242,21 @@ public struct AtomicFile: Sendable {
 
         guard try fileSystem.exists(destination) else {
             try fileSystem.rename(from: staged, to: destination)
-            try syncParents()
+            do throws(StoreError) {
+                try syncParents()
+            } catch {
+                throw Self.durabilityUnknown(error, path: destination)
+            }
             return
         }
         try fileSystem.exchange(destination, staged)
-        try syncParents()
+        do throws(StoreError) {
+            try syncParents()
+        } catch {
+            // The swap is done and a retry would swap the old item back. The
+            // old item stays at `staged`, as after a failed removal.
+            throw Self.durabilityUnknown(error, path: destination)
+        }
         // The new item is in place and durable. What is left is the old one.
         do throws(StoreError) {
             try fileSystem.removeTree(staged)

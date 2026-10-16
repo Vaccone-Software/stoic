@@ -162,6 +162,15 @@ stale `.tmp` → create `.tmp` exclusively, write `envelope(bytes)`, `fullSync`
 `.previous` (a corrupt current file is quarantined instead, so garbage never
 displaces a good `.previous`) → rename `.tmp` over the path → `syncDirectory`.
 
+**Three outcomes, not two.** A write either did not happen (any failure up to
+the rename: the old contents are what `read` returns), happened durably (it
+returned), or happened with its durability unknown: the rename is done, every
+reader sees the new bytes, and the directory sync that would make the rename
+survive a power loss failed. The last is thrown as `StoreError.Kind.durabilityUnknown`
+(with the sync's errno), never as an ordinary failure, because a caller that
+keeps the value in memory must treat the change as made: the settings store
+publishes it. `replaceItem` reports a failed sync after its swap the same way.
+
 Envelope: `"STAF" | version:u8 | 0,0,0 | length:u64 | crc32c:u32 | payload`,
 little-endian; the CRC covers the version, reserved bytes, length and payload.
 The file must be exactly `20 + length` bytes. An empty file is corrupt.
@@ -178,12 +187,14 @@ something was corrupt, `read` throws `.corrupt` once; the next read returns `nil
 | the current file is missing or fails its checksum         | The previous generation is returned (`store.recovered_previous`); a corrupt file is quarantined    |
 | both generations are corrupt                              | `read` throws `.corrupt`; both are quarantined; the next `read` returns `nil`                       |
 | the volume has less free space than the file needs        | `write` throws `.diskFull` before creating anything                                                |
-| a step of `write` fails                                   | The temporary is removed and the old contents are untouched                                        |
+| a step of `write` before the rename into place fails      | The temporary is removed; `read` returns the old contents (at the path, or as the previous generation when the old file had already been demoted to it) |
+| the directory sync after the rename fails                 | `.durabilityUnknown`, not a plain failure: the new contents are in place and `read` returns them; a power loss may undo them |
 | a stale `.tmp` from a crash is found                      | It is removed and reported (`store.temp_removed`)                                                   |
 | the process dies at any instruction of `replaceItem`      | `destination` is the old item complete or the new item complete; never missing if the old existed  |
 | `replaceItem` has returned, then power is lost            | `destination` is the new item                                                                      |
 | `replaceItem`'s paths are on different volumes            | Throws `.invalidArgument` (`EXDEV`, "different volumes") before anything changes                   |
 | a step of `replaceItem` before the swap fails             | `destination` and the staged item are as they were                                                 |
+| the directory sync after `replaceItem`'s swap fails       | `.durabilityUnknown`: `destination` is the new item, the old one waits at the staged path; a power loss may undo the swap |
 | the old item cannot be removed after the swap             | No error (a retry would swap the old item back); `store.replace_leftover`; the old item stays at the staged path |
 | the file system cannot swap                               | `.unsupported`, when `destination` exists                                                          |
 
@@ -357,6 +368,8 @@ file, versioned (`v1` files are still read).
   `EEXIST`, `EINVAL`, `EXDEV`, corruption, poisoning. Nothing about a retry changes them.
 - **Retry:** `EINTR` (`PosixFileSystem` also restarts it itself), `EAGAIN`,
   `EBUSY`, `EMFILE`, `ENFILE`, `ENOMEM`: momentary conditions.
+- **`.durabilityUnknown` stops.** The change is made; repeating it proves
+  nothing about the first one's durability.
 - **`EIO` stops.** After a failed `fsync` the kernel may have dropped the dirty
   pages, so a retried `fsync` can report success without the data being on
   disk ("fsyncgate"). A *whole* `AtomicFile.write` is safe to try again later

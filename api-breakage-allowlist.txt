@@ -3,3 +3,5 @@ API breakage: struct HTTPStatusError has been removed
 API breakage: var URLError.retryDecision has been removed
 API breakage: var POSIXError.retryDecision has been removed
 API breakage: var CocoaError.retryDecision has been removed
+API breakage: enumelement StoreError.Kind.durabilityUnknown has been added as a new enum case
+API breakage: enumelement SettingsStore.UpdateError.durabilityUnknown has been added as a new enum case

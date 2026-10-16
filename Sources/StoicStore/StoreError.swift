@@ -64,6 +64,12 @@ public struct StoreError: Error, Retryable, Sendable, CustomStringConvertible {
         case invalidArgument
         /// An earlier failure left the object in a state that needs reopening.
         case poisoned
+        /// The change was made, and every reader now sees it, but making it
+        /// durable failed (the directory sync after a rename, say): whether it
+        /// survives a power loss is unknown. Not "nothing happened": a caller
+        /// that keeps state in memory should treat the change as made. The
+        /// failed call's errno is in ``errnoValue``.
+        case durabilityUnknown
         /// Anything else; the errno is in ``errnoValue``.
         case other
     }
@@ -117,7 +123,7 @@ public struct StoreError: Error, Retryable, Sendable, CustomStringConvertible {
         switch kind {
         case .interrupted, .busy, .resourceExhausted: .retry
         case .diskFull, .readOnly, .quotaExceeded, .permissionDenied, .notFound, .alreadyExists,
-             .ioFailure, .corrupt, .unsupported, .invalidArgument, .poisoned, .other: .stop
+             .ioFailure, .corrupt, .unsupported, .invalidArgument, .poisoned, .durabilityUnknown, .other: .stop
         }
     }
 

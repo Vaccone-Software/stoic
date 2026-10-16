@@ -74,12 +74,18 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         case newerFormat
         /// The write failed; the value and the file are as they were.
         case storage(StoreError)
+        /// The new value is in the file and has been published, but the disk
+        /// could not confirm it is durable (``StoreError/Kind/durabilityUnknown``):
+        /// a power loss may bring back the old one. Unlike every other case,
+        /// the update *happened*.
+        case durabilityUnknown(StoreError)
 
         public var description: String {
             switch self {
             case .invalid(let issues): "settings update refused: " + issues.map(\.description).joined(separator: "; ")
             case .newerFormat: "settings were written by a newer version of the app and are read-only"
             case .storage(let error): "settings could not be saved: \(error)"
+            case .durabilityUnknown(let error): "settings were saved, but may not survive a power loss: \(error)"
             }
         }
     }
@@ -262,7 +268,10 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Changes the settings: validated, written, then published.
     ///
     /// - Returns: The new value.
-    /// - Throws: ``UpdateError``; on any error nothing has changed.
+    /// - Throws: ``UpdateError``. On any error but
+    ///   ``UpdateError/durabilityUnknown(_:)`` nothing has changed; with that
+    ///   one, the new value is in the file and published, and only its
+    ///   durability is in doubt.
     @discardableResult
     public func update(_ change: (inout Value) throws -> Void) throws -> Value {
         try writing.withLock { _ throws -> Value in
@@ -281,6 +290,14 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             let written: JSONValue
             do throws(StoreError) {
                 written = try write(new, carrying: document)
+            } catch where error.kind == .durabilityUnknown {
+                // The file holds the new value, so memory must too: the next
+                // launch reads it unless the power fails first.
+                publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? encoded(new, carrying: document) : nil))
+                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                    .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
+                ]))
+                throw UpdateError.durabilityUnknown(error)
             } catch {
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
@@ -335,10 +352,16 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// declare put back. Returns what was written.
     @discardableResult
     private func write(_ value: Value, carrying document: JSONValue?) throws(StoreError) -> JSONValue {
-        var json = schema.encode(value, style: .sparse(includeSecrets: true))
-        if let document { json = UnknownKeys.carrying(document, into: json, node: schema.node) }
+        let json = encoded(value, carrying: document)
         let bytes = json.encoded(style: format == .handEdited ? .pretty() : .canonical)
         try file.write(bytes, to: path)
+        return json
+    }
+
+    /// The document a write of `value` puts in the file.
+    private func encoded(_ value: Value, carrying document: JSONValue?) -> JSONValue {
+        var json = schema.encode(value, style: .sparse(includeSecrets: true))
+        if let document { json = UnknownKeys.carrying(document, into: json, node: schema.node) }
         return json
     }
 
