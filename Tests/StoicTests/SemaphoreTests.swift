@@ -69,6 +69,69 @@ struct SemaphoreTests {
         #expect(order.values == ["0", "1", "2", "3", "4"])
     }
 
+    /// Holds a waiter between deciding to wait and queueing, for a second of
+    /// the ambient clock.
+    struct StallArrival: FaultPolicy {
+        func action(at site: String) -> FaultAction {
+            site == "semaphore.arriving" ? .delay(.seconds(1)) : .proceed
+        }
+    }
+
+    /// A task that asks for a permit while `clock` holds it on its way to the queue.
+    func stalledWaiter(_ semaphore: AsyncSemaphore, _ clock: TestClock, _ body: @escaping @Sendable () -> Void) -> Task<Void, any Error> {
+        Task {
+            try await withAmbient({ $0.clock = clock.erased; $0.faultPolicy = StallArrival() }) { () async throws(PolicyError<Never>) in
+                try await semaphore.withPermit { body() }
+            }
+        }
+    }
+
+    @Test(.stoic(seed: 104), .timeLimit(.minutes(1)), .failureMode("design/03", "a permit frees while a waiter is on its way to the queue"))
+    func aNewcomerNeverOvertakesAWaiterStillOnItsWayToTheQueue() async throws {
+        let semaphore = AsyncSemaphore(permits: 1, label: "fifo")
+        let clock = TestClock()
+        let order = OrderLog()
+        let gate = TestGate()
+        let holder = Task { try await semaphore.withPermit { await gate.wait() } }
+        #expect(await eventually { semaphore.availablePermits == 0 })
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let first = stalledWaiter(semaphore, clock) { order.append("first") }
+        await clock.waitForSleepers(count: 1)   // it found no permit, and is not queued yet
+        gate.open()
+        try await holder.value
+        let second = Task { try await semaphore.withPermit { order.append("second") } }
+        #expect(await eventually { semaphore.waiterCount == 1 })   // queued behind the first, though a permit is free
+        #expect(order.values.isEmpty, "previously the newcomer took the free permit")
+        await clock.advance(by: .seconds(1))
+        try await first.value
+        try await second.value
+        #expect(order.values == ["first", "second"])
+        #expect(semaphore.availablePermits == 1)
+    }
+
+    @Test(.stoic(seed: 105), .timeLimit(.minutes(1)), .failureMode("design/03", "a waiter on its way to the queue is cancelled"))
+    func aWaiterThatLeavesOnItsWayToTheQueueLetsTheOthersThrough() async throws {
+        let semaphore = AsyncSemaphore(permits: 1, label: "fifo")
+        let clock = TestClock()
+        let gate = TestGate()
+        let holder = Task { try await semaphore.withPermit { await gate.wait() } }
+        #expect(await eventually { semaphore.availablePermits == 0 })
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let first = stalledWaiter(semaphore, clock) { Issue.record("a cancelled waiter must not run") }
+        await clock.waitForSleepers(count: 1)
+        let second = Task { try await semaphore.withPermit {} }
+        #expect(await eventually { semaphore.waiterCount == 1 })
+        gate.open()
+        try await holder.value
+        first.cancel()   // the permit it was owed goes to the next in line
+        try await second.value
+        await #expect(throws: PolicyError<Never>.self) { try await first.value }
+        #expect(semaphore.availablePermits == 1)
+        #expect(semaphore.waiterCount == 0)
+    }
+
     @Test func aCancelledWaiterLeavesWithoutConsumingAPermit() async throws {
         let semaphore = AsyncSemaphore(permits: 1, label: "cancel")
         let gate = AsyncGate()

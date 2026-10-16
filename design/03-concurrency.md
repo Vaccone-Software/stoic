@@ -113,7 +113,9 @@ only the started elements' outcomes.
 **Child-task closures are `@concurrent`.** They run concurrently by design;
 the explicit attribute keeps that true under `NonisolatedNonsendingByDefault`.
 
-**AsyncSemaphore and AsyncMutex.** Strict FIFO. A waiter that is cancelled,
+**AsyncSemaphore and AsyncMutex.** Strict FIFO, counted from arrival: a
+waiter that has found no permit but not yet queued keeps its place, so a
+newcomer never takes a permit freed in that moment. A waiter that is cancelled,
 or whose `Deadline.current` passes, leaves the queue and never consumes a
 permit — arrivals are tracked so even a cancellation that lands before the
 waiter queues is honoured. Cancellation caused by an enclosing deadline is
@@ -164,20 +166,22 @@ that keeps the promise, and the lint rule against
 
 ## Failure modes
 
-| What happens if…                                        | Behaviour                                                                                                                                             |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a superseded `TaskSlot` task finishes after the new one | Its result is dropped inside the slot; `slot.superseded_late` event                                                                                   |
-| a `TaskSlot` task ignores cancellation forever          | Next `run` does not wait for it (it is not structured to the slot's caller); it stays in `unfinishedCount` and the task ledger, so `stoicTasksStillRunning` names it; if it ever returns, `slot.superseded_late` |
-| every racer fails                                       | The first failure is thrown; `race.all_failed` carries all of them, completion order                                                                  |
-| a racer ignores cancellation after another won          | `race` waits for it (structured); give such work its own timeout                                                                                      |
-| the hedge budget is empty                               | No further hedges; the attempts already running continue                                                                                              |
-| `mapConcurrent` caller is cancelled                     | No further element starts; children cancelled and awaited; `CancellationError` if `Failure` allows, else the started (leading) results               |
-| a semaphore waiter is cancelled while queued            | Removed from the queue; no permit consumed; `.rejected(.cancelled)` (`isCancellation`; see Cancellation of the caller)                                |
-| a semaphore waiter's deadline passes while queued       | Removed; `.rejected(.deadlineExceeded)`                                                                                                               |
-| a body inside `withPermit` throws                       | Permit returned; error passed through as `.failed`                                                                                                    |
-| two single-flight waiters, the first cancels            | The operation continues for the second                                                                                                                |
-| every single-flight waiter cancels                      | The operation is cancelled                                                                                                                            |
-| a higher-priority caller joins a single flight          | The shared operation is escalated to that priority (SE-0462); it is never lowered when that caller leaves                                            |
+| What happens if…                                         | Behaviour                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a superseded `TaskSlot` task finishes after the new one  | Its result is dropped inside the slot; `slot.superseded_late` event                                                                                                                                              |
+| a `TaskSlot` task ignores cancellation forever           | Next `run` does not wait for it (it is not structured to the slot's caller); it stays in `unfinishedCount` and the task ledger, so `stoicTasksStillRunning` names it; if it ever returns, `slot.superseded_late` |
+| every racer fails                                        | The first failure is thrown; `race.all_failed` carries all of them, completion order                                                                                                                             |
+| a racer ignores cancellation after another won           | `race` waits for it (structured); give such work its own timeout                                                                                                                                                 |
+| the hedge budget is empty                                | No further hedges; the attempts already running continue                                                                                                                                                         |
+| `mapConcurrent` caller is cancelled                      | No further element starts; children cancelled and awaited; `CancellationError` if `Failure` allows, else the started (leading) results                                                                           |
+| a semaphore waiter is cancelled while queued             | Removed from the queue; no permit consumed; `.rejected(.cancelled)` (`isCancellation`; see Cancellation of the caller)                                                                                           |
+| a semaphore waiter's deadline passes while queued        | Removed; `.rejected(.deadlineExceeded)`                                                                                                                                                                          |
+| a permit frees while a waiter is on its way to the queue | The waiter keeps its place: the permit is kept for it, and a newcomer queues behind it                                                                                                                           |
+| a waiter on its way to the queue is cancelled            | It leaves without a permit; the waiters it held up are let through at once                                                                                                                                       |
+| a body inside `withPermit` throws                        | Permit returned; error passed through as `.failed`                                                                                                                                                               |
+| two single-flight waiters, the first cancels             | The operation continues for the second                                                                                                                                                                           |
+| every single-flight waiter cancels                       | The operation is cancelled                                                                                                                                                                                       |
+| a higher-priority caller joins a single flight           | The shared operation is escalated to that priority (SE-0462); it is never lowered when that caller leaves                                                                                                        |
 
 ## Events
 

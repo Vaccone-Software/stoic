@@ -32,11 +32,31 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
     private struct State {
         var available: Int
         var nextID: UInt64 = 0
+        // In arrival (id) order, which is not always the order waiters queue in.
         var queue: [Waiter] = []
         // Waiters that have an id but have not queued yet.
         var arriving: Set<UInt64> = []
-        // Arriving waiters whose cancellation or deadline came first.
+        // Arriving waiters whose cancellation or deadline came first. They
+        // are no longer `arriving`: nobody waits behind a waiter that left.
         var leftEarly: [UInt64: Rejection] = [:]
+
+        /// Whether waiter `id` may take a free permit: no waiter that
+        /// arrived before it is still on its way to the queue.
+        func isFirst(_ id: UInt64) -> Bool {
+            arriving.allSatisfy { $0 > id }
+        }
+
+        /// Hands free permits to the queue's head while it is first in line;
+        /// called whenever an arriving waiter stops holding the line.
+        mutating func grantInOrder() -> [Waiter] {
+            var granted: [Waiter] = []
+            while available > 0, let head = queue.first, isFirst(head.id) {
+                queue.removeFirst()
+                available -= 1
+                granted.append(head)
+            }
+            return granted
+        }
     }
 
     private let state: Mutex<State>
@@ -146,7 +166,9 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
         }
         enum Admission { case granted, full(waiting: Int), wait(UInt64) }
         let admission = state.withLock { state -> Admission in
-            if state.available > 0, state.queue.isEmpty {
+            // A waiter still on its way to the queue is ahead of a newcomer,
+            // however briefly: strict FIFO counts it.
+            if state.available > 0, state.queue.isEmpty, state.arriving.isEmpty {
                 state.available -= 1
                 return .granted
             }
@@ -173,11 +195,14 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
             id = ticket
         }
         defer {
-            // Whatever ended the wait, this waiter is gone: forget it.
-            state.withLock { state in
-                state.arriving.remove(id)
+            // Whatever ended the wait, this waiter is gone: forget it, and
+            // let through anyone it was holding up.
+            let granted = state.withLock { state -> [Waiter] in
                 state.leftEarly.removeValue(forKey: id)
+                guard state.arriving.remove(id) != nil else { return [] }
+                return state.grantInOrder()
             }
+            for waiter in granted { waiter.continuation.resume(returning: nil) }
         }
 
         // Between deciding to wait and queueing: where a cancellation or a
@@ -220,46 +245,46 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
     }
 
     private func enqueue(_ waiter: Waiter) {
-        enum Next { case wait, grant, reject(Rejection) }
-        let next = state.withLock { state -> Next in
-            state.arriving.remove(waiter.id)
+        let (rejection, granted) = state.withLock { state -> (Rejection?, [Waiter]) in
             if let rejection = state.leftEarly.removeValue(forKey: waiter.id) {
-                return .reject(rejection)
+                return (rejection, [])
             }
-            if state.available > 0, state.queue.isEmpty {
-                state.available -= 1
-                return .grant
-            }
-            state.queue.append(waiter)
-            return .wait
+            state.arriving.remove(waiter.id)
+            // Usually the newest id, so usually the end; a waiter that took
+            // longer to get here than one that arrived after it goes ahead.
+            let index = state.queue.lastIndex { $0.id < waiter.id }.map { $0 + 1 } ?? 0
+            state.queue.insert(waiter, at: index)
+            return (nil, state.grantInOrder())
         }
-        switch next {
-        case .wait: break
-        case .grant: waiter.continuation.resume(returning: nil)
-        case .reject(let rejection): waiter.continuation.resume(returning: rejection)
-        }
+        if let rejection { waiter.continuation.resume(returning: rejection) }
+        for waiter in granted { waiter.continuation.resume(returning: nil) }
     }
 
     /// Takes waiter `id` out of the queue, if it is still waiting.
     private func leave(_ id: UInt64, because rejection: Rejection) {
-        let waiter = state.withLock { state -> Waiter? in
+        let (waiter, granted) = state.withLock { state -> (Waiter?, [Waiter]) in
             if let index = state.queue.firstIndex(where: { $0.id == id }) {
-                return state.queue.remove(at: index)
+                return (state.queue.remove(at: index), [])
             }
-            if state.arriving.contains(id), state.leftEarly[id] == nil {
-                // Not queued yet: it will find this on arrival and leave.
+            if state.arriving.remove(id) != nil {
+                // Not queued yet: it will find this on arrival and leave, and
+                // it no longer holds the line for those behind it.
                 state.leftEarly[id] = rejection
+                return (nil, state.grantInOrder())
             }
             // Otherwise it was already granted a permit — the body will run
             // and see the cancellation itself — or it has already gone.
-            return nil
+            return (nil, [])
         }
         waiter?.continuation.resume(returning: rejection)
+        for waiter in granted { waiter.continuation.resume(returning: nil) }
     }
 
     private func release() {
         let next = state.withLock { state -> Waiter? in
-            if state.queue.isEmpty {
+            // A waiter still arriving ahead of the queue's head takes this
+            // permit when it queues.
+            guard let head = state.queue.first, state.isFirst(head.id) else {
                 state.available += 1
                 precondition(state.available <= capacity, "AsyncSemaphore \(label): released more permits than it has")
                 return nil
