@@ -19,7 +19,8 @@ internal import Synchronization
 ///
 /// Every call ends in exactly one fate. The ticket's fate is decided by
 /// whoever removes the ticket from `pending` under the lock (the timer, a
-/// newer call, or the caller's cancellation), so it is resolved once.
+/// newer call that replaces it or finds it already due, or the caller's
+/// cancellation), so it is resolved once.
 final class CallShaper: Sendable {
     enum Mode: Sendable { case debounce, throttle }
 
@@ -106,28 +107,11 @@ final class CallShaper: Sendable {
 
     private nonisolated(nonsending) func enter() async -> Fate {
         let now = clock.now
-        let step = state.withLock { state -> Step in
-            let open = state.pending != nil || (state.edge.map { now < $0 } ?? false)
-            if !open, leading {
-                state.edge = now.advanced(by: period)
-                return .run
-            }
-            if open, !trailing {
-                if mode == .debounce { state.edge = now.advanced(by: period) }
-                return .suppress
-            }
-            let due: AnyClock.Instant
-            if open, mode == .throttle, let edge = state.edge {
-                due = edge
-            } else {
-                due = now.advanced(by: period)
-                state.edge = due
-            }
-            state.nextID += 1
-            let ticket = Ticket(id: state.nextID)
-            defer { state.pending = ticket }
-            return .park(ticket, until: due, replacing: state.pending)
+        let (step, ripe) = state.withLock { state -> (Step, Ticket?) in
+            let ripe = takeRipe(&state, now: now)
+            return (decide(&state, now: now), ripe)
         }
+        ripe?.fate.resolve(.run)
         switch step {
         case .run:
             return .run
@@ -151,6 +135,42 @@ final class CallShaper: Sendable {
                 self.settle(ticket, as: .cancelled)
             }
         }
+    }
+
+    /// The pending call, if its time has come and its timer has not yet said
+    /// so. A timer always fires a little late; a call arriving in that gap
+    /// is after the burst or window, so it must not replace the call that
+    /// was due: that call runs, as its timer would have had it, and the new
+    /// one is decided after it.
+    private func takeRipe(_ state: inout State, now: AnyClock.Instant) -> Ticket? {
+        guard let pending = state.pending, let edge = state.edge, !(now < edge) else { return nil }
+        state.pending = nil
+        if mode == .throttle { state.edge = now.advanced(by: period) }
+        return pending
+    }
+
+    /// What becomes of a call arriving at `now`.
+    private func decide(_ state: inout State, now: AnyClock.Instant) -> Step {
+        let open = state.pending != nil || (state.edge.map { now < $0 } ?? false)
+        if !open, leading {
+            state.edge = now.advanced(by: period)
+            return .run
+        }
+        if open, !trailing {
+            if mode == .debounce { state.edge = now.advanced(by: period) }
+            return .suppress
+        }
+        let due: AnyClock.Instant
+        if open, mode == .throttle, let edge = state.edge {
+            due = edge
+        } else {
+            due = now.advanced(by: period)
+            state.edge = due
+        }
+        state.nextID += 1
+        let ticket = Ticket(id: state.nextID)
+        defer { state.pending = ticket }
+        return .park(ticket, until: due, replacing: state.pending)
     }
 
     /// Gives `ticket` its fate if it is still the pending call.

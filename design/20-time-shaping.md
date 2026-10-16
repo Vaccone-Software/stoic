@@ -94,7 +94,10 @@ that is a child of that wait. No task is started that a caller or a scope does
 not own, so cancelling the caller withdraws the call and ending the scope that
 holds a `submit` fork does the same; there is no timer to leak. `submit` is
 for callers that do not wait for the answer: rejections end the fork quietly,
-an error from the operation fails the scope as any fork's does.
+an error from the operation fails the scope as any fork's does. Time is the
+clock's, not the timer's: a timer always fires a little late, and a call that
+arrives after a burst or window has ended, in that gap, finds the waiting call
+due and lets it run rather than replacing it.
 
 **Expiring cache.** An entry is fresh for `ttl`, then stale for `staleWindow`,
 then gone. A stale read returns the value and starts at most one refresh per
@@ -119,38 +122,40 @@ publisher nor grow without bound. Drops reuse `Channel`'s counting and event.
 
 ## Failure modes
 
-| What happens if…                                           | Behaviour                                                                                                                                              |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| a debounced call arrives while an earlier one waits        | The earlier call throws `.rejected(.superseded)` at once; the quiet period restarts from the new call; `debounce.dropped`                              |
-| the quiet period passes with no newer call                 | The latest call runs its operation, in its own task, and returns the result                                                                            |
-| `leading` is on and a call opens a burst                   | It runs at once; with `trailing` also on, the last later call of the burst runs when the burst ends, and a burst of one call runs once                 |
-| `leading` only and a call arrives inside the burst         | `.rejected(.suppressed)` and the burst is extended; `debounce.dropped`                                                                                 |
-| a waiting debounced call is cancelled                      | `.rejected(.cancelled)` (`.deadlineExceeded` when its deadline did it); the call is withdrawn and nothing runs for it                                  |
-| the scope that owns a `submit` ends                        | The waiting call is withdrawn with its fork; nothing runs afterwards and the scope's outcome is unchanged                                              |
-| a debounced operation throws                               | `.failed(error)` for that caller; the next call starts a new burst                                                                                     |
-| a call arrives inside the window with `trailing` off       | `.rejected(.suppressed)`; `throttle.dropped`                                                                                                           |
-| calls arrive inside the window with `trailing` on          | Only the latest is kept and runs when the window ends; each one it replaces throws `.superseded` at once; `throttle.dropped`                           |
-| a trailing call runs                                       | It opens the next window of `interval`, so runs are never closer than that                                                                             |
-| `leading` is off and a call opens a window                 | It waits for the window to end, then runs; nothing runs sooner than `interval` after the first call                                                    |
-| a call waiting for the window's end is cancelled           | `.rejected(.cancelled)`; the window stays open and nothing runs for it                                                                                 |
-| a fresh entry is read                                      | Returned without calling the loader                                                                                                                    |
-| a stale entry is read                                      | Returned at once; one refresh for the key starts in the background, forked into the cache's scope, however many readers see it                         |
-| callers miss the same key together                         | One load runs and every caller gets its value or its error (single flight)                                                                             |
-| a background refresh fails                                 | The stale value is kept and served; `cache.refresh_failed`; the next stale read tries again                                                            |
-| a load with no value to fall back on fails                 | `.failed(error)` to every waiting caller; nothing is cached, so the next caller tries again                                                            |
-| `negativeTTL` is set and a load fails                      | The failure is remembered for that long and thrown to callers without calling the loader                                                               |
-| one of several callers waiting on a load is cancelled      | It leaves with `.rejected(.cancelled)`; the load continues for the others and its value is cached                                                      |
-| every caller waiting on a load is cancelled                | The load is cancelled and nothing is cached, not even a failure                                                                                        |
-| an entry is added past `maxEntries`                        | The least recently used entry is evicted; a read counts as a use                                                                                       |
-| the scope ends while a refresh runs                        | The refresh is cancelled and awaited, and is not reported as a failure; the stale entry stays until it expires                                         |
-| a `dropOldest` subscriber's buffer is full                 | Its oldest element is discarded for the new one; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                  |
-| a `dropNewest` subscriber's buffer is full                 | The new element is not delivered to it; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                           |
-| a `suspend` subscriber's buffer is full                    | The publish waits, in subscription order, until it takes an element; later subscribers get the element after it                                        |
-| a `suspend` subscriber ends while a publish waits for it   | The publish is released, skips that subscriber and goes on with the rest                                                                               |
-| the publisher is cancelled while it waits for a subscriber | `.rejected(.cancelled)` (`.deadlineExceeded` for a deadline); subscribers earlier in the order have the element, later ones do not                     |
-| a subscriber's task is cancelled                           | Its loop ends and the subscriber is removed from the broadcast at once                                                                                 |
-| a subscription is dropped without being iterated           | It is removed from the broadcast; nothing is buffered for it afterwards                                                                                |
-| `finish()` is called                                       | Subscribers drain what they buffered and then end; `publish` throws `.rejected(.closed)`; a later `subscribe` returns a subscription that ends at once |
+| What happens if…                                              | Behaviour                                                                                                                                              |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| a debounced call arrives while an earlier one waits           | The earlier call throws `.rejected(.superseded)` at once; the quiet period restarts from the new call; `debounce.dropped`                              |
+| the quiet period passes with no newer call                    | The latest call runs its operation, in its own task, and returns the result                                                                            |
+| `leading` is on and a call opens a burst                      | It runs at once; with `trailing` also on, the last later call of the burst runs when the burst ends, and a burst of one call runs once                 |
+| `leading` only and a call arrives inside the burst            | `.rejected(.suppressed)` and the burst is extended; `debounce.dropped`                                                                                 |
+| a waiting debounced call is cancelled                         | `.rejected(.cancelled)` (`.deadlineExceeded` when its deadline did it); the call is withdrawn and nothing runs for it                                  |
+| the scope that owns a `submit` ends                           | The waiting call is withdrawn with its fork; nothing runs afterwards and the scope's outcome is unchanged                                              |
+| a debounced operation throws                                  | `.failed(error)` for that caller; the next call starts a new burst                                                                                     |
+| a call arrives inside the window with `trailing` off          | `.rejected(.suppressed)`; `throttle.dropped`                                                                                                           |
+| calls arrive inside the window with `trailing` on             | Only the latest is kept and runs when the window ends; each one it replaces throws `.superseded` at once; `throttle.dropped`                           |
+| a trailing call runs                                          | It opens the next window of `interval`, so runs are never closer than that                                                                             |
+| `leading` is off and a call opens a window                    | It waits for the window to end, then runs; nothing runs sooner than `interval` after the first call                                                    |
+| a call waiting for the window's end is cancelled              | `.rejected(.cancelled)`; the window stays open and nothing runs for it                                                                                 |
+| a call arrives after the quiet period, before its timer fires | The waiting call runs (its burst is over) instead of being superseded; the new call opens the next burst                                               |
+| a call arrives after the window ends, before its timer fires  | The waiting call runs and opens the next window, as its timer would have; the new call falls inside that window                                        |
+| a fresh entry is read                                         | Returned without calling the loader                                                                                                                    |
+| a stale entry is read                                         | Returned at once; one refresh for the key starts in the background, forked into the cache's scope, however many readers see it                         |
+| callers miss the same key together                            | One load runs and every caller gets its value or its error (single flight)                                                                             |
+| a background refresh fails                                    | The stale value is kept and served; `cache.refresh_failed`; the next stale read tries again                                                            |
+| a load with no value to fall back on fails                    | `.failed(error)` to every waiting caller; nothing is cached, so the next caller tries again                                                            |
+| `negativeTTL` is set and a load fails                         | The failure is remembered for that long and thrown to callers without calling the loader                                                               |
+| one of several callers waiting on a load is cancelled         | It leaves with `.rejected(.cancelled)`; the load continues for the others and its value is cached                                                      |
+| every caller waiting on a load is cancelled                   | The load is cancelled and nothing is cached, not even a failure                                                                                        |
+| an entry is added past `maxEntries`                           | The least recently used entry is evicted; a read counts as a use                                                                                       |
+| the scope ends while a refresh runs                           | The refresh is cancelled and awaited, and is not reported as a failure; the stale entry stays until it expires                                         |
+| a `dropOldest` subscriber's buffer is full                    | Its oldest element is discarded for the new one; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                  |
+| a `dropNewest` subscriber's buffer is full                    | The new element is not delivered to it; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                           |
+| a `suspend` subscriber's buffer is full                       | The publish waits, in subscription order, until it takes an element; later subscribers get the element after it                                        |
+| a `suspend` subscriber ends while a publish waits for it      | The publish is released, skips that subscriber and goes on with the rest                                                                               |
+| the publisher is cancelled while it waits for a subscriber    | `.rejected(.cancelled)` (`.deadlineExceeded` for a deadline); subscribers earlier in the order have the element, later ones do not                     |
+| a subscriber's task is cancelled                              | Its loop ends and the subscriber is removed from the broadcast at once                                                                                 |
+| a subscription is dropped without being iterated              | It is removed from the broadcast; nothing is buffered for it afterwards                                                                                |
+| `finish()` is called                                          | Subscribers drain what they buffered and then end; `publish` throws `.rejected(.closed)`; a later `subscribe` returns a subscription that ends at once |
 
 ## Events
 
