@@ -108,7 +108,8 @@ public struct Scope: ~Copyable {
     }
 
     /// How many operations started inside this scope (or a scope inside it)
-    /// have been abandoned so far.
+    /// were abandoned and are still running. Work that finishes after it
+    /// was abandoned stops counting.
     public var abandonedWork: Int {
         state.watch.count
     }
@@ -210,6 +211,12 @@ struct Finalizer: Sendable {
     let runsOn: RunsOn
     /// What is reported when the finalizer throws: a saga names its own.
     var failedEvent: EventName = "scope.finalizer_failed"
+    /// What is reported when the finalizer starts while an earlier one,
+    /// abandoned, is still running; `nil` for none. A saga's compensations
+    /// undo in order, so one that runs alongside the compensation before it
+    /// is out of order, and says so. A scope's releases need no event: a
+    /// release that must not run under abandoned work declares `.quarantine`.
+    var overlapEvent: EventName?
     var ifWorkAbandoned: IfWorkAbandoned = .release
     let run: @Sendable (Exit) async throws -> Void
 }
@@ -224,6 +231,16 @@ final class ScopeState: Sendable {
     /// the caller asked for, shorter than this, is honoured as written.
     static let exitDeadlineFloor: Duration = .milliseconds(250)
 
+    /// How long one stage of the exit (waiting for forks, or one finalizer)
+    /// may take: what it asked for, within what is left of the exit budget
+    /// since `start` and of the enclosing deadline, but never less than the
+    /// floor, unless it asked for less.
+    func allowance(wanting wanted: Duration, since start: AnyClock.Instant, clock: AnyClock, enclosing: Deadline?) -> Duration {
+        var left = exitBudget.saturatingSubtracting(start.duration(to: clock.now))
+        if let enclosing { left = min(left, enclosing.remaining) }
+        return min(wanted, max(Self.exitDeadlineFloor, left))
+    }
+
     let label: String?
     let exitBudget: Duration
     let finalizerTimeout: Duration
@@ -235,7 +252,7 @@ final class ScopeState: Sendable {
 
     private let state = Mutex(State())
 
-    /// Counts work abandoned inside the scope.
+    /// Counts work abandoned inside the scope and still running.
     let watch = AbandonmentWatch(parent: AbandonmentWatch.current)
 
     init(label: String?, exitBudget: Duration, finalizerTimeout: Duration) {
@@ -259,7 +276,12 @@ final class ScopeState: Sendable {
     }
 
     /// Runs every finalizer, newest first, shielded and bounded.
-    func exit(_ exit: Exit) async {
+    ///
+    /// The exit budget is counted from `startedAt`: a task scope's exit
+    /// begins with waiting for its forks, and charges that to the same
+    /// budget. Each finalizer's allowance is also bounded by the deadline in
+    /// force when the exit began, floor included (see ``allowance(wanting:since:clock:enclosing:)``).
+    func exit(_ exit: Exit, startedAt: AnyClock.Instant? = nil) async {
         let finalizers = state.withLock { state -> [Finalizer] in
             state.exited = true
             return state.finalizers.reversed()
@@ -267,10 +289,15 @@ final class ScopeState: Sendable {
         guard !finalizers.isEmpty else { return }
         let ambient = Ambient.current
         let clock = ambient.clock
+        let enclosing = Deadline.current
         await withTaskCancellationShield {
-            let start = clock.now
+            let start = startedAt ?? clock.now
+            // Finalizers abandoned during this exit, while they still run.
+            var overrunning: [(label: String, id: UInt64)] = []
             for finalizer in finalizers {
                 if finalizer.runsOn == .failureOnly, !exit.isFailure { continue }
+                // Decided now, not when the work was abandoned: work that has
+                // since finished is using nothing, and its resource is released.
                 let abandoned = watch.count
                 if finalizer.ifWorkAbandoned == .quarantine, abandoned > 0 {
                     ambient.instrumentation.record(Event("scope.release_quarantined", level: .warning, label: label, fields: [
@@ -279,21 +306,35 @@ final class ScopeState: Sendable {
                     ]))
                     continue
                 }
-                let remaining = exitBudget.saturatingSubtracting(start.duration(to: clock.now))
-                let wanted = finalizer.timeout ?? finalizerTimeout
-                let allowed = min(wanted, max(Self.exitDeadlineFloor, remaining))
-                await run(finalizer, exit: exit, allowed: allowed, clock: clock, instrumentation: ambient.instrumentation)
+                let allowed = allowance(wanting: finalizer.timeout ?? finalizerTimeout, since: start, clock: clock, enclosing: enclosing)
+                if let overlapEvent = finalizer.overlapEvent {
+                    let ledger = AbandonedWork.ledger
+                    overrunning.removeAll { !ledger.isRunning($0.id) }
+                    if !overrunning.isEmpty {
+                        ambient.instrumentation.record(Event(overlapEvent, level: .warning, label: label, fields: [
+                            .init("finalizer", .string(finalizer.label), privacy: .public),
+                            .init("still_running", .string(overrunning.map(\.label).joined(separator: ", ")), privacy: .public),
+                        ]))
+                    }
+                }
+                if let id = await run(finalizer, exit: exit, allowed: allowed, clock: clock, instrumentation: ambient.instrumentation) {
+                    overrunning.append((finalizer.label, id))
+                }
             }
         }
     }
 
+    /// Runs one finalizer in its own task, for at most `allowed`.
+    ///
+    /// - Returns: The finalizer's entry in the abandonment ledger if it was
+    ///   abandoned and is still running, `nil` if it ended.
     private func run(
         _ finalizer: Finalizer,
         exit: Exit,
         allowed: Duration,
         clock: AnyClock,
         instrumentation: any Instrumentation
-    ) async {
+    ) async -> UInt64? {
         let label = label
         func report(_ name: EventName, _ level: Event.Level, _ fields: [Event.Field]) {
             instrumentation.record(Event(name, level: level, label: label, fields: [.init("finalizer", .string(finalizer.label), privacy: .public)] + fields))
@@ -307,24 +348,36 @@ final class ScopeState: Sendable {
         let start = clock.now
         let ledgerLabel = "scope \(label.map { "\($0) " } ?? "")finalizer \(finalizer.label)"
         let id = ledger.admit(label: ledgerLabel)
+        // Cleanup keeps its own time. The deadline the body ran under has
+        // often passed (that is how the body ended), and inherited, it would
+        // refuse every retry, wait and policy the finalizer goes through. So
+        // the finalizer runs under its allowance as its deadline, replacing
+        // the enclosing one rather than narrowing it, with a cause box of
+        // its own, and anything Stoic inside it knows how long it has.
+        let deadline = Deadline.after(allowed, clock: clock)
+        let cause = CancellationCauseBox(parent: nil)
         let task = Task<(any Error)?, Never>.stoic {
-            // A finalizer that is slow to start exercises the slow and
-            // abandoned paths.
-            await FaultPoint.hit("scope.finalizer")
-            let failure: (any Error)?
-            do {
-                try await finalizer.run(exit)
-                failure = nil
-            } catch {
-                failure = error
+            await Deadline.$stored.withValue(deadline) {
+                await CancellationCauseBox.$current.withValue(cause) {
+                    // A finalizer that is slow to start exercises the slow and
+                    // abandoned paths.
+                    await FaultPoint.hit("scope.finalizer")
+                    let failure: (any Error)?
+                    do {
+                        try await finalizer.run(exit)
+                        failure = nil
+                    } catch {
+                        failure = error
+                    }
+                    if let lateness = ledger.finish(id) {
+                        report("abandoned.completed", .notice, [
+                            .init("ran_for", .duration(start.duration(to: clock.now))),
+                            .init("late_by", .duration(lateness)),
+                        ])
+                    }
+                    return failure
+                }
             }
-            if let lateness = ledger.finish(id) {
-                report("abandoned.completed", .notice, [
-                    .init("ran_for", .duration(start.duration(to: clock.now))),
-                    .init("late_by", .duration(lateness)),
-                ])
-            }
-            return failure
         }
         switch await waitForTask(task, within: allowed, clock: clock) {
         case .finished(let error?):
@@ -335,10 +388,15 @@ final class ScopeState: Sendable {
                 report("scope.finalizer_slow", .notice, [.init("took", .duration(took)), .init("allowed", .duration(allowed))])
             }
         case .timedOut:
+            cause.record(.deadline)
             task.cancel()
-            _ = ledger.abandon(id, deadline: clock.now, clock: clock)
+            // Counted against this scope (and those around it) while it
+            // runs: the releases after it may be of what it is still using.
+            let stillRunning = ledger.abandon(id, deadline: clock.now, clock: clock, watch: watch)
             report("scope.finalizer_abandoned", .error, [.init("allowed", .duration(allowed))])
+            return stillRunning ? id : nil
         }
+        return nil
     }
 }
 
@@ -386,7 +444,14 @@ func waitForTask<T: Sendable>(_ task: Task<T, Never>, within limit: Duration, cl
     return result
 }
 
-/// Counts work abandoned inside a scope, and in every scope around it.
+/// Counts work abandoned inside a scope, and in every scope around it, for
+/// as long as that work runs.
+///
+/// Live, not cumulative: abandoned work that has since finished is using
+/// nothing, and a quarantine decided on a count that only grew would leak a
+/// resource on every reload that once hit a wedge. The ledger calls
+/// ``record()`` and ``resolve()`` under its own lock, so the end of a piece
+/// of work is never counted before its abandonment.
 final class AbandonmentWatch: Sendable {
     @TaskLocal static var current: AbandonmentWatch?
 
@@ -397,6 +462,7 @@ final class AbandonmentWatch: Sendable {
         self.parent = parent
     }
 
+    /// Abandoned work started here (or in a scope inside) still running.
     var count: Int {
         abandoned.load(ordering: .relaxed)
     }
@@ -406,5 +472,11 @@ final class AbandonmentWatch: Sendable {
     func record() {
         abandoned.wrappingAdd(1, ordering: .relaxed)
         parent?.record()
+    }
+
+    /// Records that an operation ``record()`` counted has finished.
+    func resolve() {
+        abandoned.wrappingSubtract(1, ordering: .relaxed)
+        parent?.resolve()
     }
 }

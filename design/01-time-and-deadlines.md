@@ -160,10 +160,11 @@ Abandoned work is listed in a process-wide ledger (label, age, call site)
 and appears in diagnostics until it finishes; a late finish is reported with
 its lateness. Built: `abandoningAfter(_:label:limit:clock:qos:operation:)`, and its scope
 integration: every scope counts work abandoned inside it (and inside scopes
-within it) — `scope.abandonedWork` — and a release declared
-`ifWorkAbandoned: .quarantine` is skipped and reported
-(`scope.release_quarantined`) when that count is not zero. The count is not
-a case of `Exit`, which would break every `switch` over it.
+within it) for as long as that work runs — `scope.abandonedWork` — and a
+release declared `ifWorkAbandoned: .quarantine` is skipped and reported
+(`scope.release_quarantined`) when that count is not zero as the release
+would run. The count is not a case of `Exit`, which would break every
+`switch` over it.
 
 **Async work (`abandoningAsyncAfter`).** Some work that ignores cancellation is
 async by signature: a `withCheckedContinuation` around a CoreAudio or Speech

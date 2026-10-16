@@ -89,9 +89,11 @@ struct ConcurrencyFailureModeTests {
 
 @Suite("Failure modes: scope exit")
 struct ScopeExitFailureModeTests {
+    enum Failure: Error { case boom }
+
     /// "the enclosing deadline has already passed at exit: finalizers still
-    /// get exitDeadlineFloor each." The exit budget is spent here (zero) as
-    /// well, so only the floor is left: 250 ms.
+    /// get exitDeadlineFloor each." The exit budget has ten seconds left, so
+    /// it is the passed deadline alone that leaves only the floor: 250 ms.
     @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "the enclosing deadline has already passed at exit"))
     func finalizersStillGetTheFloorWhenTheEnclosingDeadlineHasPassed() async {
         let clock = TestClock()
@@ -100,7 +102,7 @@ struct ScopeExitFailureModeTests {
         let task = Task {
             await withAmbient({ $0.clock = clock.erased; $0.instrumentation = events }) {
                 await withTimeout(.seconds(1)) {
-                    await withScope(exitBudget: .zero) { scope in
+                    await withScope(exitBudget: .seconds(10)) { scope in
                         scope.onExit(label: "needs 200ms") { _ in
                             try await clock.sleep(for: .milliseconds(200))
                             log.append("200ms done")
@@ -155,6 +157,185 @@ struct ScopeExitFailureModeTests {
         let tracked = TaskLedger.entries(tag: tag).count + AbandonedWork.current.filter { $0.label.contains("ledger-test") }.count
         #expect(tracked >= 1, "the hung finalizer is invisible to diagnostics")
         hung.open()
+    }
+
+    /// Cleanup keeps its own time. The deadline that ended the body has
+    /// passed; a finalizer that inherited it would have every Stoic call it
+    /// makes refused, or run already cancelled.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "a finalizer calls a Stoic primitive after the deadline that ended the scope"))
+    func aFinalizerAfterTheDeadlineRunsUnderItsOwnAllowance() async {
+        let clock = TestClock()
+        let observed = SendableBox<[String]>([])
+        let task = Task {
+            await withTestAmbient(clock: clock) {
+                await withTimeout(.seconds(1)) {
+                    await withScope { scope in
+                        scope.onExit(label: "flush") { _ in
+                            let left = Deadline.current.map { clock.erased.now.duration(to: $0.instant) }
+                            observed.mutate { $0.append("deadline in \(left.map { "\($0)" } ?? "none")") }
+                            let cancelled = await withTimeout(.seconds(2)) { () async -> Bool in Task.isCancelled }
+                            observed.mutate { $0.append("timeout cancelled on entry: \(cancelled)") }
+                            do {
+                                try await Bulkhead(maxConcurrent: 1, label: "flush").execute { () async throws(Failure) in }
+                                observed.mutate { $0.append("bulkhead ran") }
+                            } catch {
+                                observed.mutate { $0.append("bulkhead: \(error)") }
+                            }
+                        }
+                        try? await Ambient.sleep(for: .seconds(3600))
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(1))
+        await task.value
+        // The enclosing deadline has passed, so the finalizer's allowance is the floor.
+        #expect(observed.value == ["deadline in \(ScopeState.exitDeadlineFloor)", "timeout cancelled on entry: false", "bulkhead ran"])
+    }
+
+    /// The same for a saga: the refund that undoes a charge is not refused
+    /// because the deadline that ended the saga has passed.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "a finalizer calls a Stoic primitive after the deadline that ended the scope"))
+    func aCompensationAfterTheDeadlineIsNotRefused() async {
+        let clock = TestClock()
+        let refund = SendableBox<String?>(nil)
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    try await withSaga { saga in
+                        _ = try await saga.step(label: "charge") { () async throws -> Int in 42 } compensate: { _ in
+                            do {
+                                try await Bulkhead(maxConcurrent: 1, label: "payments").execute { () async throws(Failure) in }
+                                refund.mutate { $0 = "refunded" }
+                            } catch {
+                                refund.mutate { $0 = "refused: \(error)" }
+                            }
+                        }
+                        try await Ambient.sleep(for: .seconds(3600))   // shipping hangs; the deadline ends the saga
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(1))
+        _ = try? await task.value
+        #expect(refund.value == "refunded")
+    }
+
+    /// A deadline with time left bounds the exit, as the exit budget does:
+    /// a scope inside a two-second timeout does not take ten seconds more.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "the enclosing deadline has time left at exit"))
+    func theEnclosingDeadlineBoundsEachFinalizer() async {
+        let clock = TestClock()
+        let task = Task {
+            await withTestAmbient(clock: clock) {
+                await withTimeout(.seconds(2)) {
+                    await withScope(exitBudget: .seconds(10), finalizerTimeout: .seconds(5)) { scope in
+                        scope.onExit(label: "slow close") { _ in await AsyncGate().wait() }
+                        try? await Ambient.sleep(for: .seconds(1))
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the timeout and the body
+        await clock.advance(by: .seconds(1))
+        await clock.waitForSleepers(count: 2)   // the timeout and the finalizer's timer
+        // One second of the deadline is left: the finalizer gets that, not its five.
+        #expect(clock.pendingDeadlines.map(\.offset) == [.seconds(2), .seconds(2)])
+        await clock.advance(by: .seconds(1))
+        await task.value
+    }
+
+    /// Waiting for forks is part of the exit and charged to its budget: a
+    /// fork that uses it up leaves the finalizers only the floor.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "waiting for forks uses up the exit budget"))
+    func waitingForForksIsChargedToTheExitBudget() async throws {
+        let clock = TestClock()
+        let stubborn = AsyncGate()
+        defer { stubborn.open() }
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTaskScope(exitBudget: .seconds(1), forkTimeout: .seconds(5)) { scope in
+                    scope.onExit(label: "close") { _ in await AsyncGate().wait() }
+                    scope.fork(label: "stubborn") { await stubborn.wait() }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        // The fork gets the budget's second, not its five.
+        #expect(clock.pendingDeadlines.map(\.offset) == [.seconds(1)])
+        await clock.advance(by: .seconds(1))
+        await clock.waitForSleepers(count: 1)
+        // The budget is spent: the finalizer gets the floor.
+        #expect(clock.pendingDeadlines.map(\.offset) == [.seconds(1) + ScopeState.exitDeadlineFloor])
+        await clock.advance(by: ScopeState.exitDeadlineFloor)
+        try await task.value
+    }
+
+    /// A hung finalizer is abandoned, and counted while it runs: the release
+    /// behind it of what it may still be using is quarantined, not closed
+    /// under it. It reads the deadline as its cause.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "a finalizer hangs"))
+    func anAbandonedFinalizerQuarantinesTheReleasesBehindIt() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let hung = AsyncGate()
+        let log = OrderLog()
+        let cause = SendableBox<CancellationCause?>(nil)
+        let task = Task {
+            await withTestAmbient(clock: clock, events: events) {
+                await withScope { scope in
+                    scope.onExit(label: "close session", ifWorkAbandoned: .quarantine) { _ in log.append("session closed") }
+                    scope.onExit(label: "close stream") { _ in log.append("stream closed") }
+                    scope.onExit(label: "drain stream on session", timeout: .milliseconds(100)) { _ in
+                        await hung.wait()
+                        cause.mutate { $0 = CancellationCause.current }
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .milliseconds(100))
+        await task.value
+        #expect(log.values == ["stream closed"])
+        #expect(events.events(named: "scope.release_quarantined").first?.fields.contains { $0.key == "finalizer" && "\($0.value)" == "close session" } == true)
+        hung.open()
+        #expect(await eventually { cause.value != nil })
+        #expect(cause.value == .deadline)
+    }
+
+    /// A saga's compensation that overruns is abandoned and the chain goes
+    /// on, but out of order: each compensation that starts while it still
+    /// runs is reported.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/04", "a saga's compensation overruns"))
+    func aCompensationThatOverrunsIsReportedForEachOneThatOverlapsIt() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let hung = AsyncGate()
+        defer { hung.open() }
+        let log = OrderLog()
+        let task = Task {
+            await withTestAmbient(clock: clock, events: events) {
+                _ = try? await withSaga(label: "order") { saga in
+                    _ = await saga.step(label: "create order") { 1 } compensate: { _ in log.append("order cancelled") }
+                    _ = await saga.step(label: "reserve stock") { 2 } compensate: { _ in log.append("stock released") }
+                    _ = await saga.step(label: "charge", timeout: .milliseconds(100)) { 3 } compensate: { _ in await hung.wait() }
+                    throw Failure.boom
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .milliseconds(100))
+        await task.value
+        #expect(log.values == ["stock released", "order cancelled"], "the chain is not held up")
+        #expect(events.names.contains("scope.finalizer_abandoned"))
+        let overlaps = events.events(named: "saga.compensation_overlapped")
+        #expect(overlaps.map { $0.level } == [.warning, .warning])
+        #expect(overlaps.map(\.label) == ["order", "order"])
+        func field(_ event: Event, _ key: String) -> String? { event.fields.first { $0.key == key }.map { "\($0.value)" } }
+        #expect(overlaps.map { field($0, "finalizer") } == ["reserve stock", "create order"])
+        #expect(overlaps.map { field($0, "still_running") } == ["charge", "charge"])
     }
 }
 

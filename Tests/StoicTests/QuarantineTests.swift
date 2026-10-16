@@ -84,4 +84,29 @@ struct QuarantineTests {
         }
         #expect(!closed.withLock { $0 })
     }
+
+    /// Abandonment is counted while the work runs, not for ever: work that
+    /// finished after it was abandoned is using nothing, and a release
+    /// decided at exit runs as usual instead of leaking.
+    @Test(.failureMode("design/04", "abandoned work finishes before the scope exits")) func workThatFinishedAfterAbandonmentNoLongerQuarantines() async {
+        let events = RecordingInstrumentation()
+        let wedge = Wedge()
+        let closed = Mutex(false)
+        await withTestAmbient(clock: ContinuousClock(), events: events) {
+            await withScope { outer in
+                outer.onExit(ifWorkAbandoned: .quarantine) { _ in closed.withLock { $0 = true } }
+                await withScope { inner in
+                    await Self.abandonOne(wedge, label: Self.label("late"))
+                    #expect(inner.abandonedWork == 1)
+                    #expect(outer.abandonedWork == 1)
+                    wedge.release()
+                    #expect(await eventually { events.names.contains("abandoned.completed") })
+                    #expect(inner.abandonedWork == 0)
+                }
+                #expect(outer.abandonedWork == 0)
+            }
+        }
+        #expect(closed.withLock { $0 }, "the handle leaked though the abandoned work had finished")
+        #expect(!events.names.contains("scope.release_quarantined"))
+    }
 }

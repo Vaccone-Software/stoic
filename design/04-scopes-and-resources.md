@@ -59,13 +59,37 @@ body. `shielded: true` runs the acquire itself hidden from cancellation.
 at a time, newest first. Waiting for them is shielded
 (`withTaskCancellationShield`), so a cancelled task still cleans up. Each
 finalizer runs in its own task and gets `min(its timeout, max(exitDeadlineFloor,
-what is left of exitBudget))`: a total budget, so n finalizers cannot add up
-to n × timeout, and a floor (`exitDeadlineFloor`, 250 ms), because cleanup
-that never runs is worse than cleanup that runs late. The floor lifts only
-what the budget left over; it never lengthens a timeout the caller asked for,
-so an explicit `timeout: .milliseconds(10)` is ten milliseconds. A finalizer
+min(what is left of exitBudget, what is left of the enclosing deadline)))`:
+a total budget, so n finalizers cannot add up to n × timeout; bounded by the
+deadline the scope ran under, so a scope inside a two-second timeout does
+not take ten seconds more; and a floor (`exitDeadlineFloor`, 250 ms),
+because cleanup that never runs is worse than cleanup that runs late. The
+floor applies even when that deadline has already passed (which is how a
+body ended by its deadline exits); it lifts only what the budget and the
+deadline left over, and never lengthens a timeout the caller asked for, so
+an explicit `timeout: .milliseconds(10)` is ten milliseconds. A finalizer
 that overruns is abandoned — `scope.finalizer_abandoned`, error level — and
 the next one runs.
+
+**Cleanup keeps its own time.** Each finalizer runs under its allowance as
+`Deadline.current`, replacing the enclosing deadline rather than narrowing
+it, and with a cancellation-cause box of its own (cause `deadline` if it is
+abandoned). A first version let finalizers inherit the body's deadline:
+when the deadline was what ended the body, it had passed, so every retry,
+wait and policy a finalizer or a saga's compensation went through refused
+at once, and a refund that should have undone a charge was rejected with
+`deadlineExceeded`. Under its own deadline, Stoic code in a finalizer knows
+how long it has and stops in time instead of being abandoned.
+
+**Abandonment is live.** `abandonedWork` counts work abandoned in the scope
+(and scopes inside it) that is still running: operations given up by
+`abandoningAfter`, forks that outlived `forkTimeout`, and finalizers that
+overran, which may still be using what the releases after them close.
+Work that finishes stops counting, and `.quarantine` is decided when the
+release would run. A first version only ever counted up, so a release was
+leaked even when the abandoned work had long finished. (A release that
+waits, bounded, for abandoned work to end and then runs was considered;
+it is a plausible extension once a real resource needs it.)
 
 **Finalizers cannot change the outcome.** They may throw; the error is
 reported (`scope.finalizer_failed`) and the body's result or error passes
@@ -83,14 +107,18 @@ with every fork failure followed by the body's own error if it failed for
 another reason. The body runs as a child task — the only way a fork's
 failure can cancel it without cancelling the caller — so, like `Task {}`, it
 inherits the caller's actor and returns a `Sendable` result. Waiting for forks is
-bounded, as waiting for finalizers is: a fork that ignores cancellation (a
-blocked call, a loop with no suspension point) gets `forkTimeout` (five
-seconds by default) after the body ends, and is then *abandoned* — the scope
-goes on, the fork keeps running unwatched, is listed in `AbandonedWork` and the
-task ledger until it ends, is reported (`scope.fork_abandoned`, then
-`abandoned.completed`), and counts toward `abandonedWork`, so a release
-declared `ifWorkAbandoned: .quarantine` is skipped rather than run under a fork
-that may still be using the resource. Cancellation of a fork or the body that
+bounded, as waiting for finalizers is, and is the first stage of the exit: a
+fork that ignores cancellation (a blocked call, a loop with no suspension
+point) gets `forkTimeout` (five seconds by default) after the body ends,
+within the exit budget and the enclosing deadline (floor included, as for a
+finalizer), and is then *abandoned* — the scope goes on, the fork keeps
+running unwatched, is listed in `AbandonedWork` and the task ledger until it
+ends, is reported (`scope.fork_abandoned`, then `abandoned.completed`), and
+counts toward `abandonedWork` while it runs, so a release declared
+`ifWorkAbandoned: .quarantine` is skipped rather than run under a fork that
+may still be using the resource. The finalizers get what the fork wait left
+of the budget, so `exitBudget` bounds the whole exit; it once restarted after
+the fork wait, and an exit could take `forkTimeout + exitBudget`. Cancellation of a fork or the body that
 ends as `.rejected(.cancelled)` (a cancelled policy wait; design/03) is
 cancellation, not a failure. A fork that
 finishes is forgotten at once, its failure (if any) already recorded: the
@@ -102,8 +130,14 @@ typed error.
 **Saga.** A step's compensation is registered only once the step
 succeeds, and runs only if the saga ends in failure or cancellation:
 newest first, shielded, time-bounded, each one even if an earlier one
-failed. Compensations live in memory; effects that must be undone across a
-crash need a durable journal (design/15, `StoicStore`).
+failed, each under its own allowance as its deadline. A compensation that
+overruns is abandoned and the chain goes on without it: holding the older
+compensations for it would make the saga's exit unbounded. They then run
+while it still runs, which is out of order, so each that starts while an
+abandoned compensation is still running is reported
+(`saga.compensation_overlapped`, naming both). Compensations live in memory;
+effects that must be undone across a crash need a durable journal
+(design/15, `StoicStore`).
 
 **Typestate.** For a single resource with states to move through, use a
 `~Copyable` type with `consuming` transitions; a scope then guarantees
@@ -119,13 +153,18 @@ returned to the body and kept by the release closure).
 | the body throws                                   | Finalizers run with `.failure(error)`, error rethrown unchanged                            |
 | the task is cancelled mid-body                    | Finalizers run with `.cancelled`, shielded; `CancellationError` rethrown                   |
 | a finalizer throws (logs) / fails                 | Reported at error level; remaining finalizers run; outcome unchanged                       |
-| work started in the scope was abandoned           | Releases marked `.quarantine` are skipped (leaked on purpose); `scope.release_quarantined` |
-| a finalizer hangs                                 | Abandoned after its timeout, listed in `AbandonedWork`; `scope.finalizer_abandoned`        |
+| work started in the scope was abandoned           | While it runs, releases marked `.quarantine` are skipped (leaked on purpose); `scope.release_quarantined` |
+| abandoned work finishes before the scope exits    | It no longer counts in `abandonedWork`; releases marked `.quarantine` run                  |
+| a finalizer hangs                                 | Abandoned after its timeout, listed in `AbandonedWork`; `scope.finalizer_abandoned`; counted in `abandonedWork` while it runs, so later `.quarantine` releases are skipped |
+| a saga's compensation overruns                    | Abandoned; the older compensations still run; each that starts while it runs: `saga.compensation_overlapped` |
 | the acquire throws                                | Nothing registered; error rethrown; earlier acquisitions are released                      |
 | a forked child throws                             | Body and siblings cancelled; after cleanup, `ConcurrentFailure` with every child error     |
 | a fork ignores cancellation                       | Abandoned after `forkTimeout`; `scope.fork_abandoned`; counted in `abandonedWork`; finalizers run |
+| waiting for forks uses up the exit budget         | Forks get at most what is left of it; finalizers get the rest, `exitDeadlineFloor` at least |
 | a long-lived scope forks many short tasks         | Each fork is forgotten when it finishes; the scope holds only the running ones             |
 | the enclosing deadline has already passed at exit | Finalizers still get `exitDeadlineFloor` each                                              |
+| the enclosing deadline has time left at exit      | Each finalizer gets at most what is left of it (and of `exitBudget`), `exitDeadlineFloor` at least |
+| a finalizer calls a Stoic primitive after the deadline that ended the scope | It runs under its own allowance as its deadline, with a cause of its own: the call is not refused |
 | someone tries to keep the `Scope`                 | Compile error                                                                              |
 
 ## Events
@@ -133,7 +172,8 @@ returned to the body and kept by the release closure).
 `scope.finalizer_failed`, `scope.finalizer_abandoned`, `scope.finalizer_slow`, `scope.release_quarantined`
 (over half its allowance), `scope.child_failed`, `scope.fork_abandoned`, `scope.fork_after_exit`,
 `saga.compensation_failed` (a saga's compensation threw; the scope event is
-not also emitted), and `abandoned.completed` when an abandoned finalizer
+not also emitted), `saga.compensation_overlapped` (a compensation started
+while an earlier, abandoned one was still running), and `abandoned.completed` when an abandoned finalizer
 finally ends (it is listed in `AbandonedWork` until then).
 
 ## Testing

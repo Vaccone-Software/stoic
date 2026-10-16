@@ -215,8 +215,7 @@ private nonisolated(nonsending) func abandonable<R: Sendable, Failure: Error>(
     // The deadline or the caller won. Abandon the work — unless it finished
     // in the meantime, in which case its result simply goes unused.
     let reason: Rejection.Reason = Task.isCancelled ? cancellationReason() : .deadlineExceeded
-    if ledger.abandon(id, deadline: deadline.instant, clock: deadline.clock) {
-        AbandonmentWatch.current?.record()
+    if ledger.abandon(id, deadline: deadline.instant, clock: deadline.clock, watch: AbandonmentWatch.current) {
         instrumentation.record(Event("abandoned.started", level: .warning, label: label, fields: [
             .init("reason", .string(reason.rawValue), privacy: .public),
             .init("outstanding", .int(ledger.outstanding(label: label))),
@@ -262,6 +261,8 @@ final class AbandonmentLedger: Sendable {
     private struct Record {
         let label: String
         var status: Status
+        /// The scopes counting it while it runs abandoned.
+        var watch: AbandonmentWatch?
     }
 
     /// A label's thread budget, and how many calls and operations hold it.
@@ -337,13 +338,24 @@ final class AbandonmentLedger: Sendable {
         }
     }
 
-    /// Marks the operation abandoned. Returns `false` if it had already finished.
-    func abandon(_ id: UInt64, deadline: AnyClock.Instant, clock: AnyClock) -> Bool {
+    /// Marks the operation abandoned, and counts it in `watch` (the scopes
+    /// it was started in) until it finishes. Returns `false` if it had
+    /// already finished.
+    func abandon(_ id: UInt64, deadline: AnyClock.Instant, clock: AnyClock, watch: AbandonmentWatch?) -> Bool {
         state.withLock { state in
             guard state.records[id] != nil else { return false }
             state.records[id]?.status = .abandoned(at: deadline, clock: clock)
+            state.records[id]?.watch = watch
+            // Under the lock, as `finish` resolves it: a scope never sees
+            // the end of work before its abandonment.
+            watch?.record()
             return true
         }
+    }
+
+    /// Whether the operation is still running, abandoned or not.
+    func isRunning(_ id: UInt64) -> Bool {
+        state.withLock { $0.records[id] != nil }
     }
 
     /// Records that the operation finished. Returns how late it was, if it
@@ -352,6 +364,7 @@ final class AbandonmentLedger: Sendable {
         state.withLock { state in
             guard let record = state.records.removeValue(forKey: id) else { return nil }
             if case .abandoned(let at, let clock) = record.status {
+                record.watch?.resolve()
                 return at.duration(to: clock.now)
             }
             // Finished in time: its waiter will forget it too, harmlessly.

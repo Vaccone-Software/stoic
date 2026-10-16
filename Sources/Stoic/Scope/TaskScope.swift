@@ -12,13 +12,14 @@ internal import Synchronization
 /// Waiting for forks is bounded. Cancellation is cooperative: a fork that
 /// never looks at it (a blocked call, a loop without a suspension point)
 /// would otherwise hold the scope, and every finalizer behind it, forever.
-/// Forks get `forkTimeout` after the body ends to stop; any still running
+/// Forks get `forkTimeout` after the body ends to stop (within the exit
+/// budget and the enclosing deadline, as finalizers are); any still running
 /// then are *abandoned*, as an overrunning finalizer is: the scope goes on,
 /// the fork keeps running unwatched but listed in ``AbandonedWork/current``
 /// and ``TaskLedger/current`` until it ends, `scope.fork_abandoned` is
-/// reported, and the scope's ``abandonedWork`` counts it — so a release
-/// declared `ifWorkAbandoned: .quarantine` is skipped rather than run under a
-/// fork that may still be using the resource.
+/// reported, and the scope's ``abandonedWork`` counts it while it runs — so
+/// a release declared `ifWorkAbandoned: .quarantine` is skipped rather than
+/// run under a fork that may still be using the resource.
 ///
 /// A fork that fails cancels the body and every other fork
 /// (``CancellationCause/siblingFailed``): one broken part stops the whole.
@@ -60,8 +61,8 @@ public struct TaskScope: ~Copyable {
         Scope(state: resources).onExit(label: label, timeout: timeout, ifWorkAbandoned: ifWorkAbandoned, finalizer)
     }
 
-    /// How many operations and forks started inside this scope (or a scope
-    /// inside it) have been abandoned so far.
+    /// How many operations, forks and finalizers started inside this scope
+    /// (or a scope inside it) were abandoned and are still running.
     public var abandonedWork: Int {
         resources.watch.count
     }
@@ -71,10 +72,12 @@ public struct TaskScope: ~Copyable {
 ///
 /// - Parameters:
 ///   - exitBudget: How long the exit phase (waiting for forks, running
-///     finalizers) may take in all.
+///     finalizers) may take in all. Each stage still gets the floor of a
+///     quarter of a second, unless it asked for less.
 ///   - finalizerTimeout: How long one finalizer may take.
 ///   - forkTimeout: How long forks get to stop, once the body has ended and
-///     cancelled them, before they are abandoned (see ``TaskScope``).
+///     cancelled them, before they are abandoned (see ``TaskScope``); within
+///     `exitBudget` and the enclosing deadline.
 ///   - label: Names the scope in events and reports.
 ///   - body: The work the scope owns.
 public nonisolated(nonsending) func withTaskScope<R: Sendable>(
@@ -112,7 +115,12 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
     }
 
     // The body has ended: no new forks; stop and await the running ones.
-    await tasks.close(within: forkTimeout)
+    // Waiting for forks is the first stage of the exit, charged to the same
+    // budget (and bounded by the same enclosing deadline) as the finalizers
+    // after it, so the whole exit has one bound.
+    let clock = Ambient.current.clock
+    let exitStart = clock.now
+    await tasks.close(within: resources.allowance(wanting: forkTimeout, since: exitStart, clock: clock, enclosing: Deadline.current))
     let forkFailures = tasks.failures
 
     let exit: Exit
@@ -121,7 +129,7 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
     } else {
         exit = bodyResult.exit
     }
-    await resources.exit(exit)
+    await resources.exit(exit, startedAt: exitStart)
 
     if !forkFailures.isEmpty {
         var all = forkFailures
@@ -295,8 +303,7 @@ final class TaskScopeState: Sendable {
         for (task, forkLabel) in running {
             let start = clock.now
             let id = ledger.admit(label: "scope \(label.map { "\($0) " } ?? "")fork \(forkLabel)")
-            _ = ledger.abandon(id, deadline: start, clock: clock)
-            watch?.record()
+            _ = ledger.abandon(id, deadline: start, clock: clock, watch: watch)
             Ambient.record(Event("scope.fork_abandoned", level: .error, label: label, fields: [
                 .init("fork", .string(forkLabel), privacy: .public),
                 .init("allowed", .duration(allowed)),
