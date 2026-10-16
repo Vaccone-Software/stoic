@@ -169,6 +169,7 @@ extension Schema {
                 let errorsBefore = state.errorCount
                 var context = DecodingContext()
                 swap(&context.state, &state)
+                context.errorsBefore = context.state.errorCount
                 let value = decode(json, &context)
                 swap(&context.state, &state)
                 if state.errorCount > errorsBefore { return nil }
@@ -195,6 +196,9 @@ extension Schema {
 /// the input was text.
 public struct DecodingContext {
     var state: DecodeState
+    /// The errors the whole decode had recorded when this decoder started:
+    /// its siblings' are not its own.
+    var errorsBefore = 0
 
     init() {
         state = DecodeState(options: .strict)
@@ -207,8 +211,11 @@ public struct DecodingContext {
     /// replaced by a default instead of failing the whole.
     public var isLenient: Bool { state.isLenient }
 
-    /// Whether an error has been reported since this decoder started.
-    public var hasErrors: Bool { state.errorCount > 0 }
+    /// Whether an error has been reported since this decoder started, by it
+    /// or by a schema it decoded with: an error elsewhere in the document
+    /// does not count, so a decoder that gives up on `hasErrors` gives up
+    /// only on its own value.
+    public var hasErrors: Bool { state.errorCount > errorsBefore }
 
     /// Records a problem.
     ///

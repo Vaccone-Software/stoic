@@ -319,6 +319,28 @@ struct CustomSchemaTests {
         #expect(holder.decodeReporting(#"{"range": {"low": 1, "high": 2}}"#).value == Holder(range: Range(low: 1, high: 2)))
     }
 
+    @Test func hasErrorsCountsOnlyThisDecodersErrors() {
+        // A decoder that gives up on `hasErrors` must not give up because a
+        // sibling field failed: that would add an issue to a valid value and
+        // break "three invalid fields, three issues".
+        struct Span: Sendable, Equatable { var low = 0; var high = 0 }
+        let span = Schema<Span>.custom(description: "a span") { json, context in
+            let low = context.decode(json.object?["low"] ?? .null, as: Schema<Int>.int(), at: .key("low"))
+            let high = context.decode(json.object?["high"] ?? .null, as: Schema<Int>.int(), at: .key("high"))
+            guard !context.hasErrors, let low, let high else { return nil }
+            return Span(low: low, high: high)
+        } encode: { ["low": .number(JSONNumber($0.low)), "high": .number(JSONNumber($0.high))] }
+        struct Holder: Sendable { var count = 0; var span = Span() }
+        let holder = Schema.object(Holder.self, default: Holder()) {
+            Field("count", \.count, .int())
+            Field("span", \.span, span)
+        }
+        let valid = holder.decodeReporting(#"{"count": "x", "span": {"low": 1, "high": 2}}"#)
+        #expect(valid.issues.locations == ["$.count type_mismatch"])
+        let invalid = holder.decodeReporting(#"{"count": "x", "span": {"low": 1, "high": "y"}}"#)
+        #expect(invalid.issues.locations == ["$.count type_mismatch", "$.span.high type_mismatch"])
+    }
+
     @Test func aDecoderThatReturnsNilWithoutReportingStillFails() {
         let schema = Schema<Int>.custom(
             description: "never", decode: { _, _ in nil }, encode: { .number(JSONNumber($0)) })

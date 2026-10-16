@@ -325,6 +325,9 @@ the order it was built:
   decodes sub-values with other schemas (`context.decode(_, as:, at:)`).
   A decoder that returns `nil` without reporting still fails with
   `invalid_value`; one that returns a value after reporting an error fails.
+  `context.hasErrors` counts the errors since this decoder started, never
+  a sibling's, so a decoder that gives up on it gives up only on its own
+  value.
 - **`Schema.enumeration(_:)` also takes `Int` raw values**
   (`SchemaNode.integerEnumeration`, with the Swift case names kept for
   documentation): `type: integer`, `enum: [...]`, `x-stoic-enum-names`.
