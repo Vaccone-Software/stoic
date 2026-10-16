@@ -46,10 +46,16 @@ public struct Deadline: Sendable, CustomStringConvertible {
     /// which is exact when both clocks advance together and an approximation
     /// otherwise; mixing clocks is best avoided.
     public func earlier(_ other: Deadline) -> Deadline {
+        other.isEarlier(than: self) ? other : self
+    }
+
+    /// Whether `self` comes strictly before `other`: whether installing it
+    /// under `other` would narrow anything. Compared as ``earlier(_:)`` does.
+    func isEarlier(than other: Deadline) -> Bool {
         if clock.isSameClock(as: other.clock) {
-            return other.instant < instant ? other : self
+            return instant < other.instant
         }
-        return other.remaining < remaining ? other : self
+        return remaining < other.remaining
     }
 
     /// `self`, narrowed by the deadline already in force.

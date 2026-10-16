@@ -186,7 +186,8 @@ struct HTTPCoalescingTests {
             await eventually { rig.api.coalescedWaiters(for: request) == 1 }
             let patient = Task { try await withTimeout(.seconds(30)) { try await api.send(request) } }
             await eventually { rig.api.coalescedWaiters(for: request) == 2 }
-            await eventually { rig.clock.sleeperCount >= 7 }
+            // The attempt's 60 s timeout narrows neither caller's deadline, so it starts no timer.
+            await eventually { rig.clock.sleeperCount >= 6 }
             await rig.clock.advance(by: .seconds(2))
             #expect(await rig.failure(of: hurried) is HTTPError)
             // The patient caller starts a flight of its own, which the second step answers at once.

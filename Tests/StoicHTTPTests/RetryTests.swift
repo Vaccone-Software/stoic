@@ -214,7 +214,8 @@ struct HTTPRetryTests {
             rig.transport.on(.get("/a"), respond: [.hang])
             let api = rig.api
             let task = Task { try await withTimeout(.seconds(4)) { try await api.send(.get("/a")) } }
-            await rig.waitForHangingAttempt(timers: 1)   // the caller's deadline
+            // The caller's deadline: the attempt's 10 s timeout narrows nothing, so it starts no timer.
+            await rig.waitForHangingAttempt()
             await rig.clock.advance(by: .seconds(4))
             let error = try #require(await rig.failure(of: task) as? HTTPError)
             #expect(error == .rejected(Rejection(.deadlineExceeded, label: "http api.example.com"), attempts: 1))
@@ -228,8 +229,9 @@ struct HTTPRetryTests {
             rig.transport.on(.get("/a"), respond: [.hang])
             let api = rig.api
             let task = Task { try await withTimeout(.seconds(4)) { try await api.send(.get("/a")) } }
-            // The caller's deadline, the flight's wait, the starter's deadline lent to the flight, the attempt and the hang.
-            await rig.waitForHangingAttempt(timers: 3)
+            // The caller's deadline, the flight's wait and the starter's deadline lent to the flight; the
+            // attempt's 10 s timeout narrows the lent deadline not at all, so it starts no timer.
+            await rig.waitForHangingAttempt(timers: 2)
             await rig.clock.advance(by: .seconds(4))
             let error = try #require(await rig.failure(of: task) as? HTTPError)
             #expect(error.rejection?.reason == .deadlineExceeded)

@@ -132,10 +132,142 @@ struct DeadlineTests {
                 }
             }
         }
-        await clock.waitForSleepers(count: 3)
+        await clock.waitForSleepers(count: 2)   // the outer timer and the operation: the inner adds none
         await clock.advance(by: .seconds(1))
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(observed.value == .deadline)
+    }
+
+    /// The inner timeout cannot narrow the outer deadline, so it is a no-op:
+    /// no timer of its own, and the expiry is the outer scope's alone.
+    @Test(.failureMode("design/01", "an inner timeout is longer than the outer deadline")) func aNoOpInnerTimeoutAddsNoTimerAndReportsNothing() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let task = Task {
+            try await withTestAmbient(clock: clock, events: events) {
+                try await withTimeout(.seconds(1), label: "outer") {
+                    try await withTimeout(.seconds(30), label: "inner") {
+                        try await Ambient.sleep(for: .seconds(60))
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        #expect(clock.sleeperCount == 2, "the inner timeout must not add a timer")
+        await clock.advance(by: .seconds(1))
+        _ = try? await task.value
+        #expect(events.events(named: "deadline.expired").map(\.label) == ["outer"])
+    }
+
+    /// A retry's attempt timeout that the enclosing deadline already bounds
+    /// is not reported as an attempt that timed out: the whole call ran out
+    /// of time, which the retry learns from the deadline, not the attempt.
+    @Test func aDeadlineThatCannotNarrowIsNotReportedAsExpired() async {
+        let clock = TestClock()
+        let expired = SendableBox<Bool?>(nil)
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    let outcome = await runWithDeadline(.after(.seconds(30)), tolerance: nil, label: "attempt", fileID: #fileID, line: #line) {
+                        try await Ambient.sleep(for: .seconds(60))
+                    }
+                    expired.mutate { $0 = outcome.expired }
+                    try outcome.result.get()
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(1))
+        _ = try? await task.value
+        #expect(expired.value == false)
+    }
+
+    /// Entered after the enclosing deadline passed, a deadline that cannot
+    /// narrow it still runs the operation cancelled, with the deadline as
+    /// the cause, and leaves the report to the enclosing scope.
+    @Test func aNoOpDeadlineEnteredAfterTheEnclosingOnePassedRunsCancelled() async throws {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let passed = Deadline(clock.erased.now, clock: clock.erased)
+        let (cancelled, cause) = await withTestAmbient(clock: clock, events: events) {
+            await Deadline.$stored.withValue(passed) {
+                await withTimeout(.seconds(30), label: "inner") { () async -> (Bool, CancellationCause?) in
+                    (Task.isCancelled, CancellationCause.current)
+                }
+            }
+        }
+        #expect(cancelled)
+        #expect(cause == .deadline)
+        #expect(events.events(named: "deadline.expired").isEmpty)
+    }
+
+    /// Random nestings of `withDeadline` and `withTimeout` on the virtual
+    /// clock: every level sees the tightest deadline so far and never a
+    /// later one, only the levels that narrow it start a timer, and when it
+    /// passes exactly one expiry is reported, by the outermost level that set it.
+    @Test(.stoic(seed: 61), .timeLimit(.minutes(1)), arguments: Array(0..<25))
+    func randomNestingsUseTheTightestDeadlineAndBlameItsOwner(round: Int) async {
+        struct Level: Sendable, CustomStringConvertible {
+            let label: String
+            let seconds: Int64
+            let asDeadline: Bool
+            var description: String { "\(label): \(asDeadline ? "deadline" : "timeout") \(seconds)s" }
+        }
+        var generator = Ambient.current.random.generator(discriminator: UInt64(round))
+        for attempt in 0..<(4 * testScale) {
+            let levels = (0..<Int.random(in: 1...6, using: &generator)).map { index in
+                Level(label: "L\(index)", seconds: Int64.random(in: 1...8, using: &generator), asDeadline: Bool.random(using: &generator))
+            }
+            let tightest = levels.map(\.seconds).min()!
+            let owner = levels.first { $0.seconds == tightest }!.label
+            var narrowing = 0
+            var smallest = Int64.max
+            for level in levels where level.seconds < smallest {
+                narrowing += 1
+                smallest = level.seconds
+            }
+            let context = "round \(round).\(attempt): \(levels)"
+
+            let clock = TestClock()
+            let events = RecordingInstrumentation()
+            let seen = SendableBox<[String]>([])
+            let cause = SendableBox<CancellationCause?>(nil)
+            @Sendable func nest(_ remaining: ArraySlice<Level>, tightestSoFar: Int64) async throws {
+                guard let level = remaining.first else {
+                    do { try await Ambient.sleep(for: .seconds(3600)) } catch {
+                        cause.mutate { $0 = CancellationCause.current }
+                        throw error
+                    }
+                    return
+                }
+                let expected = min(tightestSoFar, level.seconds)
+                let body: @Sendable () async throws -> Void = {
+                    let offset = Deadline.current.map { clock.erased.now.duration(to: $0.instant) }
+                    if offset != .seconds(expected) {
+                        seen.mutate { $0.append("\(level.label) saw \(String(describing: offset)), expected \(expected)s") }
+                    }
+                    try await nest(remaining.dropFirst(), tightestSoFar: expected)
+                }
+                if level.asDeadline {
+                    try await withDeadline(.after(.seconds(level.seconds)), label: level.label) { try await body() }
+                } else {
+                    try await withTimeout(.seconds(level.seconds), label: level.label) { try await body() }
+                }
+            }
+            let task = Task {
+                try await withTestAmbient(clock: clock, events: events) {
+                    try await nest(levels[...], tightestSoFar: .max)
+                }
+            }
+            await clock.waitForSleepers(count: narrowing + 1)
+            #expect(clock.sleeperCount == narrowing + 1, "one timer per narrowing level: \(context)")
+            await clock.advance(by: .seconds(tightest))
+            _ = try? await task.value
+
+            #expect(seen.value.isEmpty, "\(seen.value) in \(context)")
+            #expect(cause.value == .deadline, "\(context)")
+            #expect(events.events(named: "deadline.expired").map(\.label) == [owner], "\(context)")
+        }
     }
 
     @Test(.failureMode("design/01", "an inner timeout is longer than the outer deadline")) func nestedDeadlinesNarrowAndNeverWiden() async throws {

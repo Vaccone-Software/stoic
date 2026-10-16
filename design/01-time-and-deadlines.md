@@ -45,7 +45,7 @@ public nonisolated(nonsending) func withTimeout<R: Sendable, Failure: Error>(
     @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
 ) async throws(Failure) -> R
 
-// For work that cannot be cancelled: stop waiting, keep it accountable. (Not yet built; see below.)
+// For work that cannot be cancelled: stop waiting, keep it accountable (see below).
 public nonisolated(nonsending) func abandoningAfter<R: Sendable, Failure: Error>(
     _ duration: Duration, label: String, limit: Int = 2, clock: AnyClock? = nil,
     qos: DispatchQoS.QoSClass = .userInitiated, operation: @escaping @Sendable () throws(Failure) -> R
@@ -62,7 +62,14 @@ public struct CancellationCause: Hashable, Sendable {
 
 **Propagation.** `withDeadline` installs the earlier of the new deadline and
 `Deadline.current`. A nested `withTimeout(.seconds(30))` inside an outer
-two-second deadline gets two seconds. Every Stoic primitive consults
+two-second deadline gets two seconds, and is a no-op: a deadline that cannot
+narrow the one in force starts no timer, reports no `deadline.expired`, and
+does not tell a retry its attempt timed out. The scope whose deadline it is
+cancels the operation and reports the expiry, under its own label; a first
+version gave every level its own timer on the same instant, and an expiry
+was reported once per level, mostly under the wrong label. (Entered after
+the enclosing deadline has passed, the operation still runs already
+cancelled, as below.) Every Stoic primitive consults
 `Deadline.current`: `retry` will not start an attempt that cannot finish,
 semaphores and rate limiters stop waiting at it, scopes bound their
 finalizers by it (with their own floor, design/04).
@@ -208,7 +215,9 @@ duplicate types are deprecated with one minor version of overlap.
 - Virtual-clock tests for every row above, including the timer-cancelled
   check: after the operation wins, the clock must report no pending sleeper.
 - Property: for any nesting of deadlines, the effective deadline is the
-  minimum, and no operation observes a later one.
+  minimum, and no operation observes a later one; only the levels that
+  narrow it start a timer, and its expiry is reported once, by the
+  outermost level that set it.
 - Fault injection: `hangIgnoringCancellation` models CoreAudio; the
   abandoning form must return within one scheduler tick of the deadline and
   leave exactly one ledger entry.

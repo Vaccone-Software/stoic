@@ -49,14 +49,33 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
     line: UInt,
     @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
 ) async -> DeadlineOutcome<R, Failure> {
+    // A deadline that cannot narrow the one in force is a no-op: the
+    // enclosing scope's timer cancels the operation, and that scope reports
+    // the expiry under its own label. A second timer here would only add a
+    // task group, a sleeper and a duplicate `deadline.expired` naming the
+    // wrong scope, and tell a retry its attempt timed out when the whole
+    // call ran out of time.
+    let inherited = Deadline.current
+    let narrows = inherited.map { deadline.isEarlier(than: $0) } ?? true
+    if !narrows, let inherited, !inherited.hasPassed {
+        do throws(Failure) {
+            return DeadlineOutcome(result: .success(try await operation()), expired: false)
+        } catch {
+            return DeadlineOutcome(result: .failure(error), expired: false)
+        }
+    }
+
     let effective = deadline.narrowedByCurrent
     let started = effective.clock.now
+    // Read once: a deadline that passes between two reads must not count as
+    // passed on entry without the operation having been cancelled for it.
+    let passedOnEntry = effective.hasPassed
     let cause = CancellationCauseBox()
     let slot = OperationSlot(operation)
 
     let outcome: DeadlineOutcome<R, Failure> = await Deadline.$stored.withValue(effective) {
             await withTaskGroup(of: DeadlineChild<R, Failure>.self) { group in
-                if effective.hasPassed {
+                if passedOnEntry {
                     cause.record(.deadline)
                     group.cancelAll()
                 }
@@ -74,7 +93,7 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
                     }
                 }
                 var result: Result<R, Failure>?
-                var expired = effective.hasPassed
+                var expired = passedOnEntry
                 while let child = await group.next() {
                     switch child {
                     case .finished(let finished):
@@ -97,6 +116,10 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
             }
     }
 
+    // Entered after an enclosing deadline had passed: the operation ran
+    // cancelled, as on entry to any passed deadline, but the expiry is the
+    // enclosing scope's to report.
+    guard narrows else { return DeadlineOutcome(result: outcome.result, expired: false) }
     if outcome.expired {
         let finished = effective.clock.now
         Ambient.record(Event("deadline.expired", level: .notice, label: label, fields: [

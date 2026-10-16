@@ -140,7 +140,9 @@ struct ReachabilityTests {
                     try await monitor.waitUntilReachable(until: longer)
                 }
             }
-            await clock.waitForSleepers(count: 2)
+            // The outer deadline's timer only: the wait's own deadline is the
+            // same instant, so it narrows nothing and starts no timer.
+            await clock.waitForSleepers(count: 1)
             await clock.advance(by: .seconds(10))
             let result = await task.value
             guard case .failure(.deadlineExceeded) = result else {
