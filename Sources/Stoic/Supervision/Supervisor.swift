@@ -254,6 +254,11 @@ public struct Child: Sendable {
     }
 }
 
+extension CancellationCause {
+    /// The child stopped beating and is being restarted as hung.
+    public static let childHung = CancellationCause(rawValue: "child_hung")
+}
+
 /// Collects a supervisor's children.
 @resultBuilder
 public enum ChildrenBuilder {

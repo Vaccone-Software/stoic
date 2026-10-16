@@ -84,7 +84,7 @@ struct SupervisorRun {
                 let label = supervisor.children[index].label
                 supervisor.publish(.hung(child: label))
                 record("supervisor.child_hung", .error, child: index)
-                await stop(index, in: &slots)
+                await stop(index, in: &slots, cause: .childHung)
                 if let escalation = await handleStop(index, error: Hung(child: label), slots: &slots, restarts: &restarts, sink: sink) {
                     await stopAll(&slots)
                     finish(.escalated(child: label), level: .error, child: index, error: Hung(child: label))
@@ -116,7 +116,12 @@ struct SupervisorRun {
         let child = supervisor.children[index]
         let failed = error != nil
         supervisor.publish(.exited(child: child.label, failed: failed))
-        record("supervisor.child_exited", failed ? .warning : .info, child: index, error: error)
+        // A child the supervisor did not stop that ends with a cancellation
+        // was cancelled by something else: it stopped when it should not
+        // have, so it counts as a failure, and the report says how it ended.
+        let cancelledFromOutside = error.map(containsCancellation) ?? false
+        record("supervisor.child_exited", failed ? .warning : .info, child: index, error: error,
+               extra: cancelledFromOutside ? [.init("cause", .string("cancelled_from_outside"), privacy: .public)] : [])
 
         let restart: Bool
         switch child.restart {
@@ -274,13 +279,14 @@ struct SupervisorRun {
     }
 
     /// Stops a running child: newer signals from it become stale, it is
-    /// cancelled, and it gets its shutdown timeout before being abandoned.
-    private func stop(_ index: Int, in slots: inout [Slot]) async {
+    /// cancelled with `cause`, and it gets its shutdown timeout before being
+    /// abandoned.
+    private func stop(_ index: Int, in slots: inout [Slot], cause: CancellationCause = .supervisorStopped) async {
         guard let task = slots[index].task else { return }
         slots[index].generation += 1
         slots[index].monitor?.cancel()
         slots[index].monitor = nil
-        slots[index].cause?.record(.supervisorStopped)
+        slots[index].cause?.record(cause)
         slots[index].task = nil
         task.cancel()
         let timeout = supervisor.children[index].shutdownTimeout

@@ -140,10 +140,12 @@ struct SupervisorTests {
         let clock = TestClock()
         let script = Script()
         let events = RecordingInstrumentation()
+        let causes = SendableBox<[CancellationCause?]>([])
         let supervisor = Supervisor(label: "test", backoff: .immediate) {
             Child("tap", heartbeat: .init(interval: .seconds(5), misses: 2, grace: .seconds(10))) { _ in
                 _ = script.started("tap")
-                try await Task.sleep(for: .seconds(3600))   // never beats
+                do { try await Task.sleep(for: .seconds(3600)) }   // never beats
+                catch { causes.mutate { $0.append(CancellationCause.current) }; throw error }
             }
         }
         let run = Task { try await withTestAmbient(clock: clock, events: events) { try await supervisor.run() } }
@@ -156,6 +158,30 @@ struct SupervisorTests {
         await eventually { script.count("tap") >= 2 }
         #expect(script.count("tap") == 2)
         #expect(events.names.contains("supervisor.child_hung"))
+        #expect(causes.value.first == .childHung, "cleanup can tell a hang from a shutdown")
+        run.cancel()
+        _ = try? await run.value
+        #expect(causes.value.last == .supervisorStopped)
+    }
+
+    /// A cancellation the supervisor did not ask for means the child stopped
+    /// when it should not have: a failure, restarted, and reported as what
+    /// it was rather than as an ordinary error.
+    @Test(.failureMode("design/09", "a child is cancelled by something else"))
+    func aChildCancelledFromOutsideIsAFailureReportedAsSuch() async throws {
+        let events = RecordingInstrumentation()
+        let script = Script()
+        let supervisor = Supervisor(label: "test", backoff: .immediate) {
+            Child("sync") { _ in
+                if script.started("sync") == 1 { throw CancellationError() }   // e.g. a session invalidated elsewhere
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: TestClock(), events: events) { try await supervisor.run() } }
+        #expect(await eventually { script.count("sync") == 2 }, "restarted like any failure")
+        let exited = events.events(named: "supervisor.child_exited").first
+        #expect(exited?.level == .warning)
+        #expect(exited?.fields.first { $0.key == "cause" }.map { "\($0.value)" } == "cancelled_from_outside")
         run.cancel()
         _ = try? await run.value
     }

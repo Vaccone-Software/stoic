@@ -46,7 +46,12 @@ mistaken for one that crashed.
 
 **Restarts.** `permanent` children restart whenever they stop; `transient`
 only when they throw; `temporary` never. When every child has finished for
-good, `run()` returns.
+good, `run()` returns. A child that ends with a cancellation the supervisor
+did not ask for — a session invalidated elsewhere — threw: it stopped when
+it should not have, so it is a failure, and `supervisor.child_exited` says
+so (`cause: cancelled_from_outside`) rather than reporting an ordinary
+error. The supervisor's own stops, which cancel a child on purpose, are
+never counted.
 
 **Strategies.** `oneForOne` restarts the stopped child. `oneForAll` stops the
 others newest first and restarts all in order. `restForOne` does the same
@@ -102,7 +107,8 @@ on its fixed instant, so the monitor's own scheduling delays neither
 stretch the wait nor accumulate.
 
 **Stopping.** Newest first. Each child is cancelled with cause
-`supervisorStopped` and given its `shutdownTimeout`; one that does not stop
+`supervisorStopped` (`childHung` when it is stopped as hung, so its cleanup
+can tell the two apart) and given its `shutdownTimeout`; one that does not stop
 is abandoned and reported (`supervisor.child_abandoned`) so shutdown always
 finishes.
 
@@ -119,6 +125,7 @@ finishes.
 | a child stops beating                                | After `misses` intervals (past `grace`): stopped and restarted                    |
 | the Mac sleeps                                       | The liveness clock stops; no false hang                                           |
 | the process is suspended for longer than an interval | A gap, not misses: checks restart from the resume; the child gets a full interval |
+| a child is cancelled by something else               | A failure, restarted; `child_exited` says `cancelled_from_outside`                |
 | the supervisor's task is cancelled                   | Children stopped newest first; `CancellationError`                                |
 | a child ignores cancellation on shutdown             | Abandoned after `shutdownTimeout`; reported                                       |
 | a child ran long and then failed                     | Its backoff starts over                                                           |
