@@ -14,6 +14,9 @@ public struct Attempt: Sendable, Hashable, CustomStringConvertible {
     /// The idempotency key of the operation this attempt belongs to: the same
     /// on every attempt of one `retry`, and on every attempt of one `hedge`.
     /// Each run of `recur` is an operation of its own and has its own key.
+    /// An operation started inside another's attempt (a library's `retry`
+    /// called from the app's) derives its key from the enclosing one, so it
+    /// too is the same on every attempt of the operation actually retried.
     ///
     /// Send it with any request that changes something, and a server that
     /// deduplicates can recognise a retry as the request it already handled.
@@ -51,29 +54,6 @@ public struct Attempt: Sendable, Hashable, CustomStringConvertible {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(number)
         hasher.combine(elapsed)
-    }
-}
-
-/// What the attempts at one operation share: its idempotency key, drawn the
-/// first time an attempt asks for it. Attempts of a hedge run concurrently,
-/// so the draw happens under a lock, once.
-final class OperationIdentity: Sendable {
-    private let fileID: String
-    private let line: UInt
-    private let key = Mutex<IdempotencyKey?>(nil)
-
-    init(fileID: String, line: UInt) {
-        self.fileID = fileID
-        self.line = line
-    }
-
-    var idempotencyKey: IdempotencyKey {
-        key.withLock { key in
-            if let key { return key }
-            let drawn = IdempotencyKey.random(fileID: fileID, line: line)
-            key = drawn
-            return drawn
-        }
     }
 }
 
@@ -255,26 +235,6 @@ public enum RetryNesting: Sendable, Hashable {
     case allow
 }
 
-/// The retry whose attempt is running in the current task.
-///
-/// An attempt's context goes stale when the attempt ends, so a task that an
-/// attempt left running (an unstructured `Task {}` inherits task-locals)
-/// does not make every later retry it starts look nested.
-final class RetryContext: Sendable {
-    private let live = Mutex(true)
-
-    @TaskLocal static var active: RetryContext?
-
-    /// Whether a retry's attempt is running in the current task right now.
-    static var isInsideAttempt: Bool {
-        active?.live.withLock { $0 } ?? false
-    }
-
-    func end() {
-        live.withLock { $0 = false }
-    }
-}
-
 // MARK: - retry
 
 /// Runs `operation`, retrying failures on `schedule`.
@@ -315,9 +275,7 @@ public nonisolated(nonsending) func retry<R, Failure: Error>(
         label: label, fileID: fileID, line: line
     ) { attempt in
         await FaultPoint.hit("retry.attempt")
-        let context = RetryContext()
-        defer { context.end() }
-        let result: Result<R, Failure> = await RetryContext.$active.withValue(context) {
+        let result: Result<R, Failure> = await attempt.operation.running(attempt: attempt.number) {
             do throws(Failure) {
                 return .success(try await operation(attempt))
             } catch {
@@ -354,9 +312,7 @@ public nonisolated(nonsending) func retry<R: Sendable, Failure: Error>(
         schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
         label: label, fileID: fileID, line: line
     ) { attempt in
-        let context = RetryContext()
-        defer { context.end() }
-        let outcome = await RetryContext.$active.withValue(context) {
+        let outcome = await attempt.operation.running(attempt: attempt.number) {
             await runWithDeadline(
                 .after(attemptTimeout, clock: clock),
                 tolerance: nil,
@@ -396,8 +352,6 @@ nonisolated(nonsending) func retryBoundingEachAttempt<R, Failure: Error>(
         schedule, budget: budget, classify: classify, nesting: nesting, clock: nil,
         label: label, fileID: fileID, line: line
     ) { attempt in
-        let context = RetryContext()
-        defer { context.end() }
         // A local function, not a closure: `withoutActuallyEscaping`'s own
         // body is not `nonsending`, and the operation must stay on the
         // caller's actor.
@@ -405,12 +359,14 @@ nonisolated(nonsending) func retryBoundingEachAttempt<R, Failure: Error>(
             _ escapable: nonisolated(nonsending) @escaping () async throws(Failure) -> R
         ) async -> DeadlineOutcome<AttemptResult<R>, Failure> {
             await AttemptHandoff(escapable).runBounded(
-                on: isolation, context: context, timeout: attemptTimeout,
+                on: isolation, attempt: attempt, timeout: attemptTimeout,
                 label: label.map { "\($0) attempt \(attempt.number)" }, fileID: fileID, line: line
             )
         }
         let outcome = await withoutActuallyEscaping(operation, do: bounded)
-        return (outcome.result.map(\.value), outcome.expired)
+        // A closure, not a key path: a key path into a generic type is built
+        // (and allocated) at run time on every evaluation.
+        return (outcome.result.map { $0.value }, outcome.expired)
     }
 }
 
@@ -442,13 +398,13 @@ private final class AttemptHandoff<R, Failure: Error>: @unchecked Sendable {
 
     func runBounded(
         on isolation: (any Actor)?,
-        context: RetryContext,
+        attempt: Attempt,
         timeout: Duration,
         label: String?,
         fileID: String,
         line: UInt
     ) async -> DeadlineOutcome<AttemptResult<R>, Failure> {
-        await RetryContext.$active.withValue(context) {
+        await attempt.operation.running(attempt: attempt.number) {
             await runWithDeadline(.after(timeout, clock: nil), tolerance: nil, label: label, fileID: fileID, line: line) { () async throws(Failure) -> AttemptResult<R> in
                 try await self.run(on: isolation)
             }
@@ -481,11 +437,13 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     let ambient = Ambient.current
     let clock = explicitClock ?? ambient.clock
     let storage = budget.resolved(fileID: fileID, line: line, registry: ambient.budgets)
-    let nested = RetryContext.isInsideAttempt && nesting == .singleAttempt
+    // Started inside another operation's attempt, this retry is a
+    // sub-operation of it: nested, and keyed from it.
+    let operation = OperationIdentity.starting(fileID: fileID, line: line)
+    let nested = operation.isSubOperation && nesting == .singleAttempt
     // Built on the first failure: most calls succeed at once and never need it.
     var stepper: Schedule.Stepper?
     let start = clock.now
-    let operation = OperationIdentity(fileID: fileID, line: line)
     var number = 1
 
     func report(_ name: EventName, _ fields: [Event.Field], level: Event.Level = .info) {

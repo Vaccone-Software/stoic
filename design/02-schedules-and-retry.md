@@ -159,6 +159,23 @@ site: an operation that never asks draws nothing, so the ambient random
 sequence (and every seeded test) is unchanged by its existence. Attempts
 compare by number and elapsed time; the operation is identity, not value.
 
+**Operations inside operations.** A `retry`, `hedge` or `recur` run started
+while another operation's attempt is running is a *sub-operation* of it, and
+its key is derived from the enclosing operation's key, its own call site and
+its ordinal there, never drawn afresh. This is what makes the rule hold
+across layers: when a library's `retry` (sending its `attempt.idempotencyKey`)
+is called from an app's `retry`, the inner one collapses to one attempt and
+the retrying happens at the outer layer; a key drawn per inner `retry` call
+would be new on every outer attempt. The ordinal is the number of
+sub-operations the same line had already started in the same attempt, so a
+loop's n-th call gets the same key on every attempt that reaches it the same
+way, and sub-operations on other lines never shift it. Two cases need a key
+from the data instead (`IdempotencyKey(rawValue: item.id)`): a loop whose
+items change between attempts, and sub-operations started concurrently from
+one line, which take ordinals in the order they start. The attempts of a
+`hedge` count their ordinals separately, so its copies, being one
+operation, give a sub-operation one key.
+
 **Recur.** `recur` (next) runs an operation on a schedule after *success*
 — polling, periodic refresh — and may be unbounded, but only inside a scope
 or supervisor that can stop it.
@@ -184,6 +201,8 @@ or supervisor that can stop it.
 | every attempt sends `attempt.idempotencyKey`       | The same key on every attempt; drawn once, on first read                       |
 | the same call site retries twice                   | Each `retry` is its own operation, with its own key                            |
 | each run of `recur` sends `attempt.idempotencyKey` | A new key per run: each run is its own operation                               |
+| a nested retry sends its `attempt.idempotencyKey`  | The same key on every outer attempt: derived from the outer operation's key   |
+| one attempt starts several operations from one line | A different key for each, the same for the n-th on every attempt              |
 
 ## Events
 

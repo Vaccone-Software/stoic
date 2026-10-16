@@ -46,6 +46,31 @@ public struct IdempotencyKey: Sendable, Hashable, CustomStringConvertible, Codab
         return IdempotencyKey(rawValue: hex(high) + hex(low))
     }
 
+    /// The key of a sub-operation: a function of the enclosing operation's
+    /// key, the sub-operation's call site and its ordinal there, so it is the
+    /// same on every attempt of the enclosing operation (see
+    /// `OperationIdentity`). It inherits its unpredictability from the
+    /// parent's random key: each half is a stable hash of one half of the
+    /// parent and the site, so the parent's 128 bits all count.
+    static func derived(from parent: IdempotencyKey, fileID: String, line: UInt, ordinal: Int) -> IdempotencyKey {
+        func half(_ part: Substring, _ which: UInt64) -> UInt64 {
+            var hash = StableHash()
+            hash.combine(which)
+            hash.combine(part.utf8)
+            hash.combine(fileID)
+            hash.combine(UInt64(line))
+            hash.combine(UInt64(truncatingIfNeeded: ordinal))
+            // A SplitMix64 finalizer: FNV's low bits mix poorly on their own.
+            var z = hash.value &+ 0x9E37_79B9_7F4A_7C15
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+        let raw = parent.rawValue
+        let middle = raw.index(raw.startIndex, offsetBy: raw.count / 2)
+        return IdempotencyKey(rawValue: hex(half(raw[..<middle], 0)) + hex(half(raw[middle...], 1)))
+    }
+
     public var description: String { rawValue }
 
     public init(from decoder: any Decoder) throws {

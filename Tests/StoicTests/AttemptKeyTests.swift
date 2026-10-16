@@ -95,6 +95,103 @@ struct AttemptKeyTests {
         #expect(Set(seen.value.values).count == 1)
     }
 
+    // MARK: - Operations inside operations
+
+    /// A library call that retries and sends its attempt's key, as AGENTS.md
+    /// rule 2 says.
+    @Sendable static func libraryCharge(_ keys: SendableBox<[IdempotencyKey]>) async throws(Lost) {
+        try await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { attempt throws(Lost) in
+            keys.mutate { $0.append(attempt.idempotencyKey) }
+            throw Lost()
+        }
+    }
+
+    @Test(.failureMode("design/02", "a nested retry sends its `attempt.idempotencyKey`"))
+    func aCollapsedInnerRetrySendsTheSameKeyOnEveryOuterAttempt() async {
+        // The app retries the library call. The inner retry collapses to one
+        // attempt, so the retrying happens outside: each outer attempt must
+        // send the key the server saw the first time.
+        let inner = SendableBox<[IdempotencyKey]>([])
+        let outer = SendableBox<[IdempotencyKey]>([])
+        await withTestAmbient(clock: ImmediateClock()) {
+            _ = try? await retry(Self.schedule, budget: .unlimited) { attempt throws(Lost) in
+                outer.mutate { $0.append(attempt.idempotencyKey) }
+                try await Self.libraryCharge(inner)
+            }
+        }
+        #expect(inner.value.count == 4, "one inner attempt per outer attempt")
+        #expect(Set(inner.value).count == 1)
+        #expect(Set(outer.value).count == 1)
+        #expect(inner.value.first != outer.value.first, "a sub-operation is a different operation, with its own key")
+    }
+
+    @Test func anInnerRetryThatMayRetryItselfIsStillKeyedFromTheOuterOne() async {
+        let keys = SendableBox<[IdempotencyKey]>([])
+        await withTestAmbient(clock: ImmediateClock()) {
+            _ = try? await retry(.fixed(.seconds(1)).attempts(2), budget: .unlimited) { _ throws(Lost) in
+                try await retry(.fixed(.seconds(1)).attempts(2), budget: .unlimited, nesting: .allow) { attempt throws(Lost) in
+                    keys.mutate { $0.append(attempt.idempotencyKey) }
+                    throw Lost()
+                }
+            }
+        }
+        #expect(keys.value.count == 4)
+        #expect(Set(keys.value).count == 1)
+    }
+
+    @Test(.failureMode("design/02", "one attempt starts several operations from one line"))
+    func aLoopsCallsGetDifferentKeysThatAreStableAcrossOuterAttempts() async {
+        let perAttempt = SendableBox<[[IdempotencyKey]]>([])
+        await withTestAmbient(clock: ImmediateClock()) {
+            _ = try? await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { _ throws(Lost) in
+                var keys: [IdempotencyKey] = []
+                for _ in 0..<3 {
+                    keys.append(await retry(.fixed(.seconds(1)).attempts(2)) { attempt in attempt.idempotencyKey })
+                }
+                // A sub-operation on another line does not shift the loop's ordinals.
+                _ = await retry(.fixed(.seconds(1)).attempts(2)) { attempt in attempt.idempotencyKey }
+                perAttempt.mutate { $0.append(keys) }
+                throw Lost()
+            }
+        }
+        #expect(perAttempt.value.count == 3)
+        #expect(Set(perAttempt.value[0]).count == 3, "each call of the loop is its own operation")
+        #expect(perAttempt.value.allSatisfy { $0 == perAttempt.value[0] }, "the n-th call has one key on every attempt")
+    }
+
+    @Test func eachRunOfRecurInsideARetryIsKeyedFromTheRetry() async {
+        let perAttempt = SendableBox<[[IdempotencyKey]]>([])
+        await withTestAmbient(clock: ImmediateClock()) {
+            _ = try? await retry(.fixed(.seconds(1)).attempts(2), budget: .unlimited) { _ throws(Lost) in
+                let runs = SendableBox<[IdempotencyKey]>([])
+                await recur(.fixed(.seconds(1))) { run in
+                    runs.mutate { $0.append(run.idempotencyKey) }
+                    return run.number < 3 ? .continue : .stop
+                }
+                perAttempt.mutate { $0.append(runs.value) }
+                throw Lost()
+            }
+        }
+        #expect(perAttempt.value.count == 2)
+        #expect(Set(perAttempt.value[0]).count == 3)
+        #expect(perAttempt.value[0] == perAttempt.value[1])
+    }
+
+    @Test func aSubOperationsKeyFollowsTheSeedAndIsNotTheOuterKey() async {
+        func keys(seed: UInt64) async -> [IdempotencyKey] {
+            await withTestAmbient(clock: ImmediateClock(), seed: seed) {
+                await retry(Self.schedule) { outer in
+                    [outer.idempotencyKey, await retry(Self.schedule) { inner in inner.idempotencyKey }]
+                }
+            }
+        }
+        let first = await keys(seed: 3)
+        #expect(await keys(seed: 3) == first)
+        #expect(await keys(seed: 4) != first)
+        #expect(first[0] != first[1])
+        #expect(first[1].rawValue.count == 32 && first[1].rawValue.allSatisfy(\.isHexDigit))
+    }
+
     @Test func concurrentFirstReadsDrawOneKey() async {
         // Hedged attempts can ask at the same instant; the draw happens once.
         for _ in 0..<50 {
