@@ -112,6 +112,38 @@ struct JournalCrashTests {
         #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
     }
 
+    /// A batch is one write, and a crash may keep any of its pages: the
+    /// records of a batch that spans pages come back all or not at all, and a
+    /// crash during it is never reported as damage in the middle.
+    @Test(.failureMode("design/15", "a crash keeps some pages of a batch and not others"))
+    func aBatchAcrossPagesIsAllOrNothingAtEveryCrashPoint() async throws {
+        let batch = (0..<3).map { String(repeating: Character(String($0)), count: 3000) }
+        let report = try await exploreCrashes(
+            "Journal.append(batch:) across pages",
+            setup: { disk in
+                try Self.prepare(disk)
+                let journal = try Journal.open(at: Self.path, fileSystem: disk)
+                try journal.append(bytes("old"))
+                try journal.close()
+            },
+            operation: { disk in
+                let journal = try Journal.open(at: Self.path, fileSystem: disk)
+                try journal.append(batch: batch.map(bytes))
+                disk.checkpoint("ack:\(batch.count)")
+                try journal.close()
+            },
+            check: { disk, context in
+                let found = try Self.recovered(disk)
+                guard found == ["old"] || found == ["old"] + batch else {
+                    return "recovered \(found.map { String($0.prefix(8)) }): part of a batch"
+                }
+                return try Self.invariant(appended: batch, preexisting: ["old"])(disk, context)
+            }
+        )
+        print(report)
+        #expect(report.violations.isEmpty, "\(report.violations.prefix(3).map(\.description).joined(separator: "\n"))")
+    }
+
     @Test func aTornTailFromEarlierIsRepairedAtOpenEvenIfRepairIsInterrupted() async throws {
         let report = try await exploreCrashes(
             "Journal.open repairing a torn tail",

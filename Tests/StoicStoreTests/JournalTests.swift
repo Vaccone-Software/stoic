@@ -67,16 +67,21 @@ struct JournalTests {
     // MARK: Damage in the middle of the log
 
     /// A journal of `count` records, "record-0" and on, closed; and where each starts.
+    /// A log of `count` records appended one at a time, laid down with one
+    /// write and one sync rather than a hundred. (Not one `append(batch:)`: a
+    /// batch's records stand or fall together when the damage is in the last
+    /// batch, which is a different test.)
     func makeJournal(_ path: String, count: Int) throws -> [Int] {
-        let journal = try Journal.open(at: path)
         var starts: [Int] = []
-        var end = 0
+        var log: [UInt8] = []
         for index in 0..<count {
-            starts.append(end)
-            end += Journal.headerSize + "record-\(index)".utf8.count
+            starts.append(log.count)
+            log += Journal.frame(bytes("record-\(index)"), sequence: UInt64(index + 1))
         }
-        try journal.append(batch: (0..<count).map { bytes("record-\($0)") })   // one sync, not a hundred
-        try journal.close()
+        let file = try fs.open(path, mode: .createExclusive)
+        try fs.write(file, log, at: 0)
+        try fs.fullSync(file)
+        try fs.close(file)
         return starts
     }
 
@@ -182,6 +187,107 @@ struct JournalTests {
         #expect(journal.openReport.droppedBytes == size - starts[99])
         #expect(journal.openReport.corruption.isEmpty, "nothing intact follows it: indistinguishable from a crash")
         #expect(journal.byteCount == starts[99])
+    }
+
+    @Test(.failureMode("design/15", "a byte flips in the *last* record")) func aFlippedBitAnywhereInTheLastBatchCutsTheWholeBatch() throws {
+        let disk = SimulatedFileSystem()
+        try disk.createDirectory("/d")
+        let journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        try journal.append(bytes("alone"))
+        let end = journal.byteCount
+        try journal.append(batch: [bytes("one"), bytes("two"), bytes("three")])
+        try journal.close()
+        // The middle record of the batch: a crash that lost its page looks the same.
+        try flipBit(in: "/d/j", at: end + Journal.headerSize + 3 + 12, using: disk)
+        let reopened = try Journal.open(at: "/d/j", fileSystem: disk)
+        #expect(payloads(try reopened.replay()) == ["alone"])
+        #expect(reopened.openReport.corruption.isEmpty)
+        #expect(reopened.byteCount == end)
+    }
+
+    /// A crash during a batch that kept a later page of it and not an earlier
+    /// one: the batch is dropped whole, not replayed with a gap and reported
+    /// as damage in the middle.
+    @Test(.failureMode("design/15", "a crash keeps some pages of a batch and not others"))
+    func aBatchWhoseFirstPageWasLostIsATornTail() throws {
+        let disk = SimulatedFileSystem()
+        try disk.createDirectory("/d")
+        let journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        try journal.append(bytes("committed"))
+        let committedEnd = journal.byteCount
+        try journal.append(batch: [[UInt8](repeating: 0x41, count: 5000), [UInt8](repeating: 0x42, count: 5000), bytes("last")])
+        try journal.close()
+        let file = try disk.open("/d/j", mode: .readWrite)
+        try disk.write(file, [UInt8](repeating: 0, count: 4096 - committedEnd), at: committedEnd)
+        try disk.fullSync(file)
+        try disk.close(file)
+
+        let reopened = try Journal.open(at: "/d/j", fileSystem: disk)
+        #expect(try reopened.replay().records.map(\.sequence) == [1])
+        #expect(reopened.openReport.corruption.isEmpty)
+        #expect(reopened.byteCount == committedEnd)
+    }
+
+    /// Damage inside a batch that a later append follows is damage in the
+    /// middle: the batch was acknowledged, so what of it verifies is kept.
+    @Test(.failureMode("design/15", "a byte flips in the middle of the log"))
+    func damageInsideAnEarlierBatchCostsOnlyTheDamagedRecord() throws {
+        let disk = SimulatedFileSystem()
+        try disk.createDirectory("/d")
+        let journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        try journal.append(batch: [bytes("one"), bytes("two"), bytes("three")])
+        try journal.append(bytes("after"))
+        try journal.close()
+        try flipBit(in: "/d/j", at: Journal.headerSize + 3 + 12, using: disk)   // inside "two"
+        let reopened = try Journal.open(at: "/d/j", fileSystem: disk)
+        #expect(payloads(try reopened.replay()) == ["one", "three", "after"])
+        #expect(reopened.openReport.corruption.map(\.lostRecords) == [1])
+        #expect(reopened.openReport.corruption.first?.firstLostSequence == 2)
+        #expect(reopened.openReport.droppedBytes == 0)
+    }
+
+    /// The bytes an earlier release wrote for `append("alpha")`,
+    /// `append(batch: ["bravo", "charlie", "delta"])`, `append("echo")`:
+    /// records with no batch bits, which must read exactly as they did.
+    static let logWrittenByAnEarlierRelease: [UInt8] = [
+        0x0D, 0x00, 0x00, 0x00, 0xF0, 0x16, 0xF1, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x61, 0x6C, 0x70, 0x68,
+        0x61, 0x0D, 0x00, 0x00, 0x00, 0xDA, 0x1D, 0x54, 0x76, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x62, 0x72, 0x61,
+        0x76, 0x6F, 0x0F, 0x00, 0x00, 0x00, 0x33, 0x0A, 0xD7, 0x17, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x63, 0x68,
+        0x61, 0x72, 0x6C, 0x69, 0x65, 0x0D, 0x00, 0x00, 0x00, 0xF3, 0x63, 0x48, 0x3C, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x64, 0x65, 0x6C, 0x74, 0x61, 0x0C, 0x00, 0x00, 0x00, 0xB7, 0xBF, 0x91, 0xCD, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x65, 0x63, 0x68, 0x6F,
+    ]
+
+    @Test func aLogAnEarlierReleaseWroteReadsAsItDid() throws {
+        let disk = SimulatedFileSystem()
+        try disk.createDirectory("/d")
+        let file = try disk.open("/d/j", mode: .createExclusive)
+        try disk.write(file, Self.logWrittenByAnEarlierRelease, at: 0)
+        try disk.fullSync(file)
+        try disk.close(file)
+        try disk.syncDirectory("/d")
+
+        let journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        #expect(payloads(try journal.replay()) == ["alpha", "bravo", "charlie", "delta", "echo"])
+        #expect(try journal.replay().records.map(\.sequence) == [1, 2, 3, 4, 5])
+        #expect(journal.openReport == .init(droppedBytes: 0, staleRecords: 0, records: 5))
+        // A single record is still written exactly as an earlier release wrote it.
+        #expect(Journal.frame(bytes("echo"), sequence: 5) == Array(Self.logWrittenByAnEarlierRelease.suffix(Journal.headerSize + 4)))
+        #expect(try journal.append(bytes("foxtrot")) == 6)
+    }
+
+    @Test func aBatchsRecordsAreTiedTogetherAndASingleRecordIsNot() {
+        func field(_ frame: [UInt8]) -> UInt32 { frame.prefix(4).enumerated().reduce(0) { $0 | UInt32($1.element) << ($1.offset * 8) } }
+        #expect(field(Journal.frame(bytes("x"), sequence: 1)) & ~Journal.lengthMask == 0)
+        #expect(field(Journal.frame(bytes("x"), sequence: 1, more: true)) & ~Journal.lengthMask == Journal.moreFlag)
+        #expect(field(Journal.frame(bytes("x"), sequence: 2, more: true, joined: true)) & ~Journal.lengthMask == Journal.moreFlag | Journal.joinedFlag)
+        // A batch read whole; the same records without their last are a torn tail.
+        let batch = Journal.frame(bytes("a"), sequence: 1, more: true) + Journal.frame(bytes("b"), sequence: 2, more: true, joined: true)
+            + Journal.frame(bytes("c"), sequence: 3, joined: true)
+        #expect(Journal.scan(batch, maxRecordSize: 1 << 20).records.map(\.sequence) == [1, 2, 3])
+        let cut = Array(batch.dropLast(Journal.headerSize + 1))
+        #expect(Journal.scan(cut, maxRecordSize: 1 << 20).records.isEmpty)
+        #expect(Journal.scan(cut, maxRecordSize: 1 << 20).validEnd == 0)
     }
 
     @Test func damageInTheMiddleAndATornTailAreEachHandled() throws {

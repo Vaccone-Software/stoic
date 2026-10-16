@@ -21,11 +21,13 @@ internal import Synchronization
 /// ## Format
 ///
 /// A record is `length:u32 | crc:u32 | sequence:u64 | payload`, little-endian.
-/// `length` counts the sequence and payload; `crc` is the CRC-32C of the four
-/// length bytes followed by those `length` bytes, so a flipped length is as
-/// visible as a flipped payload, and a hole of zeros is never a valid record.
-/// Sequence numbers are strictly increasing across the log, and across
-/// compactions.
+/// `length` counts the sequence and payload in its low 30 bits; its top two
+/// bits tie the records of a batch together (`more` follow, `joined` to the
+/// one before), and are zero on a record appended alone. `crc` is the
+/// CRC-32C of the four length bytes followed by those `length` bytes, so a
+/// flipped length is as visible as a flipped payload, and a hole of zeros is
+/// never a valid record. Sequence numbers are strictly increasing across the
+/// log, and across compactions.
 ///
 /// ## Compaction
 ///
@@ -91,7 +93,8 @@ public final class Journal: Sendable {
             case acceptLoss
         }
 
-        /// The largest payload `append` accepts.
+        /// The largest payload `append` accepts. The format frames at most
+        /// 1 GiB less 9 bytes, whatever this says.
         public var maxRecordSize: Int
 
         /// What `open` does with damage in the middle of the log.
@@ -409,8 +412,20 @@ public final class Journal: Sendable {
 
     static let headerSize = 16   // length, crc, sequence
 
-    static func frame(_ payload: [UInt8], sequence: UInt64) -> [UInt8] {
-        let length = UInt32(payload.count + 8)
+    /// The top two bits of `length` tie the records of a batch together:
+    /// `more` on every record but the last, `joined` on every record but the
+    /// first. A record appended alone has neither, which is the format every
+    /// earlier release wrote, so their logs read as they always did.
+    static let moreFlag: UInt32 = 1 << 31
+    static let joinedFlag: UInt32 = 1 << 30
+    static let lengthMask: UInt32 = joinedFlag - 1
+
+    /// The largest payload the format can frame: `length` (payload and
+    /// sequence) has 30 bits.
+    static let largestPayload = Int(lengthMask) - 8
+
+    static func frame(_ payload: [UInt8], sequence: UInt64, more: Bool = false, joined: Bool = false) -> [UInt8] {
+        let length = UInt32(payload.count + 8) | (more ? moreFlag : 0) | (joined ? joinedFlag : 0)
         let lengthBytes = littleEndian(length)
         let body = littleEndian(sequence) + payload
         var crc = CRC32C.Running()
@@ -429,13 +444,24 @@ public final class Journal: Sendable {
         var corruption: [Corruption] = []
     }
 
+    /// One frame that verified.
+    private struct Frame {
+        let record: Record
+        let end: Int
+        /// More records of its batch follow it.
+        let more: Bool
+        /// It is not the first record of its batch.
+        let joined: Bool
+    }
+
     /// A frame is intact when it fits, is within the size limit, has a valid
     /// checksum and carries a sequence number above `previous`.
     private static func intactFrame(
         in bytes: [UInt8], at offset: Int, after previous: UInt64, maxRecordSize: Int
-    ) -> (record: Record, end: Int)? {
+    ) -> Frame? {
         guard bytes.count - offset >= headerSize else { return nil }
-        let length = Int(readLittleEndian(bytes, at: offset) as UInt32)
+        let field: UInt32 = readLittleEndian(bytes, at: offset)
+        let length = Int(field & lengthMask)
         guard length >= 8, length - 8 <= maxRecordSize, offset + 8 + length <= bytes.count else { return nil }
         let stored: UInt32 = readLittleEndian(bytes, at: offset + 4)
         var crc = CRC32C.Running()
@@ -444,7 +470,10 @@ public final class Journal: Sendable {
         guard crc.value == stored else { return nil }
         let sequence: UInt64 = readLittleEndian(bytes, at: offset + 8)
         guard sequence > previous else { return nil }
-        return (Record(sequence: sequence, bytes: Array(bytes[offset + 16..<offset + 8 + length])), offset + 8 + length)
+        return Frame(
+            record: Record(sequence: sequence, bytes: Array(bytes[offset + 16..<offset + 8 + length])),
+            end: offset + 8 + length, more: field & moreFlag != 0, joined: field & joinedFlag != 0
+        )
     }
 
     /// The intact records of `bytes`, where the last one ends, and the
@@ -467,43 +496,99 @@ public final class Journal: Sendable {
     /// framed record that happens to sit inside a damaged payload, unless its
     /// sequence number is also just right (see design/15).
     ///
+    /// **A batch is all or nothing, unless a later one proves it was kept.**
+    /// A batch's records are one write, and a crash may keep any of its pages
+    /// and not others, so its records are held back until its last one (the
+    /// one without `more`) verifies. A batch cut short by a bad frame with no
+    /// later batch after it is a torn tail, dropped whole: a crash during a
+    /// batch never leaves part of it. A later batch is proof the damaged one
+    /// was acknowledged (appends are serial, each synced before the next
+    /// begins), so then the damage is in the middle and every record of the
+    /// damaged batch that verifies is kept, as for single records.
+    ///
     /// - Parameter through: The last sequence a snapshot covers, which the
     ///   first record's gap is measured from.
     static func scan(_ bytes: [UInt8], maxRecordSize: Int, after through: UInt64 = 0) -> Scan {
         var scan = Scan()
         var offset = 0
-        var previous: UInt64 = 0
-        while offset < bytes.count {
-            if let (record, end) = intactFrame(in: bytes, at: offset, after: previous, maxRecordSize: maxRecordSize) {
-                scan.records.append(record)
-                previous = record.sequence
-                offset = end
-                continue
-            }
-            // Damage, or the tail. Look ahead for an intact frame.
-            let baseline = max(previous, through)
-            var probe = offset + 1
-            var resumed = false
-            while probe + headerSize <= bytes.count {
-                if let (record, end) = intactFrame(in: bytes, at: probe, after: previous, maxRecordSize: maxRecordSize) {
-                    let lost = record.sequence > baseline + 1 ? Int(clamping: record.sequence - baseline - 1) : 0
-                    if lost <= (probe - offset) / headerSize {
-                        scan.corruption.append(Corruption(
-                            offset: offset, length: probe - offset, lostRecords: lost,
-                            firstLostSequence: lost > 0 ? baseline + 1 : nil
-                        ))
-                        scan.records.append(record)
-                        previous = record.sequence
-                        offset = end
-                        resumed = true
-                        break
-                    }
-                }
-                probe += 1
-            }
-            if !resumed { break }
+        // The last record committed, and the batch being read.
+        var committed: UInt64 = 0
+        var batch: [Record] = []
+        var batchStart = 0
+        // Damage skipped just before the batch being read: it counts only if
+        // the batch completes.
+        var damageBeforeBatch: Corruption?
+        // Inside a damaged batch that a later one (starting here) proves was
+        // acknowledged: its intact records count as they come.
+        var salvageUntil: Int?
+
+        func commit(_ records: [Record], end: Int) {
+            if let damage = damageBeforeBatch { scan.corruption.append(damage) }
+            damageBeforeBatch = nil
+            scan.records += records
+            scan.validEnd = end
+            committed = records.last!.sequence
         }
-        scan.validEnd = offset
+
+        /// The nearest offset in `range` holding an intact frame (one that
+        /// starts a batch, if `batchStart`) whose gap in sequence numbers fits
+        /// the bytes skipped since `damageStart`, and the records that gap says
+        /// were lost.
+        func plausible(in range: ClosedRange<Int>, damageStart: Int, batchStart: Bool) -> (offset: Int, lost: Int, baseline: UInt64)? {
+            let baseline = max(committed, through)
+            for probe in range where probe + headerSize <= bytes.count {
+                guard let frame = intactFrame(in: bytes, at: probe, after: committed, maxRecordSize: maxRecordSize),
+                      !batchStart || !frame.joined else { continue }
+                let sequence = frame.record.sequence
+                let lost = sequence > baseline + 1 ? Int(clamping: sequence - baseline - 1) : 0
+                if lost <= (probe - damageStart) / headerSize { return (probe, lost, baseline) }
+            }
+            return nil
+        }
+
+        while offset < bytes.count {
+            if let limit = salvageUntil, offset >= limit { salvageUntil = nil }
+            let previous = batch.last?.sequence ?? committed
+            if let frame = intactFrame(in: bytes, at: offset, after: previous, maxRecordSize: maxRecordSize) {
+                if salvageUntil != nil {
+                    commit([frame.record], end: frame.end)
+                    offset = frame.end
+                    continue
+                }
+                if frame.joined == !batch.isEmpty, !frame.joined || frame.record.sequence == previous + 1 {
+                    if batch.isEmpty { batchStart = offset }
+                    batch.append(frame.record)
+                    offset = frame.end
+                    if !frame.more {
+                        commit(batch, end: offset)
+                        batch = []
+                    }
+                    continue
+                }
+            }
+            // Damage, or the tail. Without a later batch to prove otherwise,
+            // it is the tail, and a batch being read goes with it.
+            let damageStart = batch.isEmpty ? (damageBeforeBatch?.offset ?? offset) : batchStart
+            guard let proof = plausible(in: (offset + 1)...bytes.count, damageStart: damageStart, batchStart: true) else { break }
+            // The batch being read was acknowledged: what of it verified stays.
+            var stretchStart = damageStart
+            if !batch.isEmpty {
+                commit(batch, end: offset)
+                batch = []
+                stretchStart = offset
+            } else {
+                damageBeforeBatch = nil
+            }
+            // Resume at the nearest record that verifies, joined or not, up to
+            // the batch that proved the damage is in the middle.
+            guard let resume = plausible(in: (offset + 1)...proof.offset, damageStart: stretchStart, batchStart: false) else { break }
+            damageBeforeBatch = Corruption(
+                offset: stretchStart, length: resume.offset - stretchStart, lostRecords: resume.lost,
+                firstLostSequence: resume.lost > 0 ? resume.baseline + 1 : nil
+            )
+            if resume.offset < proof.offset { salvageUntil = proof.offset }
+            offset = resume.offset
+        }
         return scan
     }
 
@@ -518,23 +603,31 @@ public final class Journal: Sendable {
 
     /// Appends several records with one write and one `fullSync` (group
     /// commit): the cost of durability is paid once for the batch. Either all
-    /// of them are durable when this returns, or the call threw and any prefix
-    /// of them may be.
+    /// of them are durable when this returns, or the call threw and, after
+    /// recovery, all of them or none are there: the records of a batch are
+    /// framed together, and a batch a crash kept only part of is dropped
+    /// whole at open.
+    ///
+    /// A batch of more than one record is written in a form releases before
+    /// this one cannot read (they see a torn tail); a single record is not.
     ///
     /// - Returns: The sequence numbers assigned, in order.
     @discardableResult
     public func append(batch payloads: [[UInt8]]) throws(StoreError) -> [UInt64] {
         guard !payloads.isEmpty else { return [] }
-        for payload in payloads where payload.count > options.maxRecordSize {
-            throw StoreError(kind: .invalidArgument, operation: "append", path: path, detail: "record of \(payload.count) bytes exceeds \(options.maxRecordSize)")
+        let limit = min(options.maxRecordSize, Self.largestPayload)
+        for payload in payloads where payload.count > limit {
+            throw StoreError(kind: .invalidArgument, operation: "append", path: path, detail: "record of \(payload.count) bytes exceeds \(limit)")
         }
         return try state.withLock { (state) throws(StoreError) -> [UInt64] in
             let file = try ready(&state)
             var bytes: [UInt8] = []
             var sequences: [UInt64] = []
-            for payload in payloads {
+            for (index, payload) in payloads.enumerated() {
                 sequences.append(state.lastSequence + UInt64(sequences.count) + 1)
-                bytes.append(contentsOf: Journal.frame(payload, sequence: sequences.last!))
+                bytes.append(contentsOf: Journal.frame(
+                    payload, sequence: sequences.last!, more: index < payloads.count - 1, joined: index > 0
+                ))
             }
             do throws(StoreError) {
                 try fileSystem.write(file, bytes, at: state.end)

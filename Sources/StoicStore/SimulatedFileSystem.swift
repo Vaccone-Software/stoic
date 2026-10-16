@@ -166,7 +166,10 @@ public final class SimulatedFileSystem: FileSystem {
     /// The set always includes: nothing pending survived; everything did;
     /// every prefix of each file's pending writes; each pending write torn
     /// at byte granularity (every byte for writes up to 96 bytes, sector and
-    /// power-of-two boundaries beyond); every subset of the pending directory
+    /// power-of-two boundaries beyond); each write that spans 4 KiB pages
+    /// kept page by page (every combination up to four pages, each page alone
+    /// missing or kept beyond), the file grown over the missing pages or not;
+    /// every subset of the pending directory
     /// operations (all of them up to six, prefixes beyond); those crossed
     /// with each other at their extremes; and `samples` random combinations
     /// of all of it. Images that leave identical files are returned once.

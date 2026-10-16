@@ -124,8 +124,11 @@ type, `StoreError`.
   durable. (This is why a failed sync poisons a journal and is never retried.)
 - A crash keeps the durable state plus **any subset** of the pending
   operations (per file, applied in order; zero-filled where a later write
-  survives without an earlier one), each write **torn at any byte**, and any
-  subset of the pending directory operations.
+  survives without an earlier one), each write **torn at any byte**, each
+  write that spans pages kept **page by page in any combination** (the page
+  cache writes a write's pages back in any order, so a later page can survive
+  an earlier one, with or without the file grown over the missing ones), and
+  any subset of the pending directory operations.
 
 ### Atomic file
 
@@ -211,8 +214,14 @@ something was corrupt, `read` throws `.corrupt` once; the next read returns `nil
 ### Journal
 
 Record: `length:u32 | crc32c:u32 | sequence:u64 | payload`, little-endian;
-`length` counts sequence + payload, and the CRC covers the four length bytes
-and the body. A record is valid only if it fits in the file, is within
+`length` counts sequence + payload in its low 30 bits, and the CRC covers the
+four length bytes and the body. The top two bits of `length` tie a batch
+together: `more` (bit 31) on every record of a batch but the last, `joined`
+(bit 30) on every record but the first. A record appended alone has neither,
+which is the format every earlier release wrote: their logs read unchanged
+(tested against bytes an earlier release wrote), and a single append still
+writes them. A log holding a batch of several records is not readable by an
+earlier release (it sees a torn tail where the batch begins). A record is valid only if it fits in the file, is within
 `maxRecordSize`, checks, and has a sequence above its predecessor's. A hole of
 zeros is never valid. `open` tells a **torn tail** from **damage in the
 middle** by looking ahead from the first bad record. If no later offset holds
@@ -225,6 +234,16 @@ there, and the stretch is reported (`OpenReport.corruption`, a list of
 file, so appends go after them and the report is repeated on every open until
 a compaction. `open` also `syncDirectory`s when it created the file — the name
 is part of the data.
+
+**A batch is all or nothing.** `append(batch:)` is one write and one
+`fullSync`, and a crash can keep any of the write's pages and not others. The
+scan holds a batch's records back until its last one verifies; a batch cut
+short with nothing valid after it is a torn tail and is cut whole, from where
+it began, and a `joined` record is never a place to resume after damage (the
+start of its batch is missing). Only a later batch proves the damaged one was
+acknowledged (appends are serial: each is synced before the next begins);
+then the damage is in the middle, and every record of the damaged batch that
+verifies is kept and the stretch reported, as for records appended alone.
 
 The format has no sync marker, so resynchronising means trying every byte
 offset after the bad record for a valid frame (length fits, CRC-32C matches,
@@ -257,7 +276,8 @@ and the tombstone is removed.
 | `append` has returned, then power is lost                  | The record is replayed                                                                              |
 | a crash tears the last record or leaves a hole             | Cut at `open`; replay yields a prefix of the appended records                                       |
 | a byte flips in the middle of the log                      | That record is lost; the intact ones after it are kept; the damage is reported (`corruption`, `store.journal_corruption`) |
-| a byte flips in the *last* record                          | Indistinguishable from a crash: cut as a torn tail (`droppedBytes`), not reported as corruption    |
+| a byte flips in the *last* record                          | Indistinguishable from a crash: cut as a torn tail (`droppedBytes`), not reported as corruption. When the last append was a batch, the whole batch is cut, wherever in it the byte flipped |
+| a crash keeps some pages of a batch and not others         | The batch is cut whole at `open`, as a torn tail: replay yields every record of it or none, never a gap, and no damage in the middle is reported |
 | `compact` runs over a log with skipped damage              | The log is copied to `<path>.corrupt-N` first, then folded and truncated                           |
 | a crash falls inside `compact`                             | Old snapshot + full log, or new snapshot + stale log (skipped, then truncated), or new + empty     |
 | the snapshot fails its checksum                            | Quarantined, after a tombstone records the loss; `open` throws `.corrupt` (the records it replaced are gone, so starting empty would hide data loss), and so does every later `open` until one passes `lostSnapshot: .acceptLoss`, which replays what the log still holds and reports `OpenReport.lostSnapshot` |
@@ -431,7 +451,7 @@ again. Invariants:
   catches a tail that was scanned but not cut; so does the check that a
   recovered journal reports no damage in the middle, which a crash never
   causes). For single appends, batches, a repaired torn tail, and one and two
-  compactions. Over a log with a damaged record in the middle: appends and a
+  compactions; and for a batch that spans pages, every record of it or none. Over a log with a damaged record in the middle: appends and a
   compaction keep every intact record and every acknowledged append at every
   crash point, and a compaction leaves a copy of the damaged log.
 - **`Outbox`:** pending entries are a subsequence of those enqueued, intact;
@@ -461,8 +481,9 @@ acknowledgement that is never written) each fail the suite.
   - The lost records' contents. For an outbox that is an entry that is never
     delivered (a lost enqueue), or one delivered again (a lost
     acknowledgement). The report says how many and from which sequence, no more.
-  - **A flip in the last record, or in a stretch with nothing valid after it,**
-    is a torn tail by definition and is cut with only `store.journal_truncated`.
+  - **A flip in the last record (anywhere in the last batch), or in a stretch
+    with nothing valid after it,** is a torn tail by definition and is cut with
+    only `store.journal_truncated`.
   - **A damaged length field** is recoverable only because the scan retries
     every offset; a damaged *sequence number* that still checks is impossible
     (the CRC covers it). A false resync, a valid frame inside a damaged

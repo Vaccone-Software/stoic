@@ -146,6 +146,21 @@ extension SimulatedFileSystem {
                         let torn = Pending.write(offset: offset, bytes: Array(bytes[..<cut]))
                         add(torn.applied(to: prefix), "first \(index) ops, op \(index) torn after \(cut) of \(bytes.count) bytes")
                     }
+                    // The page cache writes a write's pages back in any order,
+                    // so a crash may keep a later page of it and not an
+                    // earlier one: the file may or may not have grown to
+                    // cover the pages that are missing.
+                    for (pages, kept) in Self.pageSubsets(offset: offset, count: bytes.count) {
+                        var content = prefix
+                        for range in kept {
+                            content = Pending.write(offset: offset + range.lowerBound, bytes: Array(bytes[range])).applied(to: content)
+                        }
+                        add(content, "first \(index) ops, op \(index) with only pages \(pages)")
+                        if content.count < offset + bytes.count {
+                            content += [UInt8](repeating: 0, count: offset + bytes.count - content.count)
+                            add(content, "first \(index) ops, op \(index) with only pages \(pages), the file grown over the rest")
+                        }
+                    }
                 }
                 prefix = operation.applied(to: prefix)
                 add(prefix, index == pending.count - 1 ? "all \(pending.count) ops" : "first \(index + 1) of \(pending.count) ops")
@@ -169,6 +184,36 @@ extension SimulatedFileSystem {
             choices.removeAll { $0.content == everything }
             choices.append(DataChoice(content: everything, label: "all \(pending.count) ops"))
             return choices
+        }
+
+        static let pageSize = 4096
+
+        /// The ways some of the pages a write of `count` bytes at `offset`
+        /// touches can reach the disk without the others: every proper subset
+        /// when it touches up to four pages, and beyond that each page alone
+        /// missing and each page alone kept. Each is the pages kept (numbered
+        /// from 0) and their byte ranges within the write.
+        static func pageSubsets(offset: Int, count: Int) -> [(pages: [Int], ranges: [Range<Int>])] {
+            guard count > 0 else { return [] }
+            var ranges: [Range<Int>] = []
+            var start = 0
+            while start < count {
+                let boundary = ((offset + start) / pageSize + 1) * pageSize - offset
+                ranges.append(start..<min(count, boundary))
+                start = min(count, boundary)
+            }
+            let pages = ranges.count
+            guard pages > 1 else { return [] }
+            var subsets: [[Int]] = []
+            if pages <= 4 {
+                subsets = (1..<((1 << pages) - 1)).map { bits in (0..<pages).filter { bits >> $0 & 1 == 1 } }
+            } else {
+                for page in 0..<pages {
+                    subsets.append((0..<pages).filter { $0 != page })
+                    subsets.append([page])
+                }
+            }
+            return subsets.map { kept in (kept, kept.map { ranges[$0] }) }
         }
 
         /// The lengths a write of `length` bytes can be cut to: every byte for
