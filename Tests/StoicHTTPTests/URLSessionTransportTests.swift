@@ -4,6 +4,10 @@ import StoicHTTP
 import Synchronization
 import Testing
 
+// swift-corelibs-foundation's URLSession ignores a task's own delegate (the
+// data task never completes) and cannot follow a redirect from a URLProtocol,
+// so the transport is exercised over the stub on Apple platforms only.
+#if canImport(Darwin)
 /// A URL protocol that answers from a table, in-process: the real
 /// `URLSession` machinery (delegates, cancellation, redirects) with no
 /// network.
@@ -179,6 +183,7 @@ struct URLSessionTransportTests {
         #expect(missing?.statusCode == 404)
     }
 }
+#endif
 
 @Suite("Byte budget")
 struct ByteBudgetTests {
