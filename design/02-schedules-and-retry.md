@@ -100,8 +100,21 @@ a cancelled retry. (2) Nested inside another retry's attempt with
 (5) The next attempt could not finish before `Deadline.current`, assuming it
 takes as long as the last → rethrow, `retry.deadline_skip`. (6) The budget has
 no token → rethrow, `retry.budget_exhausted`. Otherwise sleep (cancellable)
-and try again. The error is always the last attempt's, unwrapped; cancelled
-during the backoff, retry rethrows that last real failure.
+and try again. Between (4) and (5), a `retryAfter` that comes from an open
+circuit breaker and is longer than the schedule's next delay stops the retry
+(`retry.breaker_open`), and a shorter one is jittered upward by up to a tenth
+(design/10). The error is always the last attempt's, unwrapped.
+
+**What `retry` throws when it stops.** `retry` throws its operation's error
+type, so it cannot say *why* it stopped: cancelled during the backoff, it
+rethrows the last attempt's real failure (never a `CancellationError`, which
+`Failure` may not be able to hold), and the token it spent on the retry that
+never happened goes back to the budget; stopped by the deadline or the
+budget, it rethrows that same failure. The event says which. A caller that
+must tell a refusal from the dependency failing checks `Task.isCancelled`,
+or uses `Retrying` in a pipeline, whose `PolicyError` reports those stops as
+`.rejected(.cancelled)`, `.rejected(.deadlineExceeded)` and
+`.rejected(.budgetExhausted)` (design/10).
 
 **Default classification.** `.standard` lets `Retryable` errors decide,
 stops on defects, `DecodingError` and `EncodingError` (the same bytes fail
@@ -186,7 +199,7 @@ or supervisor that can stop it.
 | -------------------------------------------------- | ------------------------------------------------------------------------------ |
 | the operation succeeds on attempt n                | Result returned; `retry.succeeded` with n (only when n > 1)                    |
 | every attempt fails                                | Last error rethrown; `retry.exhausted` with attempts and elapsed               |
-| the task is cancelled during the backoff sleep     | The last attempt's error is rethrown (typed); no further attempt              |
+| the task is cancelled during the backoff sleep     | The last attempt's error is rethrown (typed); no further attempt; the budget token is returned; `retry.cancelled` |
 | the error is a `Defect`                            | Rethrown immediately; `retry.defect` at error level                            |
 | the budget is empty                                | Last error rethrown; `retry.budget_exhausted`                                  |
 | the next attempt cannot finish before the deadline | Last error rethrown without sleeping; `retry.deadline_skip`                    |
@@ -209,7 +222,9 @@ or supervisor that can stop it.
 `retry.attempt_failed` (attempt, error type, decision, next delay),
 `retry.succeeded`, `retry.exhausted`, `retry.budget_exhausted`,
 `retry.deadline_skip`, `retry.defect`, `retry.permanent`, `retry.nested`,
-`retry.after_capped`.
+`retry.after_capped`, `retry.cancelled` (debug: the task running the retry
+was cancelled), `retry.breaker_open` (an open breaker's wait was longer than
+the schedule's).
 
 ## Testing
 

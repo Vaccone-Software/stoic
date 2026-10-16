@@ -104,7 +104,8 @@ struct PipelineTests {
         }
     }
 
-    @Test(.failureMode("design/10", "Retrying meets .circuitOpen with a retryAfter")) func retryingOutsideABreakerWaitsOutTheBreakersRetryAfter() async {
+    @Test(.failureMode("design/10", "Retrying meets .circuitOpen with a retryAfter longer than its next delay"))
+    func retryingFailsFastWhenTheBreakerIsOpenForLongerThanTheScheduleWouldWait() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(), clock: clock.erased)
             await breaker.failUntilOpen()
@@ -113,16 +114,46 @@ struct PipelineTests {
                 Retrying(.fixed(.seconds(1)).attempts(3), budget: .unlimited, label: "api"),
                 breaker
             )
+            // The schedule says one second; the breaker says twenty: fail fast.
+            let result = await outcome(of: pipeline) { 42 }
+            guard case .failure(let error) = result else { return unexpected("expected the breaker's refusal") }
+            #expect(error.rejection?.reason == .circuitOpen)
+            #expect(error.rejection?.retryAfter == .seconds(20))
+            #expect(clock.sleeperCount == 0)
+            #expect(events.events(named: "retry.breaker_open").first?.duration("retry_after") == .seconds(20))
+            #expect(events.events(named: "retry.attempt_failed").isEmpty)
+        }
+    }
+
+    @Test(.failureMode("design/10", "Retrying meets .circuitOpen with a retryAfter no longer than its next delay"))
+    func retryingWaitsOutAShortOpenPeriodJitteredUpward() async {
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(label: "api", testConfiguration(), clock: clock.erased)
+            await breaker.failUntilOpen()
+            await clock.advance(by: .seconds(10))   // 20 s of the open period remain
+            let pipeline = Pipeline(
+                Retrying(.fixed(.seconds(30)).attempts(3), budget: .unlimited, label: "api"),
+                breaker
+            )
             let task = Task { await outcome(of: pipeline) { 42 } }
             await clock.waitForSleepers(count: 1)
-            // The schedule says one second; the breaker's rejection says twenty.
-            #expect(clock.pendingDeadlines.map(\.offset) == [.seconds(30)])
-            await clock.advance(by: .seconds(20))
+            // The breaker's twenty seconds, stretched by up to a tenth so that
+            // callers turned away together do not all reach the probe at once.
+            let delay = events.events(named: "retry.attempt_failed").first?.duration("delay")
+            #expect(delay.map { $0 >= .seconds(20) && $0 <= .seconds(22) } == true, "waited \(String(describing: delay))")
+            await clock.advance(by: .seconds(22))
             let result = await task.value
             if case .success(let number) = result { #expect(number == 42) } else { unexpected("expected the retry to get through") }
             #expect(breaker.state == .closed)
-            #expect(events.events(named: "retry.attempt_failed").first?.duration("delay") == .seconds(20))
         }
+    }
+
+    @Test func callersTurnedAwayTogetherReachTheProbeAtDifferentTimes() {
+        // The jitter is drawn per call site and attempt under a seed, and per
+        // call in production: under the system source two waits differ.
+        var first = RandomSource.system.generator(discriminator: 2, fileID: "a", line: 1)
+        var second = RandomSource.system.generator(discriminator: 2, fileID: "a", line: 1)
+        #expect(first.next() != second.next())
     }
 
     /// An inner `withTimeout` cancels a hung attempt, and the retry stage sees
@@ -181,7 +212,89 @@ struct PipelineTests {
         #expect(inPipeline.value == 3, "the classifier was handed the PolicyError, not Boom")
     }
 
-    @Test func aRetryThatMeetsAnOpenBreakerGetsItsRetryAfterAndEndsWithTheOperationsOwnError() async {
+    // MARK: - Retrying's stops
+
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/10", "`Retrying`'s caller is cancelled during a backoff"))
+    func aCallerCancelledDuringRetryingsBackoffIsARejectionForCancellation() async {
+        let clock = TestClock()
+        let budget = RetryBudget(ratio: 0, reservePerSecond: 0, reserveCapacity: 1)
+        let task = Task {
+            await withTestAmbient(clock: clock) {
+                await outcome(of: Pipeline(Retrying(.fixed(.seconds(10)).attempts(3), budget: budget))) { () throws(Boom) -> Int in
+                    throw .failed
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        task.cancel()
+        let result = await task.value
+        guard case .failure(let error) = result else { return unexpected("expected a failure") }
+        #expect(error.rejection?.reason == .cancelled)
+        #expect(error.isCancellation)
+        #expect(budget.available() == 1, "the token paid for the retry that never happened is back")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aBackoffCancelledByADeadlineIsARejectionForTheDeadline() async {
+        // Retry never starts a backoff that outlasts Deadline.current, so the
+        // cause is recorded by hand, as a deadline Stoic did not set would.
+        let clock = TestClock()
+        let cause = CancellationCauseBox()
+        let task = Task {
+            await withTestAmbient(clock: clock) {
+                await CancellationCauseBox.$current.withValue(cause) {
+                    await outcome(of: Pipeline(Retrying(.fixed(.seconds(10)).attempts(3), budget: .unlimited))) { () throws(Boom) -> Int in
+                        throw .failed
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        cause.record(.deadline)
+        task.cancel()
+        let result = await task.value
+        guard case .failure(let error) = result else { return unexpected("expected a failure") }
+        #expect(error.rejection?.reason == .deadlineExceeded)
+    }
+
+    @Test(.failureMode("design/10", "`Retrying`'s next attempt could not finish before the deadline"))
+    func aRetryThatCannotFitTheDeadlineIsARejectionForTheDeadline() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let result = await withTestAmbient(clock: clock, events: events) {
+            await Deadline.$stored.withValue(.after(.seconds(3))) {
+                await outcome(of: Pipeline(Retrying(.fixed(.seconds(5)).attempts(3), budget: .unlimited, label: "api"))) { () throws(Boom) -> Int in
+                    throw .failed
+                }
+            }
+        }
+        guard case .failure(let error) = result else { return unexpected("expected a failure") }
+        #expect(error.rejection == Rejection(.deadlineExceeded, label: "api", retryAfter: .seconds(5)))
+        #expect(events.names == ["retry.deadline_skip"])
+    }
+
+    @Test(.failureMode("design/10", "`Retrying`'s budget is empty"))
+    func aRetryWithNoTokenIsARejectionForTheBudget() async {
+        let budget = RetryBudget(ratio: 0, reservePerSecond: 0, reserveCapacity: 0)
+        let result = await withTestAmbient(clock: ImmediateClock()) {
+            await outcome(of: Pipeline(Retrying(.fixed(.seconds(1)).attempts(3), budget: budget, label: "api"))) { () throws(Boom) -> Int in
+                throw .failed
+            }
+        }
+        guard case .failure(let error) = result else { return unexpected("expected a failure") }
+        #expect(error.rejection == Rejection(.budgetExhausted, label: "api"))
+    }
+
+    @Test func retryingThatRunsOutOfAttemptsThrowsTheOperationsOwnError() async {
+        let result = await withTestAmbient(clock: ImmediateClock()) {
+            await outcome(of: Pipeline(Retrying(.fixed(.seconds(1)).attempts(2), budget: .unlimited))) { () throws(Boom) -> Int in
+                throw .failed
+            }
+        }
+        guard case .failure(let error) = result else { return unexpected("expected a failure") }
+        #expect(error.failure == .failed)
+    }
+
+    @Test func aRetryThatOpensTheBreakerStopsOnTheBreakersRefusal() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(minimumCalls: 2), clock: clock.erased)
             let pipeline = Pipeline(
@@ -196,18 +309,19 @@ struct PipelineTests {
                 }
             }
             // Attempts 1 and 2 fail (t = 0, 200 ms) and open the breaker; attempt 3
-            // (t = 400 ms) is rejected; attempt 4 is the half-open probe, after the
-            // breaker's own retryAfter, and fails.
-            for _ in 0..<3 {
+            // (t = 400 ms) is rejected for 30 s, far longer than the schedule's
+            // 200 ms, so the retry stops: the breaker said "fail fast".
+            for _ in 0..<2 {
                 await clock.waitForSleepers(count: 1)
                 await clock.advanceToNextDeadline()
             }
             let result = await task.value
             guard case .failure(let error) = result else { return unexpected("expected a failure") }
-            #expect(error.failure == .failed)   // one flat level: the operation's own error
-            #expect(calls.value == 3)           // the rejected attempt never ran it
+            #expect(error.rejection?.reason == .circuitOpen)   // one flat level
+            #expect(calls.value == 2)                           // the rejected attempt never ran it
             let delays = events.events(named: "retry.attempt_failed").map { $0.duration("delay") }
-            #expect(delays == [.milliseconds(200), .milliseconds(200), .seconds(29) + .milliseconds(800)])
+            #expect(delays == [.milliseconds(200), .milliseconds(200)])
+            #expect(events.events(named: "retry.breaker_open").count == 1)
             #expect(breaker.state == .open)
         }
     }

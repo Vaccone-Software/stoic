@@ -160,7 +160,7 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
                     ], level: .notice)
                     break
                 }
-                if let storage, !storage.withdraw(clock: clock) {
+                if let storage, storage.withdraw(clock: clock) == nil {
                     report("hedge.budget_exhausted", [.init("attempts", .int(started))], level: .warning)
                     break
                 }

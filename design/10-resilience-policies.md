@@ -180,8 +180,8 @@ circuit breaker → rate limiter → bulkhead → operation_, the attempt timeou
 being `Retrying(attemptTimeout:)`.
 
 - The overall timeout bounds the caller's wait, retries included.
-- Retry is outside the breaker so that every attempt is judged and an open
-  breaker's `retryAfter` shapes the backoff; one retry layer only (design/02).
+- Retry is outside the breaker so that every attempt is judged, and an open
+  breaker can end the retrying at once; one retry layer only (design/02).
 - The breaker is outside the limiter and bulkhead so that local load-shedding
   (which says nothing about the dependency) never reaches its window, and so
   that a call the limiter or bulkhead refuses never uses up a half-open probe.
@@ -400,14 +400,34 @@ from the retry's, the same on every retry attempt.
 
 ### Retrying
 
-`Retrying` runs design/02's `retry` as a pipeline stage. It sits outside the
-breaker, so a breaker's `.circuitOpen` rejection reaches the retry classifier
-as the attempt's error; the standard classifier already honours its `retryAfter`
-(a half-open rejection, with none, is retried on the schedule). Its classifier
-is typed `RetryClassifier<any Error>` because a stage does not know the
-failure type of the pipeline it will be placed in, and it is handed the
-operation's own error with the wrappers removed (as `recordWhen` is), so a
-classifier that matches `F` decides the same way alone and in a pipeline. The budget is per call site of `Retrying(…)`.
+`Retrying` runs design/02's `retry` as a pipeline stage. Its classifier is
+typed `RetryClassifier<any Error>` because a stage does not know the failure
+type of the pipeline it will be placed in, and it is handed the operation's
+own error with the wrappers removed (as `recordWhen` is), so a classifier
+that matches `F` decides the same way alone and in a pipeline. The budget is
+per call site of `Retrying(…)`.
+
+**An open breaker under retry: one rule.** The stage sits outside the
+breaker, so a `.circuitOpen` rejection reaches it as the attempt's error. An
+open breaker is saying "fail fast", and waiting it out for minutes would
+defeat it; but a breaker about to half-open is worth one more try. So: when
+its `retryAfter` is longer than the schedule's next delay, the retry stops at
+once (`retry.breaker_open`) and the caller gets the breaker's rejection;
+otherwise it waits the `retryAfter`, jittered upward by up to a tenth, since
+every caller turned away got the same instant and would otherwise all reach
+the single probe together. The remaining deadline applies as to any wait
+(design/02's check 5). A half-open rejection has no `retryAfter` and is
+retried on the schedule. (StoicHTTP's own classifier stops on every
+rejection, a stricter form of the same rule.)
+
+**Stops that are refusals are rejections.** `retry` can throw only its
+operation's error, so it cannot say that it stopped because nothing more
+was allowed. `Retrying` can, and does: its caller cancelled during a
+backoff is `.rejected(.cancelled)` (`.deadlineExceeded` when a deadline did
+the cancelling), as for any waiting policy; a next attempt that could not
+finish before the deadline is `.rejected(.deadlineExceeded)` with the delay
+it needed as `retryAfter`; an empty budget is `.rejected(.budgetExhausted)`.
+Every other stop throws the last attempt's error.
 
 With `attemptTimeout`, each attempt runs under the engine of
 `retry(attemptTimeout:)`: a timeout that cancels the attempt and awaits it. A
@@ -474,7 +494,11 @@ the operation off the caller's task, which is why a timeout is an option of
 | a stage inside a pipeline rejects                                         | The caller sees one `.rejected(r)`, never a nested `PolicyError`                                          |
 | a pipeline's operation fails                                              | The caller sees `.failed(error)` with the operation's own error                                           |
 | a pipeline has no stages                                                  | The operation runs; a failure is `.failed`                                                                |
-| `Retrying` meets `.circuitOpen` with a `retryAfter`                       | Backs off for that long in place of the schedule's delay — stretched by the device's conditions, capped at five minutes, still bounded by the deadline |
+| `Retrying` meets `.circuitOpen` with a `retryAfter` longer than its next delay | Stops at once: the breaker's `.rejected(.circuitOpen)` with its `retryAfter`; `retry.breaker_open`  |
+| `Retrying` meets `.circuitOpen` with a `retryAfter` no longer than its next delay | Waits that long, jittered upward by up to 10% — stretched by the device's conditions, capped at five minutes, still bounded by the deadline |
+| `Retrying`'s caller is cancelled during a backoff                         | `.rejected(.cancelled)`, or `.rejected(.deadlineExceeded)` when a deadline cancelled it; the budget token is returned |
+| `Retrying`'s next attempt could not finish before the deadline            | `.rejected(.deadlineExceeded)` with the delay it needed as `retryAfter`; `retry.deadline_skip`            |
+| `Retrying`'s budget is empty                                              | `.rejected(.budgetExhausted)`; `retry.budget_exhausted`                                                   |
 | an attempt under `Retrying(attemptTimeout:)` runs out of time             | Cancelled and awaited; counted as transient, so retried on the schedule (a `Defect` still stops)          |
 
 ## Events

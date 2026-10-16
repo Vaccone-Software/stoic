@@ -92,15 +92,26 @@ extension PolicyError {
 /// ``retry(_:budget:classify:nesting:clock:label:fileID:line:operation:)`` as
 /// a pipeline stage.
 ///
-/// Place it outside a ``CircuitBreaker`` so every attempt is judged and an
-/// open breaker's `retryAfter` shapes the backoff: the standard classifier
-/// reads it from the rejection, which arrives as the attempt's error. (A
+/// Place it outside a ``CircuitBreaker`` so every attempt is judged. An open
+/// breaker's refusal arrives as the attempt's error: when its `retryAfter`
+/// is longer than the schedule's next delay the retry stops at once (the
+/// breaker said "fail fast"), and otherwise it waits that long, jittered
+/// upward by up to a tenth so callers do not all reach the probe at once. (A
 /// half-open rejection has no `retryAfter` and is retried on the schedule.)
 ///
 /// The classifier is typed `RetryClassifier<any Error>` because a stage does
-/// not know the failure type of the pipeline it will sit in; the standard
-/// classifier sees through ``PolicyError``. The budget is per call site of
+/// not know the failure type of the pipeline it will sit in, and it is handed
+/// the operation's own error, unwrapped. The budget is per call site of
 /// `Retrying(…)`, unless you give one.
+///
+/// **Stops that are refusals are rejections.** Unlike `retry`, which has
+/// only the operation's error to throw, the stage reports why it stopped when
+/// that was not the operation's doing: its caller was cancelled while it
+/// waited (`.cancelled`, or `.deadlineExceeded` when a deadline cancelled
+/// it), the next attempt could not finish before the deadline
+/// (`.deadlineExceeded`, with the delay it needed as `retryAfter`), or the
+/// budget ran dry (`.budgetExhausted`). Any other stop throws the last
+/// attempt's error.
 ///
 /// Give it an `attemptTimeout` to bound each attempt, as
 /// ``retry(_:attemptTimeout:budget:classify:nesting:clock:label:fileID:line:operation:)``
@@ -151,21 +162,38 @@ public struct Retrying: Policy {
         let typed = RetryClassifier<Failure> { failure in
             classify.decision(for: failure.unwrappedForClassification, attemptTimedOut: false)
         }
-        do throws(Failure) {
+        do throws(RetryStopped<Failure>) {
             if let attemptTimeout {
                 return try await retryBoundingEachAttempt(
                     schedule, attemptTimeout: attemptTimeout, budget: budget, classify: typed, nesting: nesting,
                     label: label, fileID: fileID, line: line, operation: operation
                 )
             }
-            return try await retry(
-                schedule, budget: budget, classify: typed, nesting: nesting,
+            return try await retryInline(
+                schedule, budget: budget, classify: typed, nesting: nesting, clock: nil,
                 label: label, fileID: fileID, line: line
             ) { (_: Attempt) async throws(Failure) -> R in
                 try await operation()
             }
         } catch {
-            throw .failed(error)
+            throw policyError(for: error)
+        }
+    }
+
+    /// What the stage throws for a stop: a rejection when retrying was
+    /// refused (the caller left, the deadline or the budget ran out), the
+    /// operation's own error otherwise.
+    private func policyError<Failure>(for stop: RetryStopped<Failure>) -> PolicyError<Failure> {
+        switch stop.reason {
+        case .cancelled:
+            let reason: Rejection.Reason = CancellationCause.current == .deadline ? .deadlineExceeded : .cancelled
+            return .rejected(Rejection(reason, label: label))
+        case .deadline(let needed):
+            return .rejected(Rejection(.deadlineExceeded, label: label, retryAfter: needed))
+        case .budgetExhausted:
+            return .rejected(Rejection(.budgetExhausted, label: label))
+        case .nested, .permanent, .exhausted, .breakerOpen:
+            return .failed(stop.lastError)
         }
     }
 }

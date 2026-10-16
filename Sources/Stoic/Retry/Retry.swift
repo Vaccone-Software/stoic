@@ -270,6 +270,29 @@ public nonisolated(nonsending) func retry<R, Failure: Error>(
     line: UInt = #line,
     operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
 ) async throws(Failure) -> R {
+    do throws(RetryStopped<Failure>) {
+        return try await retryInline(
+            schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
+            label: label, fileID: fileID, line: line, operation: operation
+        )
+    } catch {
+        throw error.lastError
+    }
+}
+
+/// The inline `retry`, saying why it stopped: what ``Retrying`` runs, so it
+/// can report a stop that was a refusal as the rejection it is.
+nonisolated(nonsending) func retryInline<R, Failure: Error>(
+    _ schedule: BoundedSchedule,
+    budget: RetryBudget,
+    classify: RetryClassifier<Failure>,
+    nesting: RetryNesting,
+    clock: AnyClock?,
+    label: String?,
+    fileID: String,
+    line: UInt,
+    operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
+) async throws(RetryStopped<Failure>) -> R {
     return try await retryLoop(
         schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
         label: label, fileID: fileID, line: line
@@ -308,22 +331,26 @@ public nonisolated(nonsending) func retry<R: Sendable, Failure: Error>(
     line: UInt = #line,
     @_inheritActorContext operation: @escaping @Sendable @isolated(any) (Attempt) async throws(Failure) -> R
 ) async throws(Failure) -> R {
-    return try await retryLoop(
-        schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
-        label: label, fileID: fileID, line: line
-    ) { attempt in
-        let outcome = await attempt.operation.running(attempt: attempt.number) {
-            await runWithDeadline(
-                .after(attemptTimeout, clock: clock),
-                tolerance: nil,
-                label: label.map { "\($0) attempt \(attempt.number)" },
-                fileID: fileID,
-                line: line
-            ) { () async throws(Failure) -> R in
-                try await operation(attempt)
+    do throws(RetryStopped<Failure>) {
+        return try await retryLoop(
+            schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
+            label: label, fileID: fileID, line: line
+        ) { attempt in
+            let outcome = await attempt.operation.running(attempt: attempt.number) {
+                await runWithDeadline(
+                    .after(attemptTimeout, clock: clock),
+                    tolerance: nil,
+                    label: label.map { "\($0) attempt \(attempt.number)" },
+                    fileID: fileID,
+                    line: line
+                ) { () async throws(Failure) -> R in
+                    try await operation(attempt)
+                }
             }
+            return (outcome.result, outcome.expired)
         }
-        return (outcome.result, outcome.expired)
+    } catch {
+        throw error.lastError
     }
 }
 
@@ -346,7 +373,7 @@ nonisolated(nonsending) func retryBoundingEachAttempt<R, Failure: Error>(
     fileID: String,
     line: UInt,
     operation: nonisolated(nonsending) () async throws(Failure) -> R
-) async throws(Failure) -> R {
+) async throws(RetryStopped<Failure>) -> R {
     let isolation = #isolation
     return try await retryLoop(
         schedule, budget: budget, classify: classify, nesting: nesting, clock: nil,
@@ -416,6 +443,34 @@ private final class AttemptHandoff<R, Failure: Error>: @unchecked Sendable {
     }
 }
 
+/// Why a retry stopped, with the last attempt's error, which `retry` throws.
+///
+/// `retry` has only its operation's error type to throw, so it cannot say
+/// that it stopped because its caller was cancelled, its budget ran dry or
+/// the deadline left no room. ``Retrying``, whose error is ``PolicyError``,
+/// can, and does: it reports those stops as the rejections they are.
+struct RetryStopped<Failure: Error>: Error {
+    enum Reason: Sendable {
+        case cancelled
+        case nested
+        case permanent
+        case exhausted
+        /// The next attempt could not finish in time; the delay it needed.
+        case deadline(Duration)
+        case budgetExhausted
+        /// An open breaker's wait was longer than the schedule's.
+        case breakerOpen
+    }
+
+    let reason: Reason
+    let lastError: Failure
+
+    init(_ reason: Reason, _ lastError: Failure) {
+        self.reason = reason
+        self.lastError = lastError
+    }
+}
+
 /// The most a server's `Retry-After` may delay a retry, whatever the device's
 /// conditions (design/02): the cap is the last word, so a hot or low-power
 /// device cannot stretch an hour-long wait to eight times that.
@@ -433,7 +488,7 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     fileID: String,
     line: UInt,
     runAttempt: nonisolated(nonsending) (Attempt) async -> (result: Result<R, Failure>, timedOut: Bool)
-) async throws(Failure) -> R {
+) async throws(RetryStopped<Failure>) -> R {
     let ambient = Ambient.current
     let clock = explicitClock ?? ambient.clock
     let storage = budget.resolved(fileID: fileID, line: line, registry: ambient.budgets)
@@ -475,19 +530,19 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
         // 1. The caller, not the attempt, was cancelled.
         if Task.isCancelled {
             report("retry.cancelled", common, level: .debug)
-            throw error
+            throw RetryStopped(.cancelled, error)
         }
         // 2. Nested inside another retry.
         if nested {
             report("retry.nested", common, level: .notice)
-            throw error
+            throw RetryStopped(.nested, error)
         }
         // 3. Classification.
         let decision = classify.decision(for: error, attemptTimedOut: timedOut)
         if decision == .stop {
             let defect = containsDefect(error)
             report(defect ? "retry.defect" : "retry.permanent", common, level: defect ? .error : .info)
-            throw error
+            throw RetryStopped(.permanent, error)
         }
         // 4. The schedule.
         if stepper == nil {
@@ -495,11 +550,29 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
         }
         guard let scheduled = stepper!.next(elapsed: start.duration(to: now)) else {
             report("retry.exhausted", common + [.init("elapsed", .duration(start.duration(to: now)))], level: .notice)
-            throw error
+            throw RetryStopped(.exhausted, error)
         }
         var delay = scheduled
         var retryAfterCeiling: Duration?
-        if case .retryAfter(let requested) = decision {
+        if case .retryAfter(let requested) = decision,
+            let rejection = error.unwrappedForClassification as? Rejection, rejection.reason == .circuitOpen
+        {
+            // An open breaker said "fail fast". Wait it out only when that is
+            // no longer than the schedule would wait anyway; every caller got
+            // the same instant, so the wait is jittered upward (by up to a
+            // tenth) to keep them from arriving at the half-open probe at once.
+            if requested > scheduled {
+                report("retry.breaker_open", common + [
+                    .init("retry_after", .duration(requested)),
+                    .init("scheduled", .duration(scheduled)),
+                ], level: .notice)
+                throw RetryStopped(.breakerOpen, error)
+            }
+            var generator = ambient.random.generator(discriminator: UInt64(number), fileID: fileID, line: line)
+            let fraction = Double(generator.next() >> 11) / Double(UInt64(1) << 53)
+            retryAfterCeiling = retryAfterCap
+            delay = max(.zero, requested).saturatingAdding(max(.zero, requested).saturatingMultiplied(by: 0.1 * fraction))
+        } else if case .retryAfter(let requested) = decision {
             // A server's wait replaces the schedule's delay for this retry;
             // the schedule's bound, the budget and the deadline still apply
             // (design/02). The five-minute ceiling is remembered here and
@@ -531,13 +604,14 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
                     .init("delay", .duration(delay)),
                     .init("remaining", .duration(deadline.remaining)),
                 ], level: .notice)
-                throw error
+                throw RetryStopped(.deadline(delay), error)
             }
         }
         // 6. The budget.
-        if let storage, !storage.withdraw(clock: clock) {
+        let token = storage?.withdraw(clock: clock)
+        if storage != nil, token == nil {
             report("retry.budget_exhausted", common, level: .warning)
-            throw error
+            throw RetryStopped(.budgetExhausted, error)
         }
 
         report("retry.attempt_failed", common + [
@@ -545,16 +619,19 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             .init("timed_out", .bool(timedOut)),
             .init("decision", .string(decision == .retry ? "retry" : "retry_after"), privacy: .public),
         ])
+        // Cancelled while waiting: the last real failure is the answer, and
+        // the token goes back, since the retry it paid for never happens.
         do {
             try await clock.sleep(until: clock.now.advanced(by: delay), tolerance: nil)
         } catch _ {
-            // Cancelled while waiting: the last real failure is the answer.
+            if let storage, let token { storage.refund(token) }
             report("retry.cancelled", common, level: .debug)
-            throw error
+            throw RetryStopped(.cancelled, error)
         }
         if Task.isCancelled {
+            if let storage, let token { storage.refund(token) }
             report("retry.cancelled", common, level: .debug)
-            throw error
+            throw RetryStopped(.cancelled, error)
         }
         number += 1
     }

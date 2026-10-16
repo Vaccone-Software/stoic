@@ -62,6 +62,7 @@ public enum EventCatalog {
         Entry(name: "recur.ended", level: .debug, meaning: "A recurring loop ended: stopped, schedule ended, or cancelled."),
         Entry(name: "retry.after_capped", level: .notice, meaning: "A retryAfter request exceeded five minutes and was capped."),
         Entry(name: "retry.attempt_failed", level: .info, meaning: "An attempt failed and another will follow after the reported delay."),
+        Entry(name: "retry.breaker_open", level: .notice, meaning: "A retry stopped because a circuit breaker is open for longer than the schedule would wait."),
         Entry(name: "retry.budget_exhausted", level: .warning, meaning: "A retry was refused because its budget had no token left."),
         Entry(name: "retry.cancelled", level: .debug, meaning: "A retry stopped because the task running it was cancelled."),
         Entry(name: "retry.deadline_skip", level: .notice, meaning: "A retry was skipped because it could not finish before the deadline."),

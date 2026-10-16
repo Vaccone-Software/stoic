@@ -249,19 +249,24 @@ struct RetryTests {
 
     @Test(.failureMode("design/02", "the task is cancelled during the backoff sleep")) func cancellingTheCallerDuringBackoffRethrowsTheLastError() async {
         let clock = TestClock()
+        let events = RecordingInstrumentation()
         let attempts = SendableBox(0)
+        let budget = RetryBudget(ratio: 0, reservePerSecond: 0, reserveCapacity: 2)
         let task = Task {
-            try await withTestAmbient(clock: clock) {
-                try await retry(.fixed(.seconds(10)).attempts(5), budget: .unlimited) { _ throws(Failure) -> Int in
+            try await withTestAmbient(clock: clock, events: events) {
+                try await retry(.fixed(.seconds(10)).attempts(5), budget: budget) { _ throws(Failure) -> Int in
                     attempts.mutate { $0 += 1 }
                     throw .transient(attempts.value)
                 }
             }
         }
         await clock.waitForSleepers(count: 1)
+        #expect(budget.available() == 1)   // spent on the retry about to happen
         task.cancel()
         await #expect(throws: Failure.transient(1)) { try await task.value }
         #expect(attempts.value == 1)
+        #expect(budget.available() == 2, "the retry never happened, so its token is back")
+        #expect(events.names.last == "retry.cancelled")
     }
 
     @Test(.failureMode("design/02", "an attempt's own timeout fires")) func aTimedOutAttemptIsRetried() async throws {

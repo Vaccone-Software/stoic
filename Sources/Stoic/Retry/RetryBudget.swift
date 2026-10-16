@@ -171,19 +171,36 @@ final class BudgetStorage: Sendable {
         }
     }
 
+    /// Which kind of token a withdrawal spent, so a refund returns it there.
+    enum Token: Sendable {
+        case earned
+        case reserve
+    }
+
     /// Spends a token for one retry, if there is one.
-    func withdraw(clock: AnyClock) -> Bool {
+    func withdraw(clock: AnyClock) -> Token? {
         state.withLock { state in
             refill(&state, clock: clock)
             if state.earned >= 1000 {
                 state.earned -= 1000
-                return true
+                return .earned
             }
             if state.reserve >= 1000 {
                 state.reserve -= 1000
-                return true
+                return .reserve
             }
-            return false
+            return nil
+        }
+    }
+
+    /// Returns a token spent on a retry that never happened (its caller was
+    /// cancelled during the backoff), within the usual limits.
+    func refund(_ token: Token) {
+        state.withLock { state in
+            switch token {
+            case .earned: state.earned = min(state.earned + 1000, max(1000, settings.reserveCapacity))
+            case .reserve: state.reserve = min(state.reserve + 1000, settings.reserveCapacity)
+            }
         }
     }
 
