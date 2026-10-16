@@ -546,6 +546,7 @@ final class Simulation<R: Sendable>: Sendable {
                 ambient.random = .seeded(seed)
                 ambient.instrumentation = context.events
                 ambient.budgets = RetryBudgets()
+                ambient.backends = BackendRegistry()
                 ambient.ledgerTag = tag
                 ambient.taskExecutor = executor
                 ambient.faultPolicy = faults

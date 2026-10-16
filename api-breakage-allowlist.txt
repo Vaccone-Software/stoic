@@ -60,3 +60,4 @@ API breakage: constructor HTTPRateLimit.init(rate:per:burst:queueLimit:) has par
 API breakage: enumelement HTTPError.redirectRefused has been added as a new enum case
 API breakage: constructor HTTPPolicy.init(attemptTimeout:schedule:retryBudget:retryStatuses:maxRetryAfter:breaker:maxConcurrentPerHost:queueLimitPerHost:rateLimit:maxResponseBytes:errorExcerptBytes:decodeOptions:coalesceGETs:ignoreHeadersForCoalescing:retryOnResponse:wallClock:) has been removed
 API breakage: constructor URLSessionTransport.init(session:) has been removed
+API breakage: constructor Ambient.init(clock:livenessClock:random:instrumentation:budgets:conditions:) has been removed

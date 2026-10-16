@@ -41,12 +41,21 @@ public nonisolated(nonsending) func withDeadline<R: Sendable, Failure: Error>(
 /// reporting whether the deadline expired as well as the outcome, for
 /// primitives (such as a retry's per-attempt timeout) that treat an expired
 /// attempt differently from a failed one.
+///
+/// `enforced` runs a timer even for a deadline that does not narrow the one
+/// in force: for a deadline nothing else enforces (`perform`'s default,
+/// installed as ``Deadline/current`` without a scope of its own), or an
+/// attempt shielded from the cancellation that would enforce it. Its expiry
+/// is reported when it narrows, or when `reportsEnforcedExpiry` says no
+/// scope of its own will.
 nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
     _ deadline: Deadline,
     tolerance: Duration?,
     label: String?,
     fileID: String,
     line: UInt,
+    enforced: Bool = false,
+    reportsEnforcedExpiry: Bool = false,
     @_inheritActorContext operation: sending @escaping @isolated(any) () async throws(Failure) -> R
 ) async -> DeadlineOutcome<R, Failure> {
     // A deadline that cannot narrow the one in force is a no-op: the
@@ -57,7 +66,7 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
     // call ran out of time.
     let inherited = Deadline.current
     let narrows = inherited.map { deadline.isEarlier(than: $0) } ?? true
-    if !narrows, let inherited, !inherited.hasPassed {
+    if !narrows, !enforced, let inherited, !inherited.hasPassed {
         do throws(Failure) {
             return DeadlineOutcome(result: .success(try await operation()), expired: false)
         } catch {
@@ -72,6 +81,9 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
     let passedOnEntry = effective.hasPassed
     let cause = CancellationCauseBox()
     let slot = OperationSlot(operation)
+    // The operation's one child task does an attempt's work, if it runs in
+    // one: a `perform` inside it is in the attempt's task, not a child of it.
+    let attempt = RetryContext.active
 
     let outcome: DeadlineOutcome<R, Failure> = await Deadline.$stored.withValue(effective) {
             await withTaskGroup(of: DeadlineChild<R, Failure>.self) { group in
@@ -81,7 +93,8 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
                 }
                 group.addTask {
                     await CancellationCauseBox.$current.withValue(cause) {
-                        await slot.run()
+                        guard let attempt else { return await slot.run() }
+                        return await RetryContext.$active.withValue(attempt.carried()) { await slot.run() }
                     }
                 }
                 group.addTask {
@@ -119,7 +132,9 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
     // Entered after an enclosing deadline had passed: the operation ran
     // cancelled, as on entry to any passed deadline, but the expiry is the
     // enclosing scope's to report.
-    guard narrows else { return DeadlineOutcome(result: outcome.result, expired: false) }
+    guard narrows || enforced && reportsEnforcedExpiry else {
+        return DeadlineOutcome(result: outcome.result, expired: enforced && outcome.expired)
+    }
     if outcome.expired {
         let finished = effective.clock.now
         Ambient.record(Event("deadline.expired", level: .notice, label: label, fields: [

@@ -2,7 +2,8 @@ import Stoic
 public import Testing
 
 /// A Swift Testing trait that runs a test in an isolated, seeded Stoic
-/// context: a fixed random seed, fresh retry budgets, and recorded events.
+/// context: a fixed random seed, fresh retry budgets and backend states, and
+/// recorded events.
 ///
 ///     @Test(.stoic(seed: 42))
 ///     func syncRetriesThroughAnOutage() async throws {
@@ -32,6 +33,7 @@ public struct StoicTrait: TestTrait, SuiteTrait, TestScoping {
                 ambient.random = .seeded(seed)
                 ambient.instrumentation = events
                 ambient.budgets = RetryBudgets()
+                ambient.backends = BackendRegistry()
                 ambient.ledgerTag = LedgerTags.next()
             }) {
                 try await function()

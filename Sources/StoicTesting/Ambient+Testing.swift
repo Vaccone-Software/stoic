@@ -1,10 +1,18 @@
 public import Stoic
 internal import Synchronization
+internal import Testing
 
 /// Runs `operation` with a fully controlled ambient context: the given clock
 /// for both deadlines and liveness, a seeded random source, recorded
-/// instrumentation, and fresh retry budgets, so no other test's retries can
-/// change what this one sees.
+/// instrumentation, and fresh retry budgets and backend states, so no other
+/// test's retries or breakers can change what this one sees.
+///
+/// The events that report a bug in the code under test rather than a fault
+/// of a dependency — a keyed operation that sends no key
+/// (`operation.key_unread`, `operation.key_ambiguous`), two backends
+/// declared with one name (`operation.backend_conflict`) — also record a test
+/// issue, so the test fails where the bug is. A test that provokes one on
+/// purpose wraps it in `withKnownIssue`.
 ///
 ///     let clock = TestClock()
 ///     let events = RecordingInstrumentation()
@@ -28,10 +36,31 @@ public nonisolated(nonsending) func withTestAmbient<C: Clock<Duration>, R, Failu
         ambient.clock = erased
         ambient.livenessClock = erased
         ambient.random = .seeded(seed)
-        ambient.instrumentation = events
+        ambient.instrumentation = FailingOnBugs(events)
         ambient.budgets = RetryBudgets()
+        ambient.backends = BackendRegistry()
         ambient.ledgerTag = LedgerTags.next()
     }, operation: operation)
+}
+
+/// Passes every event to the test's recorder, and records a test issue for
+/// those that report a bug in the code under test.
+struct FailingOnBugs: Instrumentation {
+    /// Error-level events that only a mistake in the app's code produces.
+    static let bugs: Set<EventName> = ["operation.key_unread", "operation.key_ambiguous", "operation.backend_conflict"]
+
+    let events: RecordingInstrumentation
+
+    init(_ events: RecordingInstrumentation) {
+        self.events = events
+    }
+
+    func record(_ event: Event) {
+        events.record(event)
+        if event.level == .error, Self.bugs.contains(event.name) {
+            Issue.record(Comment(rawValue: "\(event.name) [\(event.label ?? "")] \(event.fields.map(\.description).joined(separator: " "))"))
+        }
+    }
 }
 
 /// Waits until every task Stoic started in the current test context has

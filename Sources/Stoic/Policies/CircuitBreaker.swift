@@ -220,6 +220,10 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     private let slowPPM: Int
     private let fileID: String
     private let line: UInt
+    /// Whether slow calls count. A declared operation's breaker has no
+    /// slow-call rule (design/22): its attempt timeout already counts as a
+    /// failure, and a `.long` transfer is slow by nature.
+    private let judgesSlowCalls: Bool
 
     // MARK: State
 
@@ -288,13 +292,18 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     ///     breaker where its owner is built.
     ///   - fileID: The call site, captured for events.
     ///   - line: The call site, captured for events.
-    public init(
+    public convenience init(
         label: String,
         _ configuration: Configuration = Configuration(),
         clock: AnyClock? = nil,
         fileID: String = #fileID,
         line: UInt = #line
     ) {
+        self.init(label: label, configuration: configuration, clock: clock, judgesSlowCalls: true, fileID: fileID, line: line)
+    }
+
+    /// A breaker, with or without a slow-call rule.
+    init(label: String, configuration: Configuration, clock: AnyClock?, judgesSlowCalls: Bool, fileID: String, line: UInt) {
         precondition(configuration.minimumCalls >= 1, "a breaker must see at least one call before judging")
         precondition(configuration.halfOpenProbes >= 1, "half-open needs at least one probe")
         precondition(configuration.slowCallDuration > .zero, "the slow-call duration must be positive")
@@ -323,6 +332,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         self.slowPPM = slowPPM
         self.fileID = fileID
         self.line = line
+        self.judgesSlowCalls = judgesSlowCalls
         self.core = Mutex(Core(window: window, closedAt: clock.now))
     }
 
@@ -369,6 +379,11 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         return snapshot
     }
 
+    /// How long a half-open probe may run before the breaker gives up on it.
+    var halfOpenTimeout: Duration {
+        configuration.halfOpenTimeout
+    }
+
     /// Every state the breaker enters, in order.
     ///
     /// Each access is its own stream. It does not replay the current state
@@ -412,22 +427,10 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             throw .rejected(refusal)
         }
         let random = ambient.random
-        let start = clock.now
-        let (admission, changes) = core.withLock { core -> (Admission, [Change]) in
-            let changes = refresh(&core, now: start, random: random)
-            return (admit(&core, now: start), changes)
-        }
-        finish(changes, to: instrumentation)
-
         let ticket: Ticket
-        switch admission {
-        case .run(let admitted):
-            ticket = admitted
-        case .reject(let rejection, let state):
-            var fields: [Event.Field] = [.init("state", .string(state.description), privacy: .public)]
-            if let retryAfter = rejection.retryAfter { fields.append(.init("retry_after", .duration(retryAfter))) }
-            record(Event("breaker.rejected", level: .debug, label: label, fields: fields), to: instrumentation)
-            throw .rejected(rejection)
+        switch admitCall(random: random, instrumentation: instrumentation) {
+        case .success(let admitted): ticket = admitted
+        case .failure(let rejection): throw .rejected(rejection)
         }
 
         // Inner queueing stages (a bulkhead, a rate limiter) mark when the
@@ -441,20 +444,12 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             }
         }
 
-        let end = clock.now
         // Cancelled by a deadline (an attempt timeout, or the caller's own),
         // the call ran out of time: the dependency did not answer within what
         // the caller could give it. Cancelled for any other reason (a user, a
         // superseding request, a scope ending), it says nothing.
         let cancellation: CancellationCause? = Task.isCancelled ? CancellationCause.current : nil
-        let verdict = judge(result, cancellation: cancellation)
-        // Building a debug event per call is most of a closed breaker's cost;
-        // skip it when nothing would record it.
-        let debug = instrumentation.isEnabled(.debug)
-        let completion = core.withLock { core -> [Change] in
-            complete(&core, ticket: ticket, verdict: verdict, start: start, now: end, random: random, debug: debug)
-        }
-        finish(completion, to: instrumentation)
+        complete(ticket, verdict: judge(result, cancellation: cancellation), random: random, instrumentation: instrumentation)
 
         switch result {
         case .success(let value): return value
@@ -497,13 +492,50 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         finish(changes)
     }
 
-    // MARK: Admission and completion (under the lock)
+    // MARK: Admission and completion
 
-    private struct Ticket: Sendable {
+    /// Admits one call, or says why not (reported as `breaker.rejected`).
+    /// Every admitted call is completed with ``complete(_:verdict:random:instrumentation:)``;
+    /// `execute` does both, and a declared operation's `perform`, which
+    /// judges its attempts itself (design/22, Breaker), calls them apart.
+    func admitCall(random: RandomSource, instrumentation: any Instrumentation) -> Result<Ticket, Rejection> {
+        let start = clock.now
+        let (admission, changes) = core.withLock { core -> (Admission, [Change]) in
+            let changes = refresh(&core, now: start, random: random)
+            return (admit(&core, now: start), changes)
+        }
+        finish(changes, to: instrumentation)
+        switch admission {
+        case .run(let ticket):
+            return .success(ticket)
+        case .reject(let rejection, let state):
+            var fields: [Event.Field] = [.init("state", .string(state.description), privacy: .public)]
+            if let retryAfter = rejection.retryAfter { fields.append(.init("retry_after", .duration(retryAfter))) }
+            record(Event("breaker.rejected", level: .debug, label: label, fields: fields), to: instrumentation)
+            return .failure(rejection)
+        }
+    }
+
+    /// Records what an admitted call says about the dependency.
+    func complete(_ ticket: Ticket, verdict: Verdict, random: RandomSource, instrumentation: any Instrumentation) {
+        let end = clock.now
+        // Building a debug event per call is most of a closed breaker's cost;
+        // skip it when nothing would record it.
+        let debug = instrumentation.isEnabled(.debug)
+        let completion = core.withLock { core -> [Change] in
+            self.complete(&core, ticket: ticket, verdict: verdict, start: ticket.start, now: end, random: random, debug: debug)
+        }
+        finish(completion, to: instrumentation)
+    }
+
+    /// An admitted call.
+    struct Ticket: Sendable {
         let generation: UInt64
         /// Names the call for an inner stage's dispatch mark.
         let call: UInt64
         let probe: UInt64?
+        /// When it was admitted.
+        let start: AnyClock.Instant
     }
 
     private enum Admission: Sendable {
@@ -511,8 +543,11 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         case reject(Rejection, State)
     }
 
-    private enum Verdict: Sendable {
+    /// What a finished call says about the dependency.
+    enum Verdict: Sendable {
+        /// Nothing: the reason is reported.
         case ignored(String)
+        /// A success or a failure; `timedOut` when a deadline cut it off.
         case recorded(failed: Bool, timedOut: Bool = false)
     }
 
@@ -549,7 +584,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         switch core.phase {
         case .closed:
             core.nextCall &+= 1
-            return .run(Ticket(generation: core.generation, call: core.nextCall, probe: nil))
+            return .run(Ticket(generation: core.generation, call: core.nextCall, probe: nil, start: now))
         case .open(let until):
             let retryAfter = until.map { max(.zero, now.duration(to: $0)) }
             return .reject(Rejection(.circuitOpen, label: label, retryAfter: retryAfter), .open)
@@ -561,7 +596,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             core.nextProbe += 1
             core.inFlight[id] = now
             core.nextCall &+= 1
-            return .run(Ticket(generation: core.generation, call: core.nextCall, probe: id))
+            return .run(Ticket(generation: core.generation, call: core.nextCall, probe: id, start: now))
         }
     }
 
@@ -613,7 +648,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             )]
 
         case .recorded(let failed, let timedOut):
-            let slow = timedOut || (dispatched ?? start).duration(to: now) > configuration.slowCallDuration
+            let slow = judgesSlowCalls && (timedOut || (dispatched ?? start).duration(to: now) > configuration.slowCallDuration)
             var recorded: [Change] = []
             if debug {
                 var fields: [Event.Field] = [

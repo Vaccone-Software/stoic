@@ -46,7 +46,11 @@ extension Error {
     /// The wrappers are the ones Stoic adds on the way out: ``PolicyError``
     /// layers (a stage inside a pipeline sees its inner stages' errors
     /// wrapped), a ``Report`` (`withContext` adds one), and a
-    /// ``ConcurrentFailure`` (its primary failure stands for it). Everything
+    /// ``ConcurrentFailure`` (its primary failure stands for it). An
+    /// ``OperationError`` is looked through only when nothing reached the
+    /// backend, or when it made one attempt for an enclosing `perform` on the
+    /// same backend; otherwise it stands for itself, so its own decision
+    /// (stop: the operation already retried) is what a classifier sees. Everything
     /// that classifies an error — a breaker's `recordWhen`, a `Retrying`
     /// stage's classifier, the standard retry classifier — looks at this, so
     /// a policy decides the same way alone, in a pipeline, or around code
@@ -62,6 +66,12 @@ extension Error {
                 current = inner
             } else if let concurrent = current as? any PrimaryFailureCarrying {
                 current = concurrent.primaryFailure
+            } else if let operation = current as? any OperationErrorCarrying,
+                operation.carriedNothingExecuted || operation.carriedDefersToEnclosing
+            {
+                if let rejection = operation.carriedRejection { return rejection }
+                guard let last = operation.carriedLast else { return current }
+                current = last
             } else {
                 return current
             }

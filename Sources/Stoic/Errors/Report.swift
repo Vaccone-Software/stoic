@@ -276,5 +276,9 @@ func firstError<E: Error>(of type: E.Type, in error: any Error) -> E? {
             if let match = firstError(of: type, in: failure) { return match }
         }
     }
+    if let operation = error as? any OperationErrorCarrying {
+        if let rejection = operation.carriedRejection, let match = rejection as? E { return match }
+        if let last = operation.carriedLast { return firstError(of: type, in: last) }
+    }
     return nil
 }

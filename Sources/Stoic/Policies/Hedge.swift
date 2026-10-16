@@ -90,6 +90,9 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
         var running = 0
         var winner: (attempt: Int, value: R)?
         var failures: [Failure] = []
+        // A declared operation inside an attempt gave up and settled it: no
+        // copy of the operation starts after that (design/22).
+        var settled = false
 
         func startAttempt() {
             started += 1
@@ -136,6 +139,15 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
                     group.cancelAll()
                 case .failure(let failure):
                     failures.append(failure)
+                    if !settled, identity.isSettled(attempt: number) {
+                        settled = true
+                        identity.settleEnclosingAttempt()
+                        report("retry.stopped", [
+                            .init("attempt", .int(number)),
+                            .init("error", .error(failure)),
+                            .init("reason", .string("inner_settled"), privacy: .public),
+                        ])
+                    }
                     report("hedge.attempt_failed", [
                         .init("attempt", .int(number)),
                         .init("running", .int(running)),
@@ -149,7 +161,7 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
                 }
 
             case .tick:
-                guard winner == nil, running > 0, started < maxAttempts else { break }
+                guard winner == nil, !settled, running > 0, started < maxAttempts else { break }
                 // Retry's rule: no attempt that could not finish in time. No
                 // attempt has finished yet, so one takes at least as long as
                 // the first has been running.

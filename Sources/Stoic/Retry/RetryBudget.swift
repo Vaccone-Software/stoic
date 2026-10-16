@@ -95,6 +95,15 @@ public final class RetryBudgets: Sendable {
     private struct State {
         var budgets: [Key: BudgetStorage] = [:]
         var order: [Key] = []
+        // Names a backend's state owns (design/22, Budget): never forgotten
+        // while it does, so a hand-written `.named` retry and the backend
+        // cannot end up with two budgets.
+        var held: [String: Int] = [:]
+
+        func isHeld(_ key: Key) -> Bool {
+            if case .name(let name) = key { return held[name] != nil }
+            return false
+        }
     }
 
     private let state = Mutex(State())
@@ -118,13 +127,30 @@ public final class RetryBudgets: Sendable {
             let created = BudgetStorage(settings: defaults)
             state.budgets[key] = created
             state.order.append(key)
-            if state.order.count > Self.limit {
-                state.budgets[state.order.removeFirst()] = nil
+            if state.order.count > Self.limit, let oldest = state.order.firstIndex(where: { !state.isHeld($0) }) {
+                state.budgets[state.order.remove(at: oldest)] = nil
             }
             return created
         }
     }
+
+    /// The budget called `name`, held for a backend's state until
+    /// ``release(name:)``: the registry does not forget it meanwhile.
+    func hold(name: String) -> BudgetStorage {
+        let storage = storage(for: .name(name))
+        state.withLock { $0.held[name, default: 0] += 1 }
+        return storage
+    }
+
+    /// Lets the registry forget `name` again, once nothing holds it.
+    func release(name: String) {
+        state.withLock { state in
+            guard let count = state.held[name] else { return }
+            state.held[name] = count > 1 ? count - 1 : nil
+        }
+    }
 }
+
 
 /// The shared token state behind a ``RetryBudget``, in thousandths of a token.
 final class BudgetStorage: Sendable {
@@ -177,15 +203,18 @@ final class BudgetStorage: Sendable {
         case reserve
     }
 
-    /// Spends a token for one retry, if there is one.
-    func withdraw(clock: AnyClock) -> Token? {
+    /// Spends a token for one retry, if there is one. With
+    /// `sparingReserve`, the last half of the reserve is not spent: work
+    /// nobody waits for must leave a person's retry its token (design/22).
+    func withdraw(clock: AnyClock, sparingReserve: Bool = false) -> Token? {
         state.withLock { state in
             refill(&state, clock: clock)
             if state.earned >= 1000 {
                 state.earned -= 1000
                 return .earned
             }
-            if state.reserve >= 1000 {
+            let floor = sparingReserve ? settings.reserveCapacity / 2 : 0
+            if state.reserve - 1000 >= floor {
                 state.reserve -= 1000
                 return .reserve
             }

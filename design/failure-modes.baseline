@@ -1,43 +1,6 @@
 # Failure-mode rows not yet proved by a test marked .failureMode(document, row).
 # This list may only shrink: FailureModeCoverageTests fails when a row here gains a test.
 design/13 | a target has no Swift sources
-design/22 | a .keyed operation is given a key
-design/22 | a .keyed operation is repeated
-design/22 | a .keyed operation's drawn key is never read and it fails transiently
-design/22 | a .long operation is slow
-design/22 | a .notRepeatable operation fails after reaching the backend
-design/22 | a .notRepeatable operation fails before reaching the backend
-design/22 | a keyed attempt reaches the backend and times out, and the schedule ends
-design/22 | a keyed attempt's connection is lost after sending
 design/22 | a keyed perform runs inside an outbox delivery
-design/22 | a keyed perform without a key runs in a child task of an enclosing attempt
-design/22 | a keyed perform's derived key after an app update and relaunch
 design/22 | a keyed request's retry is answered 409 or 425
-design/22 | a local or compute operation hangs with no caller deadline
-design/22 | a plain retry runs inside perform's operation
-design/22 | a remote backend answers 404 (a permanent failure)
-design/22 | a slot frees while an interactive and a background call wait
-design/22 | a test opens a breaker
-design/22 | a window full of slow .long calls
 design/22 | an HTTPClient call runs inside a perform attempt
-design/22 | an OperationError is caught by a retry that missed the settled mark
-design/22 | an enclosing attempt's timeout cuts a .notRepeatable perform off after it reached the backend
-design/22 | an enclosing attempt's timeout cuts a .readOnly perform off
-design/22 | background work fills the backend
-design/22 | more than 4 × capacity calls of one urgency wait
-design/22 | perform is called inside another retry's attempt
-design/22 | perform runs inside a perform on the same backend
-design/22 | perform throws inside another retry's attempt
-design/22 | the breaker is open and the call is background
-design/22 | the breaker is open and the call is interactive
-design/22 | the caller is cancelled during a backoff
-design/22 | the caller is cancelled during a brief keyed attempt
-design/22 | the caller set a deadline
-design/22 | the caller set no deadline
-design/22 | the device is offline (neverReachedBackend)
-design/22 | the device is under thermal pressure
-design/22 | the operation's ceiling is below the caller's urgency
-design/22 | two backends share a name with different kinds, even in different tests
-design/22 | two keyed performs run at one site in a loop inside one enclosing attempt
-design/22 | two writes to a local backend run at once
-design/22 | userInitiated and background calls together fill what they may

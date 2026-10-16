@@ -29,6 +29,11 @@ public struct Ambient: Sendable {
     /// The shared retry budgets: per call site and named.
     public var budgets: RetryBudgets
 
+    /// The state of every declared backend: breakers, bulkheads and their
+    /// budgets (design/22). A test installs a fresh one, so it starts with
+    /// closed breakers and cannot drain another test's capacity.
+    public var backends: BackendRegistry
+
     /// What the device is going through; backoff stretches with it.
     public var conditions: any SystemConditionsSource
 
@@ -57,6 +62,7 @@ public struct Ambient: Sendable {
         random: RandomSource = .system,
         instrumentation: any Instrumentation = platformDefaultInstrumentation(),
         budgets: RetryBudgets = .shared,
+        backends: BackendRegistry = .shared,
         conditions: any SystemConditionsSource = FixedConditions()
     ) {
         self.clock = clock
@@ -64,6 +70,7 @@ public struct Ambient: Sendable {
         self.random = random
         self.instrumentation = instrumentation
         self.budgets = budgets
+        self.backends = backends
         self.conditions = conditions
     }
 

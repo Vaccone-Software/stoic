@@ -246,7 +246,7 @@ public struct Retrying: Policy {
             return .rejected(Rejection(.deadlineExceeded, label: label, retryAfter: needed))
         case .budgetExhausted:
             return .rejected(Rejection(.budgetExhausted, label: label))
-        case .nested, .permanent, .exhausted, .breakerOpen:
+        case .nested, .permanent, .exhausted, .breakerOpen, .innerSettled:
             return .failed(stop.lastError)
         }
     }
