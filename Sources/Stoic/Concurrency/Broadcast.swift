@@ -90,7 +90,13 @@ public final class Broadcast<Element: Sendable>: Sendable {
     /// Returns once each has buffered it (or dropped it, by its policy). A
     /// subscriber that ends while the publish waits for it is skipped.
     ///
-    /// - Throws: A ``Rejection``: `.closed` after ``finish()``; `.cancelled`
+    /// Concurrent publishes are not ordered with each other: two subscribers
+    /// may see two concurrently published elements in different orders.
+    /// Publish from one task when every subscriber must see one order.
+    ///
+    /// - Throws: A ``Rejection``: `.closed` after ``finish()``, or when it
+    ///   ends the broadcast while this publish is under way and some
+    ///   subscriber has not got the element; `.cancelled`
     ///   or `.deadlineExceeded` if a wait for a ``Buffer/suspend(_:)``
     ///   subscriber was cut short. Subscribers earlier in the order already
     ///   have the element.
@@ -99,13 +105,19 @@ public final class Broadcast<Element: Sendable>: Sendable {
             if state.finished { throw Rejection(.closed, label: label) }
             return state.subscribers.valuesInKeyOrder
         }
+        var missed = false
         for channel in channels {
             do throws(Rejection) {
                 try await channel.send(element)
             } catch {
                 if error.reason != .closed { throw error }
+                missed = true
             }
         }
+        // A subscriber that left is skipped. One that `finish()` ended while
+        // this publish was under way missed the element, and the publisher
+        // must not believe it was delivered.
+        if missed, state.withLock({ $0.finished }) { throw Rejection(.closed, label: label) }
     }
 
     /// Ends the broadcast: no more publishes, and every subscription ends

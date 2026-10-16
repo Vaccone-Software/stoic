@@ -123,6 +123,13 @@ sees `nil`) after `finish()` and its drained buffer, when its consuming task
 is cancelled, after `cancel()`, or when it is dropped, and in each case leaves
 the broadcast at once, so a vanished subscriber can neither hold up a
 publisher nor grow without bound. Drops reuse `Channel`'s counting and event.
+A publish that `finish()` cuts short throws `.closed`: the subscribers it had
+not reached did not get the element. Concurrent publishers have no order
+across subscribers: each subscriber sees each publisher's elements in the order
+that publisher sent them, but two subscribers may interleave two publishers
+differently. Publishes are not serialised to give one order (a slow `suspend`
+subscriber would then hold every publisher); publish from one task when every
+subscriber must see the same order.
 
 ## Failure modes
 
@@ -158,6 +165,7 @@ publisher nor grow without bound. Drops reuse `Channel`'s counting and event.
 | a `dropNewest` subscriber's buffer is full                    | The new element is not delivered to it; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                           |
 | a `suspend` subscriber's buffer is full                       | The publish waits, in subscription order, until it takes an element; later subscribers get the element after it                                        |
 | a `suspend` subscriber ends while a publish waits for it      | The publish is released, skips that subscriber and goes on with the rest                                                                               |
+| `finish()` is called while a publish waits for a subscriber   | The publish throws `.closed`: the subscriber it waited for, and any `finish()` ended before the publish reached it, did not get the element            |
 | the publisher is cancelled while it waits for a subscriber    | `.rejected(.cancelled)` (`.deadlineExceeded` for a deadline); subscribers earlier in the order have the element, later ones do not                     |
 | a subscriber's task is cancelled                              | Its loop ends and the subscriber is removed from the broadcast at once                                                                                 |
 | a subscription is dropped without being iterated              | It is removed from the broadcast; nothing is buffered for it afterwards                                                                                |

@@ -66,6 +66,23 @@ struct BroadcastTests {
         #expect(broadcast.subscriberCount == 1)
     }
 
+    @Test(.stoic(seed: 69), .timeLimit(.minutes(1)), .failureMode("design/20", "`finish()` is called while a publish waits for a subscriber"))
+    func aPublishThatFinishCutsShortThrowsClosed() async throws {
+        let broadcast = Broadcast<Int>(label: "cut-short")
+        let slow = broadcast.subscribe(.suspend(1))
+        let after = broadcast.subscribe(.dropOldest(10))
+        try await broadcast.publish(1)
+        let publisher = Task { () -> Rejection? in
+            do throws(Rejection) { try await broadcast.publish(2); return nil } catch { return error }
+        }
+        #expect(await holdsThroughout { after.bufferedCount == 1 })   // held up at `slow`
+        broadcast.finish()
+        // `slow` never got it. (Whether `after` did depends on whether the
+        // released publish reaches it before `finish()` does.)
+        #expect(await publisher.value?.reason == .closed, "previously returned as if delivered")
+        #expect(slow.bufferedCount == 1)
+    }
+
     @Test(.stoic(seed: 65), .timeLimit(.minutes(1)), .failureMode("design/20", "the publisher is cancelled while it waits for a subscriber"))
     func aCancelledPublishHasReachedOnlyTheEarlierSubscribers() async throws {
         let broadcast = Broadcast<Int>(label: "cancelled")
