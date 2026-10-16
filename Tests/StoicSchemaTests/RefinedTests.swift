@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -11,6 +12,23 @@ enum ScrollSpeedRule: Refinement {
     static var constraints: [Constraint] { [.range(0.1...10), .finite] }
 }
 typealias ScrollSpeed = Refined<ScrollSpeedRule>
+
+enum Animal: Sendable, Equatable {
+    case cat
+    case other(String)
+}
+
+/// A refinement over an open enumeration, whose unknown case reads back with
+/// a warning.
+enum OpenAnimalRule: Refinement {
+    typealias Base = Animal
+    static var constraints: [Constraint] { [] }
+    static var baseSchema: Schema<Animal> {
+        .openEnumeration(
+            Animal.self, cases: ["cat"], read: { $0 == "cat" ? .cat : .other($0) },
+            write: { if case .other(let name) = $0 { name } else { "cat" } })
+    }
+}
 
 enum PositiveRule: Refinement {
     typealias Base = Double
@@ -230,6 +248,27 @@ struct RefinedSchemaTests {
     @Test func aPrecisionLossInTheBaseIsStillReported() {
         let result = ScrollSpeed.schema.decodeReporting("9007199254740993")
         #expect(result.issues.map(\.code) == [.precisionLoss])
+    }
+
+    @Test(.failureMode("design/06", "a number rounds, as a `Double`, across one of its constraints"))
+    func aRefinedIsNeverDecodedHoldingAValueItsInitialiserRefuses() throws {
+        // Below 1 as written; 1.0 as a Double, which `.lessThan(1)` refuses.
+        let result = Refined<PositiveRule>.schema.decodeReporting("0.99999999999999999999")
+        #expect(result.value == nil)
+        #expect(result.issues.map(\.code) == [.precisionLoss])
+        #expect(throws: ValidationFailure.self) { try Refined<PositiveRule>(1) }
+        // Whatever does decode, the initialiser accepts.
+        for text in ["0.5", "0.9999999999999999", "0.00000000000000000001", "1e-320", "0.30000000000000000001"] {
+            let decoded = try #require(Refined<PositiveRule>.schema.decodeReporting(text).value, "\(text)")
+            #expect(try Refined<PositiveRule>(decoded.value) == decoded, "\(text)")
+        }
+    }
+
+    @Test func aWarningFromTheBaseDoesNotRefuseAValue() throws {
+        // An open enumeration reads an unknown case with a warning, and its
+        // encoding back reads the same way; the value is still valid.
+        let refined = try Refined<OpenAnimalRule>(.other("zebra"))
+        #expect(refined.value == .other("zebra"))
     }
 
     @Test func refinedStringsReportAtTheirPath() {

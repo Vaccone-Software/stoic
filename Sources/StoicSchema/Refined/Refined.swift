@@ -31,7 +31,9 @@ public struct Refined<R: Refinement>: Sendable {
     ///
     /// The value is turned into JSON first and the constraints run on that,
     /// which is the form every consumer of the constraints sees: one rule,
-    /// one interpretation.
+    /// one interpretation. Only errors refuse a value: a base that reads its
+    /// own encoding with a warning (an open enumeration's unknown case) is
+    /// still valid.
     static func issues(in raw: R.Base) -> [Issue] {
         var encoding = EncodeState(style: .full)
         let json = R.baseSchema.encoder(raw, &encoding) ?? .null
@@ -39,7 +41,7 @@ public struct Refined<R: Refinement>: Sendable {
         var state = DecodeState(options: .strict)
         _ = R.baseSchema.decoder(json, &state)
         _ = state.apply(R.constraints, to: json)
-        return state.issues
+        return state.issues.filter { $0.severity == .error }
     }
 }
 
@@ -150,6 +152,14 @@ extension Schema {
             decoder: { json, state in
                 guard let base = R.baseSchema.decoder(json, &state) else { return nil }
                 guard state.apply(R.constraints, to: json) else { return nil }
+                // The base may have changed what was sent (a Double rounds), and
+                // the value carried is the one ``init(_:)`` must accept.
+                var encoding = EncodeState(style: .full)
+                if let received = R.baseSchema.encoder(base, &encoding),
+                    !state.received(received, from: json, keeps: R.constraints)
+                {
+                    return nil
+                }
                 return Refined(trusted: base)
             },
             encoder: { refined, state in R.baseSchema.encoder(refined.value, &state) },

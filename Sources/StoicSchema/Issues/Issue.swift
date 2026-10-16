@@ -150,6 +150,12 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let first = parameters["firstIndex"]?.number?.lexeme ?? "an earlier index"
             return "duplicates the element at index \(first)"
         case .precisionLoss:
+            if let constraint = parameters["constraint"]?.string {
+                guard let received = parameters["received"] else {
+                    return "\(value) is read as a value that is not \(constraint)"
+                }
+                return "\(value) is read as \(received.briefDescription), which is not \(constraint)"
+            }
             return "\(value) cannot be held exactly by a Double (integers above 2^53 lose digits)"
         case .notFinite:
             return "\(value) is not a finite Double"

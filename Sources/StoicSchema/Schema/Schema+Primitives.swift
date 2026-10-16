@@ -107,6 +107,11 @@ extension Schema where Value == Double {
     /// `precision_loss`: `9007199254740993` would read back as
     /// `9007199254740992`, and a validator that lets that pass has changed
     /// the sender's number. Use ``int64(_:)`` for identifiers.
+    ///
+    /// The constraints hold for the `Double` returned, not only for the
+    /// digits sent: a number that rounds across one of them
+    /// (`9.99999999999999999999` under `.lessThan(10)` is `10.0`) is
+    /// `precision_loss` too.
     public static func double(_ constraints: Constraint...) -> Schema<Double> {
         Schema<Double>(
             node: .number(constraints: constraints),
@@ -128,6 +133,13 @@ extension Schema where Value == Double {
                     return nil
                 }
                 guard state.apply(constraints, to: json) else { return nil }
+                // Up to fifteen significant digits survive a Double unchanged,
+                // so only a longer lexeme can have been rounded across a bound.
+                if !constraints.isEmpty, number.lexeme.utf8.count > 15, let received = JSONNumber(value),
+                    !state.received(.number(received), from: json, keeps: constraints)
+                {
+                    return nil
+                }
                 return value
             },
             encoder: { value, state in

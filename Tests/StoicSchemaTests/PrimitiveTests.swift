@@ -178,6 +178,46 @@ struct DoubleSchemaTests {
         #expect(decode(.double(), "4611686018427387904").value == 4_611_686_018_427_387_904)
     }
 
+    @Test(.failureMode("design/06", "a number rounds, as a `Double`, across one of its constraints"))
+    func aNumberThatRoundsAcrossABoundIsPrecisionLoss() {
+        // The digits are below 10; the Double they make is 10.0.
+        let result = decode(.double(.lessThan(10)), "9.99999999999999999999")
+        #expect(result.value == nil)
+        #expect(result.issues.map(\.code) == [.precisionLoss])
+        #expect(result.issues[0].message == "9.99999999999999999999 is read as 10, which is not a number that is less than 10")
+        #expect(decode(.double(.lessThan(10)), "9.999999999999998").value == 9.999999999999998)
+        // Rounding onto an inclusive bound stays inside it.
+        #expect(decode(.double(.range(0...1)), "0.99999999999999999999").value == 1)
+        #expect(decode(.double(.greaterThan(0)), "1e-320").value == 1e-320)
+    }
+
+    @Test func whateverADoubleFieldReturnsItsSchemaValidates() {
+        // Near every kind of bound, from both sides, with too many digits.
+        let schemas: [Schema<Double>] = [
+            .double(.lessThan(10)), .double(.greaterThan(-1)), .double(.range(0...1)),
+            .double(.range(0.1...0.3), .multipleOf(0.1)), .double(.lessThan(1e-300)),
+        ]
+        var texts = [
+            "9.99999999999999999999", "10.00000000000000000001", "-0.99999999999999999999",
+            "-1.00000000000000000001", "0.99999999999999999999", "1.00000000000000000001",
+            "0.09999999999999999999", "0.10000000000000000001", "0.29999999999999999999",
+            "0.30000000000000000001", "9.99999999999999999999e-301", "1.00000000000000000001e-300",
+        ]
+        var random = SeededGenerator(seed: 0xB0D)
+        for _ in 0..<200 {
+            let nines = String(repeating: "9", count: Int.random(in: 14...24, using: &random))
+            let sign = Bool.random(using: &random) ? "-" : ""
+            texts.append("\(sign)0.\(nines)e\(Int.random(in: -1...2, using: &random))")
+            texts.append("\(sign)1.\(String(repeating: "0", count: Int.random(in: 14...24, using: &random)))1e\(Int.random(in: -2...1, using: &random))")
+        }
+        for schema in schemas {
+            for text in texts {
+                guard let value = decode(schema, text).value else { continue }
+                #expect(schema.validate(value).isEmpty, "\(text) gave \(value)")
+            }
+        }
+    }
+
     @Test func ordinaryDecimalsAreNotPrecisionLoss() {
         #expect(decode(.double(), "0.30000000000000004").value == 0.30000000000000004)
         #expect(decode(.double(), "3.14159265358979323846").value != nil)

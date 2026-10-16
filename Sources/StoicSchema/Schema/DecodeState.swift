@@ -158,6 +158,24 @@ struct DecodeState {
         return violations.isEmpty
     }
 
+    /// Whether `constraints`, which `input` satisfied, also hold for
+    /// `received`: the JSON of the value a conversion made from `input`.
+    /// Records `precision_loss` if not.
+    ///
+    /// Constraints are checked on what was sent, and a conversion can change
+    /// it: `9.99999999999999999999` satisfies `.lessThan(10)` and is the
+    /// `Double` `10.0`, which does not. The caller is handed the converted
+    /// value, so it is the one that must be valid; a `Refined` built from it
+    /// must be one its own initialiser would accept.
+    mutating func received(_ received: JSONValue, from input: JSONValue, keeps constraints: [Constraint]) -> Bool {
+        guard !constraints.isEmpty, received != input else { return true }
+        guard let broken = checker.violations(of: constraints, in: received).first else { return true }
+        var parameters: JSONObject = ["constraint": .string(broken.expected)]
+        if secretDepth == 0 { parameters["received"] = received }
+        report(.precisionLoss, parameters: parameters, expected: broken.expected, actual: input.briefDescription)
+        return false
+    }
+
     /// The bytes of the text at `path`, or of the nearest enclosing text that
     /// exists: a missing key has no range of its own, but the object that
     /// lacks it does.

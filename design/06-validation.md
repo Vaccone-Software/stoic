@@ -155,7 +155,12 @@ output is StoicJSON's canonical encoding.
 or in sparse output unless asked for.
 
 **Numbers.** A JSON integer above 2^53 aimed at a `Double` field is an
-issue (`precision_loss`), not a silent rounding. `1.0` for an `Int` field is
+issue (`precision_loss`), not a silent rounding. So is any number whose
+`Double` breaks a constraint its digits kept: `9.99999999999999999999`
+satisfies `.lessThan(10)` and is `10.0`, which does not. **Constraints hold
+for the value the caller receives**, not only for the text that was sent:
+after a conversion that can change a value (a `Double`, a refinement's base)
+they are checked again on what it produced. `1.0` for an `Int` field is
 accepted only under `.lenient`. NaN and infinities do not exist in JSON and
 cannot be produced, and neither can a number outside a `Double`'s range:
 StoicJSON refuses `1e400` (and `1e-400`, which would round to zero) in text
@@ -210,6 +215,7 @@ schema and throws one `DecodingError` listing every issue.
 | a number is out of range under `.strict`     | `out_of_range` error with the bounds                                      |
 | the same under `.lenient`                    | Default used; `repaired` issue saying so                                  |
 | an integer exceeds 2^53 for a `Double` field | `precision_loss` error                                                    |
+| a number rounds, as a `Double`, across one of its constraints | `precision_loss` naming the constraint and the value it became; no value, so a `Refined` is never decoded holding a value its own initialiser refuses |
 | a secret field is invalid                    | Issue without `actual`                                                    |
 | the input has duplicate keys                 | Rejected by StoicJSON with both locations                                 |
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
