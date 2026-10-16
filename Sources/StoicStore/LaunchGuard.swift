@@ -1,4 +1,5 @@
 internal import Stoic
+internal import Synchronization
 
 #if canImport(Darwin)
 internal import Darwin
@@ -16,7 +17,7 @@ internal import Glibc
 /// circuit breaker for the process itself:
 ///
 ///     let guard = LaunchGuard(path: support + "/launch-guard")
-///     switch try guard.beginLaunch() {
+///     switch guard.beginLaunch() {
 ///     case .normal: startEverything()
 ///     case .safeMode(let unclean):
 ///         // Skip optional services, quarantine caches and the last migration,
@@ -49,6 +50,11 @@ internal import Glibc
 ///
 /// Anything else that ends a launch before it is marked stable — a crash,
 /// a watchdog kill, a jetsam while in the foreground — counts.
+///
+/// Safe to call from any thread: `markStable(after:)` writes from its own
+/// task while the app calls `markBackgrounded()` from the main thread, and
+/// every call reads, decides and writes under one lock, so none of them races
+/// another on the state file or undoes another's write.
 public final class LaunchGuard: Sendable {
     /// What the launch should do.
     public enum Verdict: Sendable, Hashable {
@@ -64,6 +70,9 @@ public final class LaunchGuard: Sendable {
     /// Identifies this boot of the device; an unfinished launch from another boot is not counted.
     public let bootSession: String?
     private let file: AtomicFile
+    /// Serialises every read-decide-write of the state file. `AtomicFile`
+    /// assumes one writer per path; this is that writer.
+    private let lock = Mutex(())
 
     /// - Parameters:
     ///   - path: Where the state is kept.
@@ -159,58 +168,77 @@ public final class LaunchGuard: Sendable {
     /// Records that a launch has begun and judges the launches before it.
     /// Call it first, before anything that could crash.
     ///
-    /// An unreadable state file counts as no history: the guard must never
-    /// itself be the reason an app cannot start.
-    public func beginLaunch() throws(StoreError) -> Verdict {
-        let previous: Record?
-        do {
-            previous = try file.read(path).flatMap { Record($0.bytes) }
-        } catch {
-            previous = nil
-        }
-        var unclean = previous?.unclean ?? 0
-        if let previous, let build, let before = previous.build, before != build {
-            // A new build: what went wrong with the last one is not evidence about this one.
-            unclean = 0
-            Ambient.current.instrumentation.record(Event("launch.interrupted", level: .info, fields: [
-                .init("reason", .string("new_build"), privacy: .public),
-            ]))
-        } else if previous?.inProgress == true {
-            if let bootSession, let before = previous?.bootSession, before != bootSession {
-                // The device restarted under the previous launch: not a crash.
-                Ambient.current.instrumentation.record(Event("launch.interrupted", level: .info, fields: [
-                    .init("reason", .string("restart"), privacy: .public),
-                    .init("unclean", .int(unclean)),
-                ]))
-            } else {
-                unclean += 1
-                Ambient.current.instrumentation.record(Event("launch.unclean_detected", level: .warning, fields: [.init("unclean", .int(unclean))]))
+    /// It never throws: the guard must never itself be the reason an app
+    /// cannot start. An unreadable state file counts as no history, and a
+    /// launch that cannot be recorded (a full or read-only disk) is reported
+    /// as `launch.record_failed` and judged on the history that could be read.
+    /// Not throwing loses nothing: the file is the same either way, and so is
+    /// this launch's verdict; the one consequence, that the next launch will
+    /// not count this one, is what the event reports.
+    public func beginLaunch() -> Verdict {
+        var events: [Event] = []
+        let unclean = lock.withLock { _ -> Int in
+            let previous: Record?
+            do {
+                previous = try file.read(path).flatMap { Record($0.bytes) }
+            } catch {
+                previous = nil
             }
+            var unclean = previous?.unclean ?? 0
+            if let previous, let build, let before = previous.build, before != build {
+                // A new build: what went wrong with the last one is not evidence about this one.
+                unclean = 0
+                events.append(Event("launch.interrupted", level: .info, fields: [
+                    .init("reason", .string("new_build"), privacy: .public),
+                ]))
+            } else if previous?.inProgress == true {
+                if let bootSession, let before = previous?.bootSession, before != bootSession {
+                    // The device restarted under the previous launch: not a crash.
+                    events.append(Event("launch.interrupted", level: .info, fields: [
+                        .init("reason", .string("restart"), privacy: .public),
+                        .init("unclean", .int(unclean)),
+                    ]))
+                } else {
+                    unclean += 1
+                    events.append(Event("launch.unclean_detected", level: .warning, fields: [.init("unclean", .int(unclean))]))
+                }
+            }
+            do throws(StoreError) {
+                try file.write(record(inProgress: true, unclean: unclean), to: path)
+            } catch {
+                events.append(Event("launch.record_failed", level: .error, fields: [.init("error", .error(error))]))
+            }
+            return unclean
         }
-        try file.write(record(inProgress: true, unclean: unclean), to: path)
         if unclean >= uncleanLimit {
-            Ambient.current.instrumentation.record(Event("launch.safe_mode", level: .error, fields: [
+            events.append(Event("launch.safe_mode", level: .error, fields: [
                 .init("unclean", .int(unclean)),
                 .init("limit", .int(uncleanLimit)),
             ]))
-            return .safeMode(uncleanLaunches: unclean)
         }
-        return .normal
+        for event in events { Ambient.current.instrumentation.record(event) }
+        return unclean >= uncleanLimit ? .safeMode(uncleanLaunches: unclean) : .normal
     }
 
     /// Records that this launch survived: the unclean count starts over.
     public func markStable() throws(StoreError) {
-        try file.write(record(inProgress: false, unclean: 0), to: path)
+        try lock.withLock { _ throws(StoreError) in
+            try file.write(record(inProgress: false, unclean: 0), to: path)
+        }
         Ambient.current.instrumentation.record(Event("launch.stable", level: .info))
     }
 
-    /// Marks the launch stable once it has run for `duration` on the ambient
-    /// clock. Returns the task, which an app may cancel if it starts to fail.
+    /// Marks the launch stable once it has *run* for `duration`, measured on
+    /// the ambient liveness clock (a suspending clock), so time the device
+    /// spent asleep does not count: a launch that slept through its 30 s has
+    /// proved nothing (DESIGN.md, the two clocks). Returns the task, which an
+    /// app may cancel if it starts to fail.
     @discardableResult
     public func markStable(after duration: Duration) -> Task<Void, Never> {
         Task.stoic {
             do {
-                try await Ambient.sleep(for: duration)
+                let clock = Ambient.current.livenessClock
+                try await clock.sleep(until: clock.now.advanced(by: duration), tolerance: nil)
                 try self.markStable()
             } catch {  // stoic:allow(swallowed-error): unconfirmed is the safe outcome (below)
                 // Cancelled, or the write failed: the launch stays unconfirmed,
@@ -221,7 +249,9 @@ public final class LaunchGuard: Sendable {
 
     /// Records a deliberate, clean exit (the user quit): not a crash.
     public func markCleanExit() throws(StoreError) {
-        try file.write(record(inProgress: false, unclean: 0), to: path)
+        try lock.withLock { _ throws(StoreError) in
+            try file.write(record(inProgress: false, unclean: 0), to: path)
+        }
     }
 
     /// Records that the app went to the background before its launch was
@@ -231,18 +261,22 @@ public final class LaunchGuard: Sendable {
     /// does not reset the count either — it proved nothing about stability.
     /// Call it from the app's background transition.
     public func markBackgrounded() throws(StoreError) {
-        let current: Record?
-        do {
-            current = try file.read(path).flatMap { Record($0.bytes) }
-        } catch {
-            current = nil
+        let marked = try lock.withLock { _ throws(StoreError) -> Int? in
+            let current: Record?
+            do {
+                current = try file.read(path).flatMap { Record($0.bytes) }
+            } catch {
+                current = nil
+            }
+            // A launch already settled (stable, or a clean exit) stays settled.
+            guard let current, current.inProgress else { return nil }
+            try file.write(record(inProgress: false, unclean: current.unclean), to: path)
+            return current.unclean
         }
-        // A launch already settled (stable, or a clean exit) stays settled.
-        guard let current, current.inProgress else { return }
-        try file.write(record(inProgress: false, unclean: current.unclean), to: path)
+        guard let unclean = marked else { return }
         Ambient.current.instrumentation.record(Event("launch.interrupted", level: .info, fields: [
             .init("reason", .string("backgrounded"), privacy: .public),
-            .init("unclean", .int(current.unclean)),
+            .init("unclean", .int(unclean)),
         ]))
     }
 }

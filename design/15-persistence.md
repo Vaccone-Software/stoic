@@ -403,11 +403,22 @@ running (an update is the way out of a loop, so the count starts over). Each
 is reported as `launch.interrupted` with its reason. The state is one small
 file, versioned (`v1` files are still read).
 
+Every call reads, decides and writes under one lock: `markStable(after:)`
+writes from its own task while the app calls `markBackgrounded()` on the main
+thread, and `AtomicFile` assumes one writer per path. `beginLaunch()` never
+throws, because the guard must never be the reason an app cannot start: a
+launch it cannot record is reported (`launch.record_failed`) and judged on the
+history it could read; throwing would leave the same file and the same
+verdict. `markStable(after:)` measures its delay on the liveness clock
+(suspending): a launch that slept through it has not shown it is stable.
+
 | What happens if…                                      | Behaviour                                                                                   |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | the app is backgrounded before the launch is stable   | Not counted as unclean, not counted as stable; `launch.interrupted` (`backgrounded`)         |
 | the device restarts during a launch                   | The unfinished launch is not counted; `launch.interrupted` (`restart`)                       |
 | a different build launches after an unfinished one    | The count starts over; `launch.interrupted` (`new_build`)                                    |
+| two of its calls run at once                          | Serialised: each reads, decides and writes in turn; none fails or undoes another             |
+| the launch cannot be recorded                         | `beginLaunch` does not throw: the verdict comes from the history it read; `launch.record_failed`; the next launch does not count this one |
 
 ### Error classification (`StoreError.retryDecision`)
 

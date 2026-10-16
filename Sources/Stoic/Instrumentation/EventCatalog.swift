@@ -46,6 +46,7 @@ public enum EventCatalog {
         Entry(name: "http.response_too_large", level: .warning, meaning: "A response body passed the byte limit and the transfer was cancelled."),
         Entry(name: "http.retry", level: .info, meaning: "A request is being retried; reports the attempt number, the wait since the last attempt and why that one failed."),
         Entry(name: "launch.interrupted", level: .info, meaning: "A launch that never became stable was not counted as a crash: the app was backgrounded, the device restarted, or the build changed."),
+        Entry(name: "launch.record_failed", level: .error, meaning: "A launch could not be recorded in the launch guard's state file (a full or read-only disk): the launch goes on, judged on the history that could be read, and the next launch will not count this one."),
         Entry(name: "launch.safe_mode", level: .error, meaning: "Too many launches in a row did not finish; the app was told to start in safe mode."),
         Entry(name: "launch.stable", level: .info, meaning: "A launch was marked stable: the unclean-launch count starts over."),
         Entry(name: "launch.unclean_detected", level: .warning, meaning: "The previous launch never became stable and never exited cleanly."),
