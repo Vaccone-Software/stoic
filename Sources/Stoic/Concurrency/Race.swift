@@ -19,7 +19,9 @@ public struct Racer<R: Sendable, Failure: Error>: Sendable {
 /// return; give such work its own timeout.) If every operation fails, `race`
 /// throws the first failure, as the typed `throws(Failure)` leaves room for
 /// nothing else, and reports every failure it saw, in completion order, in a
-/// `race.all_failed` event (`first`, then `also_1`, `also_2`, …).
+/// `race.all_failed` event (`first`, then `also_1`, `also_2`, …). A cancelled
+/// caller cancels every racer; what they throw then passes through
+/// unreported, since cancellation is not a failure.
 ///
 ///     let mirror = try await race(
 ///         { try await download(from: primary) },
@@ -118,6 +120,9 @@ public nonisolated(nonsending) func race<R: Sendable, Failure: Error>(
         ], fileID: fileID, line: line))
         return outcome.value
     }
+    // A cancelled caller's racers end because it was cancelled, which is
+    // not every racer failing: the error passes through, unreported.
+    if Task.isCancelled { throw failures[0] }
     // The event is bounded: past a handful the extra errors are only counted.
     let others = failures.dropFirst().prefix(8).enumerated().map { offset, failure in
         Event.Field("also_\(offset + 1)", .error(failure))

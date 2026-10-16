@@ -84,8 +84,10 @@ rest are cancelled (`superseded`) and then awaited, so `race` never returns
 while a loser runs. If every operation fails, the first failure is thrown —
 passthrough, not a wrapper, because `throws(Failure)` has no room for a
 `ConcurrentFailure` — and every failure is reported in `race.all_failed`
-(`first`, then `also_1`, `also_2`, … in completion order, at most nine). The
-natural variadic spelling crashes the Swift 6.4 compiler at call sites (a
+(`first`, then `also_1`, `also_2`, … in completion order, at most nine). A
+cancelled caller cancels every racer; what they throw then passes through
+(`CancellationError` where `Failure` allows) and is not reported, since
+cancellation is not a failure. The natural variadic spelling crashes the Swift 6.4 compiler at call sites (a
 SILGen assertion), and array literals of closures are not inferred
 `@Sendable`, hence fixed arities and `Racer`.
 
@@ -174,6 +176,7 @@ that keeps the promise, and the lint rule against
 | a superseded `TaskSlot` task finishes after the new one  | Its result is dropped inside the slot; `slot.superseded_late` event                                                                                                                                              |
 | a `TaskSlot` task ignores cancellation forever           | Next `run` does not wait for it (it is not structured to the slot's caller); it stays in `unfinishedCount` and the task ledger, so `stoicTasksStillRunning` names it; if it ever returns, `slot.superseded_late` |
 | every racer fails                                        | The first failure is thrown; `race.all_failed` carries all of them, completion order                                                                                                                             |
+| the caller of a race is cancelled                        | Every racer is cancelled and awaited; the first racer's error passes through; no `race.all_failed`                                                                                                               |
 | a racer ignores cancellation after another won           | `race` waits for it (structured); give such work its own timeout                                                                                                                                                 |
 | the hedge budget is empty                                | No further hedges; the attempts already running continue                                                                                                                                                         |
 | `mapConcurrent` caller is cancelled                      | No further element starts; children cancelled and awaited; `CancellationError` if `Failure` allows, else the started (leading) results                                                                           |

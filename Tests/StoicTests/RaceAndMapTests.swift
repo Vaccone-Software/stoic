@@ -75,6 +75,26 @@ struct RaceAndMapTests {
         #expect(events.names.contains("race.all_failed"))
     }
 
+    @Test(.stoic(seed: 71), .timeLimit(.minutes(1)), .failureMode("design/03", "the caller of a race is cancelled"))
+    func aCancelledCallersRaceIsNotReportedAsFailed() async {
+        let started = SendableBox(0)
+        let racing = Task { () -> (any Error)? in
+            do {
+                _ = try await race(
+                    { () async throws -> Int in started.mutate { $0 += 1 }; try await Task.sleep(for: .seconds(60)); return 1 },
+                    { () async throws -> Int in started.mutate { $0 += 1 }; try await Task.sleep(for: .seconds(60)); return 2 }
+                )
+                return nil
+            } catch {
+                return error
+            }
+        }
+        await waitUntil { started.value == 2 }
+        racing.cancel()
+        #expect(await racing.value is CancellationError)
+        #expect(StoicTest.events.events(named: "race.all_failed").isEmpty, "previously a notice that every racer failed")
+    }
+
     @Test func raceReportsEveryFailureInTheEvent() async throws {
         let events = RecordingInstrumentation()
         let racers = (0..<3).map { index in
