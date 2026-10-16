@@ -257,7 +257,12 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   `maxConcurrentPerHost: nil`) for a client that wants neither.
 - **Per-host state** is keyed by host (and port, if the URL names one) and
   bounded at 256 hosts, least recently used forgotten first. Breakers measure time on the
-  ambient clock in force when a host is first used.
+  ambient clock in force when a host is first used. A host with a request in
+  flight (waiting for a permit or a slot included) is never forgotten: a
+  bulkhead made afresh while the old one still held slots would let a second
+  set of requests through, so the bound would not hold where it matters. The
+  table can exceed 256 only by hosts in use at that moment, and is trimmed
+  back as their requests end.
 - **Default headers** (`HTTPClient(headers:)`) go only to the base URL's origin.
   An absolute URL on another host never receives the app's token.
 - **Nested retries.** The client keeps Stoic's default, `nesting:

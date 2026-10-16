@@ -149,6 +149,11 @@ public final class HTTPClient: Sendable {
         refreshes.waiterCount(for: generation)
     }
 
+    /// The hosts whose policies the client keeps now.
+    var hostCount: Int {
+        hosts.withLock { $0.count }
+    }
+
     /// The breaker for `host` (as `host` or `host:port`), once the client has
     /// sent it a request; `nil` before then, or when the policy has none.
     public func breaker(forHost host: String) -> CircuitBreaker? {
@@ -328,7 +333,8 @@ public final class HTTPClient: Sendable {
 
     /// Runs one request through the policies of its host.
     private func execute(_ prepared: PreparedRequest, log: AttemptLog) async -> Outcome {
-        let host = hostState(for: prepared)
+        let host = leaseHost(for: prepared)
+        defer { hosts.withLock { $0.release(prepared.hostKey) } }
         let watcher = RetryWatcher(forwardingTo: Ambient.current.instrumentation, label: host.label)
         let policy = self.policy
         let safeToRepeat = prepared.safeToRepeat
@@ -507,27 +513,30 @@ public final class HTTPClient: Sendable {
 
     // MARK: Preparation
 
-    private func hostState(for prepared: PreparedRequest) -> HostState {
+    /// The policies of the request's host, held in the table until the caller
+    /// releases them, so that a host is never forgotten mid-request.
+    private func leaseHost(for prepared: PreparedRequest) -> HostState {
         let key = prepared.hostKey
         return hosts.withLock { table in
-            if let existing = table.use(key) { return existing }
-            let label = "\(self.label) \(key)"
-            let clock = Ambient.current.clock
-            let breaker = policy.breaker.map { configuration -> CircuitBreaker in
-                var configuration = configuration
-                configuration.recordWhen = { error in (error as? AttemptError)?.countsAgainstHost ?? false }
-                return CircuitBreaker(label: label, configuration, clock: clock)
-            }
-            let limiter = policy.rateLimit.map {
-                RateLimiter(rate: $0.rate, per: $0.interval, burst: $0.burst, queueLimit: $0.queueLimit, label: label, clock: clock)
-            }
-            let bulkhead = policy.maxConcurrentPerHost.map {
-                Bulkhead(maxConcurrent: $0, queueLimit: policy.queueLimitPerHost, label: label)
-            }
-            let created = HostState(label: label, breaker: breaker, limiter: limiter, bulkhead: bulkhead)
-            table.insert(created, for: key)
-            return created
+            table.lease(key) { makeHost(key) }
         }
+    }
+
+    private func makeHost(_ key: String) -> HostState {
+        let label = "\(self.label) \(key)"
+        let clock = Ambient.current.clock
+        let breaker = policy.breaker.map { configuration -> CircuitBreaker in
+            var configuration = configuration
+            configuration.recordWhen = { error in (error as? AttemptError)?.countsAgainstHost ?? false }
+            return CircuitBreaker(label: label, configuration, clock: clock)
+        }
+        let limiter = policy.rateLimit.map {
+            RateLimiter(rate: $0.rate, per: $0.interval, burst: $0.burst, queueLimit: $0.queueLimit, label: label, clock: clock)
+        }
+        let bulkhead = policy.maxConcurrentPerHost.map {
+            Bulkhead(maxConcurrent: $0, queueLimit: policy.queueLimitPerHost, label: label)
+        }
+        return HostState(label: label, breaker: breaker, limiter: limiter, bulkhead: bulkhead)
     }
 
     /// Resolves the request against the base URL, folds in the query, adds

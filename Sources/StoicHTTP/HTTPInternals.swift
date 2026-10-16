@@ -79,30 +79,61 @@ struct ReauthenticationFailure: Error, Sendable {
 /// absolute URLs to arbitrary hosts forgets the least recently used rather
 /// than grow without limit, so a busy host's breaker survives a flood of
 /// one-off hosts.
+///
+/// A host with a request in flight is never forgotten. Its bulkhead is what
+/// bounds the requests to it: one made afresh while the old one still holds
+/// slots would let a second set through, and a fresh breaker would forget
+/// what the old one was learning. So the table holds at most ``limit`` hosts
+/// plus however many more are in use at that moment, and gives the excess
+/// back as their requests end.
 struct HostTable {
     static let limit = 256
 
-    private var hosts: [String: HostState] = [:]
+    private struct Entry {
+        var state: HostState
+        /// Requests running through this host's policies now.
+        var leases: Int
+    }
+
+    private var hosts: [String: Entry] = [:]
     /// Keys from least to most recently used.
     private var order: [String] = []
 
-    /// The state for `key`, without counting as a use.
-    func existing(_ key: String) -> HostState? { hosts[key] }
+    /// The hosts known now.
+    var count: Int { hosts.count }
 
-    /// The state for `key`, marked as just used.
-    mutating func use(_ key: String) -> HostState? {
-        guard let state = hosts[key] else { return nil }
+    /// The state for `key`, without counting as a use.
+    func existing(_ key: String) -> HostState? { hosts[key]?.state }
+
+    /// The state for `key` (made by `make` if the host is new), marked as
+    /// just used and as in use until ``release(_:)``.
+    mutating func lease(_ key: String, orMake make: () -> HostState) -> HostState {
+        let state = hosts[key]?.state ?? make()
+        hosts[key] = Entry(state: state, leases: (hosts[key]?.leases ?? 0) + 1)
         if let index = order.lastIndex(of: key) { order.remove(at: index) }
         order.append(key)
+        evict()
         return state
     }
 
-    mutating func insert(_ state: HostState, for key: String) {
-        hosts[key] = state
-        if let index = order.lastIndex(of: key) { order.remove(at: index) }
-        order.append(key)
-        if order.count > Self.limit {
-            hosts[order.removeFirst()] = nil
+    /// Ends one request's use of `key`.
+    mutating func release(_ key: String) {
+        hosts[key]?.leases -= 1
+        evict()
+    }
+
+    /// Forgets the least recently used hosts that are idle until the table is
+    /// within its limit, or only hosts in use are left over it.
+    private mutating func evict() {
+        var index = 0
+        while order.count > Self.limit, index < order.count {
+            let key = order[index]
+            if hosts[key]?.leases == 0 {
+                hosts[key] = nil
+                order.remove(at: index)
+            } else {
+                index += 1
+            }
         }
     }
 }

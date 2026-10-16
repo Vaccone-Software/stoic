@@ -322,6 +322,42 @@ struct HTTPFailureTests {
             #expect(rig.api.breaker(forHost: "api.example.com") === hot)
         }
     }
+
+    @Test func aHostWithARequestInFlightIsNeverForgotten() async throws {
+        try await withRig(.testing(attempts: 1, maxConcurrent: 1, queueLimit: 0, coalesce: false)) { (rig) async throws in
+            rig.transport.on(.get("/slow"), respond: [.hang])
+            rig.transport.on(.get("/ping"), respond: [], then: .status(200))
+            let slow = rig.start(.get("/slow"))
+            await rig.waitForHangingAttempt()
+            let bulkhead = try #require(rig.api.bulkhead(forHost: "api.example.com"))
+            for index in 0..<(HostTable.limit + 100) {
+                let other = try #require(URL(string: "https://host\(index).example.com/ping"))
+                _ = try await rig.start(.get(other)).value
+            }
+            #expect(rig.api.bulkhead(forHost: "api.example.com") === bulkhead, "the least recently used host was in use")
+            #expect(rig.api.hostCount == HostTable.limit)
+
+            // Its one slot is still taken: a fresh bulkhead would have let this through.
+            let second = try #require(await rig.httpError(of: rig.start(.get("/slow"))))
+            #expect(second.rejection?.reason == .bulkheadFull)
+            #expect(rig.transport.requests(to: .get("/slow")).count == 1)
+            slow.cancel()
+            _ = await rig.failure(of: slow)
+        }
+    }
+
+    @Test func hostsInUseMayHoldTheTableOverItsLimitUntilTheirRequestsEnd() {
+        var table = HostTable()
+        let keys = (0...HostTable.limit).map { "host\($0)" }
+        for key in keys { _ = table.lease(key) { HostState(label: key, breaker: nil, limiter: nil, bulkhead: nil) } }
+        #expect(table.count == HostTable.limit + 1, "every host is in use, so none is forgotten")
+        table.release(keys[5])
+        #expect(table.count == HostTable.limit)
+        #expect(table.existing(keys[5]) == nil, "the idle one went")
+        #expect(table.existing(keys[0]) != nil, "older, but still in use")
+        let again = table.lease(keys[0]) { HostState(label: "fresh", breaker: nil, limiter: nil, bulkhead: nil) }
+        #expect(again.label == "host0", "a host in the table is reused, not made again")
+    }
 }
 
 /// A transport that returns its response whatever limit it is given.
