@@ -125,14 +125,18 @@ struct StateMachineTests {
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let release = AsyncGate()
+        let engineRunning = AsyncGate()
         let nextStarted = AsyncGate()
         await withTestAmbient(clock: clock, events: events) {
             let machine = StateMachine<Int, Int>(initial: 0, label: "player") { state, _ in .to(state == 0 ? 1 : 0) }
             machine.whileIn(0, label: "engine", shutdownTimeout: .seconds(2)) { _ in
+                engineRunning.open()
                 await release.wait()   // ignores cancellation
             }
             machine.whileIn(1, label: "next") { _ in nextStarted.open() }
-            #expect(await eventually { TaskLedger.current.contains { $0.label == "player.engine" } })
+            // Running, not merely created: a visit left before its work
+            // began runs none, and there would be nothing to abandon.
+            await engineRunning.wait()
             machine.send(0)
             await clock.waitForSleepers(count: 1)
             await clock.advance(by: .seconds(2))
