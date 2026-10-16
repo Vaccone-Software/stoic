@@ -47,10 +47,10 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
     operation: @escaping @concurrent @Sendable (Attempt) async throws(Failure) -> R
 ) async throws(Failure) -> R
 
-// Bounded parallel map; results in input order.
-public func mapConcurrent<C: Collection, R: Sendable, Failure: Error>(_ elements: C, limit: Int,
-    transform: @escaping @concurrent @Sendable (C.Element) async throws(Failure) -> R) async throws(Failure) -> [R]
-public func mapConcurrentResults<…>(…) async -> [Result<R, Failure>]
+// Bounded parallel map; results in input order, one per element or none.
+public func mapConcurrent<C: Collection, R: Sendable, Failure: Error>(_ elements: C, limit: Int, label: String? = nil,
+    transform: @escaping @concurrent @Sendable (C.Element) async throws(Failure) -> R) async throws(PolicyError<Failure>) -> [R]
+public func mapConcurrentResults<…>(…) async throws(Rejection) -> [Result<R, Failure>]
 
 // FIFO, cancellation- and deadline-aware. Scoped use only.
 public final class AsyncSemaphore: Sendable {
@@ -102,15 +102,25 @@ owns) is future work; the delay is a fixed `Duration` for now.
 
 **mapConcurrent.** At most `limit` transforms run; elements start in
 order; results return in input order. On the first failure the rest are
-cancelled (`siblingFailed`) and that failure alone is thrown — failures
-caused by the cancellation are not reported as failures.
-`mapConcurrentResults` runs everything and returns each outcome. A cancelled
-caller starts no further element: the running ones are cancelled and awaited,
-and `mapConcurrent` throws `CancellationError` if any element was left
-unstarted and `Failure` can hold one (`any Error`). A typed `Failure` cannot,
-so the caller gets the results of the elements that started — the leading
-ones, an array shorter than the input; `mapConcurrentResults` likewise returns
-only the started elements' outcomes.
+cancelled (`siblingFailed`) and that failure is thrown as `.failed` —
+failures caused by the cancellation are not failures. Failures of their own
+that the others hit while winding down are not thrown (`throws(Failure)`
+inside `PolicyError` has room for one) but reported with the first in
+`map.failed` (`first`, then `also_1`, `also_2`, …, at most nine).
+`mapConcurrentResults` runs everything and returns each outcome.
+
+Neither ever returns an array shorter than its input. A cancelled caller
+starts no further element: the running ones are cancelled and awaited, and
+if any element is left without a result (unstarted, or failed because the
+caller was cancelled) the map throws `.rejected(.cancelled)` —
+`.deadlineExceeded` when an enclosing deadline cancelled it — and
+`mapConcurrentResults` throws that `Rejection`. A caller cancelled after every
+element has finished gets them all. The thrown type is `PolicyError<Failure>`
+for every `Failure`, as for every primitive whose error type cannot be a
+`CancellationError` (see Cancellation of the caller): the map refuses to run
+the elements it never started, which is what `.rejected` says. The earlier
+design threw `CancellationError` when `Failure` could hold one and otherwise
+returned the leading results, a shorter array that an index lookup trips on.
 
 **Child-task closures are `@concurrent`.** They run concurrently by design;
 the explicit attribute keeps that true under `NonisolatedNonsendingByDefault`.
@@ -152,9 +162,10 @@ count it, a scope whose body (or fork) ends with it is `Exit.cancelled`, not a
 failure, and `Rejection.isCancellation` / `PolicyError.isCancellation` ask
 the question that `error is CancellationError` asks elsewhere. It is never
 `.deadlineExceeded` (the caller's own deadline) and never a failure of the
-operation. Where the error type is not a policy's — `mapConcurrent` with an
-`any Error` failure, `Channel.receive()` (which returns `nil`), a supervisor
-— cancellation is a plain `CancellationError`, or the documented `nil`.
+operation. `mapConcurrent` is one of them, whatever its `Failure`. Where the
+error type is not a policy's — `race`, `Channel.receive()` (which returns
+`nil`), a supervisor — cancellation is a plain `CancellationError`, or the
+documented `nil`.
 
 **Channel.** A bounded queue between any number of producers and
 consumers; each element reaches exactly one consumer, in order. The
@@ -171,28 +182,30 @@ that keeps the promise, and the lint rule against
 
 ## Failure modes
 
-| What happens if…                                         | Behaviour                                                                                                                                                                                                        |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a superseded `TaskSlot` task finishes after the new one  | Its result is dropped inside the slot; `slot.superseded_late` event                                                                                                                                              |
-| a `TaskSlot` task ignores cancellation forever           | Next `run` does not wait for it (it is not structured to the slot's caller); it stays in `unfinishedCount` and the task ledger, so `stoicTasksStillRunning` names it; if it ever returns, `slot.superseded_late` |
-| every racer fails                                        | The first failure is thrown; `race.all_failed` carries all of them, completion order                                                                                                                             |
-| the caller of a race is cancelled                        | Every racer is cancelled and awaited; the first racer's error passes through; no `race.all_failed`                                                                                                               |
-| a racer ignores cancellation after another won           | `race` waits for it (structured); give such work its own timeout                                                                                                                                                 |
-| the hedge budget is empty                                | No further hedges; the attempts already running continue                                                                                                                                                         |
-| `mapConcurrent` caller is cancelled                      | No further element starts; children cancelled and awaited; `CancellationError` if `Failure` allows, else the started (leading) results                                                                           |
-| a semaphore waiter is cancelled while queued             | Removed from the queue; no permit consumed; `.rejected(.cancelled)` (`isCancellation`; see Cancellation of the caller)                                                                                           |
-| a semaphore waiter's deadline passes while queued        | Removed; `.rejected(.deadlineExceeded)`                                                                                                                                                                          |
-| a permit frees while a waiter is on its way to the queue | The waiter keeps its place: the permit is kept for it, and a newcomer queues behind it                                                                                                                           |
-| a waiter on its way to the queue is cancelled            | It leaves without a permit; the waiters it held up are let through at once                                                                                                                                       |
-| a body inside `withPermit` throws                        | Permit returned; error passed through as `.failed`                                                                                                                                                               |
-| two single-flight waiters, the first cancels             | The operation continues for the second                                                                                                                                                                           |
-| every single-flight waiter cancels                       | The operation is cancelled                                                                                                                                                                                       |
-| a higher-priority caller joins a single flight           | The shared operation is escalated to that priority (SE-0462); it is never lowered when that caller leaves                                                                                                        |
+| What happens if…                                                      | Behaviour                                                                                                                                                                                                        |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a superseded `TaskSlot` task finishes after the new one               | Its result is dropped inside the slot; `slot.superseded_late` event                                                                                                                                              |
+| a `TaskSlot` task ignores cancellation forever                        | Next `run` does not wait for it (it is not structured to the slot's caller); it stays in `unfinishedCount` and the task ledger, so `stoicTasksStillRunning` names it; if it ever returns, `slot.superseded_late` |
+| every racer fails                                                     | The first failure is thrown; `race.all_failed` carries all of them, completion order                                                                                                                             |
+| the caller of a race is cancelled                                     | Every racer is cancelled and awaited; the first racer's error passes through; no `race.all_failed`                                                                                                               |
+| a racer ignores cancellation after another won                        | `race` waits for it (structured); give such work its own timeout                                                                                                                                                 |
+| the hedge budget is empty                                             | No further hedges; the attempts already running continue                                                                                                                                                         |
+| `mapConcurrent` caller is cancelled                                   | No further element starts; children cancelled and awaited; `.rejected(.cancelled)` if an element has no result; no `map.failed`, no `siblingFailed`                                                              |
+| `mapConcurrent` with a typed failure is cancelled midway              | `.rejected(.cancelled)`, as for any `Failure`; never an array shorter than the input                                                                                                                             |
+| `mapConcurrent` siblings fail while the first failure winds them down | The first is thrown as `.failed`; `map.failed` carries it and every other failure that was not a cancellation                                                                                                    |
+| a semaphore waiter is cancelled while queued                          | Removed from the queue; no permit consumed; `.rejected(.cancelled)` (`isCancellation`; see Cancellation of the caller)                                                                                           |
+| a semaphore waiter's deadline passes while queued                     | Removed; `.rejected(.deadlineExceeded)`                                                                                                                                                                          |
+| a permit frees while a waiter is on its way to the queue              | The waiter keeps its place: the permit is kept for it, and a newcomer queues behind it                                                                                                                           |
+| a waiter on its way to the queue is cancelled                         | It leaves without a permit; the waiters it held up are let through at once                                                                                                                                       |
+| a body inside `withPermit` throws                                     | Permit returned; error passed through as `.failed`                                                                                                                                                               |
+| two single-flight waiters, the first cancels                          | The operation continues for the second                                                                                                                                                                           |
+| every single-flight waiter cancels                                    | The operation is cancelled                                                                                                                                                                                       |
+| a higher-priority caller joins a single flight                        | The shared operation is escalated to that priority (SE-0462); it is never lowered when that caller leaves                                                                                                        |
 
 ## Events
 
 `slot.superseded`, `slot.superseded_late`, `race.won` (index, latency),
-`race.all_failed`, `hedge.started` (attempt), `hedge.won`, `semaphore.rejected`,
+`race.all_failed`, `map.failed`, `hedge.started` (attempt), `hedge.won`, `semaphore.rejected`,
 `semaphore.reentrant`, `singleflight.joined`, `singleflight.abandoned`,
 `channel.dropped`.
 

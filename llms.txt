@@ -22,7 +22,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 ## Concurrency
 - `TaskSlot<S, F>(label:)`: `.run { … } deliver: { @MainActor result in … }` (only newest delivers, on the caller's actor; annotate the closure to touch actor state), `.runExclusively`, `.cancel()`.
 - `race(a, b[, c, d])` or `race([Racer { … }])`: first success; losers cancelled and awaited.
-- `mapConcurrent(items, limit: n) { … }`, `mapConcurrentResults`.
+- `mapConcurrent(items, limit: n) { … }` throws `PolicyError`: `.failed(first failure)`, or `.rejected(.cancelled)` for a cancelled caller (never a shorter array); `mapConcurrentResults` returns every outcome or throws `Rejection`.
 - `AsyncSemaphore(permits:label:).withPermit { … }`, `AsyncMutex(label:).withLock { … }`: FIFO, cancellation/deadline aware; throw `PolicyError`.
 - `SingleFlight<K, V, F>(label:).run(key) { … }`: shared execution, refcounted cancellation.
 - `Channel<T>(capacity:, overflow: .suspend/.dropOldest/.dropNewest/.reject, label:)`: bounded; `send`, `trySend`, `receive`, `finish`, `for await`.

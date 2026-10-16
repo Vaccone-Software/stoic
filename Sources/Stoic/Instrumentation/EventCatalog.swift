@@ -53,6 +53,7 @@ public enum EventCatalog {
         Entry(name: "lifecycle.terminate_completed", level: .info, meaning: "A Mac app's shutdown finished before its deadline; the app quits."),
         Entry(name: "lifecycle.terminate_overran", level: .error, meaning: "A Mac app's shutdown overran its deadline; the app quits anyway."),
         Entry(name: "lifecycle.terminate_started", level: .info, meaning: "A Mac app began its graceful shutdown."),
+        Entry(name: "map.failed", level: .notice, meaning: "A concurrent map stopped at its first failure; that failure was thrown and the others seen while the rest wound down are in the event."),
         Entry(name: "race.all_failed", level: .notice, meaning: "Every operation in a race failed; the first failure was thrown and the others are in the event."),
         Entry(name: "race.won", level: .debug, meaning: "An operation won a race; reports which and how long it took."),
         Entry(name: "ratelimiter.oversized", level: .error, meaning: "A request asked for more permits than the limiter's burst can ever hold."),

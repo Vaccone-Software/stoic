@@ -136,11 +136,21 @@ struct RaceAndMapTests {
         #expect(gauge.value.peak >= 2)
     }
 
-    @Test func mapConcurrentStopsAtTheFirstFailure() async {
+    /// What `body` came to. A `Task` closure with a typed throw crashes the
+    /// Swift 6.4 compiler (IRGen), so tasks return this instead.
+    func captured<R, E: Error>(_ body: () async throws(E) -> R) async -> Result<R, E> {
+        do throws(E) {
+            return .success(try await body())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    @Test(.stoic(seed: 72)) func mapConcurrentStopsAtTheFirstFailure() async {
         let started = SendableBox(0)
         let cancelledCause = SendableBox<CancellationCause?>(nil)
-        await #expect(throws: Failure.boom(3)) {
-            try await mapConcurrent(Array(0..<100), limit: 2) { (value: Int) async throws(Failure) -> Int in
+        let error = await #expect(throws: PolicyError<Failure>.self) {
+            try await mapConcurrent(Array(0..<100), limit: 2, label: "thumbnails") { (value: Int) async throws(Failure) -> Int in
                 started.mutate { $0 += 1 }
                 if value == 3 { throw .boom(3) }
                 do { try await Task.sleep(for: .milliseconds(value == 2 ? 200 : 1)) } catch {
@@ -149,12 +159,39 @@ struct RaceAndMapTests {
                 return value
             }
         }
+        #expect(error?.failure == .boom(3))
         #expect(started.value < 100, "elements after the failure never start")
         #expect(cancelledCause.value == .siblingFailed)
+        let event = StoicTest.events.events(named: "map.failed").first
+        #expect(event?.label == "thumbnails")
+        #expect(event?["first"]?.description.hasSuffix("boom(3)") == true)
+        #expect(event?["also_1"] == nil, "a sibling cancelled by the failure is not a failure")
     }
 
-    @Test func mapConcurrentResultsReportsEveryOutcome() async {
-        let results = await mapConcurrentResults(Array(0..<10), limit: 3) { (value: Int) async throws(Failure) -> Int in
+    @Test(.stoic(seed: 73), .timeLimit(.minutes(1)), .failureMode("design/03", "`mapConcurrent` siblings fail while the first failure winds them down"))
+    func failuresSeenWhileWindingDownAreReported() async {
+        let entered = SendableBox(0)
+        let ready = TestGate()
+        let error = await #expect(throws: PolicyError<Failure>.self) {
+            try await mapConcurrent(Array(0..<3), limit: 3) { (value: Int) async throws(Failure) -> Int in
+                if entered.mutate({ $0 += 1; return $0 }) == 3 { ready.open() }
+                await ready.wait()
+                if value == 0 { throw .boom(0) }
+                // Fails of its own accord while being cancelled, not because of it.
+                await waitUntil { Task.isCancelled }
+                throw .boom(value)
+            }
+        }
+        #expect(error?.failure == .boom(0))
+        let event = StoicTest.events.events(named: "map.failed").first
+        guard case .int(3)? = event?["failures"] else { Issue.record("failures: \(String(describing: event?["failures"]))"); return }
+        let others = ["also_1", "also_2"].compactMap { event?[$0]?.description }
+        #expect(others.count == 2, "previously dropped without a word")
+        #expect(others.contains { $0.hasSuffix("boom(1)") } && others.contains { $0.hasSuffix("boom(2)") })
+    }
+
+    @Test func mapConcurrentResultsReportsEveryOutcome() async throws {
+        let results = try await mapConcurrentResults(Array(0..<10), limit: 3) { (value: Int) async throws(Failure) -> Int in
             if value.isMultiple(of: 3) { throw .boom(value) }
             return value
         }
@@ -167,13 +204,13 @@ struct RaceAndMapTests {
         }
     }
 
-    @Test func aCancelledCallerStartsNothingAndGetsCancellationError() async {
+    @Test func aCancelledCallerStartsNothingAndIsRejectedCancelled() async {
         let started = SendableBox(0)
         let cancelled = AsyncGate()
         let task = Task {
-            await cancelled.wait()
-            return await Result {
-                try await mapConcurrent(Array(0..<1000), limit: 4) { (value: Int) async throws -> Int in
+            await captured { () async throws(PolicyError<any Error>) -> [Int] in
+                await cancelled.wait()
+                return try await mapConcurrent(Array(0..<1000), limit: 4) { (value: Int) async throws -> Int in
                     started.mutate { $0 += 1 }
                     return value
                 }
@@ -181,9 +218,9 @@ struct RaceAndMapTests {
         }
         task.cancel()
         cancelled.open()
-        let result = await task.value
+        let error = await task.value.error
         #expect(started.value == 0)
-        #expect(throws: CancellationError.self) { try result.get() }
+        #expect(error?.rejection?.reason == .cancelled)
     }
 
     @Test func aCallerCancelledMidwayStopsStartingElements() async {
@@ -191,7 +228,7 @@ struct RaceAndMapTests {
         let entered = AsyncGate()
         let release = AsyncGate()
         let task = Task {
-            await Result {
+            await captured { () async throws(PolicyError<any Error>) -> [Int] in
                 try await mapConcurrent(Array(0..<1000), limit: 4) { (value: Int) async throws -> Int in
                     if started.mutate({ $0 += 1; return $0 }) == 4 { entered.open() }
                     await release.wait()
@@ -202,28 +239,81 @@ struct RaceAndMapTests {
         await entered.wait()
         task.cancel()
         release.open()
-        let result = await task.value
+        let error = await task.value.error
         #expect(started.value == 4, "only the elements running when the caller was cancelled ever start")
-        #expect(throws: CancellationError.self) { try result.get() }
+        #expect(error?.rejection?.reason == .cancelled)
     }
 
-    @Test func aTypedFailureGetsTheLeadingResultsFromACancelledCaller() async {
+    /// A typed failure cannot hold a `CancellationError`; the caller's
+    /// cancellation is spelled `.rejected(.cancelled)` all the same, never
+    /// as an array shorter than the input.
+    @Test(.stoic(seed: 74), .timeLimit(.minutes(1)), .failureMode("design/03", "`mapConcurrent` with a typed failure is cancelled midway"))
+    func aTypedFailureIsRejectedCancelledNeverGivenAShortArray() async {
         let started = SendableBox(0)
         let entered = AsyncGate()
         let release = AsyncGate()
         let task = Task {
-            await mapConcurrent(Array(0..<100), limit: 3) { (value: Int) async throws(Never) -> Int in
-                if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
-                await release.wait()
-                return value
+            await captured { () async throws(PolicyError<Never>) -> [Int] in
+                try await mapConcurrent(Array(0..<100), limit: 3) { (value: Int) async throws(Never) -> Int in
+                    if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
+                    await release.wait()
+                    return value
+                }
             }
         }
         await entered.wait()
         task.cancel()
         release.open()
-        // A typed failure cannot say "cancelled": the caller gets the
-        // results of the elements that started, which are the leading ones.
-        #expect(await task.value == [0, 1, 2])
+        let error = await task.value.error
+        #expect(error?.rejection?.reason == .cancelled, "previously returned [0, 1, 2]")
+    }
+
+    @Test(.stoic(seed: 75), .timeLimit(.minutes(1)))
+    func aMapCancelledByItsDeadlineIsRejectedDeadlineExceeded() async {
+        let clock = TestClock()
+        let started = SendableBox(0)
+        let outcome: Result<[Int], PolicyError<Never>> = await withTestAmbient(clock: clock) {
+            await withTaskGroup { group in
+                group.addTask {
+                    await withTimeout(.seconds(1)) { () async -> Result<[Int], PolicyError<Never>> in
+                        do throws(PolicyError<Never>) {
+                            return .success(try await mapConcurrent(Array(0..<10), limit: 2) { (value: Int) async throws(Never) -> Int in
+                                started.mutate { $0 += 1 }
+                                try? await Ambient.sleep(for: .seconds(60))
+                                return value
+                            })
+                        } catch {
+                            return .failure(error)
+                        }
+                    }
+                }
+                await clock.waitForSleepers(count: 3)   // the deadline's timer and two elements
+                await clock.advance(by: .seconds(1))
+                return await group.next()!
+            }
+        }
+        guard case .failure(let error) = outcome else { Issue.record("expected a rejection, got \(outcome)"); return }
+        #expect(error.rejection?.reason == .deadlineExceeded)
+        #expect(started.value == 2)
+    }
+
+    @Test func aCallerCancelledOnceEveryElementStartedGetsEveryResult() async throws {
+        let started = SendableBox(0)
+        let entered = AsyncGate()
+        let release = AsyncGate()
+        let task = Task {
+            await captured { () async throws(PolicyError<Never>) -> [Int] in
+                try await mapConcurrent(Array(0..<5), limit: 5) { (value: Int) async throws(Never) -> Int in
+                    if started.mutate({ $0 += 1; return $0 }) == 5 { entered.open() }
+                    await release.wait()   // finishes despite the cancellation
+                    return value
+                }
+            }
+        }
+        await entered.wait()
+        task.cancel()   // too late to stop anything
+        release.open()
+        #expect(try await task.value.get() == [0, 1, 2, 3, 4])
     }
 
     @Test func mapConcurrentResultsAlsoStopsForACancelledCaller() async {
@@ -231,18 +321,20 @@ struct RaceAndMapTests {
         let entered = AsyncGate()
         let release = AsyncGate()
         let task = Task {
-            await mapConcurrentResults(Array(0..<100), limit: 3) { (value: Int) async throws(Failure) -> Int in
-                if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
-                await release.wait()
-                return value
+            await captured { () async throws(Rejection) -> [Result<Int, Failure>] in
+                try await mapConcurrentResults(Array(0..<100), limit: 3) { (value: Int) async throws(Failure) -> Int in
+                    if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
+                    await release.wait()
+                    return value
+                }
             }
         }
         await entered.wait()
         task.cancel()
         release.open()
-        let outcomes = await task.value
-        #expect(outcomes.count == 3)
-        for (index, outcome) in outcomes.enumerated() { #expect((try? outcome.get()) == index) }
+        let error = await task.value.error
+        #expect(error?.reason == .cancelled, "previously returned the three outcomes that started")
+        #expect(started.value == 3)
     }
 
     @Test func mapConcurrentHandlesEmptyInput() async throws {
@@ -250,4 +342,3 @@ struct RaceAndMapTests {
         #expect(results.isEmpty)
     }
 }
-

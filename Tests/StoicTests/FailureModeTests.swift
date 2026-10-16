@@ -9,24 +9,31 @@ struct ConcurrencyFailureModeTests {
     struct Crash: Error {}
 
     /// "mapConcurrent caller is cancelled: all children cancelled and
-    /// awaited; CancellationError propagates."
+    /// awaited; `.rejected(.cancelled)`."
     @Test(.timeLimit(.minutes(1)), .failureMode("design/03", "mapConcurrent caller is cancelled"))
     func aCancelledMapConcurrentCancelsAndAwaitsItsChildrenAndThrowsCancellation() async {
         let started = SendableBox(0)
         let running = SendableBox(0)
         let ready = TestGate()
-        let caller = Task {
-            try await mapConcurrent(Array(0..<1_000), limit: 4) { (_: Int) async throws(CancellationError) -> Int in
-                running.mutate { $0 += 1 }
-                defer { running.mutate { $0 -= 1 } }
-                if started.mutate({ $0 += 1; return $0 }) == 4 { ready.open() }
-                do { try await Task.sleep(for: .seconds(3600)) } catch { throw CancellationError() }
-                return 0
+        // A Task closure with a typed throw crashes the Swift 6.4 compiler
+        // (IRGen), so the task returns the outcome.
+        let caller = Task { () -> Result<[Int], PolicyError<CancellationError>> in
+            do throws(PolicyError<CancellationError>) {
+                return .success(try await mapConcurrent(Array(0..<1_000), limit: 4) { (_: Int) async throws(CancellationError) -> Int in
+                    running.mutate { $0 += 1 }
+                    defer { running.mutate { $0 -= 1 } }
+                    if started.mutate({ $0 += 1; return $0 }) == 4 { ready.open() }
+                    do { try await Task.sleep(for: .seconds(3600)) } catch { throw CancellationError() }
+                    return 0
+                })
+            } catch {
+                return .failure(error)
             }
         }
         await ready.wait()
         caller.cancel()
-        await #expect(throws: CancellationError.self) { try await caller.value }
+        let error = await caller.value.error
+        #expect(error?.rejection?.isCancellation == true, "the caller's cancellation, not a failure of the transform")
         #expect(running.value == 0, "the call returned while a transform was still running")
         #expect(started.value == 4, "no element starts after the caller was cancelled")
     }
@@ -42,7 +49,7 @@ struct ConcurrencyFailureModeTests {
         let release = TestGate()
         let ready = TestGate()
         let caller = Task {
-            await mapConcurrentResults(Array(0..<200), limit: 4) { (value: Int) async throws(Crash) -> Int in
+            try? await mapConcurrentResults(Array(0..<200), limit: 4) { (value: Int) async throws(Crash) -> Int in
                 if started.mutate({ $0 += 1; return $0 }) == 4 { ready.open() }
                 await release.wait()   // ignores cancellation
                 return value

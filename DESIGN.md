@@ -275,11 +275,13 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
   `PolicyError<F>` throws `PolicyError<F>`, never `PolicyError<PolicyError<F>>`.
   Pipelines of policies therefore compose without nested unwrapping.
 
-- **Concurrent failures are all kept.** Where several children can fail
-  (race, mapConcurrent, scopes with forks), Stoic throws
-  `ConcurrentFailure<Failure>`: a non-empty list in completion order, the
-  first being the primary (the precedent is Effect's parallel `Cause`, as
-  Effect 4 flattened it).
+- **Concurrent failures are all kept.** Where several children can fail,
+  none is lost. Scopes with forks throw `ConcurrentFailure<Failure>`: a
+  non-empty list in completion order, the first being the primary (the
+  precedent is Effect's parallel `Cause`, as Effect 4 flattened it). `race`
+  and `mapConcurrent` take a typed `throws(Failure)` with room for one, so
+  they throw the first and report every one in an event (`race.all_failed`,
+  `map.failed`).
 - **Cancellation is not a failure.** `CancellationError` is never retried,
   never counted by a breaker, never reported as an error event, and never
   wrapped. It propagates as itself. Where an error type cannot hold one — a
