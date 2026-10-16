@@ -190,10 +190,18 @@ final class TaskScopeState: Sendable {
         if cancelNow { task.cancel() }
     }
 
-    func fork(label: String, _ work: @escaping @Sendable () async throws -> Void) {
+    /// Starts `work` as a fork, unless the scope has closed. Returns whether
+    /// it started; a refused fork is reported as `scope.fork_after_exit`
+    /// unless `reportingRefusal` is off, for a caller that handles the
+    /// refusal itself.
+    @discardableResult
+    func fork(label: String, reportingRefusal: Bool = true, _ work: @escaping @Sendable () async throws -> Void) -> Bool {
         // A closed scope never starts the work: not even to cancel it at once.
         let open = state.withLock { !$0.closed }
-        guard open else { rejectFork(label: label); return }
+        guard open else {
+            if reportingRefusal { rejectFork(label: label) }
+            return false
+        }
         let forkCause = CancellationCauseBox(parent: cause)
         // The task waits at this gate until it is registered, so a fork that
         // loses the race with `close()` never runs a line of its work. The
@@ -225,8 +233,9 @@ final class TaskScopeState: Sendable {
         registered.resolve(id)
         if id == nil {
             task.cancel()
-            rejectFork(label: label)
+            if reportingRefusal { rejectFork(label: label) }
         }
+        return id != nil
     }
 
     private func finished(_ id: UInt64) {

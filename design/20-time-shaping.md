@@ -111,6 +111,8 @@ its outcome (the flight commits it before any caller sees it): one every
 caller left, if it returns anyway, stores nothing. Memory is bounded by
 `maxEntries`, evicting the least recently used. The cache must not outlive its
 scope: afterwards stale entries are served until they expire but not refreshed.
+It stops trying quietly: the first refresh the ended scope refuses is the
+last attempted, with nothing reported and nothing kept per key.
 
 **Broadcast.** Each subscriber has its own bounded buffer and policy, chosen
 when it subscribes, and sees only what is published afterwards. Publishing
@@ -151,6 +153,7 @@ publisher nor grow without bound. Drops reuse `Channel`'s counting and event.
 | a load every caller left finishes anyway                      | Its outcome is dropped: not cached, so it cannot overwrite a newer load's value or mark old data fresh                                                 |
 | an entry is added past `maxEntries`                           | The least recently used entry is evicted; a read counts as a use                                                                                       |
 | the scope ends while a refresh runs                           | The refresh is cancelled and awaited, and is not reported as a failure; the stale entry stays until it expires                                         |
+| a stale entry is read after the cache's scope ended           | Served as it is and not refreshed; no refresh is attempted again, nothing is reported, and nothing is kept for the key                                 |
 | a `dropOldest` subscriber's buffer is full                    | Its oldest element is discarded for the new one; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                  |
 | a `dropNewest` subscriber's buffer is full                    | The new element is not delivered to it; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                           |
 | a `suspend` subscriber's buffer is full                       | The publish waits, in subscription order, until it takes an element; later subscribers get the element after it                                        |

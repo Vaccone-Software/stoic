@@ -265,6 +265,24 @@ struct ExpiringCacheTests {
         #expect(StoicTest.events.events(named: "cache.refresh_failed").isEmpty)
     }
 
+    @Test(.stoic(seed: 70), .timeLimit(.minutes(1)), .failureMode("design/20", "a stale entry is read after the cache's scope ended"))
+    func aCacheThatOutlivesItsScopeStopsRefreshingQuietly() async throws {
+        let clock = TestClock()
+        let loader = Loader()
+        let cache = try await withTaskScope { scope -> Cache in
+            let cache = cache(loader, clock, scope: scope)
+            for key in ["a", "b", "c"] { _ = await get(cache, key) }
+            return cache
+        }
+        await clock.advance(by: .seconds(12))   // every entry is stale
+        for _ in 0..<3 {
+            for key in ["a", "b", "c"] { #expect(await get(cache, key) == "\(key)1") }
+        }
+        #expect(await cache.refreshCount == 0, "previously each stale key stayed marked as refreshing for good")
+        #expect(loader.calls("a") == 1)
+        #expect(StoicTest.events.events(named: "scope.fork_after_exit").isEmpty, "previously an error per stale key")
+    }
+
     /// A loader whose first load ignores cancellation and returns "old" once
     /// its gate opens; every later load returns "new" at once.
     final class StubbornLoader: Sendable {

@@ -61,6 +61,8 @@ public actor ExpiringCache<Key: Hashable & Sendable, Value: Sendable, Failure: E
     private var recencyHead = 0
     private var tick: UInt64 = 0
     private var refreshing: Set<Key> = []
+    // The scope refused a refresh: it has ended, and no refresh will start again.
+    private var scopeEnded = false
 
     /// Creates a cache whose background refreshes belong to `scope`.
     ///
@@ -191,8 +193,15 @@ public actor ExpiringCache<Key: Hashable & Sendable, Value: Sendable, Failure: E
     }
 
     private func startRefresh(_ key: Key) {
-        guard refreshing.insert(key).inserted else { return }
-        tasks.fork(label: "\(label).refresh") { [self] in await refresh(key) }
+        guard !scopeEnded, refreshing.insert(key).inserted else { return }
+        // A cache that outlives its scope breaks its contract, but quietly:
+        // stale entries are served unrefreshed until they expire, with no
+        // report per key and nothing kept for each.
+        let started = tasks.fork(label: "\(label).refresh", reportingRefusal: false) { [self] in await refresh(key) }
+        if !started {
+            refreshing.remove(key)
+            scopeEnded = true
+        }
     }
 
     private func refresh(_ key: Key) async {
