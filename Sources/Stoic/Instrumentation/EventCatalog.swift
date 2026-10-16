@@ -87,7 +87,7 @@ public enum EventCatalog {
         Entry(name: "settings.rejected", level: .notice, meaning: "A settings update produced a value the schema refuses; nothing changed."),
         Entry(name: "settings.repaired", level: .warning, meaning: "Invalid settings fields fell back to their defaults; reports how many."),
         Entry(name: "settings.reset", level: .error, meaning: "No settings file was usable; the defaults were used and the files quarantined."),
-        Entry(name: "settings.save_failed", level: .error, meaning: "Settings could not be written; the value and the file are as they were."),
+        Entry(name: "settings.save_failed", level: .error, meaning: "Settings could not be written, and the value and the file are as they were; or they were written but could not be made durable, and the new value is published (the error says which)."),
         Entry(name: "settings.saved", level: .debug, meaning: "A settings update was written durably and published."),
         Entry(name: "singleflight.abandoned", level: .info, meaning: "Every caller left a flight, so its operation was cancelled."),
         Entry(name: "singleflight.joined", level: .debug, meaning: "A caller joined a flight already in progress."),
