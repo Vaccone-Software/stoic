@@ -1,4 +1,5 @@
 @testable import Stoic
+import StoicTesting
 import Testing
 
 @Suite("Schedules")
@@ -109,7 +110,7 @@ struct ScheduleTests {
             let cap = Duration.milliseconds(Int.random(in: 1...60_000, using: &generator))
             let attempts = Int.random(in: 1...12, using: &generator)
             let jitter = [Jitter.full, .equal, .none].randomElement(using: &generator)!
-            let bases: [Schedule] = [.fixed(base), .linear(base), .exponential(base: base), .fibonacci(base), .decorrelated(base: base, cap: cap)]
+            let bases: [Schedule] = [.fixed(base), .linear(base), .exponential(base: base), .fibonacci(base), .decorrelated(base: max(base, .milliseconds(1)), cap: cap)]
             let schedule = bases.randomElement(using: &generator)!.capped(at: cap).jittered(jitter).attempts(attempts)
             var stepper = schedule.makeStepper(random: RandomSource.seeded(UInt64(attempts)).generator())
             var count = 0
@@ -157,6 +158,33 @@ struct ScheduleReviewTests {
         #expect(Schedule.exponential(base: .seconds(1), factor: .infinity).attempts(5).maximumTotalDelay == .seconds(1 + 300 * 3))
         #expect(Schedule.exponential(base: .seconds(1), factor: .nan).unjittered().attempts(3).maximumTotalDelay == .seconds(2))
         #expect(Schedule.exponential(base: .seconds(1), factor: 0.5).unjittered().attempts(3).maximumTotalDelay == .seconds(2))
+    }
+
+    @Test func anElapsedLimitNeverSchedulesADelayPastIt() {
+        // The limit is when waiting must be over: a minute's delay does not
+        // fit a ten-second limit, even when it would begin inside it.
+        #expect(Schedule.fixed(.seconds(60)).upTo(elapsed: .seconds(10)).maximalDelays(limit: 5) == [])
+        var stepper = Schedule.fixed(.seconds(4)).upTo(elapsed: .seconds(10)).makeStepper(random: RandomSource.seeded(1).generator())
+        #expect(stepper.next(elapsed: .seconds(1)) == .seconds(4))   // ends at 5 s
+        #expect(stepper.next(elapsed: .seconds(6)) == .seconds(4))   // ends at exactly 10 s
+        #expect(stepper.next(elapsed: .seconds(7)) == nil)           // would end at 11 s
+    }
+
+    @Test func decorrelatedRaisesACapBelowItsBase() {
+        let delays = Schedule.decorrelated(base: .seconds(2), cap: .seconds(1)).maximalDelays(limit: 3)
+        #expect(delays == [.seconds(2), .seconds(2), .seconds(2)])
+    }
+
+    /// A trap cannot be caught in-process, so the check runs in a child
+    /// process that must die on it.
+    @Test(.failureMode("design/02", "`decorrelated` is given a base that is not positive"))
+    func decorrelatedRefusesABaseThatCouldNeverBackOff() async {
+        await #expect(processExitsWith: .failure) {
+            _ = Schedule.decorrelated(base: .zero, cap: .seconds(10))
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = Schedule.decorrelated(base: .seconds(-1), cap: .seconds(-2))
+        }
     }
 
     @Test func boundsAreStructuralAndCheap() {

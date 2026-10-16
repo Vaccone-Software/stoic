@@ -75,8 +75,13 @@ public struct Schedule: Sendable, Hashable, CustomStringConvertible {
 
     /// AWS's decorrelated jitter: each delay is random in
     /// `base ... previous × 3`, never above `cap`. Good for long tails.
+    ///
+    /// `base` must be positive: each delay grows from the last, so a zero
+    /// base would stay zero forever, a retry loop with no backoff at all.
+    /// A `cap` below `base` is raised to it.
     public static func decorrelated(base: Duration, cap: Duration) -> Schedule {
-        Schedule(.decorrelated(base: base.clampedNonNegative, cap: max(base, cap)))
+        precondition(base > .zero, "decorrelated jitter needs a positive base: each delay grows from the last")
+        return Schedule(.decorrelated(base: base, cap: max(base, cap)))
     }
 
     // MARK: Shape
@@ -113,9 +118,11 @@ public struct Schedule: Sendable, Hashable, CustomStringConvertible {
         jittered(.none)
     }
 
-    /// Stops once `duration` has elapsed since the first attempt. On its own
-    /// this does not bound the number of attempts: a schedule with no delay
-    /// could still spin. Add ``attempts(_:)`` for that.
+    /// Stops rather than wait past `duration` since the first attempt: a
+    /// delay that would end later than that is not taken, so a ten-second
+    /// limit never sleeps for a minute. On its own this does not bound the
+    /// number of attempts: a schedule with no delay could still spin. Add
+    /// ``attempts(_:)`` for that.
     public func upTo(elapsed duration: Duration) -> Schedule {
         Schedule(.elapsed(node, duration.clampedNonNegative))
     }
@@ -384,6 +391,9 @@ private indirect enum StepState: Sendable {
             guard elapsed < limit else { return nil }
             let delay = inner.next(elapsed: elapsed, random: &random)
             self = .elapsed(inner, limit)
+            // The limit is when waiting must be over, not the last moment a
+            // wait may begin.
+            guard let delay, elapsed.saturatingAdding(delay) <= limit else { return nil }
             return delay
 
         case .union(var left, var right, var leftDone, var rightDone):

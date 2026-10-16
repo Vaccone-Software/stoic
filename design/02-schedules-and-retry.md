@@ -79,14 +79,18 @@ try await withTimeout(start.worstCase(attemptTimeout: .milliseconds(2500))) {
 make one are `attempts(_:)` and `delays(_:)`. An unbounded retry does not
 compile; there is no runtime cap that behaves differently in debug and
 release. `upTo(elapsed:)` is an extra stop condition, not a bound: a schedule
-with no delay and only an elapsed limit could spin.
+with no delay and only an elapsed limit could spin. It stops rather than take
+a delay that would end past the limit, so a ten-second limit never sleeps for
+a minute.
 
 **Schedules are data.** A schedule is a tree of nodes interpreted by a
 stepper, so it prints, compares, reports its worst case, and steps the same
 way in a test as in production. Full and equal jitter only ever shorten a
 delay, so a cap holds whichever order `capped` and `jittered` are written
 in. `capped(at:)` directly after a base replaces the base's default cap
-(exponential and Fibonacci default to five minutes).
+(exponential and Fibonacci default to five minutes). `decorrelated` needs a
+positive base (each of its delays grows from the last, so a zero base would
+never back off) and raises a cap below the base to it.
 
 **Order of checks after a failed attempt.** (1) The task running the retry
 was cancelled → rethrow; a cancelled *attempt* (its own timeout fired) is not
@@ -161,8 +165,10 @@ or supervisor that can stop it.
 | the error is a `Defect`                            | Rethrown immediately; `retry.defect` at error level                            |
 | the budget is empty                                | Last error rethrown; `retry.budget_exhausted`                                  |
 | the next attempt cannot finish before the deadline | Last error rethrown without sleeping; `retry.deadline_skip`                    |
+| the next delay would end past `upTo(elapsed:)`     | Last error rethrown without sleeping; `retry.exhausted`                        |
 | the server sends Retry-After longer than the cap   | The cap wins; `retry.after_capped`                                             |
 | the schedule is unbounded                          | Does not compile: `retry` takes only a `BoundedSchedule`                       |
+| `decorrelated` is given a base that is not positive | Precondition failure at construction: it could never back off                  |
 | a retry runs inside another retry's attempt        | One attempt only, `retry.nested`, unless `nesting: .allow`                     |
 | an attempt's own timeout fires                     | Counted as transient and retried; `timed_out=true` on the event               |
 | the error is a `DecodingError`                     | Not retried (`.standard`): the same bytes fail the same way                   |

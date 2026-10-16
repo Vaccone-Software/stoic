@@ -200,6 +200,21 @@ struct RetryTests {
         #expect(events.names.contains("retry.deadline_skip"))
     }
 
+    @Test(.failureMode("design/02", "the next delay would end past `upTo(elapsed:)`"))
+    func aDelayThatWouldOutlastTheElapsedLimitEndsTheRetryWithoutSleeping() async {
+        let clock = ImmediateClock()
+        let events = RecordingInstrumentation()
+        await #expect(throws: Failure.transient(1)) {
+            try await withTestAmbient(clock: clock, events: events) {
+                try await retry(.fixed(.seconds(60)).upTo(elapsed: .seconds(10)).attempts(5), budget: .unlimited) { attempt throws(Failure) -> Int in
+                    throw .transient(attempt.number)
+                }
+            }
+        }
+        #expect(clock.sleeps.isEmpty)
+        #expect(events.names == ["retry.exhausted"])
+    }
+
     @Test(.failureMode("design/02", "a retry runs inside another retry's attempt")) func aNestedRetryMakesOneAttempt() async {
         let events = RecordingInstrumentation()
         let inner = SendableBox(0)
