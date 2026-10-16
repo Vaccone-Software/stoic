@@ -327,6 +327,7 @@ struct AtomicFileFailureTests {
     @Test(.failureMode("design/15", "the volume has less free space than the file needs")) func aFullDiskIsRefusedBeforeAnythingIsTouched() throws {
         let disk = SimulatedFileSystem(capacity: 60)
         try disk.createDirectory("/d")
+        disk.settle()
         let file = AtomicFile(fileSystem: disk)
         try file.write(bytes("small"), to: "/d/s")
         let error = #expect(throws: StoreError.self) { try file.write([UInt8](repeating: 1, count: 100), to: "/d/s") }

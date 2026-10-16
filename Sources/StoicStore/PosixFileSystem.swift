@@ -230,11 +230,17 @@ public final class PosixFileSystem: FileSystem {
         }
     }
 
+    /// Creates `path` and any missing parents, and syncs the parent of each
+    /// one it created: a new directory is a name in its parent, and without
+    /// the sync a power loss can take it, and every file written into it
+    /// since, however carefully those were synced.
     public func createDirectory(_ path: String) throws(StoreError) {
         var prefix = path.hasPrefix("/") ? "/" : ""
         for component in path.split(separator: "/", omittingEmptySubsequences: true) {
             prefix = prefix.isEmpty || prefix == "/" ? prefix + component : prefix + "/" + component
-            if CSys.makeDirectory(prefix, permissions: 0o755) != 0, errno != EEXIST {
+            if CSys.makeDirectory(prefix, permissions: 0o755) == 0 {
+                try syncDirectory(StorePath.directory(of: prefix))
+            } else if errno != EEXIST {
                 throw StoreError(errno: errno, operation: "mkdir", path: prefix)
             }
         }

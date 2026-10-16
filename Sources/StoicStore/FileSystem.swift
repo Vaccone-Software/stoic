@@ -88,7 +88,9 @@ public protocol FileSystem: Sendable {
     /// Bytes available to this process on the volume holding `directory`.
     func freeSpace(at directory: String) throws(StoreError) -> UInt64
 
-    /// Creates `path` and any missing parents; succeeds if it exists.
+    /// Creates `path` and any missing parents, durably: the parent of each
+    /// directory created is synced, since a new directory is a name in it.
+    /// Succeeds if `path` exists.
     func createDirectory(_ path: String) throws(StoreError)
 
     /// The permission bits (`0o600`, `0o644`, …) of the file at `path`,

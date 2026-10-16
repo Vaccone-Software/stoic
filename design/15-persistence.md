@@ -94,8 +94,14 @@ type, `StoreError`.
   durable rename makes the new name point at the renamed file whether or not
   the `create` of its old name ever became durable. That is the harsher
   reading, and it is what makes "rename before `fullSync`" visibly wrong.
-- **Directories are always durable in the simulation.** Only file names and
-  contents are modelled, which is all the store uses.
+- **A new directory is a name in its parent.** `FileSystem.createDirectory`
+  syncs the parent of every directory it creates (`PosixFileSystem` and the
+  simulation alike), so the store's directory is durable once it returns. A
+  directory made some other way (`FileManager`) whose parent was never synced
+  can vanish in a power loss with every file in it, however carefully those
+  were synced: create the store's directory with `createDirectory`. The
+  simulation models directory creation as a pending entry in the parent, and
+  a crash loses whatever is inside a directory that did not survive.
 - **Whole-file reads at open.** The journal reads its log whole at open and
   at `replay()`. Compaction is how it stays small; it is not a database.
 - **Items as bytes, not `Codable`.** `OutboxCodec` is a pair of closures:
@@ -110,8 +116,12 @@ type, `StoreError`.
 
 - A file's `write` and `truncate` are *pending* until `fullSync` on that
   file; the file is durable as of the last `fullSync`.
-- A name (create, rename, remove) is *pending* until `syncDirectory`. Syncing
-  a file does not sync its name; syncing a directory does not sync file data.
+- A name (create, rename, remove, and a new directory) is *pending* until
+  `syncDirectory` of its directory. Syncing a file does not sync its name;
+  syncing a directory does not sync file data.
+- A `fullSync` that fails drops the file's pending writes, as Linux does after
+  a writeback error: readers still see them, and no later `fullSync` makes them
+  durable. (This is why a failed sync poisons a journal and is never retried.)
 - A crash keeps the durable state plus **any subset** of the pending
   operations (per file, applied in order; zero-filled where a later write
   survives without an earlier one), each write **torn at any byte**, and any

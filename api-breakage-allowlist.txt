@@ -7,3 +7,4 @@ API breakage: enumelement StoreError.Kind.durabilityUnknown has been added as a 
 API breakage: enumelement SettingsStore.UpdateError.durabilityUnknown has been added as a new enum case
 API breakage: constructor Journal.Options.init(maxRecordSize:middleDamage:crossProcessLock:) has been removed
 API breakage: func Outbox.open(at:codec:fileSystem:policy:compactionThreshold:) has been renamed to func open(at:codec:fileSystem:policy:compactionThreshold:journalOptions:)
+API breakage: enumelement SimulatedFileSystem.Operation.createDirectory has been added as a new enum case

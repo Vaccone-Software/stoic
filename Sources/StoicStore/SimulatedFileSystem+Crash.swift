@@ -20,16 +20,16 @@ extension SimulatedFileSystem {
             let pendingInodes = state.inodes.keys.sorted().filter { !state.inodes[$0]!.pending.isEmpty }
             let choices: [Int: [DataChoice]] = Dictionary(uniqueKeysWithValues: pendingInodes.map { ($0, dataChoices(for: $0)) })
 
-            var seen = Set<[String: [UInt8]]>()
+            var seen = Set<Image>()
             var images: [CrashImage] = []
 
             func add(dirMask: [Bool], picks: [Int: DataChoice], description: String) {
-                let (files, modes) = resolve(dirMask: dirMask, picks: picks)
-                guard seen.insert(files).inserted else { return }
+                let (files, modes, directories) = resolve(dirMask: dirMask, picks: picks)
+                guard seen.insert(Image(files: files, directories: directories)).inserted else { return }
                 images.append(CrashImage(
                     operationCount: operationCount,
                     description: description,
-                    fileSystem: SimulatedFileSystem(restoring: files, modes: modes, like: state)
+                    fileSystem: SimulatedFileSystem(restoring: files, modes: modes, directories: directories, like: state)
                 ))
             }
 
@@ -88,21 +88,31 @@ extension SimulatedFileSystem {
             return images
         }
 
+        /// What makes two images the same: their files and their directories.
+        struct Image: Hashable {
+            let files: [String: [UInt8]]
+            let directories: Set<String>
+        }
+
         /// The files visible after applying the chosen directory operations
         /// to the durable names and the chosen contents to each file, with
-        /// each file's permission bits.
-        func resolve(dirMask: [Bool], picks: [Int: DataChoice]) -> (files: [String: [UInt8]], modes: [String: UInt16]) {
+        /// each file's permission bits, and the directories that survive. A
+        /// file or directory inside a directory that did not survive is gone.
+        func resolve(dirMask: [Bool], picks: [Int: DataChoice]) -> (files: [String: [UInt8]], modes: [String: UInt16], directories: Set<String>) {
             var names = state.durableNames
+            var directories = state.durableDirectories
             for (operation, keep) in zip(state.pendingDirOps, dirMask) where keep {
                 operation.apply(to: &names)
+                operation.apply(to: &directories)
             }
+            directories = State.surviving(directories)
             var files: [String: [UInt8]] = [:]
             var modes: [String: UInt16] = [:]
-            for (path, ino) in names {
+            for (path, ino) in State.files(names, in: directories) {
                 files[path] = picks[ino]?.content ?? state.inodes[ino]!.durable
                 modes[path] = state.inodes[ino]!.mode
             }
-            return (files, modes)
+            return (files, modes, directories)
         }
 
         /// Every directory-operation subset when there are few operations;
@@ -197,10 +207,10 @@ extension SimulatedFileSystem {
         }
     }
 
-    /// A file system holding exactly `files`, all of it durable.
-    convenience init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], like other: State) {
+    /// A file system holding exactly `files` and `directories`, all of it durable.
+    convenience init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], directories: Set<String>, like other: State) {
         self.init(capacity: other.capacity, recordsHistory: other.recordsHistory)
-        restore(files, modes: modes, links: other.links, directories: other.directories)
+        restore(files, modes: modes, links: other.links, directories: directories)
     }
 
     func restore(_ files: [String: [UInt8]], modes: [String: UInt16] = [:], links: [String: String], directories: Set<String>) {

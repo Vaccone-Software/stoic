@@ -26,8 +26,12 @@ internal import Synchronization
 ///         }
 ///     }
 ///
-/// Directories always exist durably: only files and their names are modelled,
-/// which is the surface the store uses. Paths are `/`-separated strings.
+/// A directory made by ``createDirectory(_:)`` is a name in its parent like
+/// any other, pending until the parent is synced, which `createDirectory`
+/// does before it returns; a crash inside it can lose the directory and
+/// everything in it. A failed ``fullSync(_:)`` drops the file's pending
+/// writes, as Linux does after a writeback error: readers still see them, and
+/// no later sync makes them durable. Paths are `/`-separated strings.
 public final class SimulatedFileSystem: FileSystem {
     let state: Mutex<State>
 
@@ -49,6 +53,7 @@ public final class SimulatedFileSystem: FileSystem {
         case write(path: String, offset: Int, count: Int)
         case truncate(path: String, size: Int)
         case fullSync(path: String)
+        case createDirectory(path: String)
         case rename(from: String, to: String)
         case exchange(String, String)
         case remove(path: String)
@@ -60,6 +65,7 @@ public final class SimulatedFileSystem: FileSystem {
             case .write(let path, let offset, let count): "write \(path) [\(offset)..<\(offset + count)]"
             case .truncate(let path, let size): "truncate \(path) to \(size)"
             case .fullSync(let path): "fullSync \(path)"
+            case .createDirectory(let path): "createDirectory \(path)"
             case .rename(let from, let to): "rename \(from) -> \(to)"
             case .exchange(let first, let second): "exchange \(first) <-> \(second)"
             case .remove(let path): "remove \(path)"
@@ -135,7 +141,11 @@ public final class SimulatedFileSystem: FileSystem {
     /// legally produce, use ``crashImages(afterOperation:samples:seed:)``.
     public func crash() {
         state.withLock { state in
-            state = State(restoring: state.imageWithNothingPending(), modes: state.durableModes(), like: state)
+            let directories = State.surviving(state.durableDirectories)
+            state = State(
+                restoring: State.files(state.imageWithNothingPending(), in: directories), modes: state.durableModes(),
+                links: state.links, directories: directories, like: state
+            )
         }
     }
 
@@ -185,7 +195,11 @@ public final class SimulatedFileSystem: FileSystem {
     }
 
     /// Makes matching calls fail with `errno`, leaving the file system as it
-    /// was before the call.
+    /// was before the call, with one exception, because it is what a real
+    /// kernel does: a failed `fullSync` drops the file's pending writes from
+    /// durability (they stay visible to readers, and a later sync does not
+    /// bring them back), so a caller that retries the sync and trusts the
+    /// answer is caught.
     ///
     /// - Parameters:
     ///   - skipping: How many matching calls succeed first.
@@ -297,12 +311,19 @@ public final class SimulatedFileSystem: FileSystem {
         }
     }
 
+    /// Creates `path` and any missing parents, each a pending name in its
+    /// parent that is then synced, as `PosixFileSystem` does: durable when
+    /// this returns, lost if the machine dies part-way.
     public func createDirectory(_ path: String) throws(StoreError) {
-        state.withLock { state in
+        try state.withLock { (state) throws(StoreError) in
             var prefix = ""
             for component in path.split(separator: "/", omittingEmptySubsequences: true) {
                 prefix += "/" + component
+                guard !state.directories.contains(prefix) else { continue }
                 state.directories.insert(prefix)
+                state.pendingDirOps.append(.makeDirectory(path: prefix))
+                state.record(.createDirectory(path: prefix))
+                try state.syncDirectory(StorePath.directory(of: prefix))
             }
         }
     }
@@ -350,10 +371,11 @@ extension SimulatedFileSystem {
         case rename(from: String, to: String, inode: Int)
         case exchange(first: String, second: String, firstInode: Int, secondInode: Int)
         case remove(path: String)
+        case makeDirectory(path: String)
 
         var directories: [String] {
             switch self {
-            case .create(let path, _), .remove(let path): [StorePath.directory(of: path)]
+            case .create(let path, _), .remove(let path), .makeDirectory(let path): [StorePath.directory(of: path)]
             case .rename(let from, let to, _): [StorePath.directory(of: from), StorePath.directory(of: to)]
             case .exchange(let first, let second, _, _): [StorePath.directory(of: first), StorePath.directory(of: second)]
             }
@@ -374,7 +396,13 @@ extension SimulatedFileSystem {
                 names[first] = secondInode
                 names[second] = firstInode
             case .remove(let path): names[path] = nil
+            case .makeDirectory: break
             }
+        }
+
+        /// Applies this operation to a set of directories.
+        func apply(to directories: inout Set<String>) {
+            if case .makeDirectory(let path) = self { directories.insert(path) }
         }
     }
 
@@ -391,6 +419,8 @@ extension SimulatedFileSystem {
         var durableNames: [String: Int] = [:]
         var pendingDirOps: [DirectoryOperation] = []
         var directories: Set<String> = []
+        /// The directories that would survive a crash that kept nothing pending.
+        var durableDirectories: Set<String> = []
         var links: [String: String] = [:]
         var descriptors: [Int32: Int] = [:]
         /// The open file (descriptor) holding each inode's advisory lock.
@@ -417,6 +447,7 @@ extension SimulatedFileSystem {
             capacity = other.capacity
             recordsHistory = other.recordsHistory
             self.directories = directories
+            durableDirectories = directories
             for path in files.keys.sorted() {
                 let inode = nextInode
                 nextInode += 1
@@ -425,10 +456,6 @@ extension SimulatedFileSystem {
                 durableNames[path] = inode
             }
             if recordsHistory { history = [withoutHistory()] }
-        }
-
-        init(restoring files: [String: [UInt8]], modes: [String: UInt16] = [:], like other: State) {
-            self.init(restoring: files, modes: modes, links: other.links, directories: other.directories, like: other)
         }
 
         func withoutHistoryReset() -> State {
@@ -453,6 +480,7 @@ extension SimulatedFileSystem {
                 inodes[key]!.pending = []
             }
             durableNames = live
+            durableDirectories = directories
             pendingDirOps = []
             operations = []
             checkpoints = []
@@ -466,6 +494,25 @@ extension SimulatedFileSystem {
 
         func imageWithNothingPending() -> [String: [UInt8]] {
             durableNames.mapValues { inodes[$0]!.durable }
+        }
+
+        /// `directories` without any whose parent did not survive: a
+        /// directory whose own name survived inside a lost one is lost too.
+        static func surviving(_ directories: Set<String>) -> Set<String> {
+            var kept: Set<String> = []
+            for directory in directories.sorted(by: { $0.count < $1.count }) {
+                let parent = StorePath.directory(of: directory)
+                if parent == "/" || parent == "." || kept.contains(parent) { kept.insert(directory) }
+            }
+            return kept
+        }
+
+        /// The files whose directory is among `directories`.
+        static func files<V>(_ files: [String: V], in directories: Set<String>) -> [String: V] {
+            files.filter { path, _ in
+                let parent = StorePath.directory(of: path)
+                return parent == "/" || parent == "." || directories.contains(parent)
+            }
         }
 
         mutating func record(_ operation: Operation) {
@@ -571,8 +618,17 @@ extension SimulatedFileSystem {
 
         mutating func fullSync(_ file: OpenFile) throws(StoreError) {
             let ino = try inode(for: file)
-            try checkFault(.fullSync, path: inodes[ino]!.name)
-            inodes[ino]!.durable = inodes[ino]!.current
+            do throws(StoreError) {
+                try checkFault(.fullSync, path: inodes[ino]!.name)
+            } catch {
+                // The kernel may have marked the dirty pages clean: readers
+                // still see the writes, but they will never reach the disk.
+                inodes[ino]!.pending = []
+                throw error
+            }
+            // What was pending, not what readers see: writes an earlier failed
+            // sync dropped are not made durable by this one.
+            inodes[ino]!.durable = inodes[ino]!.pending.reduce(inodes[ino]!.durable) { $1.applied(to: $0) }
             inodes[ino]!.pending = []
             record(.fullSync(path: inodes[ino]!.name))
         }
@@ -590,6 +646,7 @@ extension SimulatedFileSystem {
             for operation in pendingDirOps {
                 if operation.directories.contains(normalized) {
                     operation.apply(to: &durableNames)
+                    operation.apply(to: &durableDirectories)
                 } else {
                     remaining.append(operation)
                 }

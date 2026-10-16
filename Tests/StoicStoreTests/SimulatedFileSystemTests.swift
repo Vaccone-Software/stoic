@@ -1,4 +1,6 @@
+import Foundation
 @testable import StoicStore
+import Synchronization
 import Testing
 
 @Suite("SimulatedFileSystem")
@@ -85,6 +87,54 @@ struct SimulatedFileSystemTests {
             "create /d/a", "write /d/a [0..<2]", "fullSync /d/a", "rename /d/a -> /d/b", "syncDirectory /d",
         ])
         #expect(disk.checkpoints == [.init(label: "created", operationCount: 3)])
+    }
+
+    @Test func aFailedSyncDropsThePendingWritesForGood() throws {
+        let disk = try makeDisk()
+        try create(disk, "/d/a", "old", sync: true)
+        try disk.syncDirectory("/d")
+        disk.settle()
+        let file = try disk.open("/d/a", mode: .readWrite)
+        try disk.write(file, bytes("new"), at: 0)
+        disk.inject(EIO, on: .fullSync)
+        #expect(throws: StoreError.self) { try disk.fullSync(file) }
+        #expect(text(try disk.read(file, at: 0, count: 3)) == "new", "readers still see the write")
+        try disk.fullSync(file)   // succeeds, and proves nothing
+        try disk.close(file)
+        disk.crash()
+        #expect(disk.contents(of: "/d/a").map(text) == "old")
+    }
+
+    @Test func aDirectoryIsANameInItsParentUntilTheParentIsSynced() throws {
+        let disk = try makeDisk()
+        try disk.createDirectory("/d/sub/deeper")
+        #expect(disk.operations.map(\.description) == [
+            "createDirectory /d/sub", "syncDirectory /d", "createDirectory /d/sub/deeper", "syncDirectory /d/sub",
+        ])
+        try create(disk, "/d/sub/deeper/f", "data", sync: true)
+        try disk.syncDirectory("/d/sub/deeper")
+        // Durable once createDirectory returned.
+        let last = disk.crashImages(afterOperation: disk.operationCount)
+        #expect(last.allSatisfy { $0.fileSystem.contents(of: "/d/sub/deeper/f").map(text) == "data" })
+        // A crash before the parent's sync can lose the directory, and with
+        // it a file whose own name and data were synced.
+        let early = disk.crashImages(afterOperation: 1)
+        #expect(early.contains { (try? $0.fileSystem.exists("/d/sub")) == false })
+    }
+
+    @Test func aFileInALostDirectoryIsLostWithIt() throws {
+        // A directory made by something other than createDirectory, which
+        // never synced its parent.
+        let disk = SimulatedFileSystem()
+        disk.state.withLock { state in
+            state.directories = ["/a"]
+            state.pendingDirOps = [.makeDirectory(path: "/a")]
+        }
+        try create(disk, "/a/f", "data", sync: true)
+        try disk.syncDirectory("/a")   // the file's name is durable in /a; /a itself is not in /
+        disk.crash()
+        #expect(disk.contents(of: "/a/f") == nil)
+        #expect(try !disk.exists("/a"))
     }
 
     @Test func crashImagesAtTheStartAndEndAreSingletons() throws {
