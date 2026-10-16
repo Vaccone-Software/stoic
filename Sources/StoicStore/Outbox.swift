@@ -37,7 +37,18 @@ public import Stoic
 /// - **Retry.** Each attempt sequence runs under Stoic's `retry` with the
 ///   policy's bounded schedule and classifier, so a `Retryable` error that
 ///   says `.stop` (a 4xx, say) is not retried. When the schedule is spent the
-///   entry stays pending for the next run; nothing is dropped.
+///   entry stays pending for the next run; nothing is dropped. A declared
+///   operation's `perform` inside `deliver` that gives up settles the
+///   attempt, which is then not repeated in this run (design/22).
+/// - **Keys inside.** The entry's key is the enclosing key of every attempt:
+///   a `.keyed` operation performed inside `deliver` without a key of its own
+///   derives one from it, the same on every attempt and every relaunch.
+///
+///       try await outbox.deliverPending { entry in
+///           try await Payments.subscribe.perform { attempt in
+///               try await api.subscribe(entry.item, idempotencyKey: attempt.idempotencyKey)
+///           }
+///       }
 /// - **Cancellation.** Cancelling `deliverPending` stops it at once; the
 ///   entry in flight stays pending.
 ///
@@ -295,8 +306,12 @@ public actor Outbox<Item: Sendable> {
             var attempts = 0
             do {
                 let entry = try decode(stored)
+                // The entry's key is the attempts' key: a keyed `perform`
+                // inside `deliver` derives its own from it, the same on every
+                // attempt and every relaunch (design/22, Keys).
                 try await retry(
-                    policy.schedule, budget: policy.budget, classify: policy.classify, label: "outbox"
+                    policy.schedule, idempotencyKey: stored.key, budget: policy.budget, classify: policy.classify,
+                    label: "outbox"
                 ) { _ in
                     attempts += 1
                     try await deliver(entry)

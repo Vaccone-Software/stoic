@@ -452,6 +452,62 @@ struct OutboxTests {
         #expect(try await outbox.entries().map(\.item) == ["c"])
     }
 
+    @Test(.failureMode("design/22", "a keyed perform runs inside an outbox delivery"))
+    func aKeyedPerformInsideDeliveryDerivesItsKeyFromTheEntrys() async throws {
+        let disk = try disk()
+        var outbox = try open(disk)
+        let entryKey = try await outbox.enqueue("order")
+        let charge = Backend.remote("outbox.keyed-charge").keyed("charge")
+        let sent = SendableBox<[IdempotencyKey]>([])
+        // The charge succeeds; what follows it fails, so the outbox repeats
+        // the delivery, and in the first launch never finishes it.
+        @Sendable func deliver(failing: Bool) -> @Sendable (Outbox<String>.Entry) async throws -> Void {
+            { _ in
+                _ = try await charge.perform { attempt throws(Unavailable) in
+                    sent.mutate { $0.append(attempt.idempotencyKey) }
+                }
+                if failing { throw Unavailable() }
+            }
+        }
+        let first = try await simulate(seed: 1, faults: .none) { [outbox] _ in
+            try await outbox.deliverPending(using: deliver(failing: true))
+        }
+        #expect(first.value.failed.first?.attempts == 3)
+        try await outbox.close()
+
+        // A relaunch: a new process, a new seed, the entry still pending.
+        outbox = try open(disk)
+        let second = try await simulate(seed: 2, faults: .none) { [outbox] _ in
+            try await outbox.deliverPending(using: deliver(failing: false))
+        }
+        #expect(second.value.delivered == [entryKey])
+        let keys = sent.value
+        #expect(keys.count == 4)
+        #expect(Set(keys).count == 1)               // every attempt, every launch
+        #expect(keys[0] != entryKey)                // derived, not the entry's own
+        #expect(keys[0].rawValue.count == 36)
+    }
+
+    @Test func aPerformThatGivesUpInsideDeliveryIsNotRepeated() async throws {
+        let outbox = try open(try disk())
+        try await outbox.enqueue("order")
+        let charge = Backend.remote("outbox.gives-up").notRepeatable("charge")
+        let calls = SendableBox(0)
+        let run = try await simulate(seed: 1, faults: .none) { [outbox] _ in
+            try await outbox.deliverPending { _ in
+                _ = try await charge.perform { _ throws(Unavailable) in
+                    calls.mutate { $0 += 1 }
+                    throw Unavailable()
+                }
+            }
+        }
+        // The charge may have happened: the attempt is settled, the entry
+        // stays pending for the app to reconcile, and nothing repeats it.
+        #expect(calls.value == 1)
+        #expect(run.value.failed.first?.attempts == 1)
+        #expect(run.value.remaining == 1)
+    }
+
     @Test(.failureMode("design/15", "two processes open one outbox"))
     func aSecondOpenOfALockedOutboxIsBusy() async throws {
         let disk = try disk()

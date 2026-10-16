@@ -329,6 +329,32 @@ public nonisolated(nonsending) func retry<R, Failure: Error>(
     }
 }
 
+/// `retry` for an operation whose idempotency key was made with its intent
+/// and outlives the process: an outbox entry's. Every attempt's key is
+/// `idempotencyKey`, and so is the enclosing key of every operation started
+/// inside one, so a keyed `perform` in an attempt derives the same key on
+/// every attempt and every relaunch (design/22, Keys).
+package nonisolated(nonsending) func retry<R, Failure: Error>(
+    _ schedule: BoundedSchedule,
+    idempotencyKey: IdempotencyKey,
+    budget: RetryBudget = .perCallSite,
+    classify: RetryClassifier<Failure> = .standard,
+    label: String? = nil,
+    fileID: String = #fileID,
+    line: UInt = #line,
+    operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
+) async throws(Failure) -> R {
+    do throws(RetryStopped<Failure>) {
+        return try await retryInline(
+            schedule, budget: budget, classify: classify, nesting: .singleAttempt, clock: nil,
+            label: label, fileID: fileID, line: line,
+            identity: OperationIdentity(key: idempotencyKey, fileID: fileID, line: line), operation: operation
+        )
+    } catch {
+        throw error.lastError
+    }
+}
+
 /// The inline `retry`, saying why it stopped: what ``Retrying`` runs, so it
 /// can report a stop that was a refusal as the rejection it is.
 nonisolated(nonsending) func retryInline<R, Failure: Error>(
@@ -340,11 +366,12 @@ nonisolated(nonsending) func retryInline<R, Failure: Error>(
     label: String?,
     fileID: String,
     line: UInt,
+    identity: OperationIdentity? = nil,
     operation: nonisolated(nonsending) (Attempt) async throws(Failure) -> R
 ) async throws(RetryStopped<Failure>) -> R {
     return try await retryLoop(
         schedule, budget: budget, classify: classify, nesting: nesting, clock: clock,
-        label: label, fileID: fileID, line: line
+        label: label, fileID: fileID, line: line, identity: identity
     ) { attempt in
         await FaultPoint.hit("retry.attempt")
         let result: Result<R, Failure> = await attempt.operation.running(attempt: attempt.number) {
@@ -770,14 +797,16 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     label: String?,
     fileID: String,
     line: UInt,
+    identity: OperationIdentity? = nil,
     runAttempt: nonisolated(nonsending) (Attempt) async -> (result: Result<R, Failure>, timedOut: Bool)
 ) async throws(RetryStopped<Failure>) -> R {
     let ambient = Ambient.current
     let clock = explicitClock ?? ambient.clock
     let storage = budget.resolved(fileID: fileID, line: line, registry: ambient.budgets)
     // Started inside another operation's attempt, this retry is a
-    // sub-operation of it: nested, and keyed from it.
-    let operation = OperationIdentity.starting(fileID: fileID, line: line)
+    // sub-operation of it: nested, and keyed from it. One whose key was
+    // given is an operation of its own.
+    let operation = identity ?? OperationIdentity.starting(fileID: fileID, line: line)
     let nested = operation.isSubOperation && nesting == .singleAttempt
     var pacer = RetryPacer(ambient: ambient, clock: clock, schedule: schedule, storage: storage, label: label, fileID: fileID, line: line)
     var number = 1
