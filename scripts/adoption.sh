@@ -21,6 +21,9 @@ case "$(uname -s)" in
     *) products="$portable" ;;
 esac
 
+# A path dependency's identity is its directory's name, not the manifest's.
+identity="$(basename "$root")"
+
 work="$(mktemp -d "${TMPDIR:-/tmp}/stoic-adoption.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/Sources/App"
@@ -29,7 +32,7 @@ dependencies=""
 imports=""
 count=0
 for product in $products; do
-    dependencies="$dependencies .product(name: \"$product\", package: \"stoic\"),"
+    dependencies="$dependencies .product(name: \"$product\", package: \"$identity\"),"
     imports="${imports}import $product
 "
     count=$((count + 1))
