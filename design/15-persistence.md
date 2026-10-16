@@ -260,7 +260,10 @@ and the tombstone is removed.
 Journal records: `0x01 | keyLength | key | item` (enqueue) and
 `0x02 | keyLength | key` (acknowledge). The pending list is the snapshot's
 entries plus the log, enqueues in order minus acknowledged keys. `enqueue` is
-idempotent in its key. The pending list is kept in enqueue order with a key
+idempotent in its key while that key is pending; once its entry is acknowledged
+or discarded the key is forgotten, and enqueueing it again is a new entry,
+delivered again under the same key (there is no record of keys already
+delivered). The pending list is kept in enqueue order with a key
 index (removal leaves a hole that is squeezed out later), so opening,
 enqueueing and acknowledging are linear in the journal, not quadratic: 20,000
 pending entries open in tens of milliseconds, where a list searched per record
@@ -283,6 +286,9 @@ what the key is for.
 | an item no longer decodes                             | Reported as a failed entry with `.corrupt` and zero attempts; `discard(key)` drops it durably      |
 | the ack cannot be written                             | `deliverPending` throws the `StoreError`; the entry stays pending and will be redelivered        |
 | the log passes `compactionThreshold` after a run      | Pending entries are folded into a snapshot; a failure to do so is reported, never thrown          |
+| the journal lost records to damage in the middle      | The intact entries are pending as before; `openReport.corruption` says how many records were lost and from which sequence: a lost enqueue is an entry that is never delivered, a lost acknowledgement one that is delivered again |
+| the outbox's snapshot is lost                         | `open` throws `.corrupt`, and keeps throwing until it is opened with `journalOptions.lostSnapshot = .acceptLoss`; the entries the snapshot held are gone, and `openReport.lostSnapshot` says so |
+| two processes open one outbox                         | With `journalOptions.crossProcessLock`, the second `open` throws `.busy` (or waits, with `lockTimeout:`); without it, each keeps its own end of the log and they overwrite each other's records |
 
 ### Cross-process lock
 

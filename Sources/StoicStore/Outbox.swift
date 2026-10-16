@@ -120,6 +120,12 @@ public actor Outbox<Item: Sendable> {
         }
     }
 
+    /// What opening the journal found: damage skipped in the middle of the
+    /// log (each lost record is an enqueue never delivered or an
+    /// acknowledgement whose entry is delivered again; the report says how
+    /// many, not which), a torn tail cut, a lost snapshot accepted.
+    public nonisolated let openReport: Journal.OpenReport
+
     private let journal: Journal
     private let codec: OutboxCodec<Item>
     private let policy: DeliveryPolicy
@@ -128,6 +134,7 @@ public actor Outbox<Item: Sendable> {
     private var delivering = false
 
     private init(journal: Journal, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int, pending: PendingQueue) {
+        self.openReport = journal.openReport
         self.journal = journal
         self.codec = codec
         self.policy = policy
@@ -138,17 +145,52 @@ public actor Outbox<Item: Sendable> {
     /// Opens the outbox at `path` (a journal and its snapshot beside it),
     /// recovering whatever was pending when the app last stopped.
     ///
-    /// - Parameter compactionThreshold: Once the log passes this many bytes
-    ///   after a delivery run, the pending entries are folded into a snapshot
-    ///   and the log truncated, so acknowledgements do not accumulate.
+    /// - Parameters:
+    ///   - compactionThreshold: Once the log passes this many bytes after a
+    ///     delivery run, the pending entries are folded into a snapshot and
+    ///     the log truncated, so acknowledgements do not accumulate.
+    ///   - journalOptions: How the journal underneath is opened. Set
+    ///     ``Journal/Options/crossProcessLock`` when two processes share the
+    ///     outbox (an app and its extension in an app group): without it each
+    ///     keeps its own idea of where the log ends and they overwrite each
+    ///     other's records. ``Journal/Options/lostSnapshot`` decides what a lost
+    ///     snapshot does (``openReport`` says when one was accepted).
     public static func open(
         at path: String,
         codec: OutboxCodec<Item>,
         fileSystem: any FileSystem = PosixFileSystem(),
         policy: DeliveryPolicy = DeliveryPolicy(),
-        compactionThreshold: Int = 64 * 1024
+        compactionThreshold: Int = 64 * 1024,
+        journalOptions: Journal.Options = Journal.Options()
     ) throws(StoreError) -> Outbox {
-        let journal = try Journal.open(at: path, fileSystem: fileSystem)
+        let journal = try Journal.open(at: path, fileSystem: fileSystem, options: journalOptions)
+        return try recover(journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold)
+    }
+
+    /// ``open(at:codec:fileSystem:policy:compactionThreshold:journalOptions:)``,
+    /// waiting up to `lockTimeout` for another process to let go of the
+    /// outbox's lock (``Journal/Options/crossProcessLock``).
+    public static func open(
+        at path: String,
+        codec: OutboxCodec<Item>,
+        fileSystem: any FileSystem = PosixFileSystem(),
+        policy: DeliveryPolicy = DeliveryPolicy(),
+        compactionThreshold: Int = 64 * 1024,
+        journalOptions: Journal.Options = Journal.Options(),
+        lockTimeout: Duration
+    ) async throws(PolicyError<StoreError>) -> Outbox {
+        let journal = try await Journal.open(at: path, fileSystem: fileSystem, options: journalOptions, lockTimeout: lockTimeout)
+        do throws(StoreError) {
+            return try recover(journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold)
+        } catch {
+            throw .failed(error)
+        }
+    }
+
+    /// The pending entries, rebuilt from the snapshot and the log.
+    private static func recover(
+        _ journal: Journal, path: String, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int
+    ) throws(StoreError) -> Outbox {
         let replay = try journal.replay()
         var pending = PendingQueue()
         if let snapshot = replay.snapshot {
@@ -172,7 +214,12 @@ public actor Outbox<Item: Sendable> {
     ///
     /// Passing a `key` that is already pending is a no-op that returns it: an
     /// enqueue is idempotent in its key, so a retried enqueue (the UI
-    /// double-fired, a task re-ran) never queues twice.
+    /// double-fired, a task re-ran) never queues twice *while the first is
+    /// pending*. Once that entry has been delivered and acknowledged (or
+    /// discarded) the outbox forgets the key: enqueueing it again is a new
+    /// entry, delivered again under the same key, which a server that honours
+    /// the key deduplicates and one that does not acts on twice. An operation
+    /// must not be enqueued again after its delivery has been reported.
     @discardableResult
     public func enqueue(_ item: Item, key: IdempotencyKey = .random()) throws(StoreError) -> IdempotencyKey {
         if pending.contains(key) { return key }

@@ -399,7 +399,8 @@ struct OutboxTests {
         #expect(try await outbox.entries().map(\.item).suffix(2) == ["item 196", "late"])
     }
 
-    @Test func aFlippedBitInTheMiddleOfTheJournalCostsOneEntryNotTheRest() async throws {
+    @Test(.failureMode("design/15", "the journal lost records to damage in the middle"))
+    func aFlippedBitInTheMiddleOfTheJournalCostsOneEntryNotTheRest() async throws {
         let disk = try disk()
         var outbox = try open(disk)
         var keys: [IdempotencyKey] = []
@@ -418,7 +419,50 @@ struct OutboxTests {
 
         outbox = try open(disk)
         #expect(await outbox.pendingKeys == keys.enumerated().filter { $0.offset != 1 }.map(\.element), "the other 99 are still pending, in order")
+        // The lost enqueue is not silent: the app can see how many and from where.
+        #expect(outbox.openReport.corruptRecords == 1)
+        #expect(outbox.openReport.corruption.first?.firstLostSequence == 2)
         let report = try await outbox.deliverPending { _ in }
         #expect(report.delivered.count == 99)
+    }
+
+    @Test(.failureMode("design/15", "the outbox's snapshot is lost"))
+    func aLostSnapshotIsRefusedOnEveryOpenUntilTheLossIsAccepted() async throws {
+        let disk = try disk()
+        var outbox = try open(disk, policy: DeliveryPolicy(schedule: .fixed(.zero).attempts(1), budget: .unlimited), threshold: 1)
+        try await outbox.enqueue("a")
+        try await outbox.enqueue("b")
+        _ = try await outbox.deliverPending { _ in throw Rejected() }   // delivers nothing, compacts: a and b are in the snapshot
+        try await outbox.enqueue("c")
+        try await outbox.close()
+        let file = try disk.open("/d/outbox.snapshot", mode: .readWrite)
+        let byte = try disk.read(file, at: 30, count: 1)
+        try disk.write(file, [byte[0] ^ 0x10], at: 30)
+        try disk.fullSync(file)
+        try disk.close(file)
+
+        for _ in 0..<2 {   // the first open, and the retry after it
+            let error = #expect(throws: StoreError.self) { try open(disk) }
+            #expect(error?.kind == .corrupt)
+        }
+        outbox = try Outbox<String>.open(
+            at: "/d/outbox", codec: .utf8, fileSystem: disk, journalOptions: .init(lostSnapshot: .acceptLoss)
+        )
+        #expect(outbox.openReport.lostSnapshot)
+        #expect(try await outbox.entries().map(\.item) == ["c"])
+    }
+
+    @Test(.failureMode("design/15", "two processes open one outbox"))
+    func aSecondOpenOfALockedOutboxIsBusy() async throws {
+        let disk = try disk()
+        let locked = Journal.Options(crossProcessLock: true)
+        let first = try Outbox<String>.open(at: "/d/outbox", codec: .utf8, fileSystem: disk, journalOptions: locked)
+        let error = #expect(throws: StoreError.self) {
+            try Outbox<String>.open(at: "/d/outbox", codec: .utf8, fileSystem: disk, journalOptions: locked)
+        }
+        #expect(error?.kind == .busy)
+        try await first.close()
+        let second = try Outbox<String>.open(at: "/d/outbox", codec: .utf8, fileSystem: disk, journalOptions: locked)
+        try await second.close()
     }
 }
