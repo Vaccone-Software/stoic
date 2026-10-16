@@ -13,6 +13,7 @@ repository root lists every entry point.
 |---|---|
 | timeout built from a continuation and two tasks | `withTimeout(_:)` (cooperative) or `abandoningAfter(_:label:)` (blocking, uncancellable work) |
 | `for attempt in 0..<n { do {…} catch { sleep } }` | `retry(.exponential(base:).attempts(n))` |
+| timeouts, retry counts, breakers chosen at each call to a service | declare it: `Backend.remote("api").readOnly("user")` as a `static let`, then `.perform { attempt in … }`; say who waits with `withUrgency` |
 | generation counter checked in callbacks | `TaskSlot` or `StateMachine.whileIn` |
 | booleans tracking a lifecycle | `StateMachine` |
 | cleanup needing `await`, or in `deinit` | `withScope` + `scope.acquire(…, release:)` |
@@ -30,11 +31,12 @@ repository root lists every entry point.
 1. Every retry ends in `.attempts(n)`; it will not compile otherwise.
 2. For non-idempotent requests, send `attempt.idempotencyKey` (the same on every attempt), or create an `IdempotencyKey` outside `retry`.
 3. Don't nest retries for the same dependency (inner ones make one attempt).
-4. Never catch `CancellationError` to keep going; never wrap it.
-5. Bug-shaped errors conform to `Defect`; dependency errors to `Retryable`.
-6. Release resources in finalizers; commit in the body.
-7. No `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` or `try!` without a written reason (`// stoic:allow(<rule>): <why>`).
-8. Tests: `TestClock` + `waitForSleepers(count:)` + `advance(by:)`; `ImmediateClock` only to record delays; `FaultInjector` for failures; `@Test(.stoic(seed:))` for isolation. No real sleeps. For concurrent logic (caches, sync engines, anything with shared state across tasks), add a `simulate(seeds: 0..<500) { sim in … }` test: it explores interleavings deterministically and a failure names the seed that replays it.
+4. Declare backends and operations (`readOnly`, `idempotent`, `keyed`, `notRepeatable`) and call `perform`; never hand-pick timeouts, attempts or breaker numbers at a call site. A keyed operation sends `attempt.idempotencyKey`; an `OperationError` with `outcome == .unknown` is reconciled under its key, never asked again.
+5. Never catch `CancellationError` to keep going; never wrap it.
+6. Bug-shaped errors conform to `Defect`; dependency errors to `Retryable`.
+7. Release resources in finalizers; commit in the body.
+8. No `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` or `try!` without a written reason (`// stoic:allow(<rule>): <why>`).
+9. Tests: `TestClock` + `waitForSleepers(count:)` + `advance(by:)`; `ImmediateClock` only to record delays; `FaultInjector` for failures; `@Test(.stoic(seed:))` for isolation. No real sleeps. For concurrent logic (caches, sync engines, anything with shared state across tasks), add a `simulate(seeds: 0..<500) { sim in … }` test: it explores interleavings deterministically and a failure names the seed that replays it.
 
 ## Declaring a schema
 

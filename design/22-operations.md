@@ -501,8 +501,11 @@ so:
   (it applies its default only when there is none, so the two never
   coincide). `retry`, `Retrying`,
   `hedge` and the outbox's delivery loop never repeat a settled attempt,
-  whatever their classifier says (`retry.stopped`, reason `inner_settled`).
-  That covers giving up after retrying, refusing to repeat, and rejections.
+  whatever their classifier says (`retry.stopped`, reason `inner_settled`),
+  and a layer that stops on one settles its own enclosing attempt in turn,
+  so a layer that collapsed to one attempt in between cannot let the one
+  outside it repeat the attempt. That covers giving up after retrying,
+  refusing to repeat, and rejections.
   The mark can only suppress retries: a task that outlives its attempt finds
   the context stale and marks nothing.
 - A `perform` inside a live attempt of a `perform` on the **same backend**
@@ -688,6 +691,59 @@ succeeded as a failure.
 | ------------------------------------------------------------------ | ------------------------------------------------------------ |
 | an `HTTPClient` call runs inside a `perform` attempt               | the client makes one attempt, through no breaker or bulkhead |
 | a keyed request's retry is answered `409` or `425`                 | it is retried after at least 1 s                             |
+
+## As built
+
+The contract above is implemented as written; where the code had to choose,
+it chose this.
+
+- **The settled mark passes outward.** A `retry` (or `Retrying`, or `hedge`)
+  that stops on a settled attempt settles the attempt it runs in, if any.
+  Without it, `retry { retry { perform } }` repeated the `perform`: the middle
+  layer collapsed to one attempt and threw, and the outer one saw an
+  ordinary failure. The property test of the one-layer rule found nothing
+  else.
+- **The derived key is a version 8 UUID.** RFC 9562 gives version 5 to
+  names hashed with SHA-1 and version 8 to custom ones, its own example
+  being SHA-256; the derivation (`IdempotencyKey.derived(fromEnclosing:…)`,
+  frozen as version 1 under the namespace
+  `5e1f0c3a-7b2d-4c8e-9a61-3f4d2b8c0e17`) hashes the enclosing key, the two
+  names, each length-prefixed, and the occurrence as eight big-endian bytes.
+- **A same-backend inner call defers its classification.** Its
+  `OperationError` is marked as made for the enclosing call, which looks
+  through it to the inner failure, as if the inner layer were not there; any
+  other `OperationError` stands for itself unless nothing was executed.
+- **A shielded attempt runs in a task of its own.** Cancelling a task
+  cancels every child task, shield or no shield, and a shield inside the
+  attempt would stop its timer as well; so a brief keyed or non-repeatable
+  attempt runs in a task Stoic starts and the caller awaits, shielded,
+  under a timer at the earlier of its attempt timeout and the deadline. It is
+  never left running.
+- **"In the task of the attempt"** is decided by the task's identity
+  (`withUnsafeCurrentTask`, hashed and nothing else). A deadline's single
+  child task carries the attempt on, so a `perform` inside
+  `retry(attemptTimeout:)` or a `withTimeout` in an attempt counts its
+  occurrence; a task group or an `async let` does not.
+- **A forced-open breaker** has no `retryAfter`; a `.utility` or
+  `.background` call waits for its state to change, as for a half-open
+  breaker's verdict, bounded by the half-open timeout, at most three times.
+- **A wait for a slot that the caller's deadline ends** is that deadline
+  cutting the call off: it does not settle the enclosing attempt.
+- **`OperationError.idempotencyKey`** is the key every attempt sent: a given
+  key, or a made one that an attempt read. A made key nobody read was never
+  sent, and is `nil` (with `operation.key_unread`, also reported when such a
+  call succeeds).
+- **`operation.backend_conflict`** describes the refused declaration (its
+  kind and capacity); the backend returned is the first declaration's.
+- **The bug events fail a test** under `withTestAmbient` (a test that
+  provokes one on purpose wraps it in `withKnownIssue`); `simulate` and the
+  `.stoic` trait give each run a fresh registry too, but record no issue.
+- **The simulation runs without early timers.** With them, virtual time
+  passes while a woken task waits to run, as on a starved CPU, and a
+  deadline is cooperative: "nothing outlives its deadline" would measure the
+  scheduler, not `perform`.
+- **The outbox's delivery loop** is `retry` with the entry's key as its
+  operation's key, through a `package` overload of `retry`.
 
 ## Later
 

@@ -51,7 +51,8 @@ struct OperationNestingTests {
         #expect(run.value == ["inner_settled"])
     }
 
-    @Test func theSettledMarkPassesThroughACollapsedLayer() async throws {
+    @Test(.failureMode("design/02", "a declared operation inside the attempt settled it"))
+    func theSettledMarkPassesThroughACollapsedLayer() async throws {
         // retry → retry (collapses) → perform: the outermost must not repeat.
         let fetch = Backend.remote("nesting.through").readOnly("fetch")
         let script = Script([.fail(Transient())])

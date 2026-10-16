@@ -19,6 +19,12 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `Retryable` (errors classify themselves: `.retry`, `.retryAfter(d)`, `.stop`), `RetryClassifier.standard/.transientOnly/.never`, `RetryBudget.perCallSite/.named(_)/.unlimited`, `RetryNesting.singleAttempt/.allow`.
 - `recur(_ schedule:) { attempt in .continue / .continueAfter(d) / .stop }` → `RecurOutcome`.
 
+## Operations (declare facts, never numbers)
+- `extension Backend { static let api = Backend.remote("api") }` (also `.system`, `.local`, `.compute`; `capacity:` is the only number); `enum API { static let user = Backend.api.readOnly("user") }` (also `.idempotent`, `.keyed`, `.notRepeatable`; `length: .long`, `ceiling:`). Declare as `static let`; one name, one kind (a conflict is `operation.backend_conflict`, which fails a test).
+- `try await API.user.perform { attempt in … }`: derives the default deadline, schedule, classifier, attempt timeout, breaker, urgency-partitioned admission, budget and key from the declaration, `Urgency.current` and `Deadline.current`; runs on the caller's actor (non-Sendable captures fine); throws `OperationError<F>` (`stop: .failed(f)/.rejected(r)/.cancelled`, `outcome: .notExecuted/.executed/.unknown`, `last`, `attempts`, `idempotencyKey`). `.keyed`: send `attempt.idempotencyKey`, pass `idempotencyKey:` made with the intent (checkout opened); on `outcome == .unknown` reconcile under it, never re-ask.
+- `withUrgency(.interactive) { … }` at a tap; urgency is otherwise inferred from base priority (`.background`, `.utility`, else `.userInitiated`; never `.interactive`). `op.policy(at:)` prints the derived policy for a test.
+- A `perform` that gives up inside another retry's attempt settles it (never repeated); inside a `perform` on the same backend it makes one attempt. `Retryable.neverReachedBackend` lets a `.notRepeatable` operation be retried. Tests get fresh backend state under `withTestAmbient` (`Ambient.backends`). design/22.
+
 ## Concurrency
 - `TaskSlot<S, F>(label:)`: `.run(for: self) { [api] in … } deliver: { @MainActor model, result in … }` (only newest delivers, on the caller's actor, which is required; the owner is held weakly and handed to `deliver`, so never capture `self` in either closure; annotate `deliver` to touch actor state), `.runExclusively(for:)`, `.cancel()`.
 - `race(a, b[, c, d])` or `race([Racer { … }])`: first success; losers cancelled and awaited.

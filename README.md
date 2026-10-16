@@ -53,6 +53,24 @@ let user = try await retry(.exponential(base: .milliseconds(200)).attempts(5), a
 }
 ```
 
+**Operations** take the numbers away from call sites. Declare each backend
+once (what it is, how much it can take) and each operation on it by
+whether repeating it is harmless; say who is waiting. `perform` derives
+the rest — deadline, retries, attempt timeout, breaker, admission with
+capacity kept for people, budget, idempotency key — and its error says
+whether the backend may have acted.
+
+```swift
+extension Backend { static let payments = Backend.remote("payments") }
+enum Payments { static let subscribe = Backend.payments.keyed("subscribe") }
+
+let receipt = try await withUrgency(.interactive) {
+    try await Payments.subscribe.perform(idempotencyKey: checkout.key) { attempt in
+        try await api.subscribe(plan, idempotencyKey: attempt.idempotencyKey)
+    }
+}   // on failure, `error.outcome == .unknown` means: reconcile under the key, never re-ask
+```
+
 **Scopes** release what they acquired — on success, failure and
 cancellation, in reverse order, shielded and time-bounded.
 

@@ -7,22 +7,23 @@ Short on purpose: each rule is one you can check.
 
 ### Reach for the primitive, not the pattern
 
-| Instead of…                                               | Use                                                   |
-| --------------------------------------------------------- | ----------------------------------------------------- |
-| a continuation + two tasks + a flag to time something out | `withTimeout(_:)` / `withDeadline(_:)`                |
-| `for attempt in 0..<3 { do { … } catch { sleep } }`       | `retry(.exponential(base:).attempts(n))`              |
-| `Task.sleep` in code tests should control                 | `Ambient.sleep(for:)`, or pass `clock:`               |
-| a generation counter compared in a callback               | `TaskSlot`, or `StateMachine.whileIn`                 |
-| several booleans tracking a lifecycle                     | `StateMachine`                                        |
-| cleanup in `defer` that needs `await`, or in `deinit`     | `withScope` + `scope.acquire(…, release:)`            |
-| `DispatchSemaphore` around async work                     | `AsyncSemaphore` / `AsyncMutex`                       |
-| `AsyncStream` with an unbounded buffer                    | `Channel(capacity:overflow:)`                         |
-| a task group with no limit over a big collection          | `mapConcurrent(_:limit:)`                             |
-| a "while true, catch, sleep" loop keeping work alive      | `Supervisor`                                          |
-| a teardown list in `applicationWillTerminate`             | `ServiceGraph`                                        |
-| `try?`, or `catch { print(error) }`                       | handle it, or `withContext("what I was doing") { … }` |
-| a token in a `String` property                            | `Secret<String>`                                      |
-| ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`     |
+| Instead of…                                                | Use                                                   |
+| ---------------------------------------------------------- | ----------------------------------------------------- |
+| a continuation + two tasks + a flag to time something out  | `withTimeout(_:)` / `withDeadline(_:)`                |
+| `for attempt in 0..<3 { do { … } catch { sleep } }`        | `retry(.exponential(base:).attempts(n))`              |
+| timeouts, retries and breakers picked at each service call | a declared `Backend` operation's `perform`            |
+| `Task.sleep` in code tests should control                  | `Ambient.sleep(for:)`, or pass `clock:`               |
+| a generation counter compared in a callback                | `TaskSlot`, or `StateMachine.whileIn`                 |
+| several booleans tracking a lifecycle                      | `StateMachine`                                        |
+| cleanup in `defer` that needs `await`, or in `deinit`      | `withScope` + `scope.acquire(…, release:)`            |
+| `DispatchSemaphore` around async work                      | `AsyncSemaphore` / `AsyncMutex`                       |
+| `AsyncStream` with an unbounded buffer                     | `Channel(capacity:overflow:)`                         |
+| a task group with no limit over a big collection           | `mapConcurrent(_:limit:)`                             |
+| a "while true, catch, sleep" loop keeping work alive       | `Supervisor`                                          |
+| a teardown list in `applicationWillTerminate`              | `ServiceGraph`                                        |
+| `try?`, or `catch { print(error) }`                        | handle it, or `withContext("what I was doing") { … }` |
+| a token in a `String` property                             | `Secret<String>`                                      |
+| ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`      |
 
 ### Rules
 
@@ -34,19 +35,25 @@ Short on purpose: each rule is one you can check.
 3. **Retry at one layer.** Nested retries collapse to one attempt by
    default; do not pass `nesting: .allow` unless the layers retry different
    dependencies.
-4. **Let cancellation be cancellation.** Do not catch `CancellationError`
+4. **Declare backends and operations; never pick resilience numbers at a
+   call site.** Each dependency is a `static let` `Backend`, each call to it
+   a declared operation (`readOnly`, `idempotent`, `keyed`,
+   `notRepeatable`); call `perform`, and say who waits with `withUrgency`.
+   A `.keyed` operation sends `attempt.idempotencyKey`; an `.unknown`
+   outcome is reconciled under its key, never asked again (design/22).
+5. **Let cancellation be cancellation.** Do not catch `CancellationError`
    to continue; do not wrap it. `withContext` already passes it through.
-5. **Conform bug-shaped errors to `Defect`** so they are never retried.
+6. **Conform bug-shaped errors to `Defect`** so they are never retried.
    Conform dependency errors to `Retryable` so every retry classifies them
-   the same way.
-6. **Release in finalizers; commit in the body.** A finalizer's failure
+   the same way; claim `neverReachedBackend` only on proof nothing was sent.
+7. **Release in finalizers; commit in the body.** A finalizer's failure
    does not change the outcome; a commit's failure must.
-7. **No escape hatches without a reason in a comment:** `@unchecked
+8. **No escape hatches without a reason in a comment:** `@unchecked
 Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`. With the
-`StoicLint` plugin each fails the build unless the reason is
-written as `// stoic:allow(<rule>): <why>` on that line or the one above
-(`design/13`).
-8. **Test on virtual time.** `TestClock` for anything that races time,
+   `StoicLint` plugin each fails the build unless the reason is
+   written as `// stoic:allow(<rule>): <why>` on that line or the one above
+   (`design/13`).
+9. **Test on virtual time.** `TestClock` for anything that races time,
    `ImmediateClock` only for recording delays (its timers fire at once),
    `FaultInjector` for failures, `@Test(.stoic(seed:))` for isolation.
    Wait with `clock.waitForSleepers(count:)`, never with real sleeps.
@@ -81,12 +88,12 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
   `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`;
   every concurrency test must survive it.
 - **Lint:** `swift run --traits Lint stoic-lint --baseline
-  .stoic-lint-baseline.json Sources Plugins Package.swift` must stay clean;
+.stoic-lint-baseline.json Sources Plugins Package.swift` must stay clean;
   the lint tests are `swift test --traits Lint --filter StoicLintCoreTests`.
   Without the `Lint` trait, swift-syntax is never fetched. A new
   `stoic:allow` fails until the baseline records it: fix the code first, and
   re-record (`--write-baseline .stoic-lint-baseline.json Sources Plugins
-  Package.swift`) only for an escape a reviewer should see.
+Package.swift`) only for an escape a reviewer should see.
 - **API and allocations:** a breaking public API change fails `check.sh`
   unless listed in `api-breakage-allowlist.txt` in the same change. A hot
   path that allocates more than `Benchmarks/allocations.json` records fails
@@ -100,7 +107,7 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
 - **Contracts first.** Each primitive has a contract in `design/`. Change the
   contract and the code together; a failure-mode table row without a test
   is a gap. Mark the test that proves a row with `@Test(.failureMode("design/NN",
-  "the row's first column"))`: `FailureModeCoverageTests` fails on a row no
+"the row's first column"))`: `FailureModeCoverageTests` fails on a row no
   test claims (unless it is in `design/failure-modes.baseline`, which may
   only shrink) and on a claim whose row no longer exists.
 - **Events are API.** A new event goes in `EventCatalog`; the catalog test

@@ -92,7 +92,12 @@ in. `capped(at:)` directly after a base replaces the base's default cap
 positive base (each of its delays grows from the last, so a zero base would
 never back off) and raises a cap below the base to it.
 
-**Order of checks after a failed attempt.** (1) The task running the retry
+**Order of checks after a failed attempt.** (0) A declared operation
+inside the attempt gave up and *settled* it (design/22) → rethrow,
+`retry.stopped` with reason `inner_settled`, whatever the classifier would
+say; a retry that stops so settles its own enclosing attempt in turn, so a
+layer that collapsed to one attempt cannot let the one outside it repeat
+what the operation refused to. (1) The task running the retry
 was cancelled → rethrow; a cancelled *attempt* (its own timeout fired) is not
 a cancelled retry. (2) Nested inside another retry's attempt with
 `.singleAttempt` → rethrow, `retry.nested`. (3) The classifier says stop (a
@@ -216,6 +221,7 @@ or supervisor that can stop it.
 | each run of `recur` sends `attempt.idempotencyKey` | A new key per run: each run is its own operation                               |
 | a nested retry sends its `attempt.idempotencyKey`  | The same key on every outer attempt: derived from the outer operation's key   |
 | one attempt starts several operations from one line | A different key for each, the same for the n-th on every attempt              |
+| a declared operation inside the attempt settled it  | Not repeated, whatever the classifier says; `retry.stopped`, and the mark passes to the enclosing attempt |
 
 ## Events
 
@@ -224,7 +230,8 @@ or supervisor that can stop it.
 `retry.deadline_skip`, `retry.defect`, `retry.permanent`, `retry.nested`,
 `retry.after_capped`, `retry.cancelled` (debug: the task running the retry
 was cancelled), `retry.breaker_open` (an open breaker's wait was longer than
-the schedule's).
+the schedule's), `retry.stopped` (reason `inner_settled`: a declared
+operation inside the attempt settled it, design/22).
 
 ## Testing
 

@@ -302,8 +302,12 @@ enqueueing and acknowledging are linear in the journal, not quadratic: 20,000
 pending entries open in tens of milliseconds, where a list searched per record
 took 17 seconds. `deliverPending` takes the pending list as of its start;
 each entry runs `retry(policy.schedule, budget:, classify:)` around the user's
-closure, and is acknowledged durably the moment the closure returns. Failures
-stay pending. Semantics are at least once: an entry delivered but not yet
+closure, with the entry's key as the key of every attempt, and is
+acknowledged durably the moment the closure returns. Failures stay pending.
+Because the entry's key is the enclosing key, a keyed declared operation
+performed inside the closure without a key of its own derives one from it,
+the same on every attempt and every relaunch; and one that gives up settles
+the attempt, which the run then does not repeat (design/22). Semantics are at least once: an entry delivered but not yet
 acknowledged when the app dies is delivered again, with the same key — which is
 what the key is for.
 
