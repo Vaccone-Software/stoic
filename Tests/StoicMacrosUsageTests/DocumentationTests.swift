@@ -29,13 +29,17 @@ struct DocumentedSettings {
 @Suite("The documented examples")
 struct DocumentationTests {
     @Test func theyDoWhatTheyClaim() throws {
-        let settings = try DocumentedSettings.schema.decode(#"{"scrollSpeed": 300, "api_token": "t"}"#)
+        var warnings: [StoicSchema.Issue] = []
+        let settings = try DocumentedSettings.schema.decode(#"{"scrollSpeed": 300, "api_token": "t"}"#) {
+            warnings.append($0)
+        }
         #expect(settings.scrollSpeed == 300)
+        #expect(warnings.isEmpty)
         let failure = #expect(throws: ValidationFailure.self) {
-            try DocumentedSettings.schema.decode(#"{"scrollSpeed": 5000}"#)
+            try DocumentedSettings.schema.decode(#"{"scrollSpeed": 5000}"#) { _ in }
         }
         #expect(failure?.issues.count == 1)
-        #expect(try DocumentedShape.schema.decode(#"{"type": "pt"}"#) == .point)
+        #expect(try DocumentedShape.schema.decode(#"{"type": "pt"}"#) { _ in } == .point)
         #expect(throws: ValidationFailure.self) { try Refined<DocumentedPortRule>(0) }
     }
 }

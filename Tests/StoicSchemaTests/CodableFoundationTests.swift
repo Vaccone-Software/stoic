@@ -182,6 +182,17 @@ struct FoundationCoderTests {
         #expect(try JSONDecoder().decode(SchemaCoded<Flat>.self, from: Data(text.utf8)).value == Flat(a: 5))
     }
 
+    @Test(.failureMode("design/06", "a decode that succeeds with warnings is asked only for its value"))
+    func aWarningTravelsWithTheValueThroughTheBridge() throws {
+        // `init(from:)` cannot hand a warning to anyone, so the wrapper
+        // keeps it beside the value, with its path from the document root.
+        let text = #"{"limit": {"a": 1, "ids": [1, "two", 3]}}"#
+        let decoded = try JSONDecoder().decode(LossyEnvelope.self, from: Data(text.utf8))
+        #expect(decoded.limit.value.ids == [1, 3])
+        #expect(decoded.limit.warnings.map { "\($0.path) \($0.code)" } == ["$.limit.ids[1] dropped_element"])
+        #expect(decoded.limit == SchemaCoded(Lossy(a: 1, ids: [1, 3])))
+    }
+
     @Test func longStringsAndBigContainersAreRefusedByTheLimits() throws {
         let decoder = JSONDecoder()
         var options = DecodeOptions(mode: .lenient)
@@ -219,6 +230,22 @@ struct Flat: Schematic, Equatable {
 
 struct FlatEnvelope: Decodable {
     var limit: SchemaCoded<Flat>
+}
+
+/// A model with a lossy array, whose dropped elements are warnings.
+struct Lossy: Schematic, Equatable {
+    var a: Int
+    var ids: [Int]
+
+    static let schema = Schema.object(Lossy.self) { f in
+        let a = f.field("a", \.a, .int())
+        let ids = f.field("ids", \.ids, .lossyArray(of: .int()), default: [])
+        return f.build { v in Lossy(a: v[a], ids: v[ids]) }
+    }
+}
+
+struct LossyEnvelope: Decodable {
+    var limit: SchemaCoded<Lossy>
 }
 
 /// `levels` objects, each holding an array holding the next.

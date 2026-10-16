@@ -73,12 +73,16 @@ value and the JSON Schema that documents it are the same data.
 public struct Schema<Value: Sendable>: Sendable {
     public var node: SchemaNode                         // inspectable description
     public func decode(_ value: JSONValue, options: DecodeOptions = .strict) -> Decoded<Value>
-    public func decode(_ bytes: some Collection<UInt8>, options: DecodeOptions = .strict) throws(ValidationFailure) -> Value
+    public func decode(_ bytes: some Collection<UInt8>, options: DecodeOptions = .strict,
+                       warnings: (Issue) -> Void) throws(ValidationFailure) -> Value
     public func encode(_ value: Value, style: EncodeStyle = .full) -> JSONValue
     public func jsonSchema() -> JSONValue                // Draft 2020-12
 }
 
-public struct Decoded<Value> { public var value: Value?; public var issues: [Issue] }
+public struct Decoded<Value> {
+    public var value: Value?; public var issues: [Issue]
+    public func get(warnings: (Issue) -> Void) throws(ValidationFailure) -> Value
+}
 
 public struct Issue: Sendable, Hashable {
     public enum Severity { case error, repaired, warning }
@@ -99,6 +103,20 @@ public struct ValidationFailure: Error { public var issues: [Issue] }
 decoded independently; every issue is collected with its path and, when the
 input was text, its line and column. A value is produced only when no issue
 is an error (or, under `.lenient`, after repairs).
+
+**No silent lossy path.** A warning or a repair is a decision the decoder
+made for the app: an element dropped from a lossy array, a case the server
+added read as the unknown case, a newer document read best effort, a field
+replaced by its default. So no entry point hands over the value alone
+without being told where those go: `decode(text, warnings:)` and
+`Decoded.get(warnings:)` take the handler as a required argument, and
+`{ _ in }` is how a caller says it drops them, in a line a reviewer reads.
+`decodeReporting(_:)` returns everything as a `Decoded`. A sink in
+`DecodeOptions` was the alternative and was refused: an optional sink
+defaults to nowhere, which is the silent path again, and a closure would
+cost `DecodeOptions` its `Hashable`. Through `Codable`, where `init(from:)`
+has no one to hand a warning to, `SchemaCoded` keeps its warnings beside its
+value.
 
 **Decode options.**
 
@@ -230,6 +248,7 @@ schema and throws one `DecodingError` listing every issue.
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
+| a decode that succeeds with warnings is asked only for its value | The warnings go to the `warnings:` handler every value-only entry point requires, or stay beside the value in `SchemaCoded`; none is dropped unless the caller wrote `{ _ in }` |
 | a value is clamped into a refinement with a step | Moved into every range, then to the nearest multiple (the lower on a tie); never a trap on the input. A refinement with no nearest value has no `init(clamping:)` |
 | a value read through the Codable bridge nests deeper than `maxDepth` | One `DecodingError.dataCorrupted` naming the limit, before the schema runs; the walk keeps its own stack, so no depth exhausts the thread's (`maxStringBytes` and `maxContainerCount` are enforced the same way) |
 | a value read through the Codable bridge repeats a key | Not seen: the `Decoder` resolved it before the schema was asked (`JSONDecoder` keeps the first value). Wire data and files go through the schema's text entry points, which refuse it with both locations |
@@ -428,7 +447,7 @@ the order it was built:
 
 ### The Codable bridge
 
-- **Inbound.** `schema.decode(from: decoder)` reads whatever the decoder
+- **Inbound.** `schema.decode(from: decoder, warnings:)` reads whatever the decoder
   holds into a `JSONValue` (`JSONValue(reading:)`: a keyed container walked
   with a `DynamicKey: CodingKey`, else an unkeyed one, else a single value,
   tried in that order), runs the schema, and returns the value or throws
@@ -442,8 +461,10 @@ the order it was built:
   arrays as unkeyed, integers as `Int64`/`UInt64`, other numbers as `Double`.
   A value the schema cannot write (NaN) is an `EncodingError`.
 - **`SchemaCoded<T: Schematic>`** is the wrapper (`Codable`, `Equatable` and
-  `Hashable` when `T` is) for a property, an element or a top-level value;
-  `decodeSchema`/`decodeSchemaIfPresent`/`encodeSchema` on the containers
+  `Hashable` when `T` is, on the value alone) for a property, an element or
+  a top-level value; it keeps the warnings of the decode that made it in
+  `warnings`, with their full paths. `decodeSchema`/`decodeSchemaIfPresent`
+  (each with a required `warnings:` handler)/`encodeSchema` on the containers
   serve hand-written `init(from:)`. `CodingUserInfoKey.schemaDecodeOptions`
   and `.schemaEncodeStyle` choose lenient decoding or sparse encoding through
   `userInfo`, without touching any conformance.

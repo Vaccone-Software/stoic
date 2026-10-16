@@ -40,19 +40,26 @@ extension Schema {
     ///         init(from decoder: any Decoder) throws {
     ///             let container = try decoder.container(keyedBy: CodingKeys.self)
     ///             title = try container.decode(String.self, forKey: .title)
-    ///             settings = try container.decodeSchema(Settings.self, forKey: .settings)
+    ///             settings = try container.decodeSchema(Settings.self, forKey: .settings) { log($0) }
     ///         }
     ///     }
     ///
-    /// - Parameter options: How to decode. Defaults to the
-    ///   ``CodingUserInfoKey/schemaDecodeOptions`` in the decoder's user
-    ///   info, and then to `.strict`. Warnings and repairs are dropped on
-    ///   the success path, as in ``decode(_:options:)-(String,_)``.
-    public func decode(from decoder: any Decoder, options: DecodeOptions? = nil) throws -> Value {
+    /// - Parameters:
+    ///   - options: How to decode. Defaults to the
+    ///     ``CodingUserInfoKey/schemaDecodeOptions`` in the decoder's user
+    ///     info, and then to `.strict`.
+    ///   - warnings: Receives the warnings and repairs of a decode that
+    ///     succeeded, with their full paths. Required, as for
+    ///     ``Decoded/get(warnings:)``: a dropped element or a fallback case
+    ///     is a decision the app should see.
+    public func decode(
+        from decoder: any Decoder,
+        options: DecodeOptions? = nil,
+        warnings: (Issue) -> Void
+    ) throws -> Value {
         let chosen = options ?? (decoder.userInfo[.schemaDecodeOptions] as? DecodeOptions) ?? .strict
         let json = try JSONValue(reading: decoder, limits: chosen.parse)
         let result = decode(json, options: chosen)
-        if let value = result.value { return value }
         let prefix = JSONPath(decoder.codingPath.map { key in
             key.intValue.map { JSONPath.Component.index($0) } ?? .key(key.stringValue)
         })
@@ -60,6 +67,10 @@ extension Schema {
             var shown = issue
             shown.path = JSONPath(prefix.components + issue.path.components)
             return shown
+        }
+        if let value = result.value {
+            for issue in issues { warnings(issue) }
+            return value
         }
         let count = issues.filter { $0.severity == .error }.count
         let place = prefix.components.isEmpty ? "the document" : "\(prefix)"
@@ -104,17 +115,27 @@ extension Schema {
 ///     }
 ///
 /// Decoding throws one `DecodingError.dataCorrupted` listing every issue
-/// with its full path (see ``Schema/decode(from:options:)``); encoding writes
-/// what the schema encodes.
+/// with its full path (see ``Schema/decode(from:options:warnings:)``);
+/// encoding writes what the schema encodes.
+///
+/// A decode that succeeded with warnings keeps them in ``warnings``, beside
+/// the value, because `init(from:)` has nowhere else to put them: a lossy
+/// read is never silent, it travels with what it read.
 public struct SchemaCoded<Value: Schematic>: Codable, Sendable {
     public var value: Value
+    /// The warnings and repairs of the decode that made this value, with
+    /// their full paths; empty for a value made in code.
+    public let warnings: [Issue]
 
     public init(_ value: Value) {
         self.value = value
+        warnings = []
     }
 
     public init(from decoder: any Decoder) throws {
-        value = try Value.schema.decode(from: decoder)
+        var found: [Issue] = []
+        value = try Value.schema.decode(from: decoder) { found.append($0) }
+        warnings = found
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -122,25 +143,44 @@ public struct SchemaCoded<Value: Schematic>: Codable, Sendable {
     }
 }
 
-extension SchemaCoded: Equatable where Value: Equatable {}
-extension SchemaCoded: Hashable where Value: Hashable {}
+/// Equal when the values are: the warnings say how a value was read, not
+/// what it is.
+extension SchemaCoded: Equatable where Value: Equatable {
+    public static func == (lhs: SchemaCoded, rhs: SchemaCoded) -> Bool { lhs.value == rhs.value }
+}
+
+extension SchemaCoded: Hashable where Value: Hashable {
+    public func hash(into hasher: inout Hasher) { hasher.combine(value) }
+}
 
 extension KeyedDecodingContainer {
-    /// Decodes a schema-backed value stored under `key`.
-    public func decodeSchema<Value: Schematic>(_ type: Value.Type, forKey key: Key) throws -> Value {
-        try decode(SchemaCoded<Value>.self, forKey: key).value
+    /// Decodes a schema-backed value stored under `key`, handing the
+    /// warnings of a decode that succeeded to `warnings`.
+    public func decodeSchema<Value: Schematic>(
+        _ type: Value.Type, forKey key: Key, warnings: (Issue) -> Void
+    ) throws -> Value {
+        let coded = try decode(SchemaCoded<Value>.self, forKey: key)
+        for issue in coded.warnings { warnings(issue) }
+        return coded.value
     }
 
     /// Decodes it if the key is present and not null.
-    public func decodeSchemaIfPresent<Value: Schematic>(_ type: Value.Type, forKey key: Key) throws -> Value? {
-        try decodeIfPresent(SchemaCoded<Value>.self, forKey: key)?.value
+    public func decodeSchemaIfPresent<Value: Schematic>(
+        _ type: Value.Type, forKey key: Key, warnings: (Issue) -> Void
+    ) throws -> Value? {
+        guard let coded = try decodeIfPresent(SchemaCoded<Value>.self, forKey: key) else { return nil }
+        for issue in coded.warnings { warnings(issue) }
+        return coded.value
     }
 }
 
 extension UnkeyedDecodingContainer {
-    /// Decodes the next element as a schema-backed value.
-    public mutating func decodeSchema<Value: Schematic>(_ type: Value.Type) throws -> Value {
-        try decode(SchemaCoded<Value>.self).value
+    /// Decodes the next element as a schema-backed value, handing the
+    /// warnings of a decode that succeeded to `warnings`.
+    public mutating func decodeSchema<Value: Schematic>(_ type: Value.Type, warnings: (Issue) -> Void) throws -> Value {
+        let coded = try decode(SchemaCoded<Value>.self)
+        for issue in coded.warnings { warnings(issue) }
+        return coded.value
     }
 }
 

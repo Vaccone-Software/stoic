@@ -158,7 +158,7 @@ struct ObjectAccumulationTests {
 
     @Test func failureDescriptionIsOneIssuePerLine() {
         do throws(ValidationFailure) {
-            _ = try Settings.schema.decode(#"{"scrollSpeed": 1, "theme": "x", "maxHistory": -5}"#)
+            _ = try Settings.schema.decode(#"{"scrollSpeed": 1, "theme": "x", "maxHistory": -5}"#) { _ in }
             fail("expected a failure")
         } catch {
             let lines = error.description.split(separator: "\n").map(String.init)

@@ -46,3 +46,9 @@ API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missi
 API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 8 type change from (StoicSchema.ObjectReader<Value>) -> StoicSchema.Construction<Value> to [StoicSchema.Migration]
 API breakage: constructor Refined.init(clamping:) has generic signature change from <R where R : StoicSchema.Refinement, R.Base : Swift.FixedWidthInteger> to <R where R : StoicSchema.ClampableRefinement, R.Base : Swift.FixedWidthInteger>
 API breakage: constructor Refined.init(clamping:) has generic signature change from <R where R : StoicSchema.Refinement, R.Base == Swift.Double> to <R where R : StoicSchema.ClampableRefinement, R.Base == Swift.Double>
+API breakage: func Decoded.get() has been renamed to func get(warnings:)
+API breakage: func Schema.decode(_:options:) has been renamed to func decode(_:options:warnings:)
+API breakage: func Schema.decode(from:options:) has been renamed to func decode(from:options:warnings:)
+API breakage: func KeyedDecodingContainer.decodeSchema(_:forKey:) has been renamed to func decodeSchema(_:forKey:warnings:)
+API breakage: func KeyedDecodingContainer.decodeSchemaIfPresent(_:forKey:) has been renamed to func decodeSchemaIfPresent(_:forKey:warnings:)
+API breakage: func UnkeyedDecodingContainer.decodeSchema(_:) has been renamed to func decodeSchema(_:warnings:)

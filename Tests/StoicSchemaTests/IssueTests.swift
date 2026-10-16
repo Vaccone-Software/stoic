@@ -275,7 +275,7 @@ struct ReadingOrderTests {
     @Test func thePrintedReportReadsTopToBottom() {
         let text = "{\"third\": 97, \"first\": 99,\n \"second\": 98}"
         do throws(ValidationFailure) {
-            _ = try Backwards.schema.decode(text)
+            _ = try Backwards.schema.decode(text) { _ in }
             Issue.record("expected a failure")
         } catch {
             let lines = error.description.split(separator: "\n").map { $0.prefix(4) }

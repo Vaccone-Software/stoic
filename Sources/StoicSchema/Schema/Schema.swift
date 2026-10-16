@@ -71,18 +71,29 @@ public struct Schema<Value: Sendable>: Sendable {
 
     /// Parses `bytes` and decodes them, returning the value or throwing
     /// every issue found. Malformed JSON is one `parse_error` issue at the
-    /// parser's position. Warnings and repairs are lost on the success
-    /// path; use ``decodeReporting(_:options:)`` to keep them.
+    /// parser's position.
+    ///
+    /// On success the warnings and repairs go to `warnings`, which has no
+    /// default: a dropped element, an unknown case read as its fallback or a
+    /// repaired field is something the app decided, and the shortest way to
+    /// a value must not be the way that hides it (see
+    /// ``Decoded/get(warnings:)``). ``decodeReporting(_:options:)`` returns
+    /// them with the value instead.
     public func decode(
         _ bytes: some Collection<UInt8>,
-        options: DecodeOptions = .strict
+        options: DecodeOptions = .strict,
+        warnings: (Issue) -> Void
     ) throws(ValidationFailure) -> Value {
-        try decodeReporting(bytes, options: options).get()
+        try decodeReporting(bytes, options: options).get(warnings: warnings)
     }
 
     /// Parses `text` and decodes it; see the bytes overload.
-    public func decode(_ text: String, options: DecodeOptions = .strict) throws(ValidationFailure) -> Value {
-        try decodeReporting(text, options: options).get()
+    public func decode(
+        _ text: String,
+        options: DecodeOptions = .strict,
+        warnings: (Issue) -> Void
+    ) throws(ValidationFailure) -> Value {
+        try decodeReporting(text, options: options).get(warnings: warnings)
     }
 
     /// Parses `bytes` and decodes them without throwing: the value if there

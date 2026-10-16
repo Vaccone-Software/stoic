@@ -107,7 +107,7 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
         }
         """
     do {
-        _ = try Settings.schema.decode(text)
+        _ = try Settings.schema.decode(text) { warning in print("  warning: \(warning)") }
     } catch {
         print("\(error)".split(separator: "\n").map { "  \($0)" }.joined(separator: "\n"))
     }

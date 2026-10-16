@@ -30,8 +30,9 @@ private struct Handwritten: Codable, Equatable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decode(String.self, forKey: .title)
-        network = try container.decodeSchema(Network.self, forKey: .network)
-        shape = try container.decodeSchemaIfPresent(Shape.self, forKey: .shape)
+        // This fixture keeps no warnings; saying so is the point of the parameter.
+        network = try container.decodeSchema(Network.self, forKey: .network) { _ in }
+        shape = try container.decodeSchemaIfPresent(Shape.self, forKey: .shape) { _ in }
     }
 
     func encode(to encoder: any Encoder) throws {

@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -140,15 +141,15 @@ struct EntryPointTests {
     }
 
     @Test func throwingEntryPointReturnsTheValue() throws {
-        let value = try Schema.array(of: .int()).decode("[1, 2]")
+        let value = try Schema.array(of: .int()).decode("[1, 2]") { _ in }
         #expect(value == [1, 2])
-        let fromBytes = try Schema.array(of: .int()).decode(Array("[3]".utf8))
+        let fromBytes = try Schema.array(of: .int()).decode(Array("[3]".utf8)) { _ in }
         #expect(fromBytes == [3])
     }
 
     @Test func throwingEntryPointThrowsEveryIssue() {
         do throws(ValidationFailure) {
-            _ = try Schema.array(of: .int()).decode("[\"a\", 2,\n \"b\"]")
+            _ = try Schema.array(of: .int()).decode("[\"a\", 2,\n \"b\"]") { _ in }
             fail("expected a failure")
         } catch {
             #expect(error.issues.count == 2)
@@ -157,9 +158,9 @@ struct EntryPointTests {
     }
 
     @Test func aStringLiteralIsTextNotAJSONString() throws {
-        // `decode("...")` must mean the text overload, not the JSONValue one
-        // (JSONValue is ExpressibleByStringLiteral).
-        let value = try Schema.int().decode("42")
+        // `decode("...") { … }` must mean the text overload, not the
+        // JSONValue one (JSONValue is ExpressibleByStringLiteral).
+        let value = try Schema.int().decode("42") { _ in }
         #expect(value == 42)
     }
 
@@ -178,7 +179,7 @@ struct EntryPointTests {
 
     @Test func malformedJSONThrowsAValidationFailure() {
         do throws(ValidationFailure) {
-            _ = try Schema.int().decode("{")
+            _ = try Schema.int().decode("{") { _ in }
             fail("expected a failure")
         } catch {
             #expect(error.issues.map(\.code) == [.parseError])
@@ -244,12 +245,28 @@ struct EntryPointTests {
 
     @Test func decodedGetThrowsOrReturns() throws {
         let good = Schema.int().decode(json("5"))
-        #expect(try good.get() == 5)
+        #expect(try good.get { _ in } == 5)
         let bad = Schema.int().decode(json("\"a\""))
-        #expect(throws: ValidationFailure.self) { try bad.get() }
+        #expect(throws: ValidationFailure.self) { try bad.get { _ in } }
         #expect(bad.errors.count == 1)
         #expect(bad.warnings.isEmpty)
         #expect(bad.repairs.isEmpty)
+    }
+
+    @Test(.failureMode("design/06", "a decode that succeeds with warnings is asked only for its value"))
+    func theValueAloneCannotBeTakenWithoutSayingWhereTheWarningsGo() throws {
+        // A dropped element is a decision; the shortest way to the value
+        // hands it over instead of hiding it.
+        let schema = Schema.lossyArray(of: Schema.int())
+        var seen: [String] = []
+        let value = try schema.decode("[1, \"two\", 3]") { seen.append("\($0.path) \($0.code)") }
+        #expect(value == [1, 3])
+        #expect(seen == ["$[1] dropped_element"])
+        seen = []
+        _ = try schema.decodeReporting("[1, \"two\"]").get { seen.append("\($0.code)") }
+        #expect(seen == ["dropped_element"])
+        // A failure throws them all, warnings beside the errors.
+        #expect(throws: ValidationFailure.self) { try Schema.array(of: Schema.int()).decode("[\"x\"]") { _ in } }
     }
 
     @Test func validateFindsProblemsInSwiftValues() {

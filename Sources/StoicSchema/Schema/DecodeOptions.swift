@@ -63,9 +63,17 @@ public struct Decoded<Value: Sendable>: Sendable {
     public var warnings: [Issue] { issues.filter { $0.severity == .warning } }
     public var repairs: [Issue] { issues.filter { $0.severity == .repaired } }
 
-    /// The value, or every issue as one error.
-    public func get() throws(ValidationFailure) -> Value {
+    /// The value, or every issue as one error. On success the warnings and
+    /// repairs are handed to `warnings` first, in reading order.
+    ///
+    /// There is no way to take only the value without saying where they go,
+    /// because they are decisions: an element dropped from a lossy array, a
+    /// case the server added read as the unknown case, a newer document read
+    /// best effort, a field repaired to its default. Pass `{ _ in }` to drop
+    /// them; that is then a choice someone wrote down.
+    public func get(warnings: (Issue) -> Void) throws(ValidationFailure) -> Value {
         guard let value else { throw ValidationFailure(issues: issues) }
+        for issue in issues where issue.severity != .error { warnings(issue) }
         return value
     }
 }

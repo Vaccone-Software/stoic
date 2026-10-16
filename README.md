@@ -215,7 +215,9 @@ struct Settings {
     @Length(1...253) @Count(0...8) @Unique var hosts: [String] = []
 }
 
-try Settings.schema.decode(text)   // every issue, with its line and column
+// Every issue, with its line and column; warnings (a deprecated spelling, a
+// dropped element) go where you say, never nowhere.
+try Settings.schema.decode(text) { warning in log(warning) }
 ```
 
 A property with no default is a required field, which is what an API's model
