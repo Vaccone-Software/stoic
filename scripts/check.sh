@@ -31,8 +31,10 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # The suites that exercise shared mutable state across tasks: semaphore,
 # channel, single-flight, TaskSlot, scopes, race/map, supervision, service
 # graph, state machine, simulation, abandoning timeouts, the resilience
-# policies and the idempotency key hedged attempts read at once. A few minutes: the instrumented build is separate from the one above.
-swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey'
+# policies, the idempotency key hedged attempts read at once, and declared
+# operations (their admission partitions, breakers, settled marks and shielded
+# attempts). A few minutes: the instrumented build is separate from the one above.
+swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
 # Skipped here, run with their bounds in the plain test step above: the tests
