@@ -21,8 +21,9 @@ internal import Synchronization
 /// no teardown.
 ///
 /// What counts is explained on ``Configuration/recordWhen``; in short,
-/// failures count, a cancelled caller never does, and neither does a bug in
-/// our own code (a ``Defect``) or a refusal from another policy.
+/// failures count, and so does a call a deadline cut short (it did not answer
+/// in time); a caller cancelled for any other reason never does, and neither
+/// does a bug in our own code (a ``Defect``) or a refusal from another policy.
 ///
 ///     let breaker = CircuitBreaker(label: "payments")
 ///     do {
@@ -151,8 +152,10 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         /// `false` records a success — a `404` is the dependency answering —
         /// except for a rejection, which is then not recorded at all.
         ///
-        /// Not consulted for a cancelled caller or a ``Defect``: those are
-        /// never recorded. The default is ``CircuitBreaker/countsByDefault(_:)``.
+        /// Not consulted for a cancelled caller or a ``Defect``: a defect is
+        /// never recorded, nor a call whose caller was cancelled, unless a
+        /// deadline did the cancelling: then the call ran out of time and is
+        /// recorded as a slow failure, whatever it threw. The default is ``CircuitBreaker/countsByDefault(_:)``.
         public var recordWhen: @Sendable (any Error) -> Bool
 
         public init(
@@ -198,8 +201,9 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     ///
     /// A bulkhead that is full, a limiter that refuses, a budget that has run
     /// dry — none of these says anything about the dependency's health, so
-    /// they must not push the breaker toward opening. (Caller cancellation
-    /// and defects are excluded before any classifier runs.) A
+    /// they must not push the breaker toward opening. (Caller cancellation,
+    /// a deadline's cut-off and defects are decided before any classifier
+    /// runs.) A
     /// `CancellationError` thrown while the caller is *not* cancelled means
     /// something inside — an attempt timeout — cut the call short, which is a
     /// failure of the dependency to answer in time.
@@ -424,7 +428,12 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         }
 
         let end = clock.now
-        let verdict = judge(result, duration: start.duration(to: end), callerCancelled: Task.isCancelled)
+        // Cancelled by a deadline (an attempt timeout, or the caller's own),
+        // the call ran out of time: the dependency did not answer within what
+        // the caller could give it. Cancelled for any other reason (a user, a
+        // superseding request, a scope ending), it says nothing.
+        let cancellation: CancellationCause? = Task.isCancelled ? CancellationCause.current : nil
+        let verdict = judge(result, duration: start.duration(to: end), cancellation: cancellation)
         // Building a debug event per call is most of a closed breaker's cost;
         // skip it when nothing would record it.
         let debug = instrumentation.isEnabled(.debug)
@@ -488,7 +497,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
 
     private enum Verdict: Sendable {
         case ignored(String)
-        case recorded(failed: Bool, slow: Bool)
+        case recorded(failed: Bool, slow: Bool, timedOut: Bool = false)
     }
 
     /// A decision to report once the lock is released.
@@ -540,7 +549,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
 
     /// What a finished call says about the dependency.
     private func judge<R, Failure: Error>(
-        _ result: Result<R, Failure>, duration: Duration, callerCancelled: Bool
+        _ result: Result<R, Failure>, duration: Duration, cancellation: CancellationCause?
     ) -> Verdict {
         let slow = duration > configuration.slowCallDuration
         switch result {
@@ -548,7 +557,8 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             return .recorded(failed: false, slow: slow)
         case .failure(let error):
             if containsDefect(error) { return .ignored("defect") }
-            if callerCancelled { return .ignored("cancelled") }
+            if cancellation == .deadline { return .recorded(failed: true, slow: true, timedOut: true) }
+            if cancellation != nil { return .ignored("cancelled") }
             let inner = error.unwrappedForClassification
             let failed = configuration.recordWhen(inner)
             if inner is Rejection && !failed { return .ignored("rejection") }
@@ -574,16 +584,23 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
                 fields: [.init("reason", .string(reason), privacy: .public)]
             )]
 
-        case .recorded(let failed, let slow):
-            let recorded: [Change] = debug ? [Change(name: "breaker.recorded", level: .debug, fields: [
-                .init("outcome", .string(failed ? "failure" : "success"), privacy: .public),
-                .init("slow", .bool(slow)),
-                .init("state", .string(core.phase.state.description), privacy: .public),
-            ])] : []
+        case .recorded(let failed, let slow, let timedOut):
+            var recorded: [Change] = []
+            if debug {
+                var fields: [Event.Field] = [
+                    .init("outcome", .string(failed ? "failure" : "success"), privacy: .public),
+                    .init("slow", .bool(slow)),
+                    .init("state", .string(core.phase.state.description), privacy: .public),
+                ]
+                if timedOut { fields.append(.init("reason", .string("timed_out"), privacy: .public)) }
+                recorded = [Change(name: "breaker.recorded", level: .debug, fields: fields)]
+            }
 
             if ticket.probe != nil {
                 // A slow probe is as bad as a failed one: the dependency has
-                // not recovered if it still cannot answer in time.
+                // not recovered if it still cannot answer in time. A probe cut
+                // off by a timeout is both, so it re-opens rather than handing
+                // its permit to the next caller to hang on.
                 if failed || slow {
                     return recorded + trip(&core, now: now, trigger: failed ? "probe_failed" : "probe_slow", random: random)
                 }

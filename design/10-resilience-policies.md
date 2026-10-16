@@ -193,11 +193,10 @@ being `Retrying(attemptTimeout:)`.
   timed-out attempt is never retried. `Retrying(attemptTimeout:)` knows the
   attempt ran out of time and classifies it as transient (a `Defect` still
   stops), exactly as `retry(attemptTimeout:)` does (design/02).
-- The cost: that timeout sits outside the breaker, so the cancelled attempt
-  reaches the breaker as a cancellation, which it never counts (the same as a
-  breaker outside any timeout). If the breaker must count hung calls, put a
-  `withTimeout` inside the operation that throws your own `Retryable` timeout
-  error, and leave `attemptTimeout` off.
+- That timeout sits outside the breaker, so the cut-off attempt reaches the
+  breaker as a cancellation, but one a deadline caused: the breaker records it
+  as a slow failure (`timed_out`), so a dependency that hangs opens the
+  breaker, and a half-open probe that hangs re-opens it.
 
 **Cancellation and deadlines, for every policy.** A policy that has not
 started the operation and finds the task cancelled rejects with `.cancelled`;
@@ -262,12 +261,18 @@ an inner policy) returns it.
 **What counts.** A completed call has one of three verdicts:
 
 1. _Ignored_ — not evidence about the dependency: the caller was cancelled
-   (the task is cancelled when the operation ends, whatever it threw), the
+   for any reason but a deadline (the task is cancelled when the operation
+   ends, whatever it threw: a user, a superseding request, a scope ending), the
    error is or wraps a `Defect` (a bug in our code, not the dependency's
    health; it is rethrown, reported at error level, and a half-open probe's
    permit is returned), or the call finished after the breaker had already
    changed state (a _stale_ call, found by comparing generations).
-2. _Failure_ — `recordWhen` returned `true` for the error.
+2. _Failure_ — `recordWhen` returned `true` for the error; or a deadline
+   cancelled the call (`CancellationCause.deadline`: an attempt timeout, or the
+   caller's own deadline), which is recorded as a failure _and_ slow, whatever
+   it threw (`timed_out`). The dependency did not answer within the time the
+   caller could give it, which is the failure a breaker exists to notice: a
+   hung dependency is the common one, and it never throws.
 3. _Success_ — a return, or an error for which `recordWhen` returned `false`.
    A `404` is the dependency answering, and a probe that gets one should close
    the breaker.
@@ -451,7 +456,9 @@ the operation off the caller's task, which is why a timeout is an option of
 | every probe succeeds                                                      | Closes with an empty window; `breaker.closed` (reason `probes_succeeded`)                                 |
 | a probe fails                                                             | Re-opens for the next, longer open duration; `breaker.opened` (trigger `probe_failed`)                    |
 | a probe is still running after `halfOpenTimeout`                          | The next call or read re-opens it (`probe_timeout`); the late probe is ignored as stale                   |
-| the caller is cancelled while the operation runs                          | Not recorded; a probe's permit is returned; `breaker.ignored` (reason `cancelled`)                        |
+| the caller is cancelled while the operation runs                          | Not recorded (unless a deadline cancelled it); a probe's permit is returned; `breaker.ignored` (reason `cancelled`) |
+| a deadline cancels the call while the operation runs                      | Recorded as a slow failure (`breaker.recorded` reason `timed_out`); a probe re-opens the breaker         |
+| a dependency hangs under `Retrying(attemptTimeout:)`                      | Each cut-off attempt is a slow failure, so the breaker opens                                              |
 | the operation throws a `Defect`                                           | Rethrown; not recorded; `breaker.defect` at error level; a probe's permit is returned                     |
 | an inner policy's refusal arrives wrapped by `withContext`                | Still a refusal: not recorded; `breaker.ignored` (reason `rejection`)                                     |
 | a `Retrying` stage with a custom classifier runs inside a pipeline        | The classifier is handed the operation's own error, as when the stage runs alone                          |

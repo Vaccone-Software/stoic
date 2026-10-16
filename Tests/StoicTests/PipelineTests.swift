@@ -363,8 +363,8 @@ struct PipelineTests {
         }
     }
 
-    @Test func aTimeoutAroundAPipelineKeepsItsErrorTypeAndACancelledCallerIsNotRecorded() async {
-        await withBreakerWorld { clock, _ in
+    @Test func aTimeoutAroundAPipelineKeepsItsErrorTypeAndItsCutOffIsATimedOutCall() async {
+        await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(minimumCalls: 1), clock: clock.erased)
             let pipeline = Pipeline(breaker, Bulkhead(maxConcurrent: 4, label: "api"))
             let task = Task { () async -> Result<Int, PolicyError<Boom>> in
@@ -385,9 +385,35 @@ struct PipelineTests {
             let result = await task.value
             guard case .failure(let error) = result else { return unexpected("expected the timeout to cut the call short") }
             #expect(error.failure == .failed)
-            // The pipeline's caller was cancelled by the timeout: nothing is evidence about the dependency.
-            #expect(breaker.snapshot.calls == 0)
-            #expect(breaker.state == .closed)
+            // The timeout's deadline cut the call short: the dependency did
+            // not answer in time, which is a slow failure.
+            #expect(breaker.state == .open)
+            #expect(events.events(named: "breaker.opened").first?.number("failures") == 1)
+            #expect(events.events(named: "breaker.recorded").first?.text("reason") == "timed_out")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/10", "a dependency hangs under `Retrying(attemptTimeout:)`"))
+    func aHungDependencyOpensTheBreakerInTheRecommendedStack() async {
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(label: "api", testConfiguration(window: .calls(4), minimumCalls: 2), clock: clock.erased)
+            let pipeline = Pipeline(
+                Retrying(.fixed(.seconds(1)).attempts(1), budget: .unlimited, attemptTimeout: .seconds(2), label: "api"),
+                breaker
+            )
+            for _ in 0..<2 {
+                let task = Task {
+                    await outcome(of: pipeline) { () async throws -> Int in
+                        try await clock.sleep(for: .seconds(3600))   // the dependency hangs
+                        return 1
+                    }
+                }
+                await clock.waitForSleepers(count: 2)   // the attempt and its timeout
+                await clock.advance(by: .seconds(2))
+                _ = await task.value
+            }
+            #expect(breaker.state == .open)
+            #expect(events.events(named: "breaker.opened").first?.number("slow_calls") == 2)
         }
     }
 

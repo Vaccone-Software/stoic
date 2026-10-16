@@ -118,10 +118,10 @@ extension PolicyError {
 /// does: an attempt that runs out of time is cancelled and counts as
 /// transient, so it is retried. Prefer this to a `withTimeout` inside the
 /// operation: `Retrying` sees only the error the cut-off attempt threw, which
-/// it cannot tell from a cancellation of the caller, and stops on it. The
-/// cost is that a ``CircuitBreaker`` inside the stage sees the cut-off as a
-/// cancellation, which it does not count. Each attempt runs in a child task,
-/// on the caller's actor.
+/// it cannot tell from a cancellation of the caller, and stops on it. A
+/// ``CircuitBreaker`` inside the stage records the cut-off attempt as a slow
+/// failure (a deadline cancelled it), so a dependency that hangs opens the
+/// breaker. Each attempt runs in a child task, on the caller's actor.
 public struct Retrying: Policy {
     private let schedule: BoundedSchedule
     private let budget: RetryBudget

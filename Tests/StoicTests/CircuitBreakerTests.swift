@@ -381,6 +381,52 @@ struct CircuitBreakerTests {
         }
     }
 
+    @Test(.failureMode("design/10", "a deadline cancels the call while the operation runs"))
+    func aCallCutShortByADeadlineIsASlowFailure() async {
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(label: "deadline", testConfiguration(minimumCalls: 1), clock: clock.erased)
+            let task = Task {
+                await withDeadline(.after(.seconds(2))) { () async -> Result<Int, PolicyError<Boom>> in
+                    await outcome(of: breaker) { () async throws(Boom) -> Int in
+                        do { try await clock.sleep(for: .seconds(100)) } catch { throw .failed }
+                        return 1
+                    }
+                }
+            }
+            await clock.waitForSleepers(count: 2)
+            await clock.advance(by: .seconds(2))
+            _ = await task.value
+            #expect(breaker.state == .open)
+            let opened = events.events(named: "breaker.opened").first
+            #expect(opened?.number("failures") == 1)
+            #expect(opened?.number("slow_calls") == 1)
+            #expect(events.events(named: "breaker.recorded").first?.text("reason") == "timed_out")
+        }
+    }
+
+    @Test func aProbeCutShortByADeadlineReopensInsteadOfReturningItsPermit() async {
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(label: "probe-deadline", testConfiguration(), clock: clock.erased)
+            await breaker.failUntilOpen()
+            await clock.advance(by: .seconds(30))
+            let task = Task {
+                await withDeadline(.after(.seconds(2))) { () async -> Result<Int, PolicyError<Boom>> in
+                    await outcome(of: breaker) { () async throws(Boom) -> Int in
+                        do { try await clock.sleep(for: .seconds(100)) } catch { throw .failed }
+                        return 1
+                    }
+                }
+            }
+            await clock.waitForSleepers(count: 2)
+            await clock.advance(by: .seconds(2))
+            _ = await task.value
+            // Re-opened at once, not after halfOpenTimeout: no next caller
+            // is handed the permit to hang on.
+            #expect(breaker.state == .open)
+            #expect(events.events(named: "breaker.opened").last?.text("trigger") == "probe_failed")
+        }
+    }
+
     @Test func aSuccessThatFinishesDespiteCancellationStillCounts() async {
         await withBreakerWorld { clock, _ in
             let breaker = CircuitBreaker(label: "late-success", testConfiguration(), clock: clock.erased)
