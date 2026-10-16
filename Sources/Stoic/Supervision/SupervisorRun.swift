@@ -18,6 +18,9 @@ struct SupervisorRun {
         var monitor: Task<Void, Never>?
         var startedAt: AnyClock.Instant?
         var stepper: Schedule.Stepper
+        // When the current run of failures began: the backoff schedule's
+        // elapsed time counts from here, and starts over with the stepper.
+        var streakStart: AnyClock.Instant?
         var restartTimer: Task<Void, Never>?
         var pendingRestart: [Int] = []
         var finished = false
@@ -162,9 +165,13 @@ struct SupervisorRun {
         // A child that ran long enough starts its backoff over.
         if let started = slots[index].startedAt, started.duration(to: now) >= supervisor.resetAfter {
             slots[index].stepper = supervisor.backoff.makeStepper(random: ambient.random.generator())
+            slots[index].streakStart = nil
         }
-        // A backoff schedule that has ended means restarting should stop.
-        guard let scheduled = slots[index].stepper.next(elapsed: .zero) else {
+        let streakStart = slots[index].streakStart ?? now
+        slots[index].streakStart = streakStart
+        // A backoff schedule that has ended — out of attempts, or of the time
+        // it allows since the failures began — means restarting should stop.
+        guard let scheduled = slots[index].stepper.next(elapsed: streakStart.duration(to: now)) else {
             return SupervisorEscalation(supervisor: supervisor.label, child: child.label, lastError: error)
         }
         let delay = scheduled.saturatingMultiplied(by: ambient.conditions.current.backoffFactor)

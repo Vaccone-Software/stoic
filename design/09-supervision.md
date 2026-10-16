@@ -77,7 +77,9 @@ are counted afresh from it.
 **Backoff.** Each child waits on the supervisor's schedule before
 restarting (jittered exponential by default, capped at 30 s); a child that
 ran for `resetAfter` without stopping starts its backoff over. A schedule
-that ends means restarting should stop: the supervisor escalates.
+that ends means restarting should stop: the supervisor escalates. The
+schedule's elapsed time (`upTo(elapsed:)`) counts from the first failure of
+the current streak, and starts over with the backoff.
 
 **Heartbeats.** A child with a `HeartbeatPolicy` calls `beat()` while it
 makes progress. Silence for `misses` consecutive intervals (three by
@@ -112,6 +114,7 @@ finishes.
 | a transient child returns                            | Done; not restarted                                                               |
 | a temporary child throws                             | Done; reported                                                                    |
 | restarts exceed the intensity                        | All children stopped; `SupervisorEscalation` thrown                               |
+| the backoff schedule ends                            | All children stopped; `SupervisorEscalation` thrown                               |
 | a child stops beating                                | After `misses` intervals (past `grace`): stopped and restarted                    |
 | the Mac sleeps                                       | The liveness clock stops; no false hang                                           |
 | the process is suspended for longer than an interval | A gap, not misses: checks restart from the resume; the child gets a full interval |

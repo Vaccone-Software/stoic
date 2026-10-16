@@ -65,6 +65,32 @@ struct SupervisorTests {
         #expect(events.names.contains("supervisor.escalated"))
     }
 
+    /// A schedule bounded by time ends once that much has passed since the
+    /// failures began: restarting is not helping, so the supervisor escalates.
+    @Test(.failureMode("design/09", "the backoff schedule ends")) func aBackoffBoundedByElapsedTimeEndsAndEscalates() async throws {
+        let clock = TestClock()
+        let script = Script()
+        let supervisor = Supervisor(
+            label: "test",
+            intensity: .init(maxRestarts: 1000, within: .seconds(1)),
+            backoff: Schedule.fixed(.seconds(1)).upTo(elapsed: .seconds(3))
+        ) {
+            Child("worker") { _ in
+                _ = script.started("worker")
+                throw Crash()
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        // Failures at 0, 1 and 2 s restart after a second; the one at 3 s,
+        // three seconds into the streak, finds the schedule over.
+        for _ in 0..<3 {
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(1))
+        }
+        await #expect(throws: SupervisorEscalation.self) { try await run.value }
+        #expect(script.count("worker") == 4)
+    }
+
     @Test func oneForAllRestartsEveryChild() async throws {
         let script = Script()
         let supervisor = Supervisor(label: "test", strategy: .oneForAll, backoff: .immediate) {
