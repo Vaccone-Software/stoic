@@ -221,7 +221,20 @@ before the first byte, and cancels the task at the first byte over (counted
 after decompression, so a compression bomb is stopped too). The client
 checks the size again, for transports that do not. It follows no redirect: its
 delegate declines each one, so the 3xx is the response and the client applies
-the rules below.
+the rules below. The delegate is the session's, routing each callback to the
+task's collector by task identifier, not a delegate per task:
+swift-corelibs-foundation never calls `URLSessionTask.delegate`, so on Linux
+every request waited, unanswered, until its attempt timed out. One code path
+on every platform means the transport makes its session: `init(session:)`,
+whose session could not take the transport's delegate, is gone (a listed
+break); `init(configuration:)` carries what a caller's own session would
+(cache, cookies, proxies, timeouts).
+Verified in the `swift:6.4` image against a local HTTP server: a response, the
+byte limit (declared and streamed), a redirect returned rather than followed,
+and the client following it without its headers. The `URLProtocol` stub suite
+runs on Linux as on macOS, but for its two redirect tests: a stub can only
+redirect through `wasRedirectedTo`, which swift-corelibs-foundation does not
+implement.
 
 **`ScriptedTransport` lives in `StoicHTTP`, not a `StoicHTTPTesting`
 product,** as `SimulatedFileSystem` lives in `StoicStore`: it needs nothing

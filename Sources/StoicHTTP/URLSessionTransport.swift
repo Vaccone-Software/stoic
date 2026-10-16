@@ -24,26 +24,29 @@ internal import Synchronization
 ///   it knew to be credentials from another host, compared hosts but not
 ///   schemes or ports, and on Linux let an `https` request continue over
 ///   `http`.
+/// - **One delegate, the session's.** The session the transport makes has a
+///   delegate of its own that hands each task's callbacks to that task's
+///   collector, by task identifier, on every platform.
+///   swift-corelibs-foundation never calls a task's own delegate
+///   (`URLSessionTask.delegate`), so a transport that relied on one waited
+///   on Linux for a response that had arrived; and a session someone else
+///   made cannot take this delegate, which is why there is no initializer
+///   for one.
 public final class URLSessionTransport: HTTPTransport {
     private let session: URLSession
-    private let ownsSession: Bool
+    /// The session's delegate.
+    private let transfers: Transfers
 
-    /// A transport on a new session made from `configuration`.
+    /// A transport on a new session made from `configuration`: its cache,
+    /// cookies, proxies and timeouts are the configuration's.
     public init(configuration: URLSessionConfiguration = .default) {
-        session = URLSession(configuration: configuration)
-        ownsSession = true
-    }
-
-    /// A transport on a session you manage. The session must not have a
-    /// delegate that expects to see this transport's tasks: each task has its
-    /// own.
-    public init(session: URLSession) {
-        self.session = session
-        ownsSession = false
+        let transfers = Transfers()
+        session = URLSession(configuration: configuration, delegate: transfers, delegateQueue: nil)
+        self.transfers = transfers
     }
 
     deinit {
-        if ownsSession { session.finishTasksAndInvalidate() }
+        session.finishTasksAndInvalidate()
     }
 
     public func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse {
@@ -55,7 +58,7 @@ public final class URLSessionTransport: HTTPTransport {
 
         let transfer = Transfer(limit: maxResponseBytes)
         let task = session.dataTask(with: urlRequest)
-        task.delegate = transfer
+        transfers.register(transfer, for: task)
         do {
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, any Error>) in
@@ -72,41 +75,31 @@ public final class URLSessionTransport: HTTPTransport {
     }
 }
 
-/// Collects one task's response, enforcing the byte limit as bytes arrive.
-final class Transfer: NSObject, URLSessionDataDelegate, Sendable {
-    private struct State {
-        var continuation: CheckedContinuation<HTTPResponse, any Error>?
-        var response: HTTPURLResponse?
-        var body = ByteBudget()
+/// The session's delegate: hands each callback to the ``Transfer`` registered
+/// for its task, and forgets the transfer when the task completes. Task
+/// identifiers are unique within a session.
+final class Transfers: NSObject, URLSessionDataDelegate, Sendable {
+    private let byTask = Mutex<[Int: Transfer]>([:])
+
+    /// Routes `task`'s callbacks to `transfer`; called before the task resumes.
+    func register(_ transfer: Transfer, for task: URLSessionTask) {
+        byTask.withLock { $0[task.taskIdentifier] = transfer }
     }
 
-    private let limit: Int
-    private let state: Mutex<State>
-
-    init(limit: Int) {
-        self.limit = limit
-        state = Mutex(State(body: ByteBudget(limit: limit)))
-        super.init()
-    }
-
-    func begin(_ continuation: CheckedContinuation<HTTPResponse, any Error>) {
-        state.withLock { $0.continuation = continuation }
+    private func transfer(for task: URLSessionTask) -> Transfer? {
+        byTask.withLock { $0[task.taskIdentifier] }
     }
 
     func urlSession(
         _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
         completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
     ) {
-        let allowed = state.withLock { state -> Bool in
-            state.response = response as? HTTPURLResponse
-            // A length the server declares up front settles it before a byte moves.
-            return state.body.declare(length: response.expectedContentLength)
-        }
+        let allowed = transfer(for: dataTask)?.receive(response) ?? false
         completionHandler(allowed ? .allow : .cancel)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        let withinLimit = state.withLock { $0.body.append([UInt8](data)) }
+        let withinLimit = transfer(for: dataTask)?.receive(data) ?? false
         if !withinLimit { dataTask.cancel() }
     }
 
@@ -119,6 +112,47 @@ final class Transfer: NSObject, URLSessionDataDelegate, Sendable {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let transfer = byTask.withLock { $0.removeValue(forKey: task.taskIdentifier) }
+        transfer?.complete(error: error)
+    }
+}
+
+/// Collects one task's response, enforcing the byte limit as bytes arrive.
+final class Transfer: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<HTTPResponse, any Error>?
+        var response: HTTPURLResponse?
+        var body = ByteBudget()
+    }
+
+    private let limit: Int
+    private let state: Mutex<State>
+
+    init(limit: Int) {
+        self.limit = limit
+        state = Mutex(State(body: ByteBudget(limit: limit)))
+    }
+
+    func begin(_ continuation: CheckedContinuation<HTTPResponse, any Error>) {
+        state.withLock { $0.continuation = continuation }
+    }
+
+    /// Keeps the response's head. Returns `false` if the length it declares
+    /// is already over the limit: that settles it before a byte moves.
+    func receive(_ response: URLResponse) -> Bool {
+        state.withLock { state -> Bool in
+            state.response = response as? HTTPURLResponse
+            return state.body.declare(length: response.expectedContentLength)
+        }
+    }
+
+    /// Keeps what fits of `data`. Returns `false` once the limit is passed,
+    /// meaning the task is to be cancelled.
+    func receive(_ data: Data) -> Bool {
+        state.withLock { $0.body.append([UInt8](data)) }
+    }
+
+    func complete(error: (any Error)?) {
         let (continuation, response, body) = state.withLock { state -> (CheckedContinuation<HTTPResponse, any Error>?, HTTPURLResponse?, ByteBudget) in
             defer { state.continuation = nil }
             return (state.continuation, state.response, state.body)

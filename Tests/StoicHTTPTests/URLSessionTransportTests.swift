@@ -1,13 +1,13 @@
 import Foundation
+#if canImport(FoundationNetworking)
+// URLSession and URLProtocol live here on Linux.
+import FoundationNetworking
+#endif
 import StoicHTTP
 @testable import StoicHTTP
 import Synchronization
 import Testing
 
-// swift-corelibs-foundation's URLSession ignores a task's own delegate (the
-// data task never completes) and cannot follow a redirect from a URLProtocol,
-// so the transport is exercised over the stub on Apple platforms only.
-#if canImport(Darwin)
 /// A URL protocol that answers from a table, in-process: the real
 /// `URLSession` machinery (delegates, cancellation, redirects) with no
 /// network.
@@ -36,8 +36,10 @@ final class StubProtocol: URLProtocol {
 
     override func startLoading() {
         guard let url = request.url else { return }
-        var body: [UInt8] = []
-        if let stream = request.httpBodyStream {
+        // Apple's loading hands a protocol the body as a stream; Linux's may
+        // leave it in `httpBody`.
+        var body = request.httpBody.map { [UInt8]($0) } ?? []
+        if body.isEmpty, let stream = request.httpBodyStream {
             stream.open()
             var buffer = [UInt8](repeating: 0, count: 1024)
             while stream.hasBytesAvailable {
@@ -78,6 +80,8 @@ final class StubProtocol: URLProtocol {
             break
         case "/offline":
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+        // swift-corelibs-foundation's URLProtocolClient.wasRedirectedTo is a fatalError.
+        #if canImport(Darwin)
         case "/redirect":
             let target = URL(string: "https://other.example.com/final")!
             var next = URLRequest(url: target)
@@ -89,6 +93,7 @@ final class StubProtocol: URLProtocol {
             client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data("moved".utf8))
             client?.urlProtocolDidFinishLoading(self)
+        #endif
         case "/final":
             respond(200)
             client?.urlProtocol(self, didLoad: Data("arrived".utf8))
@@ -169,6 +174,8 @@ struct URLSessionTransportTests {
         #expect(error?.code == .notConnectedToInternet)
     }
 
+    // The stub's /redirect needs `wasRedirectedTo`, a fatalError in swift-corelibs-foundation (design/19, As built).
+    #if canImport(Darwin)
     @Test func aRedirectIsTheResponseNotFollowed() async throws {
         let transport = Self.transport()
         let response = try await transport.send(Self.request("/redirect", headers: ["X-API-Key": "secret-key"]), maxResponseBytes: 1000)
@@ -177,7 +184,21 @@ struct URLSessionTransportTests {
         #expect(response.text == "moved")
         #expect(StubProtocol.seen.map(\.url.path) == ["/redirect"], "the transport went nowhere else")
     }
+    #endif
 
+    @Test func concurrentRequestsOnOneSessionEachGetTheirOwnResponse() async throws {
+        let transport = Self.transport()
+        async let ok = transport.send(Self.request("/ok"), maxResponseBytes: 1000)
+        async let echo = transport.send(Self.request("/echo", method: .post, body: Array("ping".utf8)), maxResponseBytes: 1000)
+        async let final = transport.send(Self.request("/final"), maxResponseBytes: 1000)
+        let (first, second, third) = try await (ok, echo, final)
+        #expect(first.text == "hello")
+        #expect(second.status == 201 && second.text == "ping")
+        #expect(third.text == "arrived")
+    }
+
+    // Same reason: it redirects through the stub's /redirect.
+    #if canImport(Darwin)
     @Test func theClientFollowsARedirectOverTheRealTransportWithoutTheClientsHeaders() async throws {
         let api = HTTPClient(base: URL(string: "https://api.example.com")!, transport: Self.transport(), headers: ["X-API-Key": "secret-key"])
         let response = try await api.send(.get("/redirect", headers: ["Accept": "text/plain"]))
@@ -188,6 +209,7 @@ struct URLSessionTransportTests {
         #expect(final.headers["X-API-Key"] == nil, "a custom credential stays with its origin")
         #expect(final.headers["Accept"] == "text/plain")
     }
+    #endif
 
     @Test func theClientRunsOverTheRealTransport() async throws {
         let api = HTTPClient(base: URL(string: "https://api.example.com")!, transport: Self.transport())
@@ -197,7 +219,6 @@ struct URLSessionTransportTests {
         #expect(missing?.statusCode == 404)
     }
 }
-#endif
 
 @Suite("Byte budget")
 struct ByteBudgetTests {
