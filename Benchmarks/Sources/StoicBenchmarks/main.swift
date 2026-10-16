@@ -114,6 +114,10 @@ try await withAmbient({ $0.instrumentation = NoInstrumentation() }) {
     let machine = StateMachine<Int, Int>(initial: 0, label: "bench", historyLimit: 1) { state, _ in .to(state &+ 1) }
     await measure("StateMachine.send", iterations: 200_000) { machine.send(1) }
 
+    // The default history, full: a record replaces the oldest in place.
+    let recording = StateMachine<Int, Int>(initial: 0, label: "bench") { state, _ in .to(state &+ 1) }
+    await measure("StateMachine.send (history of 64)", iterations: 200_000) { recording.send(1) }
+
     try await measure("withTimeout, completes at once", iterations: 20_000) {
         try await withTimeout(.seconds(10)) { () throws(Failure) in }
     }

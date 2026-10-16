@@ -28,6 +28,18 @@ struct StateMachineTests {
         #expect(machine.history.map { "\($0.from)>\($0.to)" } == ["idle>listening", "listening>transcribing", "transcribing>idle"])
     }
 
+    @Test(arguments: [0, 1, 3, 64]) func historyKeepsTheMostRecentTransitionsOldestFirst(limit: Int) {
+        enum Tick: Sendable { case tick }
+        let machine = StateMachine<Int, Tick>(initial: 0, label: "counter", historyLimit: limit, clock: TestClock().erased) { count, _ in
+            .to(count + 1)
+        }
+        for sent in 1...100 {
+            machine.send(.tick)
+            let expected = Array(max(0, sent - limit)..<sent)
+            #expect(machine.history.map(\.from) == expected, "after \(sent) events")
+        }
+    }
+
     @Test(.failureMode("design/07", "an event is invalid in the current state")) func invalidEventsAreReportedAndChangeNothing() async {
         let events = RecordingInstrumentation()
         await withTestAmbient(clock: TestClock(), events: events) {

@@ -27,12 +27,13 @@ magnitude, not for comparing machines.
 | `CircuitBreaker.execute`, closed, success  | ~750 ns   | 1           | window bookkeeping; the per-call debug event is skipped when nothing records it |
 | `retry`, first attempt succeeds            | ~850 ns   | 5           | the nesting marker is most of it; the schedule is built only on a failure |
 | Schedule step                              | ~1.2 µs   | 3           | paid once per *retry*, beside a sleep of milliseconds |
-| `StateMachine.send`                        | ~5.8 µs   | 6           | was ~0.9 µs when first measured: a regression the time-only harness never flagged, not yet investigated |
+| `StateMachine.send`                        | ~0.9 µs   | 0           | the transition, its record, and the observation and event bookkeeping |
+| `StateMachine.send`, history of 64         | ~0.9 µs   | 0           | the default history, full: a ring, so a record replaces the oldest in place |
 | `withScope` with one finalizer             | ~27 µs    | 33          | each finalizer runs in its own task so a hung one can be abandoned |
 | `withTimeout`, completing at once          | ~38 µs    | 20          | a task group with two children: the price of cancelling work without cancelling the caller |
 
 **What the numbers say.** Everything that sits on a per-call path costs
-less than a microsecond, except `StateMachine.send` (above). The two structural primitives cost tens of
+less than about a microsecond. The two structural primitives cost tens of
 microseconds because they create tasks, which is what their guarantees
 require; they belong around I/O, not inside tight loops.
 
@@ -41,4 +42,9 @@ task-local push per permit) is now debug-only; instrumentation can say a
 level is disabled, so debug events on hot paths are not built for nothing;
 per-call-site budget keys no longer build a string on every retry; a
 retry's schedule is built lazily; transition records keep the event value
-instead of formatting it.
+instead of formatting it. `StateMachine.send` had drifted to ~6 µs and six
+allocations: its observation key paths (`\.state`, `\.history` on a generic
+class) and `valuesInKeyOrder`'s `\.value` were rebuilt by the runtime,
+demangling generic arguments, on every call, and a full history shifted
+every record. The key paths are now built once, the map is a closure, and
+the history is a ring.

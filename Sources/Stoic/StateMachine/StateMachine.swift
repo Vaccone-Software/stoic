@@ -99,7 +99,9 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     private struct Core {
         var state: State
         var visit: UInt64 = 0
+        // A ring once full: `historyHead` is the oldest record's index.
         var history: [Record] = []
+        var historyHead = 0
         var stateWork: [Task<Void, Never>] = []
         var activities: [Activity] = []
         var observers: [UInt64: AsyncStream<State>.Continuation] = [:]
@@ -110,6 +112,11 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     private let clock: AnyClock
     private let core: Mutex<Core>
     private let registrar = ObservationRegistrar()
+    // Built once: a key path into a generic class is otherwise rebuilt at run
+    // time, demangling its generic arguments, every time its literal is
+    // evaluated — most of what a transition cost.
+    private let stateKeyPath: any KeyPath<StateMachine, State> & Sendable = \.state
+    private let historyKeyPath: any KeyPath<StateMachine, [Record]> & Sendable = \.history
 
     public init(
         initial: State,
@@ -138,14 +145,16 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// Observable: a SwiftUI view (or anything using Observation) that reads
     /// it is updated after every transition.
     public var state: State {
-        registrar.access(self, keyPath: \.state)
+        registrar.access(self, keyPath: stateKeyPath)
         return core.withLock { $0.state }
     }
 
     /// The most recent transitions, oldest first, for diagnostics.
     public var history: [Record] {
-        registrar.access(self, keyPath: \.history)
-        return core.withLock { $0.history }
+        registrar.access(self, keyPath: historyKeyPath)
+        return core.withLock { core in
+            Array(core.history[core.historyHead...] + core.history[..<core.historyHead])
+        }
     }
 
     /// Handles `event`: computes the transition and applies it.
@@ -225,8 +234,8 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         // observation callback nor an instrumentation sink may be able to
         // deadlock the machine.
         if case .moved = outcome {
-            registrar.withMutation(of: self, keyPath: \.state) {}
-            registrar.withMutation(of: self, keyPath: \.history) {}
+            registrar.withMutation(of: self, keyPath: stateKeyPath) {}
+            registrar.withMutation(of: self, keyPath: historyKeyPath) {}
         }
         switch outcome {
         case .none:
@@ -259,9 +268,15 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         let record = Record(from: core.state, event: event, to: next, at: clock.now)
         core.visit += 1
         core.state = next
-        core.history.append(record)
-        if core.history.count > historyLimit { core.history.removeFirst(core.history.count - historyLimit) }
-        for observer in core.observers.valuesInKeyOrder { observer.yield(next) }
+        if core.history.count < historyLimit {
+            core.history.append(record)
+        } else if historyLimit > 0 {
+            core.history[core.historyHead] = record
+            core.historyHead = (core.historyHead + 1) % historyLimit
+        }
+        if !core.observers.isEmpty {
+            for observer in core.observers.valuesInKeyOrder { observer.yield(next) }
+        }
 
         // Enter: start the new visit's work and its timer.
         let visit = core.visit
