@@ -42,12 +42,12 @@ struct FoundationTests {
 
     /// The century clamp has a lower half: an instant further in the past
     /// than the underlying clock can represent returns at once instead of
-    /// trapping in the clock's conversion to seconds.
-    @Test func sleepingUntilAnInstantFarInThePastReturnsAtOnce() async {
-        await #expect(processExitsWith: .success) {
-            try? await AnyClock.continuous.sleep(until: AnyClock.Instant(offset: .minimum))
-            try? await AnyClock.suspending.sleep(until: AnyClock.Instant(offset: .minimum))
-        }
+    /// trapping in the clock's conversion to seconds. Run in process, not as
+    /// an exit test (whose child aborts under Address Sanitizer whatever it
+    /// does): a regression traps, which fails the run loudly enough.
+    @Test(.timeLimit(.minutes(1))) func sleepingUntilAnInstantFarInThePastReturnsAtOnce() async throws {
+        try await AnyClock.continuous.sleep(until: AnyClock.Instant(offset: .minimum))
+        try await AnyClock.suspending.sleep(until: AnyClock.Instant(offset: .minimum))
     }
 
     // MARK: Saturating arithmetic
