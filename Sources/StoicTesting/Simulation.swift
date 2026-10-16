@@ -628,13 +628,16 @@ final class Simulation<R: Sendable>: Sendable {
             let outside = executor.outsideArrivals > 0 || outsideSleeps.load(ordering: .relaxed) > 0 || ExternalWork.isOutstanding(tag: tag)
             let patience = outside ? limits.stall : min(limits.quietStall, limits.stall)
             if executor.waitForArrival(within: patience) { continue }
-            // A quiet window is real time, and real time is load: a busy
-            // machine may not have started a task of the app's in fifty
-            // milliseconds. Before calling the run stalled, prove the
-            // thread pools are answering, and give what they had queued
-            // one last moment to arrive.
-            if !outside, failure == nil, executor.waitForPoolsToAnswer(within: limits.stall),
-               executor.waitForArrival(within: max(.milliseconds(5), limits.quietStall / 10)) { continue }
+            // A window is real time, and real time is load: a machine
+            // running other tests flat out may not have started a task of
+            // the app's, or fired its timer, within any patience. Before
+            // calling the run stalled, prove the thread pools are answering,
+            // and give what they had queued one more window to arrive. The
+            // pools get far longer than any patience: an idle pool answers
+            // at once, so a real deadlock is still called promptly, and a
+            // pool too busy to answer is evidence of load, not of a stall.
+            if failure == nil, executor.waitForPoolsToAnswer(within: max(limits.stall, Self.poolPatience)),
+               executor.waitForArrival(within: max(.milliseconds(50), patience / 4)) { continue }
             if failure != nil { break }
             fail(.stalled(TaskLedger.entries(tag: tag)))
         }
@@ -662,6 +665,13 @@ final class Simulation<R: Sendable>: Sendable {
             return .failure(SimulationFailure(kind: .stalled(TaskLedger.entries(tag: tag)), seed: seed, steps: steps, elapsed: elapsed, fingerprint: fingerprint.value, schedule: resolved.description))
         }
     }
+}
+
+extension Simulation {
+    /// The longest the driver waits for the thread pools to answer before
+    /// calling a run stalled: generous, because only a loaded machine is
+    /// slow to answer, and an idle one answers in microseconds.
+    static var poolPatience: Duration { .seconds(30) }
 }
 
 extension Simulation {
