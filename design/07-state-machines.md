@@ -59,7 +59,10 @@ matching state and is cancelled with cause `stateExited` on exit. The
 `Sender` it receives delivers events only during that visit; a late event
 from an earlier visit is dropped and reported (`statemachine.stale_event`).
 This is what replaces generation counters: the machine does the
-comparison, every time, so no callback can forget to.
+comparison, every time, so no callback can forget to. Work that captured the
+machine and calls its `send` is checked the same way: state work runs under
+a task-local naming its machine and visit, inherited by the tasks it starts,
+and the machine's own `send` drops their events once that visit has ended.
 
 **Visits never overlap.** Leaving a state cancels its work, and the next
 visit's work starts only once that work has stopped — its cleanup included
@@ -115,6 +118,7 @@ events; use typestate for values whose protocol a single caller drives.
 | an event is invalid in the current state      | Reported at error level; the machine stays           |
 | a state is left while its work runs           | The work is cancelled (`stateExited`)                |
 | the work sends an event after its visit ended | Dropped; `statemachine.stale_event`                  |
+| the work of an ended visit calls the machine's send | Dropped, as through its `Sender`                |
 | a state's timeout elapses during its visit    | The machine sends itself the timeout event           |
 | the state is left before its timeout          | The timer is cancelled; no event                     |
 | a thousand tasks send events at once          | Applied one at a time; none lost                     |

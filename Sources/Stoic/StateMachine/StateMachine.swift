@@ -189,9 +189,14 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     }
 
     /// Handles `event`: computes the transition and applies it.
+    ///
+    /// Sent from this machine's own state work, the event is checked like
+    /// one sent through the work's ``Sender``: once the work's visit has
+    /// ended, it is dropped (`statemachine.stale_event`).
     public func send(_ event: Event) {
         checkNotInTransition()
-        apply(event, onlyDuring: nil)
+        let visit = MachineContext.stateWork.flatMap { $0.machine == ObjectIdentifier(self) ? $0.visit : nil }
+        apply(event, onlyDuring: visit)
     }
 
     /// Runs `work` whenever the machine is in a state matching `predicate`,
@@ -293,7 +298,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     /// Runs one of the caller's closures that the machine calls under its lock.
     private static func inTransition<R>(_ body: () -> R) -> R {
-        Transitioning.$active.withValue(true, operation: body)
+        MachineContext.$transitioning.withValue(true, operation: body)
     }
 
     /// A transition function or predicate that used a machine would take a
@@ -301,7 +306,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// so, rather than the lock's own abort.
     private func checkNotInTransition() {
         precondition(
-            !Transitioning.active,
+            !MachineContext.transitioning,
             "StateMachine \(label): a transition function or whileIn predicate must not use a state machine (send, state, history, whileIn, states): it runs while the machine is locked. Return a Transition instead."
         )
     }
@@ -451,6 +456,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         let cause = CancellationCauseBox(parent: nil)
         let sender = makeSender(visit: visit)
         let work = activity.work
+        let context = MachineContext.StateWork(machine: ObjectIdentifier(self), visit: visit)
         let task = TaskLedger.task(.stateWork, label: "\(label).\(activity.label)") {
             // State work belongs to the state, not to whoever sent the event
             // that entered it: it does not inherit the sender's deadline.
@@ -463,7 +469,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                     guard !Task.isCancelled else { return }
                     // Late-starting work meets events from a later visit.
                     await FaultPoint.hit("statemachine.work")
-                    await work(sender)
+                    await MachineContext.$stateWork.withValue(context) { await work(sender) }
                 }
             }
         }
@@ -485,11 +491,24 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     }
 }
 
-/// Whether the current task (or thread) is inside a transition function or
-/// a `whileIn` predicate, which run while a machine holds its lock. (A
-/// generic type cannot hold a task-local.)
-private enum Transitioning {
-    @TaskLocal static var active = false
+/// What the current task is doing for a state machine. (A generic type
+/// cannot hold a task-local.)
+private enum MachineContext {
+    /// The machine and visit whose state work this is.
+    struct StateWork: Sendable {
+        let machine: ObjectIdentifier
+        let visit: UInt64
+    }
+
+    /// Whether this task (or thread) is inside a transition function or a
+    /// `whileIn` predicate, which run while a machine holds its lock.
+    @TaskLocal static var transitioning = false
+
+    /// Set while state work runs, and inherited by the tasks it starts, so
+    /// that the machine's own `send` drops their events once the visit ends,
+    /// as their `Sender` does: work that captured the machine cannot
+    /// deliver a stale event either.
+    @TaskLocal static var stateWork: StateWork?
 }
 
 extension CancellationCause {

@@ -263,6 +263,50 @@ struct StateMachineTests {
         #expect(events.names.contains("statemachine.stale_event"))
     }
 
+    /// Work that captured the machine and calls its `send` — the obvious
+    /// thing to write — is checked exactly like its `Sender`.
+    @Test(.failureMode("design/07", "the work of an ended visit calls the machine's send"))
+    func theMachinesOwnSendDropsAnEndedVisitsEvents() async {
+        enum Load: Hashable, Sendable { case idle, loading, loaded, cancelled }
+        enum Step: Sendable { case load, cancel, done }
+        let events = RecordingInstrumentation()
+        let started = AsyncGate()
+        let finished = AsyncGate()
+        await withTestAmbient(clock: TestClock(), events: events) {
+            let machine = StateMachine<Load, Step>(initial: .idle, label: "fetch") { load, step in
+                switch (load, step) {
+                case (.idle, .load): .to(.loading)
+                case (.loading, .cancel): .to(.cancelled)
+                case (.loading, .done), (.cancelled, .done): .to(.loaded)
+                default: .ignore
+                }
+            }
+            machine.whileIn(.loading, label: "request") { [weak machine] _ in
+                started.open()
+                try? await Task.sleep(for: .seconds(3600))   // cancelled: returns at once
+                // Not `sender.send`, and from a task the work started.
+                await Task { machine?.send(.done) }.value
+                finished.open()
+            }
+            machine.send(.load)
+            await started.wait()
+            machine.send(.cancel)
+            await finished.wait()
+            #expect(machine.state == .cancelled, "the ended visit's work moved the machine to \(machine.state)")
+            machine.send(.done)   // from outside any state work: applied
+            #expect(machine.state == .loaded)
+        }
+        #expect(events.events(named: "statemachine.stale_event").count == 1)
+    }
+
+    @Test func stateWorkMaySendThroughTheMachineDuringItsVisit() async {
+        let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: TestClock().erased, transition: Self.transitions)
+        machine.whileIn(.listening, label: "microphone") { [weak machine] _ in machine?.send(.heard) }
+        machine.send(.start)
+        #expect(await eventually { machine.state == .transcribing })
+        await machine.shutdown()
+    }
+
     @Test(.failureMode("design/07", "the state is left before its timeout"), .failureMode("design/07", "a state's timeout elapses during its visit")) func aStateTimeoutFiresOnlyIfTheStateIsStillCurrent() async {
         let clock = TestClock()
         let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: clock.erased, transition: Self.transitions)
