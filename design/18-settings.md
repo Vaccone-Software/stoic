@@ -39,6 +39,14 @@ not JSON, the wrong shape) is quarantined, never deleted, and the previous
 generation is tried; failing that, the defaults. `source` says which, and
 why.
 
+**A repaired value stays in the file.** A value the schema does not accept
+may be a newer build's (a range it widened, an enumeration case it added,
+without a new version), so the repair is not written back at open, and every
+update that leaves that field alone puts the file's value back; the field is
+repaired again at each load (`repaired` issue) until the app sets it, and then
+the app's value wins. Only paths through objects are carried, as for unknown
+keys, and a migrated document carries none.
+
 **Migration.** The schema migrates old documents as it decodes them. An
 app-owned store then writes the migrated form back at once, so the old
 format does not linger — and because the previous generation is kept, the
@@ -107,7 +115,7 @@ the previous generation and any quarantined copy live beside the real file, the
 rename replaces the real file, and the link is untouched.
 
 **Formats.** `.appOwned` (default): checksum envelope, write-back of
-migrations and repairs. `.handEdited`: plain JSON with comments allowed,
+migrations. `.handEdited`: plain JSON with comments allowed,
 nothing written back on load, and `update` rewrites the file without its
 comments — say so in the UI that offers both.
 
@@ -118,7 +126,7 @@ comments — say so in the UI that offers both.
 | there is no file                              | Defaults; `source` `.defaults(.missing)`; nothing written until an update     |
 | the app crashed mid-save                      | The old file or the new one, never a mix (`AtomicFile`)                       |
 | the file is torn or not JSON                  | Quarantined; previous generation, else defaults; `settings.recovered`/`reset` |
-| one field is invalid                          | That field's default; `repaired` issue; the rest kept                         |
+| one field is invalid                          | That field's default; `repaired` issue; the rest kept. The file keeps its value: not written back at open, and put back by every update that does not change that field (a newer build's value survives an older build's open and save) |
 | the document is an older version              | Migrated; written back (app-owned); the old file kept as `.previous`          |
 | the document is a newer version               | Read-only; never overwritten; `update` throws `.newerFormat`                  |
 | an update produces an invalid value           | Refused with every issue; value and file unchanged                            |

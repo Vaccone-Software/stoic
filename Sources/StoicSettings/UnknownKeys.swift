@@ -61,3 +61,77 @@ enum UnknownKeys {
         }
     }
 }
+
+/// A field the load repaired (its value was one the schema does not accept,
+/// so the default stood in), with the value the file held.
+///
+/// A newer build may have written that value: a range it widened, an
+/// enumeration case it added, without a new version. Until the app changes
+/// the field, every write puts the file's value back, so an older build
+/// never destroys it by saving something else.
+struct RepairedField: Sendable, Equatable {
+    /// Where the field is. Only paths through objects are carried.
+    let path: JSONPath
+    /// What the file held there.
+    let original: JSONValue
+    /// The repaired value, fully encoded: while the value about to be written
+    /// still encodes to this, the app has not changed the field.
+    let repairedTo: JSONValue?
+
+    /// The fields of `issues` that were repaired, with what `document` held
+    /// for each and what `repaired` (the full encoding of the decoded value)
+    /// holds now.
+    static func found(in issues: [Issue], document: JSONValue?, repaired: JSONValue) -> [RepairedField] {
+        guard let document else { return [] }
+        return issues.filter { $0.severity == .repaired }.compactMap { issue in
+            guard issue.path.components.allSatisfy({ if case .key = $0 { true } else { false } }),
+                  let original = document.value(at: issue.path) else { return nil }
+            return RepairedField(path: issue.path, original: original, repairedTo: repaired.value(at: issue.path))
+        }
+    }
+
+    /// `encoded` with the file's value put back for each field in `fields`
+    /// that `full` (the value being written, fully encoded) has not changed,
+    /// and the fields so carried.
+    static func restoring(_ fields: [RepairedField], into encoded: JSONValue, full: JSONValue) -> (JSONValue, [RepairedField]) {
+        var result = encoded
+        var carried: [RepairedField] = []
+        for field in fields where full.value(at: field.path) == field.repairedTo {
+            if let restored = result.setting(field.original, at: field.path) {
+                result = restored
+                carried.append(field)
+            }
+        }
+        return (result, carried)
+    }
+}
+
+extension JSONValue {
+    /// The value at `path`, if there is one.
+    func value(at path: JSONPath) -> JSONValue? {
+        var node = self
+        for component in path.components {
+            switch component {
+            case .key(let key):
+                guard let next = node.object?[key] else { return nil }
+                node = next
+            case .index(let index):
+                guard case .array(let elements) = node, elements.indices.contains(index) else { return nil }
+                node = elements[index]
+            }
+        }
+        return node
+    }
+
+    /// This value with `value` at `path`, a path of object keys, making the
+    /// objects on the way (sparse output leaves out one that is all defaults);
+    /// `nil` if something on the way is not an object.
+    func setting(_ value: JSONValue, at path: JSONPath) -> JSONValue? {
+        guard let first = path.components.first else { return value }
+        guard case .key(let key) = first, case .object(var object) = self else { return nil }
+        let rest = JSONPath(Array(path.components.dropFirst()))
+        guard let child = (object[key] ?? .object(JSONObject())).setting(value, at: rest) else { return nil }
+        object[key] = child
+        return .object(object)
+    }
+}

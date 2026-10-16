@@ -150,10 +150,34 @@ struct SettingsStoreTests {
         let settings = try Self.open(disk)
         #expect(settings.value == Prefs(speed: 600, name: "kept"))
         #expect(settings.issues.contains { $0.severity == .repaired })
-        // App-owned: the repair is written back.
+        // Not written back: the value may be a newer build's.
         let reopened = try Self.open(disk)
-        #expect(reopened.issues.isEmpty)
-        #expect(reopened.value.name == "kept")
+        #expect(reopened.issues.contains { $0.severity == .repaired })
+        #expect(reopened.value == Prefs(speed: 600, name: "kept"))
+    }
+
+    /// A newer build widened `speed` without a new version and saved 6000.
+    /// Opening it with this schema, and saving another field, leaves 6000 in
+    /// the file; only changing `speed` itself replaces it.
+    @Test(.failureMode("design/18", "one field is invalid")) func aRepairedValueStaysInTheFileUntilTheAppChangesThatField() throws {
+        let disk = try Self.disk()
+        try Self.place(#"{"version": 2, "speed": 6000, "name": "n"}"#, on: disk, format: .appOwned)
+        func fileSpeed() throws -> String? {
+            let saved = try #require(try AtomicFile(fileSystem: disk).read(Self.path))
+            return try JSONParser().parseValue(saved.bytes)["speed"]?.number?.lexeme
+        }
+        let settings = try Self.open(disk)
+        #expect(settings.value.speed == 600)
+        #expect(try fileSpeed() == "6000", "opening wrote nothing")
+        try settings.update { $0.name = "renamed" }
+        #expect(try fileSpeed() == "6000", "an update of another field carries it")
+        try settings.update { $0.name = "again" }
+        #expect(try fileSpeed() == "6000", "and so does the next")
+        #expect(try Self.open(disk).value == Prefs(speed: 600, name: "again"))
+        try settings.update { $0.speed = 900 }
+        #expect(try fileSpeed() == "900", "the app changed it: its value wins")
+        try settings.update { $0.speed = 600 }
+        #expect(try fileSpeed() == nil, "and is no longer carried: the default is left out")
     }
 
     @Test(.failureMode("design/18", "the file is torn or not JSON")) func anUnusableFileIsQuarantinedAndThePreviousGenerationUsed() throws {
@@ -313,13 +337,14 @@ struct SettingsStoreTests {
         #expect(try Self.onDisk(disk, format: format)["flag"] == .bool(true))
     }
 
-    @Test func theKeysAreKeptThroughTheWriteBackOfARepair() throws {
+    @Test func theKeysAreKeptAlongsideARepairedValue() throws {
         let disk = try Self.disk()
         try Self.place(#"{"version": 2, "speed": 99999, "addedByNewerBuild": 1}"#, on: disk, format: .appOwned)
-        _ = try Self.open(disk)   // repairs speed and writes the repair back
+        try Self.open(disk).update { $0.name = "changed" }   // speed was repaired at load
         let document = try Self.onDisk(disk)
         #expect(document["addedByNewerBuild"] == .number(JSONNumber(1)))
-        #expect(document["speed"] == nil, "the repaired field is back to its default, which sparse output omits")
+        #expect(document["speed"] == .number(JSONNumber(99999)), "the repaired field's value is the file's until the app sets it")
+        #expect(document["name"] == .string("changed"))
     }
 
     @Test func anAppThatAsksToDropUnknownKeysDropsThem() throws {

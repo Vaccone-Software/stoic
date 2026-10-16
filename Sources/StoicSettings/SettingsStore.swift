@@ -40,7 +40,8 @@ internal import Synchronization
 public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observable {
     /// Who owns the file, which decides what the store may write.
     public enum Format: Sendable, Hashable {
-        /// The app: checksummed, migrations and repairs written back.
+        /// The app: checksummed, migrations written back. (A repaired value
+        /// is not: it may be a newer build's, and stays until the app sets it.)
         case appOwned
         /// A person: plain JSON with comments, nothing written back on load.
         /// An update rewrites the file without its comments.
@@ -127,6 +128,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// undeclared keys the next write carries. `nil` when there is
         /// nothing to carry.
         var document: JSONValue?
+        /// Fields the load repaired whose file values every write puts back
+        /// until the app changes them.
+        var repaired: [RepairedField] = []
         /// What changed in commits whose observers have not been told yet.
         var unnotified: Set<Observed> = []
     }
@@ -234,15 +238,20 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         )
 
         let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
-        current = Mutex(Current(value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys)))
+        current = Mutex(Current(
+            value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys),
+            repaired: Self.repairs(loaded)
+        ))
         Self.report(loaded, path: path)
 
-        // Migrated or repaired, an app-owned file is brought up to date now:
-        // the old form does not linger, and survives as `.previous`.
+        // Migrated, an app-owned file is brought up to date now: the old form
+        // does not linger, and survives as `.previous`. A repair alone is not
+        // written back: the value it replaced may be a newer build's, and the
+        // file keeps it until the app changes that field.
         if format == .appOwned, loaded.source == .file || loaded.source == .previousGeneration,
-           loaded.issues.contains(where: { $0.code == .migrated || $0.severity == .repaired }) {
+           loaded.issues.contains(where: { $0.code == .migrated }) {
             do throws(StoreError) {
-                try write(loaded.value, carrying: Self.carried(loaded, unknownKeys))
+                try write(loaded.value, carrying: Self.carried(loaded, unknownKeys), repaired: [])
             } catch {
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("load"), privacy: .public),
@@ -285,7 +294,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     public func update(_ change: (inout Value) throws -> Void) throws -> Value {
         defer { notifyObservers() }
         return try writing.withLock { _ throws -> Value in
-            let (old, source, document) = current.withLock { ($0.value, $0.source, $0.document) }
+            let (old, source, document, repaired) = current.withLock { ($0.value, $0.source, $0.document, $0.repaired) }
             if case .newerFormat = source { throw UpdateError.newerFormat }
             var new = old
             try change(&new)
@@ -297,13 +306,14 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
                 ]))
                 throw UpdateError.invalid(problems)
             }
-            let written: JSONValue
+            let written: (json: JSONValue, repaired: [RepairedField])
             do throws(StoreError) {
-                written = try write(new, carrying: document)
+                written = try write(new, carrying: document, repaired: repaired)
             } catch where error.kind == .durabilityUnknown {
                 // The file holds the new value, so memory must too: the next
                 // launch reads it unless the power fails first.
-                publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? encoded(new, carrying: document) : nil))
+                let json = encoded(new, carrying: document, repaired: repaired)
+                publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? json.json : nil, repaired: json.repaired))
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
                 ]))
@@ -314,7 +324,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
                 ]))
                 throw UpdateError.storage(error)
             }
-            publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? written : nil))
+            publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? written.json : nil, repaired: written.repaired))
             Ambient.record(Event("settings.saved", level: .debug, label: path))
             return new
         }
@@ -336,7 +346,10 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
             Self.report(loaded, path: path)
             betweenReloadAndPublish.withLock { $0 }?()
-            publish(Current(value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys)))
+            publish(Current(
+                value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys),
+                repaired: Self.repairs(loaded)
+            ))
         }
     }
 
@@ -349,6 +362,15 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// The parsed file the value came from, if there was one and its
         /// keys can be carried (see `carried`).
         let document: JSONValue?
+        /// The fields that were repaired, with what the file held.
+        var repaired: [RepairedField] = []
+    }
+
+    /// The fields the load repaired, whose file values writes carry. None for
+    /// a migrated document, for the reason `carried` gives.
+    private static func repairs(_ loaded: Loaded) -> [RepairedField] {
+        guard !loaded.issues.contains(where: { $0.code == .migrated }) else { return [] }
+        return loaded.repaired
     }
 
     /// The document whose undeclared keys a write should carry. A migrated
@@ -360,20 +382,27 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     }
 
     /// Writes `value`, with the keys of `document` that the schema does not
-    /// declare put back. Returns what was written.
+    /// declare put back, and the file's values of the `repaired` fields the
+    /// app has not changed. Returns what was written and the repaired fields
+    /// still carried.
     @discardableResult
-    private func write(_ value: Value, carrying document: JSONValue?) throws(StoreError) -> JSONValue {
-        let json = encoded(value, carrying: document)
-        let bytes = json.encoded(style: format == .handEdited ? .pretty() : .canonical)
+    private func write(
+        _ value: Value, carrying document: JSONValue?, repaired: [RepairedField]
+    ) throws(StoreError) -> (json: JSONValue, repaired: [RepairedField]) {
+        let written = encoded(value, carrying: document, repaired: repaired)
+        let bytes = written.json.encoded(style: format == .handEdited ? .pretty() : .canonical)
         try file.write(bytes, to: path)
-        return json
+        return written
     }
 
     /// The document a write of `value` puts in the file.
-    private func encoded(_ value: Value, carrying document: JSONValue?) -> JSONValue {
+    private func encoded(
+        _ value: Value, carrying document: JSONValue?, repaired: [RepairedField]
+    ) -> (json: JSONValue, repaired: [RepairedField]) {
         var json = schema.encode(value, style: .sparse(includeSecrets: true))
         if let document { json = UnknownKeys.carrying(document, into: json, node: schema.node) }
-        return json
+        guard !repaired.isEmpty else { return (json, []) }
+        return RepairedField.restoring(repaired, into: json, full: schema.encode(value, style: .init(.full, includeSecrets: true)))
     }
 
     /// Commits `next` as the current value. Called under `writing`, so
@@ -437,7 +466,10 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             let document = try? JSONParser(options: options.parse).parseValue(contents.bytes)
             return Loaded(
                 value: value, issues: decoded.issues,
-                source: contents.source == .current ? .file : .previousGeneration, document: document)
+                source: contents.source == .current ? .file : .previousGeneration, document: document,
+                repaired: RepairedField.found(
+                    in: decoded.issues, document: document, repaired: schema.encode(value, style: .init(.full, includeSecrets: true))
+                ))
         }
         let newer = decoded.errors.first { $0.code == .versionTooNew }
         return Loaded(value: defaults, issues: decoded.issues, source: .newerFormat(version: newer?.foundVersion), document: nil)
