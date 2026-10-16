@@ -13,7 +13,7 @@ internal import Synchronization
 /// never looks at it (a blocked call, a loop without a suspension point)
 /// would otherwise hold the scope, and every finalizer behind it, forever.
 /// Forks get `forkTimeout` after the body ends to stop (within the exit
-/// budget and the enclosing deadline, as finalizers are); any still running
+/// budget, which the finalizers then share); any still running
 /// then are *abandoned*, as an overrunning finalizer is: the scope goes on,
 /// the fork keeps running unwatched but listed in ``AbandonedWork/current``
 /// and ``TaskLedger/current`` until it ends, `scope.fork_abandoned` is
@@ -77,7 +77,7 @@ public struct TaskScope: ~Copyable {
 ///   - finalizerTimeout: How long one finalizer may take.
 ///   - forkTimeout: How long forks get to stop, once the body has ended and
 ///     cancelled them, before they are abandoned (see ``TaskScope``); within
-///     `exitBudget` and the enclosing deadline.
+///     `exitBudget`.
 ///   - label: Names the scope in events and reports.
 ///   - body: The work the scope owns.
 public nonisolated(nonsending) func withTaskScope<R: Sendable>(
@@ -116,11 +116,13 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
 
     // The body has ended: no new forks; stop and await the running ones.
     // Waiting for forks is the first stage of the exit, charged to the same
-    // budget (and bounded by the same enclosing deadline) as the finalizers
-    // after it, so the whole exit has one bound.
+    // budget as the finalizers after it, so the whole exit has one bound.
+    // Not to the enclosing deadline: a fork that runs out of time is
+    // abandoned, still running, and a passed deadline would turn a
+    // cooperative stop into an abandonment after a quarter of a second.
     let clock = Ambient.current.clock
     let exitStart = clock.now
-    await tasks.close(within: resources.allowance(wanting: forkTimeout, since: exitStart, clock: clock, enclosing: Deadline.current))
+    await tasks.close(within: resources.allowance(wanting: forkTimeout, since: exitStart, clock: clock, enclosing: nil))
     let forkFailures = tasks.failures
 
     let exit: Exit

@@ -110,15 +110,19 @@ inherits the caller's actor and returns a `Sendable` result. Waiting for forks i
 bounded, as waiting for finalizers is, and is the first stage of the exit: a
 fork that ignores cancellation (a blocked call, a loop with no suspension
 point) gets `forkTimeout` (five seconds by default) after the body ends,
-within the exit budget and the enclosing deadline (floor included, as for a
-finalizer), and is then *abandoned* — the scope goes on, the fork keeps
+within the exit budget (floor included, as for a finalizer), and is then
+*abandoned* — the scope goes on, the fork keeps
 running unwatched, is listed in `AbandonedWork` and the task ledger until it
 ends, is reported (`scope.fork_abandoned`, then `abandoned.completed`), and
 counts toward `abandonedWork` while it runs, so a release declared
 `ifWorkAbandoned: .quarantine` is skipped rather than run under a fork that
 may still be using the resource. The finalizers get what the fork wait left
 of the budget, so `exitBudget` bounds the whole exit; it once restarted after
-the fork wait, and an exit could take `forkTimeout + exitBudget`. Cancellation of a fork or the body that
+the fork wait, and an exit could take `forkTimeout + exitBudget`. The fork
+wait is not shortened by the enclosing deadline, as a finalizer's allowance
+is: a fork out of time is abandoned while it still runs, and a deadline that
+has passed would turn every cooperative stop taking more than the floor into
+an abandonment. Cancellation of a fork or the body that
 ends as `.rejected(.cancelled)` (a cancelled policy wait; design/03) is
 cancellation, not a failure. A fork that
 finishes is forgotten at once, its failure (if any) already recorded: the

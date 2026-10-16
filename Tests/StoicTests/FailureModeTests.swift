@@ -273,6 +273,31 @@ struct ScopeExitFailureModeTests {
         try await task.value
     }
 
+    /// The fork wait is not shortened by a passed deadline, as a finalizer's
+    /// allowance is: that would abandon, still running, every fork whose
+    /// cooperative stop takes longer than the floor.
+    @Test(.timeLimit(.minutes(1))) func aPassedDeadlineDoesNotShortenTheForkWait() async throws {
+        let clock = TestClock()
+        let stubborn = AsyncGate()
+        defer { stubborn.open() }
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    try await withTaskScope(forkTimeout: .seconds(5)) { scope in
+                        scope.fork(label: "winding down") { await stubborn.wait() }
+                        try? await Ambient.sleep(for: .seconds(3600))
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the timeout and the body
+        await clock.advance(by: .seconds(1))
+        await clock.waitForSleepers(count: 1)
+        #expect(clock.pendingDeadlines.map(\.offset) == [.seconds(6)])
+        await clock.advance(by: .seconds(5))
+        _ = try? await task.value
+    }
+
     /// A hung finalizer is abandoned, and counted while it runs: the release
     /// behind it of what it may still be using is quarantined, not closed
     /// under it. It reads the deadline as its cause.
