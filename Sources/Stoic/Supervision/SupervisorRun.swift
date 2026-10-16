@@ -33,14 +33,12 @@ struct SupervisorRun {
 
     let supervisor: Supervisor
     let ambient: Ambient
-    let publish: AsyncStream<SupervisorEvent>.Continuation
 
     private var clock: AnyClock { ambient.clock }
 
-    init(supervisor: Supervisor, ambient: Ambient, publish: AsyncStream<SupervisorEvent>.Continuation) {
+    init(supervisor: Supervisor, ambient: Ambient) {
         self.supervisor = supervisor
         self.ambient = ambient
-        self.publish = publish
     }
 
     func execute() async throws {
@@ -84,7 +82,7 @@ struct SupervisorRun {
             case .hung(let index, let generation):
                 guard slots[index].generation == generation, slots[index].task != nil else { continue }
                 let label = supervisor.children[index].label
-                publish.yield(.hung(child: label))
+                supervisor.publish(.hung(child: label))
                 record("supervisor.child_hung", .error, child: index)
                 await stop(index, in: &slots)
                 if let escalation = await handleStop(index, error: Hung(child: label), slots: &slots, restarts: &restarts, sink: sink) {
@@ -117,7 +115,7 @@ struct SupervisorRun {
     ) async -> SupervisorEscalation? {
         let child = supervisor.children[index]
         let failed = error != nil
-        publish.yield(.exited(child: child.label, failed: failed))
+        supervisor.publish(.exited(child: child.label, failed: failed))
         record("supervisor.child_exited", failed ? .warning : .info, child: index, error: error)
 
         let restart: Bool
@@ -178,7 +176,7 @@ struct SupervisorRun {
         // The restart is due `delay` after this decision, not after the
         // timer's task first runs.
         let due = clock.now.advanced(by: delay)
-        publish.yield(.restarting(child: child.label, after: delay))
+        supervisor.publish(.restarting(child: child.label, after: delay))
         record("supervisor.child_restarting", .info, child: index, extra: [.init("delay", .duration(delay))])
 
         slots[index].pendingRestart = affected
@@ -271,7 +269,7 @@ struct SupervisorRun {
                 } catch {}
             }
         }
-        publish.yield(.started(child: child.label))
+        supervisor.publish(.started(child: child.label))
         record("supervisor.child_started", .debug, child: index)
     }
 
@@ -309,7 +307,7 @@ struct SupervisorRun {
     // MARK: Reporting
 
     private func finish(_ event: SupervisorEvent, level: Event.Level, child: Int?, error: (any Error)?) {
-        publish.yield(event)
+        supervisor.publish(event)
         switch event {
         case .escalated:
             record("supervisor.escalated", level, child: child, error: error)

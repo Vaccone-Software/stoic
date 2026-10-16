@@ -27,7 +27,7 @@ public final class Supervisor: Sendable {
                 backoff: Schedule = .exponential(base: .milliseconds(500)).capped(at: .seconds(30)),
                 resetAfter: Duration = .seconds(30), @ChildrenBuilder children: () -> [Child])
     public func run() async throws            // SupervisorEscalation, or CancellationError
-    public var events: AsyncStream<SupervisorEvent>
+    public func events() -> AsyncStream<SupervisorEvent>   // one stream per call
 }
 public struct Child { init(_ label: String, restart: RestartPolicy = .permanent, heartbeat: HeartbeatPolicy? = nil,
                            shutdownTimeout: Duration = .seconds(5), run: @escaping @Sendable (Heartbeat) async throws -> Void) }
@@ -114,6 +114,7 @@ finishes.
 | a transient child returns                            | Done; not restarted                                                               |
 | a temporary child throws                             | Done; reported                                                                    |
 | restarts exceed the intensity                        | All children stopped; `SupervisorEscalation` thrown                               |
+| two observers watch the supervisor                   | Each `events()` stream sees every event                                           |
 | the backoff schedule ends                            | All children stopped; `SupervisorEscalation` thrown                               |
 | a child stops beating                                | After `misses` intervals (past `grace`): stopped and restarted                    |
 | the Mac sleeps                                       | The liveness clock stops; no false hang                                           |
@@ -127,7 +128,10 @@ finishes.
 `supervisor.child_started`, `supervisor.child_exited` (failed or not, with
 the error), `supervisor.child_restarting` (delay), `supervisor.child_hung`,
 `supervisor.child_abandoned`, `supervisor.escalated`, `supervisor.stopped`;
-also published on `events` for a UI or a parent.
+also published on `events()` for a UI or a parent. Each call makes a stream
+of its own, so every subscriber sees every event from when it subscribed
+(the newest 256 buffered); a single shared stream would deal each event to
+one of its consumers. Every stream finishes when `run()` ends.
 
 ## Testing
 

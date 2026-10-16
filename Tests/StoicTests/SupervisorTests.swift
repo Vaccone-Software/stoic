@@ -318,8 +318,9 @@ struct SupervisorReviewTests {
                 try await Task.sleep(for: .seconds(3600))
             }
         }
+        let published = supervisor.events()
         let decided = Task {
-            for await event in supervisor.events {
+            for await event in published {
                 if case .restarting = event { return }
             }
         }
@@ -373,12 +374,32 @@ struct SupervisorReviewTests {
         let supervisor = Supervisor(label: "once") {
             Child("once", restart: .temporary) { _ in }
         }
+        let events = supervisor.events()
         let collected = Task { () -> Int in
             var count = 0
-            for await _ in supervisor.events { count += 1 }
+            for await _ in events { count += 1 }
             return count
         }
         try await supervisor.run()
         #expect(await collected.value >= 2)
+        var late = supervisor.events().makeAsyncIterator()
+        #expect(await late.next() == nil, "a stream made after the run finishes at once")
+    }
+
+    /// A UI and a parent both watching: each stream gets every event, not a
+    /// share of them.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "two observers watch the supervisor"))
+    func everyEventsStreamSeesEveryEvent() async throws {
+        let supervisor = Supervisor(label: "watched") {
+            Child("once", restart: .temporary) { _ in }
+        }
+        let first = supervisor.events()
+        let second = supervisor.events()
+        let collectFirst = Task { await first.reduce(into: [SupervisorEvent]()) { $0.append($1) } }
+        let collectSecond = Task { await second.reduce(into: [SupervisorEvent]()) { $0.append($1) } }
+        try await withTestAmbient(clock: TestClock()) { try await supervisor.run() }
+        let expected: [SupervisorEvent] = [.started(child: "once"), .exited(child: "once", failed: false), .stopped]
+        #expect(await collectFirst.value == expected)
+        #expect(await collectSecond.value == expected)
     }
 }

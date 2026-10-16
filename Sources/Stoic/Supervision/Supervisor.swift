@@ -76,8 +76,13 @@ public final class Supervisor: Sendable {
     public let resetAfter: Duration
     let children: [Child]
 
-    private let eventStream: AsyncStream<SupervisorEvent>
-    private let eventContinuation: AsyncStream<SupervisorEvent>.Continuation
+    private struct Subscribers {
+        var continuations: [UInt64: AsyncStream<SupervisorEvent>.Continuation] = [:]
+        var next: UInt64 = 0
+        var finished = false
+    }
+
+    private let subscribers = Mutex(Subscribers())
     private let running = Mutex(false)
 
     public init(
@@ -94,15 +99,49 @@ public final class Supervisor: Sendable {
         self.backoff = backoff
         self.resetAfter = resetAfter
         self.children = children()
-        precondition(Set(self.children.map(\.label)).count == self.children.count, "Supervisor \(label): child labels must be unique")
-        (eventStream, eventContinuation) = AsyncStream<SupervisorEvent>.makeStream(bufferingPolicy: .bufferingNewest(256))
+        precondition(Set(self.children.map { $0.label }).count == self.children.count, "Supervisor \(label): child labels must be unique")
     }
 
     /// What the supervisor does, as it happens: starts, exits, restarts,
-    /// hangs, escalation. Newest 256 buffered. The stream finishes when
-    /// ``run()`` ends.
-    public var events: AsyncStream<SupervisorEvent> {
-        eventStream
+    /// hangs, escalation.
+    ///
+    /// Each call returns a stream of its own, so a UI and a parent each see
+    /// every event; a stream sees what happens after it was made (make it
+    /// before ``run()`` to see everything) and buffers the newest 256. Every
+    /// stream finishes when `run()` ends; one made after that finishes at once.
+    public func events() -> AsyncStream<SupervisorEvent> {
+        let (stream, continuation) = AsyncStream<SupervisorEvent>.makeStream(bufferingPolicy: .bufferingNewest(256))
+        let id = subscribers.withLock { subscribers -> UInt64? in
+            if subscribers.finished { return nil }
+            defer { subscribers.next += 1 }
+            subscribers.continuations[subscribers.next] = continuation
+            return subscribers.next
+        }
+        guard let id else {
+            continuation.finish()
+            return stream
+        }
+        // A subscriber that stops listening is forgotten.
+        continuation.onTermination = { [weak self] _ in
+            self?.subscribers.withLock { _ = $0.continuations.removeValue(forKey: id) }
+        }
+        return stream
+    }
+
+    /// Delivers `event` to every ``events()`` stream.
+    func publish(_ event: SupervisorEvent) {
+        let listeners = subscribers.withLock { $0.continuations.valuesInKeyOrder }
+        for listener in listeners { listener.yield(event) }
+    }
+
+    /// Finishes every ``events()`` stream, and every one made later.
+    private func finishEvents() {
+        let listeners = subscribers.withLock { subscribers in
+            subscribers.finished = true
+            defer { subscribers.continuations.removeAll() }
+            return subscribers.continuations.valuesInKeyOrder
+        }
+        for listener in listeners { listener.finish() }
     }
 
     /// Runs the children until they are all done, the supervisor escalates,
@@ -116,9 +155,9 @@ public final class Supervisor: Sendable {
             return running
         }
         precondition(!alreadyRan, "Supervisor \(label) runs once; create a new one to run again")
-        // The event stream ends with the run, so `for await` over it ends too.
-        defer { eventContinuation.finish() }
-        let run = SupervisorRun(supervisor: self, ambient: Ambient.current, publish: eventContinuation)
+        // The event streams end with the run, so `for await` over them ends too.
+        defer { finishEvents() }
+        let run = SupervisorRun(supervisor: self, ambient: Ambient.current)
         try await run.execute()
     }
 }

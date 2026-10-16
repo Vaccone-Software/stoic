@@ -67,3 +67,4 @@ API breakage: func StateMachine.whileIn(where:label:_:) has been renamed to func
 API breakage: func StateMachine.whileIn(_:label:_:) has been renamed to func whileIn(_:label:shutdownTimeout:_:)
 API breakage: func StateGraph.explore(from:events:maximumStates:transition:) has generic signature change from <State, Event where State : Swift.Hashable, State : Swift.Sendable, Event : Swift.Sendable> to <State, Event where State : Swift.Hashable, State : Swift.Sendable, Event : Swift.Hashable, Event : Swift.Sendable>
 API breakage: var StateGraph.truncated has been removed
+API breakage: var Supervisor.events has been removed
