@@ -135,6 +135,26 @@ struct ServiceGraphTests {
         #expect(log.values == ["stop database"])
     }
 
+    @Test func startFailuresAndStopsAreReported() async {
+        let events = RecordingInstrumentation()
+        let clock = TestClock()
+        await withTestAmbient(clock: clock, events: events) {
+            let graph = try! ServiceGraph(label: "app") {
+                Provide(Self.database) { _ in Database(name: "main") } stop: { _, _ in throw Failed() }
+                Provide(Self.sync, needs: [Self.database.any]) { _ -> Sync in throw Failed() }
+            }
+            await #expect(throws: ServiceGraphError.self) { try await graph.run { _ in } }
+        }
+        let failed = events.events(named: "service.start_failed")
+        #expect(failed.count == 1)
+        #expect(failed.first?.level == .error && failed.first?.label == "app")
+        #expect(failed.first?.fields.first { $0.key == "service" }.map { "\($0.value)" } == "sync")
+        let stopped = events.events(named: "service.stopped")
+        #expect(stopped.count == 1)
+        #expect(stopped.first?.level == .warning)
+        #expect(stopped.first?.fields.first { $0.key == "outcome" }.map { "\($0.value)" } == "failed")
+    }
+
     @Test func aStartThatHangsTimesOut() async {
         let clock = TestClock()
         let task = Task {

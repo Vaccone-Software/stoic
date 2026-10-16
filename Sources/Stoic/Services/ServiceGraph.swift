@@ -215,14 +215,15 @@ public struct ServiceGraph: Sendable {
                             // Cancellation passes through as itself; a start
                             // cut short by its own timeout is a deadline
                             // rejection, not a mysterious CancellationError.
-                            if containsCancellation(error) {
-                                if Task.isCancelled { throw error }
-                                throw ServiceGraphError.startFailed(
-                                    service: key,
-                                    underlying: Rejection(.deadlineExceeded, label: "\(label).\(key).start")
-                                )
-                            }
-                            throw ServiceGraphError.startFailed(service: key, underlying: error)
+                            if containsCancellation(error), Task.isCancelled { throw error }
+                            let underlying = containsCancellation(error)
+                                ? Rejection(.deadlineExceeded, label: "\(label).\(key).start")
+                                : error
+                            Ambient.record(Event("service.start_failed", level: .error, label: label, fields: [
+                                .init("service", .string(key.name), privacy: .public),
+                                .init("error", .error(underlying)),
+                            ]))
+                            throw ServiceGraphError.startFailed(service: key, underlying: underlying)
                         }
                     }
                 }
@@ -252,7 +253,7 @@ public struct ServiceGraph: Sendable {
                 // reverse of start completion: a service stops before
                 // everything it needs.
                 scope.register(Finalizer(label: "\(label).\(key).stop", timeout: service.stopTimeout, runsOn: .always) { exit in
-                    try await service.stop(value, exit)
+                    try await ServiceGraph.stop(service, value, exit: exit, graph: label)
                 })
                 Ambient.record(Event("service.started", level: .debug, label: label, fields: [
                     .init("service", .string(key.name), privacy: .public),
@@ -269,6 +270,30 @@ public struct ServiceGraph: Sendable {
             }
         }
         return started
+    }
+
+    /// Stops one service and reports it (`service.stopped`): how long the
+    /// stop took and how it went. A stop that hangs is abandoned by the
+    /// scope that runs it, and reported when it finally returns.
+    static func stop(_ service: Provide, _ value: any Sendable, exit: Exit, graph label: String) async throws {
+        let clock = Ambient.current.clock
+        let start = clock.now
+        func report(_ error: (any Error)?) {
+            var fields: [Event.Field] = [
+                .init("service", .string(service.key.name), privacy: .public),
+                .init("duration", .duration(start.duration(to: clock.now))),
+                .init("outcome", .string(error == nil ? "stopped" : "failed"), privacy: .public),
+            ]
+            if let error { fields.append(.init("error", .error(error))) }
+            Ambient.record(Event("service.stopped", level: error == nil ? .info : .warning, label: label, fields: fields))
+        }
+        do {
+            try await service.stop(value, exit)
+            report(nil)
+        } catch {
+            report(error)
+            throw error
+        }
     }
 
     // MARK: Validation

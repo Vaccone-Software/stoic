@@ -113,6 +113,17 @@ rules came from review:
 | a stop hangs                                 | Abandoned after its timeout; the rest still stop                  |
 | the app's task is cancelled                  | Every service stopped, shielded                                   |
 
+## Events
+
+`service.started` (debug) as each start completes; `service.start_failed`
+(error, with the service and its error, a timeout as a deadline rejection)
+for the start that fails the graph; `service.stopped` as each stop returns,
+with how long it took (`warning` with the error when it threw). A stop that
+hangs is abandoned by the scope that runs it, which reports that, and
+`service.stopped` follows if it ever returns. On macOS,
+`lifecycle.terminate_started`, `lifecycle.terminate_completed` and
+`lifecycle.terminate_overran` (error, naming what was left running).
+
 ## Testing
 
 Start order and reverse stop order; two services of one type; concurrency
