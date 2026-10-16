@@ -236,6 +236,26 @@ struct SettingsStoreTests {
         #expect(changed.withLock { $0 })
     }
 
+    /// Observers are told after the update lock is released: one that keeps
+    /// another setting in step by updating, or rereads the file, does not
+    /// re-enter the lock (which traps), and reads the committed value.
+    @Test(.failureMode("design/18", "an observer reacts by updating or reloading")) func anObserverMayUpdateAndReloadTheStore() throws {
+        let disk = try Self.disk()
+        let settings = try Self.open(disk)
+        let seen = Mutex<Int?>(nil)
+        withObservationTracking {
+            _ = settings.value
+        } onChange: {
+            seen.withLock { $0 = settings.value.speed }
+            _ = try? settings.update { $0.name = "kept in step" }
+            try? settings.reload()
+        }
+        try settings.update { $0.speed = 900 }
+        #expect(seen.withLock { $0 } == 900, "the observer reads the committed value")
+        #expect(settings.value == Prefs(speed: 900, name: "kept in step"))
+        #expect(try Self.open(disk).value == Prefs(speed: 900, name: "kept in step"))
+    }
+
     @Test(.failureMode("design/18", "two updates race")) func concurrentUpdatesAreSerialised() async throws {
         let disk = try Self.disk()
         let settings = try Self.open(disk)

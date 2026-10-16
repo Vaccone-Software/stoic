@@ -81,7 +81,10 @@ it. A failed write leaves the value and the file as they were — unless the
 file was replaced and only its durability is in doubt (the directory sync
 after the rename failed): then the new value is published, since it is what
 the file holds, and `update` throws `.durabilityUnknown`. Updates are
-serialised; observers see each committed value. `reload()` takes the same
+serialised, and commit in that order; observers are told of every change
+*after* the update's lock is released, so an observer may read, update or
+reload the store (one told of several commits at once reads the latest, never
+an older one). `reload()` takes the same
 lock for its read *and* its publication, so an update can never commit in the
 gap and then be overwritten in memory by the older value the reload read.
 
@@ -122,6 +125,7 @@ comments — say so in the UI that offers both.
 | the write fails (disk full, read-only volume) | `update` throws `.storage`; value and file unchanged                          |
 | the write lands but cannot be made durable    | `update` throws `.durabilityUnknown`; the new value is in the file *and* published, so memory never disagrees with what the next launch reads; a power loss may bring back the old one |
 | two updates race                              | Serialised; each sees the other's result                                      |
+| an observer reacts by updating or reloading   | Allowed: observers are told after the lock is released; the reaction is an ordinary, serialised update or reload |
 | the file is created or replaced                | Created `0600`; a replacement keeps the mode the file had; secret fields are in it in plain text |
 | a reload races an update                      | Serialised with it end to end; the update is never lost from memory or disk   |
 | the settings file is a symbolic link          | The target is replaced atomically, beside itself; the link stays a link       |

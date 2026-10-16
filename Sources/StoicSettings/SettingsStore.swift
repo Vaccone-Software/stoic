@@ -127,6 +127,13 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// undeclared keys the next write carries. `nil` when there is
         /// nothing to carry.
         var document: JSONValue?
+        /// What changed in commits whose observers have not been told yet.
+        var unnotified: Set<Observed> = []
+    }
+
+    /// The observable properties, for notifying only what changed.
+    private enum Observed: Hashable {
+        case value, issues, source
     }
 
     public let path: String
@@ -138,8 +145,10 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     private let lock: FileLock?
     private let decodeOptions: DecodeOptions
     private let current: Mutex<Current>
-    // Serialises updates end to end — validate, write, publish — without
+    // Serialises updates end to end — validate, write, commit — without
     // holding `current`'s lock across the write, so reads never wait on I/O.
+    // Observers are told after it is released (`notifyObservers`), so one
+    // that reacts by updating or reloading does not re-enter it.
     private let writing = Mutex(())
     private let registrar = ObservationRegistrar()
     /// A test seam: run between a reload's read of the file and its
@@ -274,7 +283,8 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///   durability is in doubt.
     @discardableResult
     public func update(_ change: (inout Value) throws -> Void) throws -> Value {
-        try writing.withLock { _ throws -> Value in
+        defer { notifyObservers() }
+        return try writing.withLock { _ throws -> Value in
             let (old, source, document) = current.withLock { ($0.value, $0.source, $0.document) }
             if case .newerFormat = source { throw UpdateError.newerFormat }
             var new = old
@@ -318,6 +328,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// could commit in the gap and the older value read before it would then
     /// be published over it: an acknowledged update, lost from memory.
     public func reload() throws(StoreError) {
+        defer { notifyObservers() }
         try writing.withLock { _ throws(StoreError) in
             guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
                 preconditionFailure("unreachable: checked when the store opened")
@@ -365,15 +376,32 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         return json
     }
 
+    /// Commits `next` as the current value. Called under `writing`, so
+    /// commits happen in the order updates and reloads were serialised; what
+    /// changed is remembered for ``notifyObservers()``.
     private func publish(_ next: Current) {
-        let previous = current.withLock { current -> Current in
-            defer { current = next }
-            return current
+        current.withLock { current in
+            var changed = current.unnotified
+            if current.value != next.value { changed.insert(.value) }
+            if current.issues != next.issues { changed.insert(.issues) }
+            if current.source != next.source { changed.insert(.source) }
+            current = next
+            current.unnotified = changed
         }
-        // Observers are notified outside the lock, and only of what changed.
-        if previous.value != next.value { registrar.withMutation(of: self, keyPath: \.value) {} }
-        if previous.issues != next.issues { registrar.withMutation(of: self, keyPath: \.issues) {} }
-        if previous.source != next.source { registrar.withMutation(of: self, keyPath: \.source) {} }
+    }
+
+    /// Tells observers what changed since they were last told, outside every
+    /// lock: an observer may read, update or reload the store. Each change is
+    /// told once, by whichever call gets here first after committing it; by
+    /// then the value it reads is the latest committed, never an older one.
+    private func notifyObservers() {
+        let changed = current.withLock { current -> Set<Observed> in
+            defer { current.unnotified = [] }
+            return current.unnotified
+        }
+        if changed.contains(.value) { registrar.withMutation(of: self, keyPath: \.value) {} }
+        if changed.contains(.issues) { registrar.withMutation(of: self, keyPath: \.issues) {} }
+        if changed.contains(.source) { registrar.withMutation(of: self, keyPath: \.source) {} }
     }
 
     private static func load(
