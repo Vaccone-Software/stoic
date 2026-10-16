@@ -28,3 +28,4 @@ API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has parameter 2
 API breakage: func TaskSlot.run(isolation:_:deliver:) has been renamed to func run(for:isolation:_:deliver:)
 API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has been renamed to func runExclusively(for:isolation:_:deliver:)
 API breakage: enumelement Mutation.Kind.notFinite has been removed
+API breakage: constructor JSONValue.init(reading:) has been removed

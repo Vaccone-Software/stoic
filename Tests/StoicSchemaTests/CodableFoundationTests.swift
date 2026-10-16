@@ -2,6 +2,7 @@
 // not, and these tests show it works with the decoders that do.
 import Foundation
 import StoicJSON
+import StoicTesting
 import Testing
 
 @testable import StoicSchema
@@ -143,6 +144,86 @@ struct FoundationCoderTests {
         settings.scrollSpeed = 700
         #expect(String(decoding: try encoder.encode(SchemaCoded(settings)), as: UTF8.self) == #"{"scrollSpeed":700}"#)
     }
+
+    @Test(.failureMode("design/06", "a value read through the Codable bridge nests deeper than `maxDepth`"))
+    func deepNestingIsRefusedNotACrash() async throws {
+        // 250 levels: inside JSONDecoder's own limit, and enough to crash the
+        // recursive walk this replaced, in an ordinary task, under a key the
+        // schema does not even declare.
+        await #expect(processExitsWith: .success) {
+            let text = #"{"limit": {"a": 1, "junk": "# + nestedTreeText(levels: 250) + "}}"
+            let decoded = await Task.detached {
+                (try? JSONDecoder().decode(FlatEnvelope.self, from: Data(text.utf8))) != nil
+            }.value
+            guard !decoded else { exit(1) }
+        }
+        do {
+            let text = #"{"a": 1, "junk": "# + nestedTreeText(levels: 40) + "}"
+            _ = try JSONDecoder().decode(SchemaCoded<Flat>.self, from: Data(text.utf8))
+            Issue.record("expected an error")
+        } catch let DecodingError.dataCorrupted(context) {
+            #expect(context.debugDescription == "nesting is deeper than 64 levels, the limit")
+        }
+        // The limit is the parse options' and moves with them.
+        let decoder = JSONDecoder()
+        var options = DecodeOptions(mode: .lenient)
+        options.parse.maxDepth = 200
+        decoder.userInfo[.schemaDecodeOptions] = options
+        let read = try decoder.decode(SchemaCoded<Flat>.self, from: Data((#"{"a": 1, "junk": "# + nestedTreeText(levels: 40) + "}").utf8))
+        #expect(read.value == Flat(a: 1))
+    }
+
+    @Test(.failureMode("design/06", "a value read through the Codable bridge repeats a key"))
+    func aRepeatedKeyIsResolvedByTheDecoderBeforeTheSchemaSeesIt() throws {
+        // StoicJSON refuses the document; JSONDecoder keeps the first value,
+        // and the bridge cannot know there was a second.
+        let text = #"{"a": 5, "a": 50}"#
+        #expect(Flat.schema.decodeReporting(text).issues.map(\.code) == [.parseError])
+        #expect(try JSONDecoder().decode(SchemaCoded<Flat>.self, from: Data(text.utf8)).value == Flat(a: 5))
+    }
+
+    @Test func longStringsAndBigContainersAreRefusedByTheLimits() throws {
+        let decoder = JSONDecoder()
+        var options = DecodeOptions(mode: .lenient)
+        options.parse.maxStringBytes = 8
+        options.parse.maxContainerCount = 3
+        decoder.userInfo[.schemaDecodeOptions] = options
+        func refusal(_ text: String) -> String? {
+            do {
+                _ = try decoder.decode(SchemaCoded<Flat>.self, from: Data(text.utf8))
+                return nil
+            } catch let DecodingError.dataCorrupted(context) {
+                return context.debugDescription
+            } catch {
+                return "\(error)"
+            }
+        }
+        #expect(refusal(#"{"a": 1, "x": "123456789"}"#) == "a string is longer than 8 bytes (UTF-8), the limit")
+        #expect(refusal(#"{"a": 1, "123456789": 0}"#) == "a string is longer than 8 bytes (UTF-8), the limit")
+        #expect(refusal(#"{"a": 1, "x": [1, 2, 3, 4]}"#) == "a container has more than 3 elements, the limit")
+        #expect(refusal(#"{"a": 1, "b": 2, "c": 3, "d": 4}"#) == "a container has more than 3 elements, the limit")
+        #expect(refusal(#"{"a": 1, "x": [1, 2, 3]}"#) == nil)
+    }
+}
+
+/// A flat model that ignores the keys it does not declare: the bridge still
+/// walks whatever is under them.
+struct Flat: Schematic, Equatable {
+    var a: Int
+
+    static let schema = Schema.object(Flat.self, unknownKeys: .ignore) { f in
+        let a = f.field("a", \.a, .int())
+        return f.build { v in Flat(a: v[a]) }
+    }
+}
+
+struct FlatEnvelope: Decodable {
+    var limit: SchemaCoded<Flat>
+}
+
+/// `levels` objects, each holding an array holding the next.
+func nestedTreeText(levels: Int) -> String {
+    String(repeating: #"{"children":["#, count: levels) + String(repeating: "]}", count: levels)
 }
 
 /// Reads any JSON into a tree with the bridge.

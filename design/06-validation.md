@@ -221,6 +221,8 @@ schema and throws one `DecodingError` listing every issue.
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
+| a value read through the Codable bridge nests deeper than `maxDepth` | One `DecodingError.dataCorrupted` naming the limit, before the schema runs; the walk keeps its own stack, so no depth exhausts the thread's (`maxStringBytes` and `maxContainerCount` are enforced the same way) |
+| a value read through the Codable bridge repeats a key | Not seen: the `Decoder` resolved it before the schema was asked (`JSONDecoder` keeps the first value). Wire data and files go through the schema's text entry points, which refuse it with both locations |
 
 ## Testing
 
@@ -412,8 +414,23 @@ the order it was built:
   arrive as `Int64`, `UInt64` or `Double` (so `1.0` is `1` and a negative
   zero is `0`, and a non-integer is as precise as a `Double`), object members
   arrive sorted by key, and `JSONDecoder` cannot tell `"é"` from `"e\u{301}"`
-  in a key. There are no source ranges. The schema's own text entry points
-  keep all of that; use them for files and the bridge for `Codable` graphs.
+  in a key. A repeated key never arrives at all: the decoder chose one value
+  (`JSONDecoder` the first) before the schema was asked, so the refusal
+  StoicJSON makes of such a document cannot be made, and two systems reading
+  the same bytes can disagree about it. There are no source ranges. The
+  schema's own text entry points keep all of that, so **wire data and files
+  are decoded from their bytes** (`decodeReporting(_:)`, as `StoicHTTP`
+  decodes responses and `StoicSettings` reads files); the bridge is for a
+  value that already lives in a `Codable` graph.
+- **Limits, and no recursion.** The walk into a `JSONValue` enforces the
+  options' `parse.maxDepth`, `maxStringBytes` and `maxContainerCount` (not
+  `maxBytes`: a `Decoder` has no bytes to count) and fails with one
+  `DecodingError.dataCorrupted` naming the limit. It keeps its own stack of
+  open containers and descends with `superDecoder`, never by nesting
+  `decode` calls: the recursive walk it replaced was crashed, in an ordinary
+  task on a 512 KiB stack, by 250 levels of nesting (about 3.5 KB of JSON)
+  under a key the schema did not declare, which plain `Codable` decoded
+  without trouble.
 - **Not provided:** `Schema.codable(T.self)` (wrapping an existing `Codable`
   type as a leaf) and the `userInfo` collector that lets a generated
   `init(from:)` continue after a failed field (both are in the review's 3.9;

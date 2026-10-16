@@ -22,8 +22,9 @@ extension Schema {
     /// Decodes the value at a decoder's position through the schema.
     ///
     /// This lets a schema-backed type sit inside `Codable` code. The decoder
-    /// is walked into a JSON tree (see ``JSONValue/init(reading:)``), the
-    /// schema runs on it, and the outcome is either the value or **one**
+    /// is walked into a JSON tree (see ``JSONValue/init(reading:limits:)``,
+    /// under the limits of the options' `parse`), the schema runs on it, and
+    /// the outcome is either the value or **one**
     /// `DecodingError.dataCorrupted` whose description lists every issue the
     /// schema found, each with its full path from the root of the document
     /// (the decoder's coding path, then the schema's path below it) and
@@ -48,8 +49,8 @@ extension Schema {
     ///   info, and then to `.strict`. Warnings and repairs are dropped on
     ///   the success path, as in ``decode(_:options:)-(String,_)``.
     public func decode(from decoder: any Decoder, options: DecodeOptions? = nil) throws -> Value {
-        let json = try JSONValue(reading: decoder)
         let chosen = options ?? (decoder.userInfo[.schemaDecodeOptions] as? DecodeOptions) ?? .strict
+        let json = try JSONValue(reading: decoder, limits: chosen.parse)
         let result = decode(json, options: chosen)
         if let value = result.value { return value }
         let prefix = JSONPath(decoder.codingPath.map { key in
