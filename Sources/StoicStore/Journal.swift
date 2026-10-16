@@ -41,7 +41,11 @@ internal import Synchronization
 ///
 /// A snapshot that fails its checksum is quarantined and `open` throws
 /// `.corrupt`: the log before it was discarded, so there is nothing safe to
-/// fall back to, and silently starting empty would hide data loss.
+/// fall back to, and silently starting empty would hide data loss. The
+/// refusal is sticky: a tombstone (`<path>.snapshot-lost`), made durable
+/// before the snapshot is moved aside, makes every later `open` throw too,
+/// until one passes ``Options/LostSnapshot/acceptLoss`` and reads
+/// ``OpenReport/lostSnapshot``.
 ///
 /// ## Failures
 ///
@@ -75,11 +79,26 @@ public final class Journal: Sendable {
             case refuse
         }
 
+        /// What `open` does once the snapshot has been lost.
+        public enum LostSnapshot: Sendable, Hashable {
+            /// Throw `.corrupt`, on this open and every later one: the
+            /// records the snapshot folded in are gone, and opening as if
+            /// nothing happened would hide that.
+            case refuse
+            /// Open without the snapshot, replaying every intact record left
+            /// in the log, and say so in ``OpenReport/lostSnapshot``. The
+            /// acceptance is recorded: later opens no longer refuse.
+            case acceptLoss
+        }
+
         /// The largest payload `append` accepts.
         public var maxRecordSize: Int
 
         /// What `open` does with damage in the middle of the log.
         public var middleDamage: MiddleDamage
+
+        /// What `open` does when the snapshot was lost. Refuses by default.
+        public var lostSnapshot: LostSnapshot
 
         /// Hold an advisory lock on `<path>.lock` for as long as the journal
         /// is open, so a second process cannot open it for writing: its `open`
@@ -91,11 +110,12 @@ public final class Journal: Sendable {
 
         public init(
             maxRecordSize: Int = 16 * 1024 * 1024, middleDamage: MiddleDamage = .skipAndReport,
-            crossProcessLock: Bool = false
+            crossProcessLock: Bool = false, lostSnapshot: LostSnapshot = .refuse
         ) {
             self.maxRecordSize = maxRecordSize
             self.middleDamage = middleDamage
             self.crossProcessLock = crossProcessLock
+            self.lostSnapshot = lostSnapshot
         }
     }
 
@@ -143,15 +163,20 @@ public final class Journal: Sendable {
         public let records: Int
         /// Damage found in the middle of the log and skipped; empty if none.
         public let corruption: [Corruption]
+        /// The snapshot had been lost, and this open accepted it
+        /// (``Options/LostSnapshot/acceptLoss``): whatever it folded in is
+        /// gone, and the records replayed are only those the log still held.
+        public let lostSnapshot: Bool
 
         /// How many records were lost to ``corruption``.
         public var corruptRecords: Int { corruption.reduce(0) { $0 + $1.lostRecords } }
 
-        init(droppedBytes: Int, staleRecords: Int, records: Int, corruption: [Corruption] = []) {
+        init(droppedBytes: Int, staleRecords: Int, records: Int, corruption: [Corruption] = [], lostSnapshot: Bool = false) {
             self.droppedBytes = droppedBytes
             self.staleRecords = staleRecords
             self.records = records
             self.corruption = corruption
+            self.lostSnapshot = lostSnapshot
         }
     }
 
@@ -265,7 +290,8 @@ public final class Journal: Sendable {
         at path: String, fileSystem: any FileSystem, options: Options, lock: FileLock?
     ) throws(StoreError) -> Journal {
         let directory = StorePath.directory(of: path)
-        let snapshot = try loadSnapshot(path + ".snapshot", fileSystem: fileSystem)
+        let lostSnapshot = try checkLostSnapshot(at: path, fileSystem: fileSystem, options: options)
+        let snapshot = lostSnapshot ? nil : try loadSnapshot(path + ".snapshot", fileSystem: fileSystem)
 
         let created = try !fileSystem.exists(path)
         let file = try fileSystem.open(path, mode: .readWriteCreate)
@@ -313,8 +339,14 @@ public final class Journal: Sendable {
             }
             let report = OpenReport(
                 droppedBytes: size - scan.validEnd, staleRecords: stale,
-                records: inLog.count - (end == 0 ? 0 : stale), corruption: scan.corruption
+                records: inLog.count - (end == 0 ? 0 : stale), corruption: scan.corruption, lostSnapshot: lostSnapshot
             )
+            if lostSnapshot {
+                // Accepted: later opens no longer refuse. A crash before the
+                // removal is durable only means the next open is asked again.
+                try fileSystem.remove(path + Self.lostSnapshotSuffix)
+                try fileSystem.syncDirectory(directory)
+            }
             let state = State(
                 file: file, end: end,
                 lastSequence: max(through, scan.records.last?.sequence ?? 0),
@@ -329,6 +361,40 @@ public final class Journal: Sendable {
             }
             throw error
         }
+    }
+
+    static let lostSnapshotSuffix = ".snapshot-lost"
+
+    /// Whether the snapshot was lost and `options` accept that; throws if it
+    /// was lost and they do not.
+    ///
+    /// A corrupt snapshot is found here, and the tombstone recording its loss
+    /// is made durable *before* the snapshot is quarantined: a crash between
+    /// the two leaves both, never a journal that opens as if it had none.
+    private static func checkLostSnapshot(at path: String, fileSystem: any FileSystem, options: Options) throws(StoreError) -> Bool {
+        let snapshotPath = path + ".snapshot"
+        let tombstone = path + lostSnapshotSuffix
+        let store = AtomicFile(fileSystem: fileSystem)
+        var lost = try fileSystem.exists(tombstone)
+        if !lost, try fileSystem.exists(snapshotPath), case .failure = Envelope.open(try fileSystem.readAll(snapshotPath)) {
+            try store.write(Array("stoic.journal snapshot-lost v1".utf8), to: tombstone)
+            lost = true
+        }
+        guard lost else { return false }
+        if try fileSystem.exists(snapshotPath) {
+            store.quarantine(snapshotPath, reason: "snapshot failed its checksum", options: store.options)
+        }
+        let accepted = options.lostSnapshot == .acceptLoss
+        StoreEvents.record(Event("store.journal_snapshot_lost", level: .error, fields: [
+            .init("path", .string(path)), .init("accepted", .bool(accepted)),
+        ]))
+        guard accepted else {
+            throw StoreError(
+                kind: .corrupt, operation: "snapshot", path: snapshotPath,
+                detail: "the snapshot was lost (quarantined as corrupt), and the records it folded in with it; open with lostSnapshot: .acceptLoss to continue without them"
+            )
+        }
+        return true
     }
 
     private static func loadSnapshot(_ path: String, fileSystem: any FileSystem) throws(StoreError) -> Snapshot? {

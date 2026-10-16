@@ -231,6 +231,17 @@ the log. Recovery skips records at or below the snapshot's sequence and, if
 every remaining record is covered, finishes the truncation. That ordering plus
 the sequence number is what makes every crash point correct.
 
+**A lost snapshot stays lost until the app says so.** Quarantining a corrupt
+snapshot moves it out of the way, so the next `open` would find no snapshot
+and start from the log alone, as if it had never existed. Before the snapshot
+is moved, `open` makes a tombstone durable (`<path>.snapshot-lost`); while it
+exists every `open` throws `.corrupt` (`store.journal_snapshot_lost`). An app
+that has decided to go on without what the snapshot held opens with
+`Options.lostSnapshot = .acceptLoss`: it replays every intact record left in
+the log (records an interrupted compaction had folded in are among them, since
+the sequence they were covered to is gone), `OpenReport.lostSnapshot` says so,
+and the tombstone is removed.
+
 | What happens if…                                           | Behaviour                                                                                           |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `append` has returned, then power is lost                  | The record is replayed                                                                              |
@@ -239,7 +250,7 @@ the sequence number is what makes every crash point correct.
 | a byte flips in the *last* record                          | Indistinguishable from a crash: cut as a torn tail (`droppedBytes`), not reported as corruption    |
 | `compact` runs over a log with skipped damage              | The log is copied to `<path>.corrupt-N` first, then folded and truncated                           |
 | a crash falls inside `compact`                             | Old snapshot + full log, or new snapshot + stale log (skipped, then truncated), or new + empty     |
-| the snapshot fails its checksum                            | Quarantined; `open` throws `.corrupt` (the records it replaced are gone, so starting empty would hide data loss) |
+| the snapshot fails its checksum                            | Quarantined, after a tombstone records the loss; `open` throws `.corrupt` (the records it replaced are gone, so starting empty would hide data loss), and so does every later `open` until one passes `lostSnapshot: .acceptLoss`, which replays what the log still holds and reports `OpenReport.lostSnapshot` |
 | `append`'s write fails (`ENOSPC`)                          | Rolled back by truncating to the last end; the journal stays usable                                |
 | `append`'s `fullSync` fails                                | The journal is poisoned: every call throws `.poisoned` until it is reopened, which re-reads the file |
 | a record exceeds `maxRecordSize`                           | `.invalidArgument`; nothing written                                                                |
@@ -380,7 +391,7 @@ file, versioned (`v1` files are still read).
 
 `store.corrupt_quarantined`, `store.recovered_previous`, `store.replace_leftover`, `store.temp_removed`,
 `store.fullsync_unavailable`, `store.journal_corruption`, `store.journal_truncated`,
-`store.journal_compacted`, `store.outbox_delivered`,
+`store.journal_compacted`, `store.journal_snapshot_lost`, `store.outbox_delivered`,
 `store.outbox_delivery_failed`, `store.outbox_maintenance_failed`. The lock reports no events: a refusal is a thrown error. All are in
 `EventCatalog`; the catalog test now scans for the `store.` prefix too.
 

@@ -339,18 +339,57 @@ struct JournalTests {
         #expect(try journal.append(bytes("c")) == 3)
     }
 
-    @Test(.failureMode("design/15", "the snapshot fails its checksum")) func aCorruptSnapshotIsQuarantinedAndOpenRefuses() throws {
+    @Test(.failureMode("design/15", "the snapshot fails its checksum")) func aCorruptSnapshotIsQuarantinedAndEveryOpenRefuses() throws {
         let dir = try TempDirectory()
         var journal = try Journal.open(at: dir.file("j"))
         try journal.append(bytes("a"))
         try journal.compact(snapshot: bytes("a"))
+        try journal.append(bytes("b"))
         try journal.close()
         try flipBit(in: dir.file("j.snapshot"), at: 25)
         let error = #expect(throws: StoreError.self) { try Journal.open(at: dir.file("j")) }
         #expect(error?.kind == .corrupt)
         #expect(try fs.list(directory: dir.path).contains("j.snapshot.corrupt-1"))
-        journal = try Journal.open(at: dir.file("j"))   // the damage is reported once; then it is gone
-        #expect(journal.lastSequence == 0)
+        // The snapshot is gone from its place, but the loss is not forgotten:
+        // a retried open, or the next launch, refuses too.
+        let again = #expect(throws: StoreError.self) { try Journal.open(at: dir.file("j")) }
+        #expect(again?.kind == .corrupt)
+        // Until the app accepts the loss, and sees it reported.
+        journal = try Journal.open(at: dir.file("j"), options: .init(lostSnapshot: .acceptLoss))
+        #expect(journal.openReport.lostSnapshot)
+        #expect(payloads(try journal.replay()) == ["b"])
+        #expect(try journal.replay().snapshot == nil)
+        #expect(try journal.append(bytes("c")) == 3)
+        try journal.close()
+        // Accepted once is accepted.
+        journal = try Journal.open(at: dir.file("j"))
+        #expect(!journal.openReport.lostSnapshot)
+        #expect(payloads(try journal.replay()) == ["b", "c"])
+    }
+
+    @Test(.failureMode("design/15", "the snapshot fails its checksum")) func theLossIsRecordedBeforeTheSnapshotIsMovedAside() async throws {
+        let corrupted: (SimulatedFileSystem) throws -> Void = { disk in
+            try disk.createDirectory("/d")
+            let journal = try Journal.open(at: "/d/j", fileSystem: disk)
+            try journal.append(bytes("a"))
+            try journal.compact(snapshot: bytes("a"))
+            try journal.close()
+            let file = try disk.open("/d/j.snapshot", mode: .readWrite)
+            try disk.write(file, [0xFF], at: 25)
+            try disk.fullSync(file)
+            try disk.close(file)
+        }
+        let report = try await exploreCrashes("a refused open", setup: corrupted, operation: { disk in
+            _ = try? Journal.open(at: "/d/j", fileSystem: disk)
+        }) { disk, _ in
+            do throws(StoreError) {
+                _ = try Journal.open(at: "/d/j", fileSystem: disk)
+                return "a journal whose snapshot was lost opened without being asked to accept it"
+            } catch {
+                return error.kind == .corrupt ? nil : "open threw \(error)"
+            }
+        }
+        #expect(report.violations.isEmpty, "\(report)")
     }
 
     @Test func manyThreadsAppendWithoutInterleavingOrGaps() async throws {

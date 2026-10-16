@@ -375,7 +375,7 @@ public struct AtomicFile: Sendable {
     /// Renames a corrupt file to `<path>.corrupt-N` and prunes old ones. A
     /// quarantine that cannot be carried out (a read-only volume) is reported
     /// and does not stop the read: the fallback copy is still good.
-    private func quarantine(_ path: String, reason: String, options: Options) {
+    func quarantine(_ path: String, reason: String, options: Options) {
         let directory = StorePath.directory(of: path)
         let prefix = StorePath.name(of: path) + ".corrupt-"
         var target = ""
