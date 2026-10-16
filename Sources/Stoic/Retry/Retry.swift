@@ -89,15 +89,25 @@ public protocol Retryable: Error {
 
 /// Decides, for each failure, whether a retry could help.
 public struct RetryClassifier<Failure: Error>: Sendable {
-    private let decide: @Sendable (Failure, _ attemptTimedOut: Bool) -> RetryDecision
+    // The built-in classifiers are cases, not closures: a closure generic over
+    // `Failure` captures its type, so building `.standard` allocated on
+    // every `retry` call.
+    private enum Kind: Sendable {
+        case standard
+        case transientOnly
+        case never
+        case custom(@Sendable (Failure) -> RetryDecision)
+    }
+
+    private let kind: Kind
 
     /// A classifier from a closure.
     public init(_ decide: @escaping @Sendable (Failure) -> RetryDecision) {
-        self.decide = { failure, _ in decide(failure) }
+        self.kind = .custom(decide)
     }
 
-    private init(decideWithTimeout: @escaping @Sendable (Failure, Bool) -> RetryDecision) {
-        self.decide = decideWithTimeout
+    private init(kind: Kind) {
+        self.kind = kind
     }
 
     /// The decision for one failure. Three rules hold whatever the
@@ -108,7 +118,24 @@ public struct RetryClassifier<Failure: Error>: Sendable {
         if containsDefect(failure) { return .stop }
         if attemptTimedOut { return .retry }
         if containsCancellation(failure) { return .stop }
-        return decide(failure, attemptTimedOut)
+        switch kind {
+        case .standard: return standardDecision(for: failure) ?? .retry
+        case .transientOnly: return standardDecision(for: failure) ?? .stop
+        case .never: return .stop
+        case .custom(let decide): return decide(failure)
+        }
+    }
+
+    /// This classifier for a stage's operation error `F`: what a custom
+    /// classifier is handed is the error with its wrappers removed, so it
+    /// decides the same way alone and in a pipeline.
+    func unwrapping<F: Error>(to _: F.Type) -> RetryClassifier<F> where Failure == any Error {
+        switch kind {
+        case .standard: RetryClassifier<F>(kind: .standard)
+        case .transientOnly: RetryClassifier<F>(kind: .transientOnly)
+        case .never: RetryClassifier<F>(kind: .never)
+        case .custom(let decide): RetryClassifier<F> { decide($0.unwrappedForClassification) }
+        }
     }
 
     /// The default: retry unless the failure is known to be permanent.
@@ -124,24 +151,18 @@ public struct RetryClassifier<Failure: Error>: Sendable {
     ///   load, and nested retries collapse to one attempt, so an unknown
     ///   error retried in vain costs a few bounded attempts, not an outage.
     public static var standard: RetryClassifier {
-        RetryClassifier(decideWithTimeout: { failure, timedOut in
-            if timedOut { return .retry }
-            return standardDecision(for: failure) ?? .retry
-        })
+        RetryClassifier(kind: .standard)
     }
 
     /// Retry only what is known to be transient: ``Retryable`` errors that
     /// say so, rejections with a `retryAfter`, and attempts that timed out.
     public static var transientOnly: RetryClassifier {
-        RetryClassifier(decideWithTimeout: { failure, timedOut in
-            if timedOut { return .retry }
-            return standardDecision(for: failure) ?? .stop
-        })
+        RetryClassifier(kind: .transientOnly)
     }
 
     /// Never retry.
     public static var never: RetryClassifier {
-        RetryClassifier { _ in .stop }
+        RetryClassifier(kind: .never)
     }
 }
 

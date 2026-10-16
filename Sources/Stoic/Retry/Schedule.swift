@@ -12,22 +12,24 @@
 /// takes only the bounded kind, so an unbounded retry is a compile error,
 /// not a production incident.
 public struct Schedule: Sendable, Hashable, CustomStringConvertible {
-    indirect enum Node: Sendable, Hashable {
+    // Only the cases that hold a node are indirect: a base is stored inline,
+    // so `.fixed(…)` built at a call site costs no allocation.
+    enum Node: Sendable, Hashable {
         case fixed(Duration)
         case linear(Duration)
         case exponential(base: Duration, factor: Double)
         case fibonacci(Duration)
         case delays([Duration])
         case decorrelated(base: Duration, cap: Duration)
-        case capped(Node, Duration)
-        case defaultCap(Node, Duration)
-        case jittered(Node, Jitter)
-        case defaultJitter(Node)
-        case attempts(Node, Int)
-        case elapsed(Node, Duration)
-        case union(Node, Node)
-        case intersection(Node, Node)
-        case andThen(Node, Node)
+        indirect case capped(Node, Duration)
+        indirect case defaultCap(Node, Duration)
+        indirect case jittered(Node, Jitter)
+        indirect case defaultJitter(Node)
+        indirect case attempts(Node, Int)
+        indirect case elapsed(Node, Duration)
+        indirect case union(Node, Node)
+        indirect case intersection(Node, Node)
+        indirect case andThen(Node, Node)
     }
 
     let node: Node

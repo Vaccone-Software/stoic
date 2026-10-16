@@ -215,10 +215,7 @@ public struct Retrying: Policy {
         // The classifier sees the operation's own error, not the PolicyError
         // a pipeline wraps it in, so the stage decides the same way alone and
         // in a pipeline (and as a breaker's recordWhen would).
-        let classify = self.classify
-        let typed = RetryClassifier<Failure> { failure in
-            classify.decision(for: failure.unwrappedForClassification, attemptTimedOut: false)
-        }
+        let typed = classify.unwrapping(to: Failure.self)
         do throws(RetryStopped<Failure>) {
             if let attemptTimeout {
                 return try await retryBoundingEachAttempt(

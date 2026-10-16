@@ -5,7 +5,7 @@
   "CircuitBreaker.execute (closed, success)" : 0,
   "Schedule step (exponential, jittered)" : 3,
   "StateMachine.send" : 6.16,
-  "retry, first attempt succeeds" : 5,
+  "retry, first attempt succeeds" : 2,
   "withScope, one finalizer" : 34.66,
   "withTimeout, completes at once" : 19.86
 }
