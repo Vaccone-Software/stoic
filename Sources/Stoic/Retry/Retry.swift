@@ -553,10 +553,16 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             retryAfterCeiling = retryAfterCap
             delay = max(.zero, requested)
         }
-        // A struggling device backs off further: hot, saving power, or low on memory.
+        // A struggling device backs off further: hot, saving power, or low on
+        // memory. The cap is the last word either way: the schedule's own
+        // for its delays, five minutes for a server's.
         let factor = ambient.conditions.current.backoffFactor
-        if factor > 1 { delay = delay.saturatingMultiplied(by: factor) }
-        if let ceiling = retryAfterCeiling { delay = min(delay, ceiling) }
+        if let ceiling = retryAfterCeiling {
+            if factor > 1 { delay = delay.saturatingMultiplied(by: factor) }
+            delay = min(delay, ceiling)
+        } else if factor > 1 {
+            delay = delay.stretched(by: factor, cap: schedule.schedule.node.delayCap)
+        }
         // 5. The deadline.
         if let deadline = Deadline.current {
             let needed = delay.saturatingAdding(attemptDuration)

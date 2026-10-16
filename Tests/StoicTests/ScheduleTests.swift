@@ -37,9 +37,21 @@ struct ScheduleTests {
         #expect(schedule.maximumTotalDelay == .seconds(370))
     }
 
-    @Test func worstCaseCountsEveryAttemptAndEveryDelay() {
+    @Test func worstCaseCountsEveryAttemptAndEveryDelayAsAStrugglingDeviceStretchesIt() {
+        // Two attempts of 2.5 s, and one 650 ms delay stretched eight times.
         let schedule = Schedule.fixed(.milliseconds(650)).attempts(2)
-        #expect(schedule.worstCase(attemptTimeout: .milliseconds(2500)) == .milliseconds(5650))
+        #expect(schedule.maximumTotalDelay == .milliseconds(650))
+        #expect(schedule.worstCase(attemptTimeout: .milliseconds(2500)) == .milliseconds(10_200))
+        // A cap is the last word: never stretched past it.
+        let capped = Schedule.fixed(.milliseconds(650)).capped(at: .seconds(1)).attempts(2)
+        #expect(capped.worstCase(attemptTimeout: .milliseconds(2500)) == .milliseconds(6000))
+        let defaultCap = Schedule.exponential(base: .seconds(100)).attempts(3)
+        #expect(defaultCap.worstCase(attemptTimeout: .zero) == .seconds(600), "both delays held at the five-minute default cap")
+    }
+
+    @Test func theStretchWorstCaseAssumesIsTheMostTheDeviceApplies() {
+        let worst = SystemConditions(memoryPressure: .critical, thermal: .critical, lowPowerMode: true)
+        #expect(worst.backoffFactor == BoundedSchedule.maximumBackoffFactor)
     }
 
     @Test func elapsedStopsOnceTimeIsUp() {

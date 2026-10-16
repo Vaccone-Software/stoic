@@ -211,31 +211,46 @@ public struct BoundedSchedule: Sendable, Hashable, CustomStringConvertible {
 
     /// The longest total time the schedule can spend waiting between
     /// attempts: every delay at its maximum (jitter excluded), ignoring
-    /// elapsed-time limits.
+    /// elapsed-time limits, on a device in good health.
     public var maximumTotalDelay: Duration {
+        totalDelay(stretchedBy: 1)
+    }
+
+    /// The most a struggling device stretches a retry's delays: hot, in Low
+    /// Power Mode or short of memory, ``SystemConditions/backoffFactor``
+    /// reaches eight times, never past the schedule's own cap.
+    static let maximumBackoffFactor = 8.0
+
+    /// The longest a retry under this schedule can take, if each attempt is
+    /// bounded by `attemptTimeout`: every attempt timing out, and every delay
+    /// at its maximum, stretched as far as a struggling device stretches it
+    /// (eight times, but never past the schedule's cap). A healthy device
+    /// finishes far sooner; a watchdog derived from this never cuts a retry
+    /// short on a hot one. A `retryAfter` decision may replace a delay with
+    /// up to five minutes, which this bound does not include.
+    public func worstCase(attemptTimeout: Duration) -> Duration {
+        attemptTimeout
+            .saturatingMultiplied(by: Double(maximumAttempts))
+            .saturatingAdding(totalDelay(stretchedBy: Self.maximumBackoffFactor))
+    }
+
+    /// Every delay at its maximum, each stretched by `factor` up to the cap.
+    private func totalDelay(stretchedBy factor: Double) -> Duration {
         let retries = maximumAttempts - 1
+        let cap = schedule.node.delayCap
         var stepper = Schedule.Stepper(node: schedule.node.removingElapsedLimits, random: nil)
         var total = Duration.zero
         var longest = Duration.zero
         let exact = min(retries, 100_000)
         for _ in 0..<exact {
-            guard let delay = stepper.next(elapsed: .zero) else { return total }
+            guard var delay = stepper.next(elapsed: .zero) else { return total }
+            if factor > 1 { delay = delay.stretched(by: factor, cap: cap) }
             total = total.saturatingAdding(delay)
             longest = max(longest, delay)
         }
         // Beyond 100,000 retries, bound the rest by the longest delay seen
         // rather than step them all.
         return total.saturatingAdding(longest.saturatingMultiplied(by: Double(retries - exact)))
-    }
-
-    /// The longest a retry under this schedule can take, if each attempt is
-    /// bounded by `attemptTimeout`: every attempt timing out, every delay at
-    /// its maximum. A `retryAfter` decision may replace a delay with up to
-    /// five minutes, which this bound does not include.
-    public func worstCase(attemptTimeout: Duration) -> Duration {
-        attemptTimeout
-            .saturatingMultiplied(by: Double(maximumAttempts))
-            .saturatingAdding(maximumTotalDelay)
     }
 
     public func capped(at maximum: Duration) -> BoundedSchedule {
@@ -457,6 +472,14 @@ private func pow(_ base: Double, _ exponent: Int) -> Double {
 
 extension Duration {
     fileprivate var clampedNonNegative: Duration { max(.zero, self) }
+
+    /// `self` stretched by a struggling device's backoff `factor`, never past
+    /// the schedule's `cap`: the cap is the last word.
+    func stretched(by factor: Double, cap: Duration?) -> Duration {
+        let stretched = saturatingMultiplied(by: factor)
+        guard let cap else { return stretched }
+        return min(stretched, max(cap, self))
+    }
 }
 
 extension Schedule.Node: CustomStringConvertible {
@@ -524,6 +547,28 @@ extension Schedule.Node {
             guard let f = first.attemptLimit, let s = second.attemptLimit else { return nil }
             let (sum, overflow) = (f - 1).addingReportingOverflow(s - 1)
             return overflow ? .max : sum + 1
+        }
+    }
+
+    /// The longest delay any `capped(at:)` (or a base's default cap) lets
+    /// this node produce, or `nil` when nothing caps it.
+    ///
+    /// Only caps count, not a base's own size: a fixed one-second delay may
+    /// be stretched by a struggling device, while a schedule capped at one
+    /// second never waits longer than that, whatever the device.
+    var delayCap: Duration? {
+        switch self {
+        case .fixed, .linear, .exponential, .fibonacci, .delays:
+            return nil
+        case .decorrelated(_, let cap):
+            return cap
+        case .capped(let inner, let cap), .defaultCap(let inner, let cap):
+            return inner.delayCap.map { min($0, cap) } ?? cap
+        case .jittered(let inner, _), .defaultJitter(let inner), .attempts(let inner, _), .elapsed(let inner, _):
+            return inner.delayCap
+        case .union(let left, let right), .intersection(let left, let right), .andThen(let left, let right):
+            guard let l = left.delayCap, let r = right.delayCap else { return nil }
+            return max(l, r)
         }
     }
 

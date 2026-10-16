@@ -446,4 +446,27 @@ struct ConditionsTests {
         }
         #expect(clock.sleeps == [.seconds(2), .seconds(2)])
     }
+
+    @Test(.failureMode("design/02", "the device is hot, saving power or short of memory"))
+    func theScheduleCapIsTheLastWordOnAStrugglingDevice() async {
+        let worst = FixedConditions(SystemConditions(memoryPressure: .critical, thermal: .critical))
+        let capped = ImmediateClock()
+        _ = try? await withTestAmbient(clock: capped) {
+            try await withAmbient({ $0.conditions = worst }) {
+                try await retry(.fixed(.seconds(1)).capped(at: .seconds(1)).attempts(2), budget: .unlimited) { _ throws(Transient) -> Int in
+                    throw Transient()
+                }
+            }
+        }
+        #expect(capped.sleeps == [.seconds(1)])
+        let defaultCap = ImmediateClock()
+        _ = try? await withTestAmbient(clock: defaultCap) {
+            try await withAmbient({ $0.conditions = worst }) {
+                try await retry(.exponential(base: .seconds(100)).unjittered().attempts(2), budget: .unlimited) { _ throws(Transient) -> Int in
+                    throw Transient()
+                }
+            }
+        }
+        #expect(defaultCap.sleeps == [.seconds(300)], "eight times 100 s, held at the five-minute default cap")
+    }
 }

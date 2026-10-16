@@ -136,6 +136,14 @@ is not. Randomness comes from the ambient source, one stream per call site,
 so a seed reproduces a run's delays; in production the source is the system
 generator and concurrent callers draw independently.
 
+**A struggling device.** A hot device, one in Low Power Mode or one short of
+memory stretches every delay (`SystemConditions.backoffFactor`, up to eight
+times), and the schedule's cap is the last word: a schedule capped at one
+second never waits longer, whatever the device, while an uncapped fixed delay
+stretches. `worstCase(attemptTimeout:)` includes the stretch, so a watchdog
+derived from it never cuts a retry short on a hot device; a healthy one
+finishes far sooner.
+
 **Retry-After.** `.retryAfter(d)` replaces the schedule's delay for that
 retry but not its bound, its budget or the deadline. The device's conditions
 stretch it as they stretch any delay, and the five-minute cap is the last
@@ -166,6 +174,7 @@ or supervisor that can stop it.
 | the budget is empty                                | Last error rethrown; `retry.budget_exhausted`                                  |
 | the next attempt cannot finish before the deadline | Last error rethrown without sleeping; `retry.deadline_skip`                    |
 | the next delay would end past `upTo(elapsed:)`     | Last error rethrown without sleeping; `retry.exhausted`                        |
+| the device is hot, saving power or short of memory | Delays stretched up to 8×, never past the schedule's cap; `worstCase` includes it |
 | the server sends Retry-After longer than the cap   | The cap wins; `retry.after_capped`                                             |
 | the schedule is unbounded                          | Does not compile: `retry` takes only a `BoundedSchedule`                       |
 | `decorrelated` is given a base that is not positive | Precondition failure at construction: it could never back off                  |
