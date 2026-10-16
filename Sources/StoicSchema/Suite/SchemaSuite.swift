@@ -376,8 +376,9 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
         func skips(_ kind: Mutation.Kind) -> Bool {
             switch kind {
             // A Double the decoder refuses for being too exact is still a
-            // number to a validator.
-            case .precisionLoss: true
+            // number to a validator, and `5.0` is an integer to one (Draft
+            // 2020-12 counts any number with no fractional part).
+            case .precisionLoss, .integralFraction: true
             // A format is an annotation to a JSON Schema validator; only
             // the conversion knows that 2024-02-30 is no date.
             case .refusedByConversion: true

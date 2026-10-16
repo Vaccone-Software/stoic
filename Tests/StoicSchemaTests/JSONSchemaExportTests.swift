@@ -50,7 +50,8 @@ private let settingsGolden = #"""
               "minimum": 1,
               "maximum": 65535,
               "description": "TCP port.",
-              "default": 8080
+              "default": 8080,
+              "x-stoic-integer-spelling": "no fraction or exponent"
             },
             "timeoutSeconds": {
               "type": "number",
@@ -69,7 +70,8 @@ private let settingsGolden = #"""
           "minimum": 0,
           "maximum": 10000,
           "description": "Entries kept.",
-          "default": 100
+          "default": 100,
+          "x-stoic-integer-spelling": "no fraction or exponent"
         },
         "windowTitle": {
           "type": "string",
@@ -121,8 +123,10 @@ struct GoldenExportTests {
         #expect(text.contains("x-stoic-secret"))
     }
 
-    @Test func noCustomConstraintsMeansNothingUnenforced() {
-        #expect(Settings.schema.jsonSchemaExport().unenforced.isEmpty)
+    @Test func noCustomConstraintsMeansNothingUnenforcedButIntegerSpelling() {
+        let unenforced = Settings.schema.jsonSchemaExport().unenforced
+        #expect(unenforced.allSatisfy { $0.id == "integer-spelling" })
+        #expect(unenforced.map(\.location) == ["$.network.port", "$.maxHistory"])
     }
 }
 
@@ -141,18 +145,35 @@ struct ExportMappingTests {
         #expect(export(Schema.json()) == json("{}"))
     }
 
+    @Test func anIntegerSpeltWithAFractionIsADifferenceTheExportStates() {
+        // JSON Schema's `integer` admits 5.0; the strict decoder does not.
+        // The export may not hide that: it annotates the field and lists it.
+        let schema = Schema.int()
+        #expect(JSONSchemaValidator(schema.jsonSchema()).accepts(json("5.0")))
+        #expect(schema.decode(json("5.0")).issues.map(\.code) == [.typeMismatch])
+        let export = schema.jsonSchemaExport()
+        #expect(export.schema.object?["x-stoic-integer-spelling"] == "no fraction or exponent")
+        #expect(export.unenforced.map(\.id) == ["integer-spelling"])
+        guard case .integerEnumeration = Schema<Priority>.enumeration(Priority.self).node else { return fail("node") }
+        #expect(Schema<Priority>.enumeration(Priority.self).jsonSchemaExport().unenforced.map(\.id) == ["integer-spelling"])
+        // The mutator offers 5.0 and the suite's agreement check skips it by name.
+        let mutations = Schema.int(.range(0...9)).generator.mutations(of: json("5")).filter { $0.kind == .integralFraction }
+        #expect(mutations.map(\.document) == [json("5.0")])
+        #expect(mutations.first?.expected.map(\.code) == [.typeMismatch])
+    }
+
     @Test func integersStateTheirNaturalBounds() {
         #expect(
             export(Schema.int())
-                == json(#"{"type":"integer","minimum":-9223372036854775808,"maximum":9223372036854775807}"#))
-        #expect(export(Schema.uint64()) == json(#"{"type":"integer","minimum":0,"maximum":18446744073709551615}"#))
+                == json(#"{"type":"integer","minimum":-9223372036854775808,"maximum":9223372036854775807,"x-stoic-integer-spelling":"no fraction or exponent"}"#))
+        #expect(export(Schema.uint64()) == json(#"{"type":"integer","minimum":0,"maximum":18446744073709551615,"x-stoic-integer-spelling":"no fraction or exponent"}"#))
         #expect(
-            export(Schema<UInt8>.integer(UInt8.self)) == json(#"{"type":"integer","minimum":0,"maximum":255}"#))
+            export(Schema<UInt8>.integer(UInt8.self)) == json(#"{"type":"integer","minimum":0,"maximum":255,"x-stoic-integer-spelling":"no fraction or exponent"}"#))
         // A constraint on one side leaves the other to the type.
         #expect(
             export(Schema.int(.range(1...)))
-                == json(#"{"type":"integer","minimum":1,"maximum":9223372036854775807}"#))
-        #expect(export(Schema.int(.range(1...5))) == json(#"{"type":"integer","minimum":1,"maximum":5}"#))
+                == json(#"{"type":"integer","minimum":1,"maximum":9223372036854775807,"x-stoic-integer-spelling":"no fraction or exponent"}"#))
+        #expect(export(Schema.int(.range(1...5))) == json(#"{"type":"integer","minimum":1,"maximum":5,"x-stoic-integer-spelling":"no fraction or exponent"}"#))
     }
 
     @Test func rangesBoundsAndStepsKeepTheirDigits() {
@@ -188,7 +209,7 @@ struct ExportMappingTests {
         #expect(
             export(Schema.array(of: .int(.range(0...9)), .count(1...3), .unique))
                 == json(
-                    #"{"type":"array","items":{"type":"integer","minimum":0,"maximum":9},"minItems":1,"maxItems":3,"uniqueItems":true}"#
+                    #"{"type":"array","items":{"type":"integer","minimum":0,"maximum":9,"x-stoic-integer-spelling":"no fraction or exponent"},"minItems":1,"maxItems":3,"uniqueItems":true}"#
                 ))
         #expect(
             export(Schema.dictionary(of: .bool, .count(...5)))
@@ -223,7 +244,10 @@ struct ExportMappingTests {
             Field("low", \.low, .int(even))
         }
         let result = schema.jsonSchemaExport()
-        #expect(result.unenforced == [.init(location: "$.low", id: "even", description: "an even number")])
+        #expect(
+            result.unenforced.filter { $0.id != "integer-spelling" } == [
+                .init(location: "$.low", id: "even", description: "an even number")
+            ])
         let low = result.schema.value(at: JSONPath([.key("properties"), .key("low")]))
         #expect(
             low?.object?["x-stoic-constraint"] == json(#"[{"id":"even","description":"an even number"}]"#))
@@ -254,7 +278,7 @@ struct ExportMappingTests {
 
     @Test func refinedTypesExportTheirConstraints() {
         #expect(
-            export(Port.schema) == json(#"{"type":"integer","minimum":1,"maximum":65535}"#))
+            export(Port.schema) == json(#"{"type":"integer","minimum":1,"maximum":65535,"x-stoic-integer-spelling":"no fraction or exponent"}"#))
         #expect(export(ScrollSpeed.schema) == json(#"{"type":"number","minimum":0.1,"maximum":10}"#))
     }
 

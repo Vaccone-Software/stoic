@@ -194,7 +194,12 @@ parses back.
   defaults, `description` from `doc`, `additionalProperties: false` for
   rejecting objects, `x-stoic-unit` and `x-stoic-secret` metadata. What
   cannot be expressed (cross-field constraints, `.custom`) is exported as an
-  `x-stoic-constraint` annotation and listed in the export's summary.
+  `x-stoic-constraint` annotation and listed in the export's summary. So is
+  the one place Draft 2020-12 is looser than the decoder by definition: its
+  `integer` is any number with no fractional part, so a validator admits
+  `5.0`, which `.strict` refuses for an integer; every integer (and integer
+  enumeration) carries `x-stoic-integer-spelling` and an `integer-spelling`
+  entry in the summary.
 - **Generators.** Every schema derives valid values biased to boundaries
   (lower, lower+1, upper−1, upper, empty and full collections, astral and
   combining Unicode) and _invalid documents_ — a valid one with one minimal
@@ -526,8 +531,9 @@ migration chain.
 - **The differential validator moved into the library** as
   `JSONSchemaValidator` (public, deliberately small, only the keywords the
   exporter writes), because the suite needs it. Rules a JSON Schema cannot
-  state are skipped _by name_ in the agreement check: precision loss and
-  overflow of a `Double`, and lengths counted in graphemes or bytes.
+  state are skipped _by name_ in the agreement check: precision loss of a
+  `Double`, an integer spelt with a fraction, and lengths counted in
+  graphemes or bytes.
 - **Failures are shrunk** where the property is about a value (round trip),
   so the report shows the smallest document that still fails.
 - **A transform with no examples** makes the generator guess, so the suite
@@ -618,7 +624,8 @@ that reports many positions.
   required key, unknown key, misspelt key, too long, too short, too many, too
   few, repeated element, not a multiple, pattern mismatch, bad enumeration
   case, bad union tag, misspelt tag, missing discriminator, lost precision,
-  future version. Every candidate is run through the constraint
+  an integer spelt with a fraction, future version. Every candidate is run
+  through the constraint
   interpreter first so that "exactly one issue" is a property of the
   mutation. `mutation(of:combining:)` applies several whose parts of the
   document do not overlap (a wrong container hides what is inside it, so a

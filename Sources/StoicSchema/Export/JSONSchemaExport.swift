@@ -92,6 +92,7 @@ struct JSONSchemaExporter {
             if !lowerGiven { out["minimum"] = .number(type.minimum) }
             if !upperGiven { out["maximum"] = .number(type.maximum) }
             apply(constraints, to: &out, node: node, location: location)
+            strictInteger(&out, location: location)
 
         case .number(let constraints):
             out["type"] = "number"
@@ -109,6 +110,7 @@ struct JSONSchemaExporter {
             out["type"] = "integer"
             out["enum"] = .array(cases.map { .number(JSONNumber($0.value)) })
             out["x-stoic-enum-names"] = .array(cases.map { .string($0.name) })
+            strictInteger(&out, location: location)
 
         case .transformed(let transform):
             out = export(transform.base, location: location)
@@ -343,6 +345,19 @@ struct JSONSchemaExporter {
     /// Writes a keyword. If the keyword is already there with a different
     /// value (two range constraints on one number), the new one goes in an
     /// `allOf` branch, which is conjunction and so keeps both.
+    /// Draft 2020-12's `integer` is any number with no fractional part, so a
+    /// validator admits `5.0`; the decoder, under `.strict`, refuses an
+    /// integer spelt with a fraction or an exponent. The export says so, and
+    /// lists the difference, rather than letting the documentation accept
+    /// what the decoder refuses.
+    private mutating func strictInteger(_ out: inout JSONObject, location: String) {
+        out["x-stoic-integer-spelling"] = "no fraction or exponent"
+        unenforced.append(
+            JSONSchemaExport.Unenforced(
+                location: location, id: "integer-spelling",
+                description: "an integer written without a fraction or exponent (`5.0` is refused under .strict)"))
+    }
+
     private func set(_ keyword: String, _ value: JSONValue, in out: inout JSONObject) {
         guard let existing = out[keyword] else {
             out[keyword] = value

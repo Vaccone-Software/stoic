@@ -48,6 +48,9 @@ public struct Mutation: Sendable {
         case typoUnionTag
         case missingDiscriminator
         case precisionLoss
+        /// An integer written with a fraction (`5.0`): the same number, and
+        /// a spelling `.strict` refuses for an integer field.
+        case integralFraction
         case futureVersion
         /// A value of the right kind that a conversion refuses: a date that
         /// does not exist, a string that is not a URL (a transform's

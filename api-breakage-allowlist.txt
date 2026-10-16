@@ -52,3 +52,4 @@ API breakage: func Schema.decode(from:options:) has been renamed to func decode(
 API breakage: func KeyedDecodingContainer.decodeSchema(_:forKey:) has been renamed to func decodeSchema(_:forKey:warnings:)
 API breakage: func KeyedDecodingContainer.decodeSchemaIfPresent(_:forKey:) has been renamed to func decodeSchemaIfPresent(_:forKey:warnings:)
 API breakage: func UnkeyedDecodingContainer.decodeSchema(_:) has been renamed to func decodeSchema(_:warnings:)
+API breakage: enumelement Mutation.Kind.integralFraction has been added as a new enum case

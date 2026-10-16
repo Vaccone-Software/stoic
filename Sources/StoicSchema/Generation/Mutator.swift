@@ -241,6 +241,14 @@ struct Mutator {
         out.add(replacement(
                 .wrongType, context, at: path, with: .number(JSONNumber(lexeme: "1.5") ?? JSONNumber(1)),
                 expect: .typeMismatch, summary: "replaced the integer with 1.5"))
+        // The same whole number spelt with a fraction: refused under .strict,
+        // admitted by JSON Schema's `integer`, which is why the agreement
+        // check skips it by name.
+        if case .number(let current) = value, current.isInteger, let spelt = JSONNumber(lexeme: current.lexeme + ".0") {
+            out.add(replacement(
+                    .integralFraction, context, at: path, with: .number(spelt), expect: .typeMismatch,
+                    summary: "wrote the integer as \(spelt.lexeme)"))
+        }
 
         // A value inside the range that is not a multiple of the step.
         if case .number(let current) = value, let now = current.integralInt64.map({ Int128($0) }) {
