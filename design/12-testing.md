@@ -312,3 +312,14 @@ reported with the stuck state work by name; a livelock hits the time limit.
   remains.
 - **Generated test skeletons** from the failure-mode tables, for a new
   contract.
+- **Random streams split along the task tree.** A seeded `RandomSource`
+  derives a stream from the seed and the call site, so every call through
+  one `retry` site draws the same jitter, as does every supervisor (whose
+  backoff draws at a site inside Stoic): a simulation of a hundred clients
+  retrying together cannot show whether jitter spreads them, because it
+  does not. And `IdempotencyKey.random` and span ids take a discriminator
+  from a counter all tasks share, so which task draws which value depends
+  on interleaving. The fix is to split the stream with the task tree, as
+  JAX splits keys: every Stoic-started child takes its parent's stream and
+  a deterministic child index, and a draw comes from the current task's
+  stream, never from a site and a shared counter.

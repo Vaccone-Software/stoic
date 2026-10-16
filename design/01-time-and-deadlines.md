@@ -233,6 +233,16 @@ duplicate types are deprecated with one minor version of overlap.
   timing; no lost results, no double resumes (the noncopyable `Continuation`
   of SE-0528 makes a double resume a compile error, and Stoic uses it).
 
+## Open questions
+
+- **A process-wide cap on abandoned threads.** `limit` bounds the threads
+  one label holds, but labels built at runtime (one per hung process, one
+  per device) can each wedge `limit` Dispatch threads, and enough of them
+  starve Dispatch's global pool for the whole app. A global budget (sixteen
+  abandoned threads, say) refusing with `.rejected(.abandonmentLimit)` and
+  `abandoned.wedged` would bound it; the open part is the number, and
+  whether async abandonment, which parks no thread, should count against it.
+
 ## Non-goals
 
 Hard preemption of Swift tasks (impossible and unsafe), wall-clock
