@@ -8,6 +8,17 @@ let testScale: Int = {
     ProcessInfo.processInfo.environment["STOIC_TEST_SCALE"].flatMap(Int.init).map { max(1, $0) } ?? 1
 }()
 
+/// Whether a sanitizer instruments this process. The child process an exit
+/// test starts does not get the sanitizer's runtime and aborts before its
+/// body runs ("interceptors are not working"), so exit tests that expect a
+/// clean exit are skipped under one; the plain test step runs them.
+let underSanitizer: Bool = {
+    // A symbol lookup across every loaded image (RTLD_DEFAULT); nothing is
+    // read through the pointers.
+    let everywhere = unsafe UnsafeMutableRawPointer(bitPattern: -2)
+    return unsafe dlsym(everywhere, "__tsan_init") != nil || dlsym(everywhere, "__asan_init") != nil
+}()
+
 /// A value shared between test tasks behind a lock.
 final class SendableBox<Value: Sendable>: Sendable {
     private let storage: Mutex<Value>

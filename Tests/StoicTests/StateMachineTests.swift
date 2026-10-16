@@ -185,7 +185,7 @@ struct StateMachineTests {
     /// releases its lock, so a handler that uses the machine — or work that
     /// observes it, whose stream ends on cancellation — is safe. A trap
     /// cannot be caught in-process, so each case runs in a child process.
-    @Test(.failureMode("design/07", "state work's cancellation handler uses the machine"))
+    @Test(.disabled(if: underSanitizer, "exit tests need the plain build"), .failureMode("design/07", "state work's cancellation handler uses the machine"))
     func aCancellationHandlerInStateWorkMayUseTheMachine() async {
         await #expect(processExitsWith: .success) {
             let machine = StateMachine<Int, Int>(initial: 0, label: "reentrant", clock: AnyClock.continuous) { state, _ in
@@ -207,7 +207,7 @@ struct StateMachineTests {
         }
     }
 
-    @Test func stateWorkMayObserveItsOwnMachine() async {
+    @Test(.disabled(if: underSanitizer, "exit tests need the plain build")) func stateWorkMayObserveItsOwnMachine() async {
         await #expect(processExitsWith: .success) {
             let machine = StateMachine<Int, Int>(initial: 0, label: "observer", clock: AnyClock.continuous) { state, _ in
                 .to(state == 0 ? 1 : 0)
@@ -225,7 +225,7 @@ struct StateMachineTests {
 
     /// A transition function runs while the machine is locked; one that uses
     /// a machine fails with a message that says why, not the lock's abort.
-    @Test(.failureMode("design/07", "a transition function uses the machine"))
+    @Test(.disabled(if: underSanitizer, "exit tests need the plain build"), .failureMode("design/07", "a transition function uses the machine"))
     func aTransitionFunctionThatUsesTheMachineFailsWithItsReason() async throws {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             let holder = SendableBox<StateMachine<Int, Int>?>(nil)
