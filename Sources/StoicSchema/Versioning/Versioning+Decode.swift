@@ -34,9 +34,20 @@ extension Versioning {
                 state.typeMismatch(expected: "a positive integer", found: value)
                 return nil
             }
-            guard number.isInteger || number.hasIntegralValue, let found = number.integralInt64 else {
+            guard number.hasIntegralValue, let found = number.integralInt64 else {
                 state.typeMismatch(expected: "a positive integer", found: value)
                 return nil
+            }
+            // Read as an `Int` field is: `2.0` is refused under `.strict`
+            // and accepted with a warning under `.lenient`.
+            if !number.isInteger {
+                guard state.isLenient else {
+                    state.typeMismatch(expected: "a positive integer", found: value, hints: [String(found)])
+                    return nil
+                }
+                state.report(
+                    .typeMismatch, severity: .warning, parameters: ["found": .string("number")],
+                    expected: "a positive integer", actual: number.lexeme)
             }
             guard found >= 1, found <= Int64(Int32.max) else {
                 state.report(.outOfRange, expected: "a positive integer", actual: number.lexeme)

@@ -51,6 +51,16 @@ struct MigrationOperationTests {
         #expect(throws: MigrationFailure.self) { try run([.move("a", to: "b.c")], on: #"{"a": 1, "b": 2}"#) }
     }
 
+    @Test func aMoveWithOnePathInsideTheOtherIsRefusedWhereItIsDeclared() async {
+        // `a` to `a.b` put the value inside itself and then deleted it with
+        // its old place: `{"a": {"x": 1}}` became `{}`.
+        await #expect(processExitsWith: .failure) { _ = Migration.Operation.move("a", to: "a.b") }
+        await #expect(processExitsWith: .failure) { _ = Migration.Operation.move("a.b", to: "a") }
+        await #expect(processExitsWith: .failure) {
+            _ = Versioning(current: 2, migrations: [Migration(from: 1, to: 2, operations: [.init(.move(from: "a", to: "a"))])])
+        }
+    }
+
     @Test func moveOfAMissingPathDoesNothing() throws {
         #expect(try run([.move("nope", to: "x.y")], on: #"{"a": 1}"#) == json(#"{"a": 1}"#))
     }
@@ -262,8 +272,15 @@ struct VersionedObjectTests {
             #expect(result.value == nil, "\(text)")
             #expect(result.issues.locations == ["$.version \(code)"], "\(text): \(result.issues.locations)")
         }
-        // 4.0 is a whole number in an odd spelling and is the current version.
-        #expect(decode(Prefs.schema, #"{"version": 4.0}"#).value == Prefs())
+        // 4.0 is the current version in a spelling an `Int` field refuses,
+        // so the version, read before every field, refuses it too, and
+        // suggests `4`; `.lenient` reads it with a warning.
+        let strict = decode(Prefs.schema, #"{"version": 4.0}"#)
+        #expect(strict.issues.locations == ["$.version type_mismatch"])
+        #expect(strict.issues.first?.suggestions == ["4"])
+        let lenient = decode(Prefs.schema, #"{"version": 4e0}"#, .lenient)
+        #expect(lenient.value == Prefs())
+        #expect(lenient.issues.map(\.severity) == [.warning])
     }
 
     @Test func aVersionWithNoPathToTheCurrentOneIsUnsupported() {

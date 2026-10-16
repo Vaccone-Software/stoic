@@ -85,8 +85,25 @@ public struct Migration: Sendable, Hashable {
         }
 
         /// Moves the value at `from` to `to`: `.move("hosts", to: "network.hosts")`.
+        ///
+        /// Neither path may lie inside the other: moving `a` to `a.b` would
+        /// put the value inside itself and then delete it with its old
+        /// place. That is a mistake in the declaration, whatever the
+        /// document, so it traps here.
         public static func move(_ from: String, to: String) -> Operation {
-            Operation(.move(from: from, to: to))
+            let operation = Operation(.move(from: from, to: to))
+            operation.checkDeclaration()
+            return operation
+        }
+
+        /// Traps on an operation that cannot do what it says to any document.
+        func checkDeclaration() {
+            guard case .move(let from, let to) = kind else { return }
+            let source = PathEdit.split(from)
+            let target = PathEdit.split(to)
+            precondition(
+                !source.starts(with: target) && !target.starts(with: source),
+                "a move from `\(from)` to `\(to)` has one path inside the other, and would delete what it moves")
         }
 
         /// Removes a field the new version no longer has.
@@ -243,6 +260,7 @@ public struct Versioning: Sendable, Hashable {
         precondition(current >= 1, "a version is a positive integer, not \(current)")
         var seen: Set<Int> = []
         for step in migrations {
+            for operation in step.operations { operation.checkDeclaration() }
             precondition(step.from >= 1 && step.to > step.from, "a migration goes from a version to a later one: \(step.from) to \(step.to)")
             precondition(step.to <= current, "a migration goes to version \(step.to), beyond the schema's version \(current)")
             precondition(seen.insert(step.from).inserted, "two migrations start from version \(step.from)")

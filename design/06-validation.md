@@ -418,14 +418,18 @@ the order it was built:
   `setIfAbsent`, `mapEnum`, `pinDefault` and `custom(id:)`. Paths are
   dot-separated keys; a path that is not in the document is skipped; a
   rename or move onto a taken key is a `migration_failed` error, never an
-  overwrite. `pinDefault` does what `setIfAbsent` does and says why: it
+  overwrite. A move with one path inside the other (`a` to `a.b`) would put
+  the value inside itself and delete it with its old place; it traps where
+  it is declared, as migrations are static. `pinDefault` does what `setIfAbsent` does and says why: it
   writes the old default into a document that omitted the field, so that a
   release changing a default cannot flip what an old sparse file meant.
 - **Decoding** reads the version, applies the steps from it to the current
   version one at a time, and records a `migrated` warning per step
   (`from`, `to`, the operations in words) before validating the migrated
   object, so errors are at the new paths. A version that is not a positive
-  integer is `type_mismatch`/`out_of_range`; one no step reads is
+  integer is `type_mismatch`/`out_of_range`, and one spelt `2.0` is read as
+  an `Int` field reads it (refused under `.strict`, a warning under
+  `.lenient`); one no step reads is
   `version_unsupported`; a step that cannot be applied is `migration_failed`.
   A document with no version key means the oldest version
   (`.oldest`, the default, for a format that gained its key late),
