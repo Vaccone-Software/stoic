@@ -33,7 +33,7 @@ public struct Services { subscript<Value>(key: ServiceKey<Value>) -> Value }
 public struct ServiceGraph {
     init(label: String, @ServicesBuilder _ services: () -> [Provide]) throws(ServiceGraphError)
     var startOrder: [AnyServiceKey]
-    func run<R>(exitBudget: Duration = .seconds(30), stopTimeout: Duration = .seconds(10),
+    func run<R>(exitBudget: Duration = .seconds(30), stopTimeout: Duration = .seconds(10), startGrace: Duration = .seconds(5),
                 _ body: nonisolated(nonsending) (Services) async throws -> R) async throws -> R
 }
 public enum ServiceGraphError: Error { case duplicate, missing, cycle, startFailed }
@@ -58,6 +58,18 @@ so independent services start concurrently. Each start runs under its own
 cooperative `startTimeout`. If any start fails or times out, the other
 starts are cancelled, every service that did start is stopped, and `run`
 throws `startFailed` naming the service and its error.
+
+**Every start ends.** Cooperative is not enough on its own: a start that
+ignores cancellation (a synchronous call into a framework that stopped
+answering) would hold `run`, and the app's launch, for ever, while stops are
+already abandoned after their timeout. So a start that has not returned
+`startGrace` (five seconds) after it was told to stop — by its timeout, or
+by the graph's cancellation after another start failed — is abandoned:
+listed in `AbandonedWork` until it ends, reported
+(`service.start_abandoned`), and treated as having failed (a deadline
+rejection) or been cancelled. The drain after a failure is bounded the same
+way. If an abandoned start finishes after all, its service is stopped at
+once (Exit `.failure`, or `.cancelled`): nothing else holds it.
 
 **Stopping.** However the body ends, services stop in the reverse of the
 order their starts completed — a service always stops before anything it
@@ -109,13 +121,16 @@ rules came from review:
 | services need each other                     | `cycle`, with the path                                            |
 | a factory reads a service it did not declare | Programming error on first use                                    |
 | a start throws or times out                  | Other starts cancelled; started services stopped; `startFailed`   |
+| a start ignores its timeout                  | Abandoned after `startGrace`; `startFailed`; stopped if it finishes later |
+| a start ignores cancellation after another fails | Abandoned after `startGrace`; the first failure is thrown     |
 | the body throws                              | Every service stopped (Exit `.failure`); the error passes through |
 | a stop hangs                                 | Abandoned after its timeout; the rest still stop                  |
 | the app's task is cancelled                  | Every service stopped, shielded                                   |
 
 ## Events
 
-`service.started` (debug) as each start completes; `service.start_failed`
+`service.started` (debug) as each start completes; `service.start_abandoned`
+(error) for a start that outlived its grace; `service.start_failed`
 (error, with the service and its error, a timeout as a deadline rejection)
 for the start that fails the graph; `service.stopped` as each stop returns,
 with how long it took (`warning` with the error when it threw). A stop that
@@ -128,7 +143,9 @@ hangs is abandoned by the scope that runs it, which reports that, and
 
 Start order and reverse stop order; two services of one type; concurrency
 of independent starts; every validation error and its message; start
-failure and start timeout with cleanup of what started; stops after a
+failure and start timeout with cleanup of what started; a start that
+ignores its timeout, and one that ignores cancellation after a sibling
+failed, each abandoned after the grace; stops after a
 failing body. 200 repetitions are clean.
 
 ## Planned

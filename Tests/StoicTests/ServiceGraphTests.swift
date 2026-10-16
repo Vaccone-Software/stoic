@@ -200,7 +200,9 @@ struct ServiceGraphTests {
                 try await graph.run { _ in }
             }
         }
-        await clock.waitForSleepers(count: 2)   // the hung stop and its timeout
+        // The hung stop and its timeout (the starts' own timers, cancelled
+        // as each start finished, may not have left the clock yet).
+        #expect(await eventually { clock.pendingDeadlines.contains { $0.offset == .seconds(5) } })
         await clock.advance(by: .seconds(5))
         try await run.value
         #expect(log.values == ["stop database"])
@@ -240,6 +242,79 @@ struct ServiceGraphReviewTests {
         await starting.wait()
         task.cancel()
         await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    /// Every wait has an end: a start that ignores its timeout holds `run`
+    /// for its grace at most, and if it finishes starting after all, the
+    /// service is stopped at once.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/08", "a start ignores its timeout"))
+    func aStartThatIgnoresItsTimeoutIsAbandonedAndStoppedIfItFinishes() async throws {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let release = TestGate()
+        let log = OrderLog()
+        let run = Task {
+            try await withTestAmbient(clock: clock, events: events) {
+                let graph = try ServiceGraph(label: "app") {
+                    Provide(Self.slow, startTimeout: .seconds(1)) { _ in
+                        await withTaskCancellationShield { await release.wait() }
+                        log.append("started late")
+                        return 1
+                    } stop: { _, exit in log.append("stopped: \(exit.isFailure)") }
+                }
+                try await graph.run(startGrace: .seconds(5)) { _ in log.append("body must not run") }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the start's timeout and its grace
+        await clock.advance(by: .seconds(6))
+        do {
+            try await run.value
+            Issue.record("expected a start failure")
+        } catch let ServiceGraphError.startFailed(service, underlying) {
+            #expect(service.name == "slow")
+            #expect((underlying as? Rejection)?.reason == .deadlineExceeded)
+        }
+        #expect(events.names.contains("service.start_abandoned"))
+        #expect(AbandonedWork.current.contains { $0.label == "service graph app start slow" })
+        release.open()
+        #expect(await eventually { log.values == ["started late", "stopped: true"] })
+        #expect(await eventually { !AbandonedWork.current.contains { $0.label == "service graph app start slow" } })
+    }
+
+    /// The drain after a failure is bounded the same way: a sibling that
+    /// ignores its cancellation is abandoned after the grace.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/08", "a start ignores cancellation after another fails"))
+    func aStartThatIgnoresCancellationCannotHoldUpAFailure() async throws {
+        let clock = TestClock()
+        let release = TestGate()
+        let started = TestGate()
+        let run = Task {
+            try await withTestAmbient(clock: clock) {
+                let graph = try ServiceGraph(label: "app") {
+                    Provide(Self.slow, startTimeout: .seconds(3600)) { _ in
+                        started.open()
+                        await withTaskCancellationShield { await release.wait() }
+                        return 1
+                    }
+                    Provide(Self.failing) { _ -> Int in
+                        await started.wait()
+                        throw Boom()
+                    }
+                }
+                try await graph.run(startGrace: .seconds(5)) { _ in }
+            }
+        }
+        // `failing` fails, `slow` is cancelled, and its grace is armed.
+        #expect(await eventually { clock.pendingDeadlines.contains { $0.offset == .seconds(5) } })
+        await clock.advance(by: .seconds(5))
+        do {
+            try await run.value
+            Issue.record("expected a start failure")
+        } catch let ServiceGraphError.startFailed(service, underlying) {
+            #expect(service.name == "failing")
+            #expect(underlying is Boom)
+        }
+        release.open()
     }
 
     @Test func aStartTimeoutIsADeadlineRejection() async {

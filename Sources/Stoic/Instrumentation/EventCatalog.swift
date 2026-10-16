@@ -91,6 +91,7 @@ public enum EventCatalog {
         Entry(name: "scope.release_quarantined", level: .warning, meaning: "A release was skipped because work abandoned in its scope may still be using the resource; it was leaked on purpose."),
         Entry(name: "semaphore.reentrant", level: .error, meaning: "A task asked for a permit of a semaphore it already holds: a possible self-deadlock."),
         Entry(name: "semaphore.rejected", level: .info, meaning: "A semaphore waiter left without a permit: cancelled or past its deadline."),
+        Entry(name: "service.start_abandoned", level: .error, meaning: "A service's start ignored its timeout or the graph's cancellation past the grace; it was abandoned, and is stopped at once if it finishes starting after all."),
         Entry(name: "service.start_failed", level: .error, meaning: "A service failed to start or timed out; the graph stops what already started and throws startFailed."),
         Entry(name: "service.started", level: .debug, meaning: "A service in a service graph finished starting."),
         Entry(name: "service.stopped", level: .info, meaning: "A service stopped; reports how long the stop took and whether it failed (warning, with the error)."),

@@ -175,20 +175,29 @@ public struct ServiceGraph: Sendable {
     public var startOrder: [AnyServiceKey] { order }
 
     /// Starts every service, runs `body` with them, and stops them all.
+    ///
+    /// - Parameters:
+    ///   - exitBudget: How long stopping every service may take in all.
+    ///   - stopTimeout: How long one stop may take, unless its service says.
+    ///   - startGrace: How long a start may run on after it was told to stop
+    ///     — by its `startTimeout`, or because the graph is failing or being
+    ///     cancelled — before it is abandoned, so a start that ignores
+    ///     cancellation cannot hold `run` for ever.
     public func run<R>(
         exitBudget: Duration = .seconds(30),
         stopTimeout: Duration = .seconds(10),
+        startGrace: Duration = .seconds(5),
         _ body: nonisolated(nonsending) (Services) async throws -> R
     ) async throws -> R {
         try await withScope(exitBudget: exitBudget, finalizerTimeout: stopTimeout, label: label) { scope in
-            let started = try await startAll(registeringStopsIn: scope.state)
+            let started = try await startAll(grace: startGrace, registeringStopsIn: scope.state)
             return try await body(Services(values: started, visible: nil, owner: nil))
         }
     }
 
     // MARK: Starting
 
-    private func startAll(registeringStopsIn scope: ScopeState) async throws -> [AnyServiceKey: any Sendable] {
+    private func startAll(grace: Duration, registeringStopsIn scope: ScopeState) async throws -> [AnyServiceKey: any Sendable] {
         let byKey = Dictionary(uniqueKeysWithValues: services.map { ($0.key, $0) })
         var started: [AnyServiceKey: any Sendable] = [:]
         var pending = Set(services.map(\.key))
@@ -205,12 +214,7 @@ public struct ServiceGraph: Sendable {
                     // stoic:allow(unbounded-task-group): an app's few services start as soon as their needs have
                     group.addTask {
                         do {
-                            let value = try await withTimeout(service.startTimeout, label: "\(label).\(key).start") {
-                                // Starts finish in an order the graph must not depend on.
-                                await FaultPoint.hit("service.start")
-                                return try await service.start(visible)
-                            }
-                            return (key, value)
+                            return (key, try await ServiceGraph.start(service, visible: visible, grace: grace, graph: label))
                         } catch {
                             // Cancellation passes through as itself; a start
                             // cut short by its own timeout is a deadline
@@ -232,6 +236,8 @@ public struct ServiceGraph: Sendable {
             // After the first failure the other starts are cancelled, but a
             // start may complete anyway; it is drained and registered for
             // its stop like any other, so nothing that started is leaked.
+            // The drain is bounded: a start that will not stop is abandoned
+            // `grace` after its cancellation.
             var firstFailure: (any Error)?
             while true {
                 let next: (AnyServiceKey, any Sendable)?
@@ -253,7 +259,7 @@ public struct ServiceGraph: Sendable {
                 // reverse of start completion: a service stops before
                 // everything it needs.
                 scope.register(Finalizer(label: "\(label).\(key).stop", timeout: service.stopTimeout, runsOn: .always) { exit in
-                    try await ServiceGraph.stop(service, value, exit: exit, graph: label)
+                    if let error = await ServiceGraph.stop(service, value, exit: exit, graph: label) { throw error }
                 })
                 Ambient.record(Event("service.started", level: .debug, label: label, fields: [
                     .init("service", .string(key.name), privacy: .public),
@@ -272,10 +278,108 @@ public struct ServiceGraph: Sendable {
         return started
     }
 
+    /// Starts one service under its `startTimeout`, which is cooperative. A
+    /// start that has not returned `grace` after it was told to stop — by
+    /// that timeout, or by the graph's cancellation — is abandoned: listed in
+    /// `AbandonedWork` until it ends, reported (`service.start_abandoned`),
+    /// and, if it finishes starting after all, stopped at once, since nothing
+    /// else will.
+    private static func start(_ service: Provide, visible: Services, grace: Duration, graph label: String) async throws -> any Sendable {
+        let key = service.key
+        let startLabel = "\(label).\(key).start"
+        let clock = Ambient.current.clock
+        let task = Task<Result<any Sendable, any Error>, Never>.stoic {
+            do {
+                return .success(try await withTimeout(service.startTimeout, label: startLabel) {
+                    // Starts finish in an order the graph must not depend on.
+                    await FaultPoint.hit("service.start")
+                    return try await service.start(visible)
+                })
+            } catch {
+                return .failure(error)
+            }
+        }
+        if case .finished(let result) = await awaitStart(task, timeout: service.startTimeout, grace: grace, clock: clock) {
+            return try result.get()
+        }
+        let cancelled = Task.isCancelled
+        let rejection = Rejection(.deadlineExceeded, label: startLabel)
+        let ledger = AbandonedWork.ledger
+        let id = ledger.admit(label: "service graph \(label) start \(key)")
+        let abandonedAt = clock.now
+        // Counted by the graph's scope (and those around it): the start
+        // may still hold what they release.
+        _ = ledger.abandon(id, deadline: abandonedAt, clock: clock, watch: AbandonmentWatch.current)
+        Ambient.record(Event("service.start_abandoned", level: .error, label: label, fields: [
+            .init("service", .string(key.name), privacy: .public),
+            .init("grace", .duration(grace)),
+        ]))
+        let exit: Exit = cancelled ? .cancelled : .failure(rejection)
+        Task.stoic {
+            if case .success(let value) = await task.value {
+                _ = await stop(service, value, exit: exit, graph: label)
+            }
+            if let lateness = ledger.finish(id) {
+                Ambient.record(Event("abandoned.completed", level: .notice, label: label, fields: [
+                    .init("service", .string(key.name), privacy: .public),
+                    .init("late_by", .duration(lateness)),
+                ]))
+            }
+        }
+        if cancelled { throw CancellationError() }
+        throw rejection
+    }
+
+    private enum StartWait: Sendable {
+        case finished(Result<any Sendable, any Error>)
+        case abandoned
+    }
+
+    /// Waits for a start until it finishes, or until `grace` has passed since
+    /// it was told to stop: at its `timeout`, or when this task is cancelled.
+    private static func awaitStart(
+        _ task: Task<Result<any Sendable, any Error>, Never>,
+        timeout: Duration,
+        grace: Duration,
+        clock: AnyClock
+    ) async -> StartWait {
+        let outcome = OnceCell<StartWait>()
+        Task.stoic { outcome.resolve(.finished(await task.value)) }
+        let abandon: @Sendable (AnyClock.Instant) -> Task<Void, Never> = { instant in
+            Task.stoic {
+                do {
+                    try await clock.sleep(until: instant, tolerance: nil)
+                    outcome.resolve(.abandoned)
+                } catch {}
+            }
+        }
+        // The timers, and whether the wait is over: a cancellation that comes
+        // after it starts no timer that nothing would cancel.
+        let timers = Mutex<(tasks: [Task<Void, Never>], over: Bool)>(([], false))
+        timers.withLock { $0.tasks.append(abandon(clock.now.advanced(by: timeout.saturatingAdding(grace)))) }
+        let result = await withTaskCancellationHandler {
+            await outcome.value
+        } onCancel: {
+            task.cancel()
+            timers.withLock { timers in
+                guard !timers.over else { return }
+                timers.tasks.append(abandon(clock.now.advanced(by: grace)))
+            }
+        }
+        let started = timers.withLock { timers in
+            timers.over = true
+            return timers.tasks
+        }
+        for timer in started { timer.cancel() }
+        return result
+    }
+
     /// Stops one service and reports it (`service.stopped`): how long the
     /// stop took and how it went. A stop that hangs is abandoned by the
     /// scope that runs it, and reported when it finally returns.
-    static func stop(_ service: Provide, _ value: any Sendable, exit: Exit, graph label: String) async throws {
+    ///
+    /// - Returns: The stop's error, if it threw.
+    static func stop(_ service: Provide, _ value: any Sendable, exit: Exit, graph label: String) async -> (any Error)? {
         let clock = Ambient.current.clock
         let start = clock.now
         func report(_ error: (any Error)?) {
@@ -290,9 +394,10 @@ public struct ServiceGraph: Sendable {
         do {
             try await service.stop(value, exit)
             report(nil)
+            return nil
         } catch {
             report(error)
-            throw error
+            return error
         }
     }
 

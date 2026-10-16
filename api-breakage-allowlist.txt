@@ -68,3 +68,5 @@ API breakage: func StateMachine.whileIn(_:label:_:) has been renamed to func whi
 API breakage: func StateGraph.explore(from:events:maximumStates:transition:) has generic signature change from <State, Event where State : Swift.Hashable, State : Swift.Sendable, Event : Swift.Sendable> to <State, Event where State : Swift.Hashable, State : Swift.Sendable, Event : Swift.Hashable, Event : Swift.Sendable>
 API breakage: var StateGraph.truncated has been removed
 API breakage: var Supervisor.events has been removed
+API breakage: func ServiceGraph.run(exitBudget:stopTimeout:_:) has parameter 2 type change from (Stoic.Services) async throws -> R to Swift.Duration
+API breakage: func ServiceGraph.run(exitBudget:stopTimeout:_:) has been renamed to func run(exitBudget:stopTimeout:startGrace:_:)
