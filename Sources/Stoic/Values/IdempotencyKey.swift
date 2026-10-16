@@ -71,6 +71,54 @@ public struct IdempotencyKey: Sendable, Hashable, CustomStringConvertible, Codab
         return IdempotencyKey(rawValue: hex(half(raw[..<middle], 0)) + hex(half(raw[middle...], 1)))
     }
 
+    /// The key of a declared operation performed inside another operation's
+    /// attempt (design/22, Keys): a name-based UUID of the enclosing key,
+    /// the operation's declared names and its occurrence among performs of
+    /// it in that attempt.
+    ///
+    /// **Frozen, version 1.** An outbox entry's key outlives the process and
+    /// the app version that made it, and a server deduplicates by what this
+    /// returns, so the function never changes; a different derivation would
+    /// be a new version with a new namespace. The name is the enclosing key,
+    /// the backend's name and the operation's name, each as UTF-8 preceded
+    /// by its length (4 bytes, big-endian), then the occurrence (8 bytes,
+    /// big-endian). It is hashed with SHA-256 after the 16 bytes of
+    /// ``operationKeyNamespace``, and the first 16 bytes of the digest
+    /// become a UUID with RFC 9562's version 8 (the version for a name hashed
+    /// with SHA-256, as version 5 is for SHA-1) and variant bits set,
+    /// written as 36 lowercase characters.
+    static func derived(fromEnclosing parent: IdempotencyKey, backend: String, operation: String, occurrence: Int) -> IdempotencyKey {
+        var name: [UInt8] = operationKeyNamespace
+        func field(_ text: String) {
+            let bytes = Array(text.utf8)
+            name += bigEndian(UInt64(bytes.count), bytes: 4)
+            name += bytes
+        }
+        field(parent.rawValue)
+        field(backend)
+        field(operation)
+        name += bigEndian(UInt64(max(0, occurrence)), bytes: 8)
+        var uuid = Array(SHA256.hash(name).prefix(16))
+        uuid[6] = (uuid[6] & 0x0F) | 0x80   // version 8
+        uuid[8] = (uuid[8] & 0x3F) | 0x80   // the RFC 9562 variant
+        let digits = uuid.map { byte -> String in
+            let text = String(byte, radix: 16)
+            return byte < 16 ? "0" + text : text
+        }
+        let groups = [digits[0..<4], digits[4..<6], digits[6..<8], digits[8..<10], digits[10..<16]]
+        return IdempotencyKey(rawValue: groups.map { $0.joined() }.joined(separator: "-"))
+    }
+
+    /// The namespace of derived operation keys, version 1:
+    /// `5e1f0c3a-7b2d-4c8e-9a61-3f4d2b8c0e17`. Never change it.
+    static let operationKeyNamespace: [UInt8] = [
+        0x5e, 0x1f, 0x0c, 0x3a, 0x7b, 0x2d, 0x4c, 0x8e, 0x9a, 0x61, 0x3f, 0x4d, 0x2b, 0x8c, 0x0e, 0x17,
+    ]
+
+    private static func bigEndian(_ value: UInt64, bytes count: Int) -> [UInt8] {
+        (0..<count).reversed().map { UInt8(truncatingIfNeeded: value >> UInt64(8 * $0)) }
+    }
+
     public var description: String { rawValue }
 
     public init(from decoder: any Decoder) throws {
