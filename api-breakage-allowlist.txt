@@ -1,0 +1,5 @@
+API breakage: struct HTTPRetry has been removed
+API breakage: struct HTTPStatusError has been removed
+API breakage: var URLError.retryDecision has been removed
+API breakage: var POSIXError.retryDecision has been removed
+API breakage: var CocoaError.retryDecision has been removed

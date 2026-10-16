@@ -63,10 +63,17 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
 
 ## Working on Stoic
 
-- **Check everything:** `scripts/check.sh` (build, tests, Thread and Address
-  Sanitizer, lint tests, self-lint, the public API check, the allocation
-  gate, macros, iOS, docs; `--stress` adds 100 repetitions of every suite),
-  and `scripts/linux.sh --docker` for the Linux build. Warnings are errors.
+- **Check everything:** `scripts/check.sh` (the package graph, build, tests,
+  Thread and Address Sanitizer, lint tests, self-lint, the public API check,
+  the allocation gate, macros, adoption from outside, iOS, docs; `--stress`
+  adds 100 repetitions of every suite), and `scripts/linux.sh --docker` for
+  Linux. Warnings are errors.
+- **The package graph:** a new dependency between Stoic's libraries must be
+  allowed in `scripts/package-graph.swift`'s layering, in the same change;
+  every import must be a declared, direct dependency, and every declared
+  dependency used. Split a new library off only when it brings a dependency
+  or a domain of its own; never subdivide the kernel (DESIGN.md,
+  Architecture).
   Stress a suite with
   `swift test --filter <Suite> --maximum-repetitions 300 --repeat-until fail`;
   every concurrency test must survive it.

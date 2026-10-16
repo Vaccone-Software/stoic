@@ -1,7 +1,6 @@
 public import Foundation
 public import Stoic
 public import StoicSchema
-internal import StoicApple
 internal import Synchronization
 
 /// A client for one API, with the resilience a careful team would write by

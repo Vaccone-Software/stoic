@@ -1,4 +1,8 @@
 public import Foundation
+#if canImport(FoundationNetworking)
+// URLSession and HTTPURLResponse live here on Linux.
+public import FoundationNetworking
+#endif
 internal import Synchronization
 
 /// The real transport: one `URLSession` data task per request.

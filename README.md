@@ -168,8 +168,9 @@ that replays exactly.
 | `StoicSchemaTesting` | `expectSchemaSuite`, the Swift Testing glue for `SchemaSuite` | `StoicSchema`, Swift Testing |
 | `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read — checked at every crash point | `Stoic` |
 | `StoicSettings` | Settings that a crash, a bad value, an old format or a newer app version cannot ruin; observable | `StoicSchema`, `StoicStore` |
-| `StoicHTTP`    | An HTTP client with the resilience written once: per-host retry honouring `Retry-After`, circuit breaker and bulkhead, idempotency keys on `POST`, bounded responses decoded through schemas, coalesced `GET`s, no credentials in events; a scripted transport so every failure is a test on virtual time | `Stoic`, `StoicSchema`, `StoicApple`, Foundation |
-| `StoicApple`   | Platform errors that classify themselves for retry; HTTP status semantics; device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, Foundation |
+| `StoicHTTP`    | An HTTP client with the resilience written once: per-host retry honouring `Retry-After`, circuit breaker and bulkhead, idempotency keys on `POST`, bounded responses decoded through schemas, coalesced `GET`s, no credentials in events; a scripted transport so every failure is a test on virtual time | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation |
+| `StoicFoundation` | Foundation's errors (`URLError`, `POSIXError`, `CocoaError`) classify themselves for retry; portable | `Stoic`, Foundation |
+| `StoicApple`   | Device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, `StoicFoundation`, Apple frameworks |
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
 | `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |
 | `StoicObservability` | Events to swift-log and swift-metrics                 | behind the `Logging` / `Metrics` traits |

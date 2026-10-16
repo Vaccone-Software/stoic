@@ -1,7 +1,7 @@
 public import Foundation
 public import Stoic
 public import StoicSchema
-internal import StoicApple
+internal import StoicFoundation
 
 /// Why a request failed, as one typed value.
 ///

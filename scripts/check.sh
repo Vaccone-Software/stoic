@@ -1,7 +1,8 @@
 #!/bin/sh
 # The one command that says whether Stoic is healthy.
 #
-#   scripts/check.sh            build, test, sanitizers, lint, API, allocations, macros, iOS, docs
+#   scripts/check.sh            build, test, sanitizers, lint, API, allocations, macros,
+#                               package graph, adoption, iOS, docs
 #   scripts/check.sh --stress   … and every suite 100 times
 #
 # Linux is scripts/linux.sh (a separate CI job). Every item of DESIGN.md's
@@ -13,6 +14,12 @@ set -eu
 cd "$(dirname "$0")/.."
 
 step() { printf '\n== %s\n' "$1"; }
+
+step "package graph: every dependency allowed by the layering, declared and used"
+graph=$(mktemp)
+swift package dump-package > "$graph"
+swift scripts/package-graph.swift "$graph"
+rm -f "$graph"
 
 step "build"
 swift build
@@ -96,29 +103,13 @@ step "macros (Macros trait): expansion tests, usage tests, schemas against their
 swift build --traits Macros
 swift test --traits Macros --filter StoicMacros
 
-step "macros: a consumer without the trait never fetches swift-syntax"
-probe=$(mktemp -d)
-trap 'rm -rf "$probe"' EXIT
-mkdir -p "$probe/Sources/App"
-cat > "$probe/Package.swift" <<MANIFEST
-// swift-tools-version: 6.4
-import PackageDescription
-let package = Package(
-    name: "probe",
-    platforms: [.macOS(.v27)],
-    dependencies: [.package(path: "$PWD")],
-    targets: [.executableTarget(name: "App", dependencies: [.product(name: "StoicSchema", package: "$(basename "$PWD")")])]
-)
-MANIFEST
-echo 'import StoicSchema; print(Schema<Int>.int().node.expectation)' > "$probe/Sources/App/main.swift"
-(cd "$probe" && swift build --cache-path "$probe/cache" >/dev/null)
-if [ -d "$probe/.build/checkouts/swift-syntax" ] || [ -d "$probe/cache/repositories" ]; then
-    echo "swift-syntax was fetched by a consumer that did not enable the Macros trait"
-    exit 1
-fi
+step "adoption: an app adopting every library, with no traits, fetches nothing and builds"
+# Also what proves a consumer that never enables Macros or Lint never
+# fetches swift-syntax.
+scripts/adoption.sh
 
 step "iOS: every library builds for iOS (UIKit paths compile only there)"
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability; do
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done

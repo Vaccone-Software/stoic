@@ -162,9 +162,11 @@ the breaker, rate limiter, bulkhead and budget emit their own.
 
 ## As built
 
-`StoicHTTP` depends on `Stoic`, `StoicSchema`, `StoicJSON` and `StoicApple`
-(for `HTTPRetry.retryAfterDelay` and the `URLError` classification, reused
-rather than copied). Everything above is built; this section records the
+`StoicHTTP` depends on `Stoic`, `StoicFoundation` (the `URLError`
+classification), `StoicSchema` and `StoicJSON`, and on no Apple framework:
+it builds on Linux, over FoundationNetworking. HTTP's own semantics —
+`HTTPRetry`, `HTTPStatusError` and the HTTP-date parser behind
+`Retry-After` — live here, not in `StoicApple`. Everything above is built; this section records the
 decisions the contract left open and the places the code differs from its
 wording.
 
@@ -231,7 +233,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   `RetryBudget` per `HTTPPolicy` value, so per client; `HTTPPolicy.standard` is
   a new value each time.
 - **Statuses.** 408, 429, 500, 502, 503 and 504, as the contract lists
-  (`HTTPPolicy.retryStatuses`). `StoicApple`'s `HTTPRetry` also retries 425;
+  (`HTTPPolicy.retryStatuses`). `HTTPRetry`'s public table also retries 425;
   the client does not use its status table, only its `Retry-After` parser.
   Other 3xx and 4xx and 5xx are `.status` and final.
 - **An unkeyed `POST` or `PATCH` is never retried,** on any failure: not on a

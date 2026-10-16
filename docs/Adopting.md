@@ -23,7 +23,7 @@ targets: [
         name: "App",
         dependencies: [
             .product(name: "Stoic", package: "stoic"),
-            .product(name: "StoicApple", package: "stoic"),        // platform errors classify themselves
+            .product(name: "StoicApple", package: "stoic"),        // platform integration; Foundation errors classify themselves
         ],
         plugins: [.plugin(name: "StoicLint", package: "stoic")]
     ),

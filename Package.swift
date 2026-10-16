@@ -88,6 +88,7 @@ let package = Package(
         .library(name: "Stoic", targets: ["Stoic"]),
         .library(name: "StoicTesting", targets: ["StoicTesting"]),
         .library(name: "StoicAppKit", targets: ["StoicAppKit"]),
+        .library(name: "StoicFoundation", targets: ["StoicFoundation"]),
         .library(name: "StoicApple", targets: ["StoicApple"]),
         .library(name: "StoicUIKit", targets: ["StoicUIKit"]),
         .library(name: "StoicObservability", targets: ["StoicObservability"]),
@@ -150,7 +151,7 @@ let package = Package(
         // The Swift Testing glue for SchemaSuite. The suite itself lives in
         // StoicSchema and asserts nothing, so the library that apps ship
         // never links a test framework; this target is for test bundles.
-        .target(name: "StoicSchemaTesting", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
+        .target(name: "StoicSchemaTesting", dependencies: ["StoicSchema"], swiftSettings: strict),
         .testTarget(
             name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicSchemaTesting", "StoicJSON", "StoicTesting"],
             swiftSettings: strict),
@@ -158,11 +159,18 @@ let package = Package(
         // AppKit lifecycle: finishing async shutdown before a Mac app quits.
         // Empty on platforms without AppKit.
         .target(name: "StoicAppKit", dependencies: ["Stoic"], swiftSettings: strict),
-        .testTarget(name: "StoicAppKitTests", dependencies: ["StoicAppKit", "StoicTesting"], swiftSettings: strict),
-        // Foundation integration: platform errors that classify themselves
-        // for retry, and HTTP status semantics.
-        .target(name: "StoicApple", dependencies: ["Stoic"], swiftSettings: strict),
-        .testTarget(name: "StoicAppleTests", dependencies: ["StoicApple", "StoicTesting"], swiftSettings: strict),
+        .testTarget(name: "StoicAppKitTests", dependencies: ["StoicAppKit", "Stoic", "StoicTesting"], swiftSettings: strict),
+        // Foundation integration: Foundation's own errors (URLError,
+        // POSIXError, CocoaError) classified for retry. Portable: Foundation
+        // ships on Linux, and nothing here needs an Apple framework.
+        .target(name: "StoicFoundation", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicFoundationTests", dependencies: ["StoicFoundation", "Stoic", "StoicTesting"], swiftSettings: strict),
+        // Apple platform integration (design/21): network reachability,
+        // background tasks, the Keychain, device conditions. Builds on
+        // StoicFoundation, so its error table comes along.
+        .target(name: "StoicApple", dependencies: ["Stoic", "StoicFoundation"], swiftSettings: strict),
+        .testTarget(name: "StoicAppleTests", dependencies: ["StoicApple", "Stoic", "StoicTesting"], swiftSettings: strict),
         // UIKit lifecycle: background work bounded by the time the system
         // grants. Empty on platforms without UIKit.
         .target(name: "StoicUIKit", dependencies: ["Stoic"], swiftSettings: strict),
@@ -206,25 +214,25 @@ let package = Package(
         .plugin(name: "StoicLint", capability: .buildTool(), dependencies: ["stoic-lint"]),
         .testTarget(
             name: "StoicLintCoreTests",
-            dependencies: ["StoicLintCore", "StoicTesting"] + swiftSyntax,
+            dependencies: ["StoicLintCore", "Stoic", "StoicTesting"] + swiftSyntax,
             swiftSettings: strict + [lintDefine]
         ),
         // Persistence (design/15): atomic file writes, a crash-consistent
         // journal and an outbox, over a FileSystem protocol that a simulated
         // file system can replace to test every crash point. Foundation-free.
         .target(name: "StoicStore", dependencies: ["Stoic"], swiftSettings: strict),
-        .testTarget(name: "StoicStoreTests", dependencies: ["StoicStore", "StoicTesting"], swiftSettings: strict),
+        .testTarget(name: "StoicStoreTests", dependencies: ["StoicStore", "Stoic", "StoicTesting"], swiftSettings: strict),
         // Settings: a schema-declared value kept in an atomic file, migrated,
         // validated and observable (design/18).
         .target(name: "StoicSettings", dependencies: ["Stoic", "StoicSchema", "StoicStore", "StoicJSON"], swiftSettings: strict),
         .testTarget(
-            name: "StoicSettingsTests", dependencies: ["StoicSettings", "StoicSchema", "StoicStore", "StoicTesting"],
+            name: "StoicSettingsTests", dependencies: ["StoicSettings", "Stoic", "StoicSchema", "StoicStore", "StoicJSON", "StoicTesting"],
             swiftSettings: strict),
         // HTTP (design/19): per-host retry, breaker and bulkhead, idempotency
         // keys, bounded responses decoded through schemas, request
         // coalescing, over a transport that tests replace with a script.
         .target(
-            name: "StoicHTTP", dependencies: ["Stoic", "StoicSchema", "StoicJSON", "StoicApple"], swiftSettings: strict),
+            name: "StoicHTTP", dependencies: ["Stoic", "StoicFoundation", "StoicSchema", "StoicJSON"], swiftSettings: strict),
         .testTarget(
             name: "StoicHTTPTests",
             dependencies: ["StoicHTTP", "Stoic", "StoicSchema", "StoicJSON", "StoicTesting"],

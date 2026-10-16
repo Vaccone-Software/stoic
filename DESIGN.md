@@ -110,11 +110,11 @@ meets production and where its API is refined.
 
 10. **A framework of separable packages.** The core depends on the standard
     library, `Synchronization`, and `os` for its default log sink only.
-    Everything else is a package an app adopts on its own (schemas and JSON
+    Everything else is a library an app adopts on its own (schemas and JSON
     need no core at all) or a trait: macros, lint, persistence, settings,
-    HTTP, logging, metrics, tracing, ServiceLifecycle. The packages are
-    tested together, so adopting a second one is never an integration
-    project.
+    HTTP, logging, metrics, tracing, ServiceLifecycle. The libraries are
+    tested together, and their graph is checked (see Architecture), so
+    adopting a second one is never an integration project.
 
 11. **Design from the ideal.** A primitive starts from what an idealized
     robust system would do, not from the hand-rolled code it replaces: not
@@ -132,33 +132,68 @@ meets production and where its API is refined.
 
 ## Architecture
 
+Stoic is one Swift package of separately adoptable libraries. An app names
+the products it uses and builds nothing else; with no traits enabled, it
+fetches no other package at all.
+
 ```text
-                       ┌───────────────────────────────────────────┐
-  apps import ───────▶ │ Stoic (core: stdlib + Synchronization)    │
-                       │  Ambient · Deadline · Schedule · Retry    │
-                       │  Concurrency · Scope · Supervisor · Graph │
-                       │  Policies · Report · StateMachine · Schema│
-                       │  runtime · Instrumentation                │
-                       └───────────────────────────────────────────┘
-        ▲                  ▲                  ▲                  ▲
- ┌──────┴──────┐   ┌───────┴───────┐  ┌───────┴───────┐  ┌───────┴────────┐
- │ StoicMacros │   │ StoicTesting  │  │ StoicLint     │  │ Integrations   │
- │ @Schema     │   │ TestClock     │  │ build plugin  │  │ (traits)       │
- │ @StateMach. │   │ faults, seeds │  │ + doctor      │  │ OSLog, swift-  │
- │ @Services   │   │ model tests   │  │ command       │  │ log/metrics/   │
- │ (swift-     │   │               │  │ (swift-syntax)│  │ tracing, SLC,  │
- │  syntax)    │   │               │  │               │  │ AppKit/UIKit   │
- └─────────────┘   └───────────────┘  └───────────────┘  └────────────────┘
+ portable ─────────────────────────────────────────────────────────────────────
+   Stoic ············ the kernel: Ambient · Deadline · Schedule · Retry ·
+   (stdlib, Sync.)    Concurrency · Scope · Policies · StateMachine ·
+                      ServiceGraph · Supervisor · Report · Instrumentation
+   StoicJSON ········ strict JSON, the trust boundary (stdlib only)
+     StoicSchema ···· one declaration per type        ← StoicJSON
+   StoicTesting ····· clocks, seeds, faults, simulation ← Stoic
+   StoicFoundation ·· Foundation's errors classified  ← Stoic
+   StoicStore ······· atomic files, journal, outbox   ← Stoic
+   StoicObservability swift-log / swift-metrics       ← Stoic (+ traits)
+     StoicSettings ·· settings that cannot corrupt    ← Stoic, StoicStore, StoicSchema
+     StoicHTTP ······ the resilient HTTP client       ← Stoic, StoicFoundation, StoicSchema
+ Apple ────────────────────────────────────────────────────────────────────────
+   StoicApple ······· reachability, BGTask, Keychain  ← Stoic, StoicFoundation
+   StoicAppKit, StoicUIKit · lifecycle bridges        ← Stoic
+ tools ────────────────────────────────────────────────────────────────────────
+   StoicMacros (Macros trait) · StoicLint + stoic-lint (Lint trait): swift-syntax
 ```
 
-| Product        | Contents                                                                        | Dependencies                    |
-| -------------- | ------------------------------------------------------------------------------- | ------------------------------- |
-| `Stoic`        | Every runtime primitive                                                         | stdlib, `Synchronization`       |
-| `StoicTesting` | Virtual clock, seeded randomness, fault injection, model tests                  | `Stoic`, Swift Testing          |
-| `StoicHTTP`    | Resilient HTTP client: per-host retry, breaker and bulkhead, idempotency keys, bounded and schema-decoded responses, coalescing; scripted transport for tests | `Stoic`, `StoicSchema`, `StoicApple`, Foundation |
-| `StoicMacros`  | `@Schema`, `@Refined` (built, behind the `Macros` trait); `@StateMachine`, `@Services` planned | `StoicSchema`, swift-syntax |
-| `StoicLint`    | Build-tool plugin that fails the build on unsafe patterns                       | swift-syntax (host tool only)   |
-| Traits         | `OSLog`, `Logging`, `Metrics`, `Tracing`, `ServiceLifecycle`, `AppKit`, `UIKit` | the named package, when enabled |
+| Product              | Contents                                                                       | Depends on                         |
+| -------------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
+| `Stoic`              | Every runtime primitive                                                        | stdlib, `Synchronization`, `os`    |
+| `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation     | `Stoic`, Swift Testing             |
+| `StoicJSON`          | Strict JSON: duplicate keys, exact numbers, positions                          | stdlib                             |
+| `StoicSchema`        | Decode, encode, validate, JSON Schema, migrations, generators                 | `StoicJSON`                        |
+| `StoicFoundation`    | `URLError`, `POSIXError`, `CocoaError` classified for retry                    | `Stoic`, Foundation                |
+| `StoicStore`         | Atomic files, journal, outbox, launch guard, flight recorder                   | `Stoic`                            |
+| `StoicSettings`      | Schema-declared settings in an atomic file                                     | `Stoic`, `StoicStore`, `StoicSchema` |
+| `StoicHTTP`          | Resilient HTTP client; scripted transport for tests                            | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation(Networking) |
+| `StoicObservability` | Events to swift-log and swift-metrics                                          | `Stoic`; the packages, behind traits |
+| `StoicApple`         | Reachability, background tasks, Keychain, device conditions                    | `Stoic`, `StoicFoundation`, Apple frameworks |
+| `StoicAppKit`, `StoicUIKit` | Lifecycle bridges                                                       | `Stoic`, AppKit / UIKit            |
+| `StoicMacros`        | `@Schema`, `@Refined`; `@StateMachine`, `@Services` planned                    | `StoicSchema`; swift-syntax, behind `Macros` |
+| `StoicLint`          | Build-tool plugin that fails the build on unsafe patterns                      | swift-syntax, behind `Lint` (host only) |
+
+**Where a line is drawn.** A library is split off when it brings a
+dependency the layer below refuses (Foundation, an Apple framework,
+swift-syntax, another package) or a domain of its own (JSON and schemas,
+persistence, HTTP). The kernel is never subdivided: its parts are one
+system — deadlines bound retries, budgets are ambient, scopes own the tasks
+concurrency starts, policies read all three — and splitting it would only
+move those dependencies behind `package` access while an app imported more
+modules for the same thing. It depends on nothing, so adopting it costs
+nothing.
+
+**The graph is enforced, not described** (`scripts/check.sh`):
+
+- `scripts/package-graph.swift` holds the layering above as a table. A
+  dependency the table does not allow fails the check, so a new edge is an
+  architecture change made in the same diff. Every import must be a
+  declared, direct dependency (SwiftPM lets a target import a module another
+  target happened to build, which then fails in an app adopting it alone),
+  and every declared dependency must be imported.
+- `scripts/adoption.sh` adopts every library from a fresh package outside
+  this one, with no traits: resolution must fetch nothing, and the app must
+  build. On Linux it adopts the portable ones.
+- The portable libraries build and test on Linux (`scripts/linux.sh`).
 
 Platform floor: macOS, iOS, tvOS, watchOS and visionOS 27, Swift 6.4,
 Swift 6 language mode. The floor is what makes the core honest:
@@ -424,7 +459,8 @@ write wrongly by hand.
 | **M8**    | `StoicLint` build plugin with a ratchet baseline                                                                       | Done         |
 | **M9**    | Persistence, system conditions, diagnostics                                                                            | Done         |
 | **M10**   | The quality bar enforced: Address Sanitizer, the public API check, the allocation gate, Linux builds, the escape budget | Done         |
-| **1.0**   | Packages split for separate adoption; API freeze once Lodestar runs on every primitive; SSWG incubation application    | —            |
+| **M11**   | The package graph: `StoicFoundation` split from `StoicApple`, `StoicHTTP` portable, the layering enforced, adoption tested from outside | Done         |
+| **1.0**   | API freeze once Lodestar runs on every primitive; SSWG incubation application                                          | —            |
 
 ## Decisions on record
 

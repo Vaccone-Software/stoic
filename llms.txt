@@ -74,6 +74,9 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 
 - `HTTPOverrides` per `send` (timeout, schedule, coalesce, `bypassBreaker`, `retryOnResponse`); `HTTPClient(reauthenticate:)` replays once after a 401 (single-flighted); `HTTPPolicy.rateLimit` per-host token bucket.
 
+## Foundation (StoicFoundation)
+- Linking it makes `URLError`, `POSIXError` and `CocoaError` `Retryable`: transient network and POSIX failures retry, a bad URL, a rejected certificate or a full disk stop. `StoicApple` and `StoicHTTP` link it. HTTP status semantics (`HTTPRetry`, `HTTPStatusError`) are in `StoicHTTP`.
+
 ## Apple (StoicApple)
 - `PathMonitor` (`SystemPathMonitor`, `FakePathMonitor`): `stablePaths(settle:)`, `waitUntilReachable(until:)`.
 - `BackgroundJob`: BGTask work under the system's expiration (`.systemExpiring`), completed once, rescheduled; `drainingOutbox`.
