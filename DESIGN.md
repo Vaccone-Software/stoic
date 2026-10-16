@@ -344,6 +344,7 @@ incident review is the wrong default.
 | 19  | [HTTP](design/19-http.md)                                         | hand-rolled retry loops around `URLSession`, a `POST` charged twice | Built: `StoicHTTP`                         |
 | 20  | [Time shaping](design/20-time-shaping.md) | search-as-you-type firing per keystroke, a cache that serves nothing while it refetches | Built: `Debouncer`, `Throttler`, `ExpiringCache`, `Broadcast` |
 | 21  | [Platform integration](design/21-platform-integration.md) | requests sent into a dead network, background work killed mid-write, tokens in `UserDefaults` | Built: `StoicApple` |
+| 22  | [Operations and backends](design/22-operations.md) | resilience numbers picked per call site, retried `POST`s, interactive taps waiting out background backoffs | Contract; building |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical
