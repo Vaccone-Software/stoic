@@ -5,6 +5,6 @@
   "Schedule step (exponential, jittered)" : 3,
   "StateMachine.send" : 6.16,
   "retry, first attempt succeeds" : 5,
-  "withScope, one finalizer" : 32.54,
+  "withScope, one finalizer" : 34.66,
   "withTimeout, completes at once" : 19.86
 }
