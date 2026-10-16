@@ -47,6 +47,55 @@ struct PlatformErrorTests {
     }
 }
 
+/// Which platform errors prove that nothing reached the backend (design/22,
+/// Classification): only those that fail before a connection exists.
+@Suite("Never reached the backend")
+struct NeverReachedBackendTests {
+    @Test(arguments: [
+        (URLError.Code.cannotFindHost, "the host name did not resolve: nothing was sent"),
+        (.dnsLookupFailed, "the lookup itself failed: nothing was sent"),
+        (.cannotConnectToHost, "nothing accepted the connection: nothing was sent"),
+        (.notConnectedToInternet, "there is no network at all: nothing was sent"),
+    ])
+    func urlErrorsThatFailBeforeAConnectionExist(_ code: URLError.Code, _ meaning: String) {
+        #expect(URLError(code).neverReachedBackend, "\(meaning)")
+    }
+
+    @Test(arguments: [
+        (URLError.Code.timedOut, "the request may have been sent and acted on before the timeout"),
+        (.networkConnectionLost, "the connection was lost after it opened: the request may have arrived"),
+        (.badServerResponse, "the server answered: it was reached"),
+        (.secureConnectionFailed, "the TLS handshake failed after the connection opened"),
+    ])
+    func urlErrorsThatMayComeAfterSending(_ code: URLError.Code, _ meaning: String) {
+        #expect(!URLError(code).neverReachedBackend, "\(meaning)")
+    }
+
+    @Test(arguments: [
+        (POSIXError.Code.ECONNREFUSED, "the peer refused the connection: nothing was sent"),
+        (.ENETUNREACH, "no route to the network: nothing was sent"),
+        (.EHOSTUNREACH, "no route to the host: nothing was sent"),
+    ])
+    func posixErrorsThatFailBeforeAConnectionExist(_ code: POSIXError.Code, _ meaning: String) {
+        #expect(POSIXError(code).neverReachedBackend, "\(meaning)")
+    }
+
+    @Test(arguments: [
+        (POSIXError.Code.ECONNRESET, "the peer reset an open connection: bytes may have arrived"),
+        (.ETIMEDOUT, "the connection timed out, possibly after sending"),
+        (.EPIPE, "the write failed on a connection that was open"),
+    ])
+    func posixErrorsThatMayComeAfterSending(_ code: POSIXError.Code, _ meaning: String) {
+        #expect(!POSIXError(code).neverReachedBackend, "\(meaning)")
+    }
+
+    @Test func otherErrorsClaimNothing() {
+        struct Plain: Error, Retryable { var retryDecision: RetryDecision { .retry } }
+        #expect(!Plain().neverReachedBackend)
+        #expect(!CocoaError(.fileLocking).neverReachedBackend)
+    }
+}
+
 final class SendableCounter: Sendable {
     private let count = Mutex(0)
     func increment() { count.withLock { $0 += 1 } }

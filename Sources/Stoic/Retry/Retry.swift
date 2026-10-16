@@ -83,8 +83,25 @@ public enum RetryDecision: Sendable, Hashable {
 ///             }
 ///         }
 ///     }
+///
+/// An error that proves the operation never reached the backend — no
+/// connection was made, nothing was written — says so with
+/// ``neverReachedBackend``. A declared operation that is not safe to repeat
+/// is repeated only on such proof, its breaker does not count it, and its
+/// outcome stays `.notExecuted` (design/22).
 public protocol Retryable: Error {
+    /// Whether, and when, another attempt could help.
     var retryDecision: RetryDecision { get }
+
+    /// True when the failure proves the operation never reached the
+    /// backend: no connection was made, nothing was written. Default
+    /// `false`: claim it only when it is certain, because a
+    /// `.notRepeatable` operation is repeated on its word.
+    var neverReachedBackend: Bool { get }
+}
+
+extension Retryable {
+    public var neverReachedBackend: Bool { false }
 }
 
 /// Decides, for each failure, whether a retry could help.

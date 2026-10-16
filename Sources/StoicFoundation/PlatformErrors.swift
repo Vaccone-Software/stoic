@@ -35,6 +35,21 @@ extension URLError: Retryable {
             return .retry
         }
     }
+
+    /// True for the codes that fail before a connection exists: the host
+    /// was not found, or nothing answered, or there is no network at all.
+    /// Nothing was sent, so even an operation that is not safe to repeat
+    /// may be tried again (design/22).
+    public var neverReachedBackend: Bool {
+        switch code {
+        case .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost, .notConnectedToInternet:
+            return true
+        default:
+            // A timeout, a lost connection or a bad response may come after
+            // the request was sent: whether the server acted is unknown.
+            return false
+        }
+    }
 }
 
 extension POSIXError: Retryable {
@@ -47,6 +62,18 @@ extension POSIXError: Retryable {
             // Missing files, permissions, invalid arguments, a full or
             // read-only disk: retrying cannot change them.
             return .stop
+        }
+    }
+
+    /// True for a refused connection and an unreachable network or host:
+    /// the connection never opened, so nothing was sent (design/22).
+    public var neverReachedBackend: Bool {
+        switch code {
+        case .ECONNREFUSED, .ENETUNREACH, .EHOSTUNREACH:
+            return true
+        default:
+            // A reset, an abort or a timeout can come after bytes were sent.
+            return false
         }
     }
 }
