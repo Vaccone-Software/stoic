@@ -145,29 +145,26 @@ public actor ExpiringCache<Key: Hashable & Sendable, Value: Sendable, Failure: E
                 entries[key] = nil
             }
         }
-        return try await flight.run(key, operation: load(key))
+        return try await load(key)
     }
 
-    // The flight's operation: whoever started the flight, the first outcome
-    // is stored once, here, rather than by each waiter.
-    private func load(_ key: Key) -> @concurrent @Sendable () async throws(Failure) -> Value {
-        { [self, loader] () async throws(Failure) -> Value in
-            do throws(Failure) {
-                let value = try await loader(key)
-                await store(key, .success(value))
-                return value
-            } catch {
-                await store(key, .failure(error))
-                throw error
-            }
-        }
+    // Whoever starts the flight, its outcome is stored once, by the flight's
+    // commit rather than by each waiter, and only while the flight is live: a
+    // load every caller left was cancelled, and if it returns anyway its
+    // outcome says nothing about the key, and may be older than a newer
+    // load's.
+    private func load(_ key: Key) async throws(PolicyError<Failure>) -> Value {
+        try await flight.run(key, operation: { [loader] () async throws(Failure) -> Value in
+            try await loader(key)
+        }, commit: { [self] result in
+            await store(key, result)
+        })
     }
 
     private func store(_ key: Key, _ result: Result<Value, Failure>) {
         if case .failure = result {
-            // A load nobody waits for any more says nothing about the key; a
-            // failed refresh keeps the value it was refreshing.
-            guard negativeTTL != nil, !Task.isCancelled else { return }
+            // A failed refresh keeps the value it was refreshing.
+            guard negativeTTL != nil else { return }
             if case .success? = entries[key]?.result, entries[key]!.storedAt.duration(to: clock.now) < ttl.saturatingAdding(staleWindow) { return }
         }
         entries[key] = Entry(result: result, storedAt: clock.now, touched: 0)
@@ -201,7 +198,7 @@ public actor ExpiringCache<Key: Hashable & Sendable, Value: Sendable, Failure: E
     private func refresh(_ key: Key) async {
         defer { refreshing.remove(key) }
         do throws(PolicyError<Failure>) {
-            _ = try await flight.run(key, operation: load(key))
+            _ = try await load(key)
         } catch {
             // A rejection is the scope ending the refresh: not a failure.
             guard case .failed(let failure) = error else { return }

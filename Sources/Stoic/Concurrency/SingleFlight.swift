@@ -34,6 +34,10 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
     private typealias Outcome = Result<Value, PolicyError<Failure>>
     private typealias Waiter = CheckedContinuation<Outcome, Never>
 
+    /// Records a flight's outcome where it belongs (a cache's entry) before
+    /// any caller sees it. Run only by a flight that is still live.
+    typealias Commit = @Sendable (Result<Value, Failure>) async -> Void
+
     private struct Flight {
         let id: UInt64
         let cause = CancellationCauseBox(parent: nil)
@@ -42,6 +46,9 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         /// The most urgent priority a caller has asked for: what the task
         /// must be escalated to, including before it exists.
         var priority: TaskPriority
+        /// Committing its outcome: it has finished, so it is no longer
+        /// abandoned when its last caller leaves.
+        var landing = false
     }
 
     private struct State {
@@ -79,6 +86,22 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         _ key: Key,
         operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value
     ) async throws(PolicyError<Failure>) -> Value {
+        try await run(key, operation: operation, commit: nil)
+    }
+
+    /// ``run(_:operation:)``, with `commit` run once on the outcome before
+    /// any caller receives it — if this call starts the flight.
+    ///
+    /// A flight that every caller left has been cancelled and its key
+    /// retired; if its operation finishes anyway, it never commits, so its
+    /// outcome cannot overwrite a newer flight's. Once committing has begun
+    /// the flight is no longer abandoned: callers that leave just leave, and
+    /// callers that arrive join it and receive the committed outcome.
+    nonisolated(nonsending) func run(
+        _ key: Key,
+        operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value,
+        commit: Commit?
+    ) async throws(PolicyError<Failure>) -> Value {
         if Task.isCancelled { throw .rejected(Rejection(.cancelled, label: label)) }
         let waiterID = state.withLock { state -> UInt64 in
             defer { state.nextID += 1 }
@@ -104,7 +127,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
                 }
                 let outcome = await withTaskCancellationHandler {
                     await withCheckedContinuation { (waiter: Waiter) in
-                        join(waiterID, key: key, operation: operation, waiter: waiter)
+                        join(waiterID, key: key, operation: operation, commit: commit, waiter: waiter)
                     }
                 } onCancel: {
                     leave(waiterID, because: Rejection(.cancelled, label: label),
@@ -127,6 +150,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         _ waiterID: UInt64,
         key: Key,
         operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value,
+        commit: Commit?,
         waiter: Waiter
     ) {
         let (next, priority) = state.withLock { state -> (FlightJoin, TaskPriority) in
@@ -144,7 +168,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
             escalating?.escalatePriority(to: priority)
             Ambient.record(Event("singleflight.joined", level: .debug, label: label))
         case .launch(let flightID, let priority):
-            launch(key: key, flightID: flightID, priority: priority, operation: operation)
+            launch(key: key, flightID: flightID, priority: priority, operation: operation, commit: commit)
         }
     }
 
@@ -185,7 +209,8 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         key: Key,
         flightID: UInt64,
         priority launchedAt: TaskPriority,
-        operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value
+        operation: @escaping @concurrent @Sendable () async throws(Failure) -> Value,
+        commit: Commit?
     ) {
         let cause = state.withLock { $0.flights[key]?.id == flightID ? $0.flights[key]?.cause : nil }
         guard let cause else { return }   // every caller already left
@@ -198,6 +223,9 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
                         return .failure(error)
                     }
                 }
+            }
+            if let commit, self.beginLanding(key: key, flightID: flightID) {
+                await commit(result)
             }
             self.land(key: key, flightID: flightID, result: result)
         }
@@ -230,7 +258,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
                   let waiter = flight.waiters.removeValue(forKey: waiterID) else {
                 return (nil, nil)
             }
-            if flight.waiters.isEmpty {
+            if flight.waiters.isEmpty, !flight.landing {
                 // The last caller left: retire the key now, so newcomers
                 // start afresh rather than join a flight being cancelled.
                 // The cause is recorded before the flight can be seen
@@ -247,6 +275,16 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         if let retired {
             retired.task?.cancel()
             Ambient.record(Event("singleflight.abandoned", label: label))
+        }
+    }
+
+    /// Whether flight `flightID` is still live, and if so marks it landing,
+    /// so that it can no longer be abandoned while it commits.
+    private func beginLanding(key: Key, flightID: UInt64) -> Bool {
+        state.withLock { state in
+            guard state.flights[key]?.id == flightID else { return false }
+            state.flights[key]!.landing = true
+            return true
         }
     }
 

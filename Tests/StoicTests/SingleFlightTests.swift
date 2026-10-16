@@ -29,6 +29,34 @@ struct SingleFlightTests {
         #expect(flight.flightCount == 0, "the key is cleared once the flight lands")
     }
 
+    /// The commit hook a cache stores through: a live flight commits once,
+    /// before any caller sees the outcome; an abandoned one never does.
+    @Test(.timeLimit(.minutes(1))) func onlyALiveFlightCommits() async throws {
+        let flight = SingleFlight<String, Int, Failure>(label: "commit")
+        let committed = SendableBox<[Int]>([])
+        let gate = AsyncGate()
+        let (started, finished) = (SendableBox(false), SendableBox(false))
+        let abandoned = Task {
+            try await flight.run("k", operation: { () async throws(Failure) -> Int in
+                started.mutate { $0 = true }
+                await gate.wait()   // ignores cancellation
+                finished.mutate { $0 = true }
+                return 1
+            }, commit: { result in committed.mutate { $0.append((try? result.get()) ?? -1) } })
+        }
+        await waitUntil { started.value }
+        abandoned.cancel()
+        _ = await abandoned.result
+        let value = try await flight.run("k", operation: { () async throws(Failure) -> Int in 2 }, commit: { result in
+            committed.mutate { $0.append((try? result.get()) ?? -1) }
+        })
+        #expect(value == 2)
+        #expect(committed.value == [2], "committed before the caller saw it")
+        gate.open()
+        await waitUntil { finished.value }
+        #expect(await holdsThroughout { committed.value == [2] }, "the abandoned flight finished and never committed")
+    }
+
     @Test func everyCallerSeesTheSameFailure() async throws {
         let flight = SingleFlight<Int, Int, Failure>(label: "fail")
         let gate = AsyncGate()

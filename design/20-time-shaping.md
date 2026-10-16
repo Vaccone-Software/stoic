@@ -106,7 +106,9 @@ run of the loader through a `SingleFlight`, so cancelling a waiter never
 cancels the load for another, and cancelling the last one cancels the load. A
 failed refresh keeps the stale value. A load that fails with no value to fall
 back on is thrown to its waiters and forgotten, unless `negativeTTL` is set;
-cancelled loads and rejections are never remembered. Memory is bounded by
+cancelled loads and rejections are never remembered. Only a live load stores
+its outcome (the flight commits it before any caller sees it): one every
+caller left, if it returns anyway, stores nothing. Memory is bounded by
 `maxEntries`, evicting the least recently used. The cache must not outlive its
 scope: afterwards stale entries are served until they expire but not refreshed.
 
@@ -146,6 +148,7 @@ publisher nor grow without bound. Drops reuse `Channel`'s counting and event.
 | `negativeTTL` is set and a load fails                         | The failure is remembered for that long and thrown to callers without calling the loader                                                               |
 | one of several callers waiting on a load is cancelled         | It leaves with `.rejected(.cancelled)`; the load continues for the others and its value is cached                                                      |
 | every caller waiting on a load is cancelled                   | The load is cancelled and nothing is cached, not even a failure                                                                                        |
+| a load every caller left finishes anyway                      | Its outcome is dropped: not cached, so it cannot overwrite a newer load's value or mark old data fresh                                                 |
 | an entry is added past `maxEntries`                           | The least recently used entry is evicted; a read counts as a use                                                                                       |
 | the scope ends while a refresh runs                           | The refresh is cancelled and awaited, and is not reported as a failure; the stale entry stays until it expires                                         |
 | a `dropOldest` subscriber's buffer is full                    | Its oldest element is discarded for the new one; the publisher does not wait; `droppedCount` rises; `channel.dropped`                                  |

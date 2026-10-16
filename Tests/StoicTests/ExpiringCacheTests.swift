@@ -264,4 +264,44 @@ struct ExpiringCacheTests {
         #expect(await eventually { loader.cancelled == 1 })
         #expect(StoicTest.events.events(named: "cache.refresh_failed").isEmpty)
     }
+
+    /// A loader whose first load ignores cancellation and returns "old" once
+    /// its gate opens; every later load returns "new" at once.
+    final class StubbornLoader: Sendable {
+        private let state = Mutex((calls: 0, finished: 0))
+        let gate = TestGate()
+        var calls: Int { state.withLock { $0.calls } }
+        var finished: Int { state.withLock { $0.finished } }
+
+        func load(_ key: String) async -> String {
+            let number = state.withLock { state -> Int in
+                state.calls += 1
+                return state.calls
+            }
+            if number == 1 { await gate.wait() }
+            state.withLock { $0.finished += 1 }
+            return number == 1 ? "old" : "new"
+        }
+    }
+
+    @Test(.stoic(seed: 69), .timeLimit(.minutes(1)), .failureMode("design/20", "a load every caller left finishes anyway"))
+    func anAbandonedLoadThatFinishesLateIsNotCached() async throws {
+        let clock = TestClock()
+        let loader = StubbornLoader()
+        try await withTaskScope { scope in
+            let cache = Cache.make(in: scope, ttl: .seconds(10), maxEntries: 10, label: "profiles", clock: clock.erased) { key in
+                await loader.load(key)
+            }
+            let first = Task { await get(cache, "a") }
+            #expect(await eventually { loader.calls == 1 })
+            first.cancel()
+            #expect(await first.value == "rejected:cancelled")   // every caller left: the load is abandoned
+            #expect(await get(cache, "a") == "new")              // a newer load, cached
+            loader.gate.open()                                   // the abandoned load returns anyway
+            #expect(await eventually { loader.finished == 2 })
+            #expect(await holdsThroughout { cache.waiterCount(for: "a") == 0 })
+            #expect(await get(cache, "a") == "new", "previously the abandoned load's late result overwrote the newer one")
+            #expect(loader.calls == 2)
+        }
+    }
 }
