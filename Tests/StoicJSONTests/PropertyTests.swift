@@ -160,6 +160,39 @@ struct PropertyTests {
         }
     }
 
+    @Test("bytes mutated at random never crash the parser, and what it accepts round trips")
+    func mutatedInputIsRefusedOrRoundTrips() throws {
+        let seeds: [String] = [
+            #"{"a":[1,2.5e3,-0,"xé😀"],"b":{"c":null,"d":true}}"#,
+            #"[0.1,1e308,5e-324,-1.7976931348623157e308,9007199254740993]"#,
+            #"{"k\n":"\"\\\/\b\f\n\r\t","":{},"é":[[]]}"#,
+            "  [ \"a\" , { \"b\" : [ 1 , 2 ] } ] // c\n",
+        ]
+        let alphabet = Array(#"{}[]:,"\-+.eE0123456789tfnul /*"#.utf8) + [0x0A, 0x00, 0x1F, 0x7F, 0x80, 0xBF, 0xC0, 0xED, 0xF4, 0xF5, 0xFF]
+        var random = SeededGenerator(seed: 0x5EED)
+        var accepted = 0
+        for iteration in 0..<20_000 {
+            var bytes = Array(seeds[iteration % seeds.count].utf8)
+            for _ in 0..<Int.random(in: 1...4, using: &random) where !bytes.isEmpty {
+                let at = Int.random(in: 0..<bytes.count, using: &random)
+                let byte = alphabet[Int.random(in: 0..<alphabet.count, using: &random)]
+                switch Int.random(in: 0..<3, using: &random) {
+                case 0: bytes[at] = byte
+                case 1: bytes.insert(byte, at: at)
+                default: bytes.remove(at: at)
+                }
+            }
+            for options in [JSONParseOptions.strict, .jsonc] {
+                guard let value = parse(bytes, options).value else { continue }
+                accepted += 1
+                for style in allStyles {
+                    #expect(parse(value.encoded(style: style)).value == value, "\(String(decoding: bytes, as: UTF8.self))")
+                }
+            }
+        }
+        #expect(accepted > 100)
+    }
+
     @Test("canonical bytes do not depend on member order", arguments: seeds)
     func canonicalIgnoresOrder(_ seed: UInt64) {
         var generator = JSONGenerator(seed: seed)

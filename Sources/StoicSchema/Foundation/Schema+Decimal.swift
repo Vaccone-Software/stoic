@@ -156,6 +156,10 @@ enum DecimalNumber {
         if let number = JSONNumber(lexeme: text) { return .success(number) }
         func valid(_ candidate: String) -> [String] { JSONNumber(lexeme: candidate) == nil ? [] : [candidate] }
         if text.isEmpty { return .failure(FormatFailure("it is empty")) }
+        // Spelt as a number, refused only for its size (`1e400`).
+        if text.wholeMatch(of: #/-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/#) != nil {
+            return .failure(FormatFailure("it is too large or too small for any number to hold"))
+        }
         let trimmed = text.trimmingWhitespace()
         if trimmed != text, !trimmed.isEmpty {
             return .failure(FormatFailure("it has whitespace around the number", suggestions: valid(trimmed)))

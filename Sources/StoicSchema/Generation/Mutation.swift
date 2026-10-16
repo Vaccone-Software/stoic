@@ -48,7 +48,6 @@ public struct Mutation: Sendable {
         case typoUnionTag
         case missingDiscriminator
         case precisionLoss
-        case notFinite
         case futureVersion
         /// A value of the right kind that a conversion refuses: a date that
         /// does not exist, a string that is not a URL (a transform's

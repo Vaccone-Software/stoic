@@ -56,7 +56,7 @@ struct ConstraintChecker {
             ]
 
         case (.multipleOf(let step), .number(let number)):
-            guard !step.isZero, step.compared(to: JSONNumber(0)) > 0 else {
+            guard step > JSONNumber(0) else {
                 return [Self.invalid("multipleOf needs a step greater than zero, not \(step.lexeme)")]
             }
             guard !number.isMultiple(of: step) else { return [] }

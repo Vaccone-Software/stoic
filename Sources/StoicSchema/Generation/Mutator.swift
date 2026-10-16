@@ -26,8 +26,8 @@ struct Mutator {
         /// The node's generic mutations (null, wrong type) were already made
         /// by a wrapper around it.
         var genericDone = false
-        /// A number is read through a `Double`, so 2^53 + 1 and 1e400 are
-        /// refused. Not so below a conversion that reads the digits.
+        /// A number is read through a `Double`, so 2^53 + 1 is refused. Not
+        /// so below a conversion that reads the digits.
         var doubleLimits = true
     }
 
@@ -304,17 +304,13 @@ struct Mutator {
                         summary: "replaced the value with \(bad.briefDescription), above its upper bound"))
             }
         }
-        // An integer a Double cannot hold exactly, and a number it cannot hold at all.
+        // An integer a Double cannot hold exactly. (One it cannot hold at
+        // all, 1e400, is not a JSON number StoicJSON lets exist.)
         guard context.doubleLimits else { return }
         if let loss = JSONNumber(lexeme: "9007199254740993") {
             out.add(replacement(
                     .precisionLoss, context, at: path, with: .number(loss), expect: .precisionLoss,
                     summary: "replaced the value with 2^53 + 1"))
-        }
-        if let huge = JSONNumber(lexeme: "1e400") {
-            out.add(replacement(
-                    .notFinite, context, at: path, with: .number(huge), expect: .notFinite,
-                    summary: "replaced the value with 1e400"))
         }
     }
 

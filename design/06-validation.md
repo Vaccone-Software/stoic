@@ -146,7 +146,11 @@ or in sparse output unless asked for.
 **Numbers.** A JSON integer above 2^53 aimed at a `Double` field is an
 issue (`precision_loss`), not a silent rounding. `1.0` for an `Int` field is
 accepted only under `.lenient`. NaN and infinities do not exist in JSON and
-cannot be produced.
+cannot be produced, and neither can a number outside a `Double`'s range:
+StoicJSON refuses `1e400` (and `1e-400`, which would round to zero) in text
+and in `JSONNumber(lexeme:)` alike, judged by the number's exponent and never
+by how long its text is, so every number that exists encodes to text that
+parses back.
 
 ## Layer 3: tooling
 
@@ -225,8 +229,11 @@ above left open:
 
 - **Constraints are a struct over a `Kind` enum**, so `Constraint.range(…)`
   reads as in the examples while exporters switch over `constraint.kind`.
-  Bounds are `JSONNumber`s and are compared as exact decimals (up to 38
-  digits), so `2^53 + 1` is above `2^53` and `0.3` is a multiple of `0.1`.
+  Bounds are `JSONNumber`s, which order and divide on their digits at any
+  precision (`JSONNumber` is `Comparable` and has `isMultiple(of:)`), so
+  `2^53 + 1` is above `2^53`, `0.3` is a multiple of `0.1`, and a sender
+  cannot slip past `.range(0...10)` with forty digits that a `Double` would
+  round to `10`.
   A constraint is silent about kinds of value it is not about, as JSON
   Schema's keywords are.
 - **String length has a unit.** `.characters` is Unicode scalars, the only
@@ -516,7 +523,7 @@ A missing key sorts with the object that lacks it.
   required key, unknown key, misspelt key, too long, too short, too many, too
   few, repeated element, not a multiple, pattern mismatch, bad enumeration
   case, bad union tag, misspelt tag, missing discriminator, lost precision,
-  not finite, future version. Every candidate is run through the constraint
+  future version. Every candidate is run through the constraint
   interpreter first so that "exactly one issue" is a property of the
   mutation. `mutation(of:combining:)` applies several whose parts of the
   document do not overlap (a wrong container hides what is inside it, so a
@@ -845,8 +852,8 @@ the order it was built.
   `anyOf` of that and a string with the number grammar as its `pattern`
   (JSON Schema cannot constrain a string by its value, so the constraints
   are on the number alternative only). `TransformNode.readsNumberDigits`
-  tells the mutator that 2^53 + 1 and 1e400, which a `Double` refuses, are
-  not refused here; the conversion's own `counterexamples` (`1e200`, a
+  tells the mutator that 2^53 + 1, which a `Double` refuses, is not refused
+  here; the conversion's own `counterexamples` (`1e200`, a
   39-digit number, the bad strings) say what is.
 
 ### Enumerations a server may extend

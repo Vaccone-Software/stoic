@@ -83,10 +83,10 @@ public struct JSONSchemaValidator: Sendable {
     }
 
     private func acceptsNumber(_ number: JSONNumber, _ schema: JSONObject) -> Bool {
-        if let bound = schema["minimum"]?.number, number.compared(to: bound) < 0 { return false }
-        if let bound = schema["maximum"]?.number, number.compared(to: bound) > 0 { return false }
-        if let bound = schema["exclusiveMinimum"]?.number, number.compared(to: bound) <= 0 { return false }
-        if let bound = schema["exclusiveMaximum"]?.number, number.compared(to: bound) >= 0 { return false }
+        if let bound = schema["minimum"]?.number, number < bound { return false }
+        if let bound = schema["maximum"]?.number, number > bound { return false }
+        if let bound = schema["exclusiveMinimum"]?.number, number <= bound { return false }
+        if let bound = schema["exclusiveMaximum"]?.number, number >= bound { return false }
         if let step = schema["multipleOf"]?.number, !number.isMultiple(of: step) { return false }
         return true
     }

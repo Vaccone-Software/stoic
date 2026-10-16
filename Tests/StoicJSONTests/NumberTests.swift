@@ -46,22 +46,19 @@ struct NumberTests {
     }
 
     @Test func overflowIsOutOfRangeNeverInfinity() throws {
-        let n = try number("1e400")
-        #expect(n.double == nil)
-        #expect(!n.isExactlyRepresentableAsDouble)
-        #expect(n.int64 == nil)
-        #expect(n.uint64 == nil)
-        #expect(try number("-1e400").double == nil)
-        #expect(try number("1e99999999999999999999999").double == nil)
+        // A number that could be built but not parsed would break every
+        // encoding's promise to parse back; so it cannot be built.
+        #expect(JSONNumber(lexeme: "1e400") == nil)
+        #expect(JSONNumber(lexeme: "-1e400") == nil)
+        #expect(JSONNumber(lexeme: "1e99999999999999999999999") == nil)
+        #expect(JSONNumber(lexeme: "1" + String(repeating: "0", count: 309)) == nil)
     }
 
     @Test func underflowToZeroIsOutOfRangeToo() throws {
         // Decision: a nonzero number that would round to zero is out of
         // range, like overflow. One rule, and no silent 0.
-        let n = try number("1E-400")
-        #expect(n.double == nil)
-        #expect(!n.isExactlyRepresentableAsDouble)
-        #expect(try number("1e-324").double == nil)
+        #expect(JSONNumber(lexeme: "1E-400") == nil)
+        #expect(JSONNumber(lexeme: "1e-324") == nil)
         #expect(try number("0e-400").double == 0)  // actual zero is fine
         #expect(try number("0.000e500").double == 0)
     }
@@ -71,7 +68,35 @@ struct NumberTests {
         #expect(n.double == Double.leastNonzeroMagnitude)
         #expect(n.isExactlyRepresentableAsDouble)
         #expect(try number("1.7976931348623157e308").double == Double.greatestFiniteMagnitude)
-        #expect(try number("1.7976931348623159e308").double == nil)
+        #expect(JSONNumber(lexeme: "1.7976931348623159e308") == nil)
+    }
+
+    @Test(arguments: [801, 10_000, 100_000, 1_000_000])
+    func rangeIsDecidedByTheNumberNotTheLengthOfItsText(digits: Int) throws {
+        // The standard library's conversion gives up on long text; a number
+        // about 0.78 is in range however many digits spell it.
+        let sevens = String(repeating: "7", count: digits)
+        #expect(try number("0." + sevens).double == 0.7777777777777778)
+        #expect(try number("-0." + sevens + "e-300").double == -0.7777777777777778e-300)
+        #expect(try number("0." + String(repeating: "0", count: digits) + "e5").double == 0)
+        #expect(JSONNumber(lexeme: "0." + sevens + "e310") == nil)
+        #expect(JSONNumber(lexeme: "0." + sevens + "e-330") == nil)
+        #expect(try JSONValue(parsing: "[0." + sevens + "]") == [.number(number("0." + sevens))])
+    }
+
+    @Test func longLexemesRoundLikeTheStandardLibraryWhereItCanStillTell() throws {
+        // Past 800 digits the conversion keeps the first 800 and a sticky 1;
+        // under ten thousand the standard library still converts the whole
+        // text, so the two must agree.
+        var random = SeededGenerator(seed: 0xD161)
+        for _ in 0..<300 {
+            let length = Int.random(in: 801...4000, using: &random)
+            var digits = String(Int.random(in: 1...9, using: &random))
+            for _ in 1..<length { digits.append(Character(Unicode.Scalar(UInt8(ascii: "0") + UInt8.random(in: 0...9, using: &random)))) }
+            let exponent = Int.random(in: -320...300, using: &random)
+            let text = "0." + digits + "e" + String(exponent)
+            #expect(try number(text).double == Double(text), "\(text.prefix(30))… e\(exponent)")
+        }
     }
 
     @Test func maxUInt64() throws {
@@ -126,7 +151,6 @@ struct NumberTests {
         #expect(try number("1e22").isExactlyRepresentableAsDouble)
         #expect(!(try number("0.10000000000000000555").isExactlyRepresentableAsDouble))
         #expect(!(try number("3.14159265358979323846264338327950288").isExactlyRepresentableAsDouble))
-        #expect(!(try number("1e23000").isExactlyRepresentableAsDouble))
     }
 
     // MARK: Equality and hashing
@@ -142,13 +166,6 @@ struct NumberTests {
         #expect(try number("1") != number("-1"))
         #expect(try number("10") != number("1"))
         #expect(try number("0.1") != number("0.01"))
-    }
-
-    @Test func equalityOfHugeExponentsDoesNotOverflow() throws {
-        #expect(try number("1e99999999999999999999") == number("1e99999999999999999999"))
-        // Exponents are saturated, not wrapped: no trap, and no false equality for sane values.
-        #expect(try number("1e99999999999999999999") != number("1e5"))
-        #expect(try number("1e-99999999999999999999") != number("1e99999999999999999999"))
     }
 
     // MARK: Construction
@@ -217,10 +234,58 @@ struct NumberTests {
         #expect(JSONNumber(lexeme: text) == nil)
     }
 
-    @Test func wellFormedButOutOfRangeLexemesAreConstructible() throws {
-        // Range is a property of a number, not of its spelling.
-        let n = try #require(JSONNumber(lexeme: "1e400"))
-        #expect(n.double == nil)
+    @Test func wellFormedButOutOfRangeLexemesAreRefused() throws {
+        // Built, it would encode to text the parser refuses.
+        #expect(JSONNumber(lexeme: "1e400") == nil)
+        #expect(throws: JSONParseError.self) { try JSONValue(parsing: "1e400") }
+    }
+
+    // MARK: Order and multiples
+
+    @Test func orderIsNumericAcrossSpellingsAndSigns() throws {
+        func order(_ a: String, _ b: String) throws -> Int {
+            let (x, y) = (try number(a), try number(b))
+            return x < y ? -1 : (x == y ? 0 : 1)
+        }
+        #expect(try order("1", "1.0") == 0)
+        #expect(try order("-0", "0") == 0)
+        #expect(try order("1e2", "99.99") == 1)
+        #expect(try order("-1e2", "-99.99") == -1)
+        #expect(try order("-5", "3") == -1)
+        #expect(try order("0.001", "0.0009") == 1)
+        #expect(try order("9007199254740993", "9007199254740992") == 1)
+        #expect(try order("12345678901234567890123456789012345678", "12345678901234567890123456789012345679") == -1)
+    }
+
+    @Test func orderIsExactPastAnyFixedPrecision() throws {
+        // Forty-two digits: a Double, or 38 digits of Decimal, calls these equal.
+        let above = try number("10.0000000000000000000000000000000000000001")
+        #expect(above > (try number("10")))
+        #expect(try number("-10.0000000000000000000000000000000000000001") < number("-10"))
+        let long = "0." + String(repeating: "9", count: 5_000)
+        #expect(try number(long) < number("1"))
+        #expect(try number(long + "1") > number(long))
+    }
+
+    @Test func multiplesAreDecidedOnTheDigits() throws {
+        func multiple(_ a: String, of b: String) throws -> Bool { try number(a).isMultiple(of: number(b)) }
+        #expect(try multiple("0.3", of: "0.1"))
+        #expect(try multiple("0.15", of: "0.05"))
+        #expect(try multiple("-12", of: "4"))
+        #expect(try multiple("12", of: "-4"))
+        #expect(try multiple("0", of: "7"))
+        #expect(try !multiple("7", of: "0"))
+        #expect(try !multiple("0.30000000000000001", of: "0.1"))
+        #expect(try multiple("1e300", of: "7e-300") == false)
+        #expect(try multiple("7e300", of: "7e-300"))
+        #expect(try multiple("2.5", of: "1.25"))
+        #expect(try !multiple("2.5", of: "1.5"))
+        // A step of more than 37 digits takes the long-division path.
+        let step = "1" + String(repeating: "0", count: 40) + "3"
+        #expect(try multiple(step + "0", of: step))
+        #expect(try !multiple(step + "1", of: step))
+        // A long dividend is judged exactly, not rounded into one that passes.
+        #expect(try !multiple("0.1" + String(repeating: "0", count: 60) + "1", of: "0.1"))
     }
 
     // MARK: Canonical spelling
@@ -242,7 +307,6 @@ struct NumberTests {
         #expect(try number("0.10000000000000000555").canonicalLexeme == "0.10000000000000000555")
         // Twenty-three digits: past ECMAScript's 21-digit window, so exponent form.
         #expect(try number("12345678901234567890123").canonicalLexeme == "1.2345678901234567890123e+22")
-        #expect(try number("1e400").canonicalLexeme == "1e+400")
     }
 
     @Test func rfc8785NumberSamples() throws {
@@ -256,7 +320,7 @@ struct NumberTests {
     }
 
     @Test func canonicalSpellingIsAFixedPoint() throws {
-        for text in ["1.0", "-0", "1E30", "9007199254740993", "0.1e1", "123e-20", "1e400", "12345678901234567890123"] {
+        for text in ["1.0", "-0", "1E30", "9007199254740993", "0.1e1", "123e-20", "1e300", "12345678901234567890123"] {
             let once = try number(text).canonicalLexeme
             #expect(try number(once).canonicalLexeme == once, "\(text)")
             #expect(try number(once) == number(text), "\(text)")

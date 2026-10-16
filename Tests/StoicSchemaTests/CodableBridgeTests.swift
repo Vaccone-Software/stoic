@@ -86,11 +86,6 @@ struct JSONTreeCodingTests {
         }
     }
 
-    @Test func aNumberThatNoDoubleCanHoldCannotBeEncoded() {
-        let huge = JSONValue.number(JSONNumber(lexeme: "1e400") ?? JSONNumber(0))
-        #expect(throws: EncodingError.self) { try encodeToValue(JSONTreeBox(huge)) }
-    }
-
     @Test func membersAreReadInKeyOrder() throws {
         let read = try decodeFromValue(JSONTreeBox.self, ["b": 1, "a": 2, "c": 3]).value
         #expect(read.object?.keys == ["a", "b", "c"])

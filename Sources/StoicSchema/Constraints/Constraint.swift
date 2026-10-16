@@ -237,15 +237,14 @@ public struct NumberRange: Sendable, Hashable {
         self.upper = upper
     }
 
-    /// Whether `number` is within the range.
+    /// Whether `number` is within the range, decided on its digits however
+    /// many it has (see the order of `JSONNumber`).
     public func contains(_ number: JSONNumber) -> Bool {
         if let lower {
-            let order = number.compared(to: lower.value)
-            if order < 0 || (order == 0 && !lower.isInclusive) { return false }
+            if number < lower.value || (number == lower.value && !lower.isInclusive) { return false }
         }
         if let upper {
-            let order = number.compared(to: upper.value)
-            if order > 0 || (order == 0 && !upper.isInclusive) { return false }
+            if number > upper.value || (number == upper.value && !upper.isInclusive) { return false }
         }
         return true
     }

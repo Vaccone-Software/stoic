@@ -72,6 +72,17 @@ struct RangeConstraintTests {
         #expect(codes(.range(0...UInt64.max), "-1") == [.outOfRange])
     }
 
+    @Test func aSenderCannotSlipPastABoundWithMoreDigits() {
+        // Past 38 digits a Double, or a 128-bit coefficient, calls these 10;
+        // a value passed through untouched would then forward a number above
+        // its bound.
+        let above = "10.0000000000000000000000000000000000000001"
+        #expect(Schema.json(.range(0...10)).decode(json(above)).value == nil)
+        #expect(codes(.range(0...10), above) == [.outOfRange])
+        #expect(codes(.lessThan(10), "9." + String(repeating: "9", count: 60)).isEmpty)
+        #expect(codes(.multipleOf(0.1), "0.1" + String(repeating: "0", count: 60) + "1") == [.notMultiple])
+    }
+
     @Test func negativeZeroEqualsZero() {
         #expect(codes(.range(0...1), "-0").isEmpty)
         #expect(codes(.greaterThan(0), "-0") == [.outOfRange])
@@ -152,10 +163,10 @@ struct MultipleOfTests {
 
 @Suite("finite")
 struct FiniteConstraintTests {
-    @Test func aNumberOutsideDoubleIsNotFinite() {
-        guard let huge = JSONNumber(lexeme: "1e999") else { return fail("lexeme") }
-        let issues = Constraint.finite.check(.number(huge))
-        #expect(issues.map(\.code) == [.notFinite])
+    @Test func everyJSONNumberIsFinite() {
+        // A number outside a Double cannot exist (StoicJSON refuses it), so
+        // the constraint speaks only to Swift values, through `Refined`.
+        #expect(JSONNumber(lexeme: "1e999") == nil)
         #expect(codes(.finite, "1e308").isEmpty)
         #expect(codes(.finite, "0").isEmpty)
     }
@@ -388,31 +399,13 @@ struct ExactDecimalTests {
         return number
     }
 
-    @Test func comparesAcrossSpellingsAndSigns() {
-        func order(_ a: String, _ b: String) -> Int { number(a).compared(to: number(b)) }
-        #expect(order("1", "1.0") == 0)
-        #expect(order("-0", "0") == 0)
-        #expect(order("1e2", "99.99") == 1)
-        #expect(order("-1e2", "-99.99") == -1)
-        #expect(order("-5", "3") == -1)
-        #expect(order("0.001", "0.0009") == 1)
-        #expect(order("12345678901234567890123456789012345678", "12345678901234567890123456789012345679") == -1)
-    }
-
-    @Test func fallsBackToDoubleBeyondThirtyEightDigits() {
-        let long = "1." + String(repeating: "0", count: 60) + "1"
-        #expect(number(long).compared(to: number("1")) == 0)  // the fallback cannot tell
-        #expect(number(long).compared(to: number("2")) == -1)
-    }
-
     @Test func zeroHasOneRepresentation() {
         #expect(ExactDecimal(number("0.000"))?.coefficient == 0)
         #expect(ExactDecimal(number("-0e5"))?.isNegative == false)
-        #expect(number("0e0").isZero)
-        #expect(!number("1e-300").isZero)
     }
 
-    @Test func absurdExponentsAreDeclinedNotComputed() {
-        #expect(ExactDecimal(number("1e9999999")) == nil)
+    @Test func moreThanThirtyEightDigitsAreDeclined() {
+        #expect(ExactDecimal(number("1." + String(repeating: "0", count: 60) + "1")) == nil)
+        #expect(ExactDecimal(number("12345678901234567890123456789012345678")) != nil)
     }
 }

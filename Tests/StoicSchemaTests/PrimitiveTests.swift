@@ -151,14 +151,11 @@ struct DoubleSchemaTests {
         #expect(decode(.double(), "5e-324").value == 5e-324)
     }
 
-    @Test func aNumberTooBigForDoubleIsNotFinite() {
-        guard let huge = JSONNumber(lexeme: "1e400") else { return fail("lexeme") }
-        let result = Schema.double().decode(.number(huge))
-        #expect(result.value == nil)
-        #expect(result.issues.map(\.code) == [.notFinite])
-        #expect(result.issues[0].message == "1e400 is not a finite Double")
-        guard let tiny = JSONNumber(lexeme: "1e-400") else { return fail("lexeme") }
-        #expect(Schema.double().decode(.number(tiny)).issues.map(\.code) == [.notFinite])
+    @Test func aNumberTooBigForDoubleNeverReachesTheSchema() {
+        // StoicJSON refuses it in text and in code alike, so a Double field
+        // cannot be handed infinity or a silent zero.
+        #expect(JSONNumber(lexeme: "1e400") == nil)
+        #expect(JSONNumber(lexeme: "1e-400") == nil)
     }
 
     @Test func textWithAnOverflowingNumberIsAParseErrorFirst() {
