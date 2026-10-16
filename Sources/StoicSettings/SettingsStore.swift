@@ -237,7 +237,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             options: .init(envelope: format == .appOwned, keepPrevious: true, newFileMode: 0o600)
         )
 
-        let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
+        let loaded = try Self.load(path: path, schema: schema, format: format, file: file, options: decodeOptions, defaults: defaults)
         current = Mutex(Current(
             value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys),
             repaired: Self.repairs(loaded)
@@ -249,9 +249,19 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         // written back: the value it replaced may be a newer build's, and the
         // file keeps it until the app changes that field.
         if format == .appOwned, loaded.source == .file || loaded.source == .previousGeneration,
-           loaded.issues.contains(where: { $0.code == .migrated }) {
+           Self.isMigrated(loaded) {
             do throws(StoreError) {
-                try write(loaded.value, carrying: Self.carried(loaded, unknownKeys), repaired: [])
+                if let legacy = loaded.legacyBytes {
+                    // Kept beside it first, durably: the plain file is the way
+                    // back to the release that wrote it. It is then replaced,
+                    // not demoted, since a previous generation must be enveloped.
+                    try AtomicFile(fileSystem: fileSystem, options: .init(envelope: false, newFileMode: 0o600))
+                        .write(legacy, to: path + ".legacy")
+                }
+                try write(
+                    loaded.value, carrying: Self.carried(loaded, unknownKeys), repaired: [],
+                    options: loaded.legacyBytes == nil ? nil : .init(envelope: true, keepPrevious: false, newFileMode: 0o600)
+                )
             } catch {
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("load"), privacy: .public),
@@ -343,7 +353,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
                 preconditionFailure("unreachable: checked when the store opened")
             }
-            let loaded = try Self.load(path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults)
+            let loaded = try Self.load(path: path, schema: schema, format: format, file: file, options: decodeOptions, defaults: defaults)
             Self.report(loaded, path: path)
             betweenReloadAndPublish.withLock { $0 }?()
             publish(Current(
@@ -364,12 +374,21 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         let document: JSONValue?
         /// The fields that were repaired, with what the file held.
         var repaired: [RepairedField] = []
+        /// The file's bytes, when it was plain JSON from before the store
+        /// (an app-owned file with no envelope that the schema reads).
+        var legacyBytes: [UInt8]?
+    }
+
+    /// Whether `loaded` came from an older form than the one this store
+    /// writes: migrated by the schema, or a plain file from before the store.
+    private static func isMigrated(_ loaded: Loaded) -> Bool {
+        loaded.legacyBytes != nil || loaded.issues.contains { $0.code == .migrated }
     }
 
     /// The fields the load repaired, whose file values writes carry. None for
     /// a migrated document, for the reason `carried` gives.
     private static func repairs(_ loaded: Loaded) -> [RepairedField] {
-        guard !loaded.issues.contains(where: { $0.code == .migrated }) else { return [] }
+        guard !isMigrated(loaded) else { return [] }
         return loaded.repaired
     }
 
@@ -377,7 +396,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// document carries none: what the schema does not declare there is
     /// what the migration left behind, not something a newer build added.
     private static func carried(_ loaded: Loaded, _ unknownKeys: UnknownKeysOnSave) -> JSONValue? {
-        guard unknownKeys == .keep, !loaded.issues.contains(where: { $0.code == .migrated }) else { return nil }
+        guard unknownKeys == .keep, !isMigrated(loaded) else { return nil }
         return loaded.document
     }
 
@@ -387,11 +406,11 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// still carried.
     @discardableResult
     private func write(
-        _ value: Value, carrying document: JSONValue?, repaired: [RepairedField]
+        _ value: Value, carrying document: JSONValue?, repaired: [RepairedField], options: AtomicFile.Options? = nil
     ) throws(StoreError) -> (json: JSONValue, repaired: [RepairedField]) {
         let written = encoded(value, carrying: document, repaired: repaired)
         let bytes = written.json.encoded(style: format == .handEdited ? .pretty() : .canonical)
-        try file.write(bytes, to: path)
+        try file.write(bytes, to: path, options: options)
         return written
     }
 
@@ -436,10 +455,14 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     private static func load(
         path: String,
         schema: Schema<Value>,
+        format: Format,
         file: AtomicFile,
         options: DecodeOptions,
         defaults: Value
     ) throws(StoreError) -> Loaded {
+        if format == .appOwned, let legacy = try legacy(path: path, schema: schema, fileSystem: file.fileSystem, options: options) {
+            return legacy
+        }
         // A document from a newer app version is intact, not corrupt: it must
         // not be quarantined or fallen back over.
         let isNewer: ([UInt8]) -> Bool = { bytes in
@@ -475,6 +498,22 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         return Loaded(value: defaults, issues: decoded.issues, source: .newerFormat(version: newer?.foundVersion), document: nil)
     }
 
+    /// The settings at `path`, if it is plain JSON from before the store: an
+    /// app adopting it keeps the file its earlier releases wrote, rather than
+    /// see it quarantined as corrupt for want of an envelope. Read through
+    /// the same schema; a file it does not read is left to the usual path.
+    private static func legacy(
+        path: String, schema: Schema<Value>, fileSystem: any FileSystem, options: DecodeOptions
+    ) throws(StoreError) -> Loaded? {
+        // Without an envelope and without validation, a read never quarantines.
+        guard let raw = try AtomicFile(fileSystem: fileSystem, options: .init(envelope: false)).read(path)?.bytes,
+              !raw.starts(with: Array("STAF".utf8)) else { return nil }
+        let decoded = schema.decodeReporting(raw, options: options)
+        guard let value = decoded.value, !decoded.issues.contains(where: { $0.code == .versionTooNew }) else { return nil }
+        let document = try? JSONParser(options: options.parse).parseValue(raw)
+        return Loaded(value: value, issues: decoded.issues, source: .file, document: document, legacyBytes: raw)
+    }
+
     private static func report(_ loaded: Loaded, path: String) {
         let repaired = loaded.issues.filter { $0.severity == .repaired }.count
         let migrated = loaded.issues.contains { $0.code == .migrated }
@@ -485,7 +524,11 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         if repaired > 0 {
             Ambient.record(Event("settings.repaired", level: .warning, label: path, fields: [.init("fields", .int(repaired))]))
         }
-        if migrated {
+        if loaded.legacyBytes != nil {
+            Ambient.record(Event("settings.migrated", level: .info, label: path, fields: [
+                .init("from", .string("plain_json"), privacy: .public),
+            ]))
+        } else if migrated {
             Ambient.record(Event("settings.migrated", level: .info, label: path))
         }
         switch loaded.source {

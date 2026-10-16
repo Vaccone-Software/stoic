@@ -52,6 +52,16 @@ app-owned store then writes the migrated form back at once, so the old
 format does not linger — and because the previous generation is kept, the
 pre-migration file survives as `.previous`, a way back for a downgrade.
 
+**Adopting the store over a plain file.** An app that kept its settings with
+`Codable` and `Data.write` has plain JSON at the path, with no envelope. An
+app-owned store reads such a file through the schema (migrations included)
+instead of quarantining it for want of an envelope, writes the plain bytes to
+`<path>.legacy` (the way back to the release that wrote them), then replaces
+the file with the enveloped form, and reports `settings.migrated` with
+`from: plain_json`. Like a migrated document, it carries no unknown keys or
+repaired values: what it holds that the schema does not declare is what the
+old struct left behind.
+
 **A newer format is read-only.** A document whose version is newer than the
 schema knows was written by a newer app. It is never quarantined, fallen
 back over or overwritten: the store opens with the defaults (or what it can
@@ -128,6 +138,7 @@ comments — say so in the UI that offers both.
 | the file is torn or not JSON                  | Quarantined; previous generation, else defaults; `settings.recovered`/`reset` |
 | one field is invalid                          | That field's default; `repaired` issue; the rest kept. The file keeps its value: not written back at open, and put back by every update that does not change that field (a newer build's value survives an older build's open and save) |
 | the document is an older version              | Migrated; written back (app-owned); the old file kept as `.previous`          |
+| the file is plain JSON from before the store  | App-owned: read through the schema like any document; rewritten enveloped, the plain file kept as `<path>.legacy`; `settings.migrated` (`from: plain_json`). Plain JSON the schema cannot read is quarantined like any unusable file |
 | the document is a newer version               | Read-only; never overwritten; `update` throws `.newerFormat`                  |
 | an update produces an invalid value           | Refused with every issue; value and file unchanged                            |
 | the write fails (disk full, read-only volume) | `update` throws `.storage`; value and file unchanged                          |

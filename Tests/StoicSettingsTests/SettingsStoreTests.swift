@@ -212,6 +212,38 @@ struct SettingsStoreTests {
         #expect(String(decoding: previous.bytes, as: UTF8.self).contains("scroll_speed"), "the old file survives for a downgrade")
     }
 
+    /// An app adopting the store over the plain JSON its earlier releases
+    /// wrote (no envelope) keeps its settings: read through the schema,
+    /// rewritten enveloped, the plain file kept beside it.
+    @Test(.failureMode("design/18", "the file is plain JSON from before the store")) func plainJSONFromBeforeTheStoreIsAdopted() async throws {
+        let disk = try Self.disk()
+        let legacy = #"{"version": 1, "scroll_speed": 900, "name": "me"}"#
+        try Self.place(legacy, on: disk, format: .handEdited)   // what `Data.write` left
+        let events = RecordingInstrumentation()
+        let settings = try await withAmbient({ $0.instrumentation = events }) { try Self.open(disk) }
+        #expect(settings.value == Prefs(speed: 900, name: "me"))
+        #expect(settings.source == .file)
+        #expect(events.events(named: "settings.migrated").first?["from"].map(\.description) == "plain_json")
+        #expect(events.events(named: "store.corrupt_quarantined").isEmpty, "not treated as corrupt")
+        // Rewritten in the store's own format, and the plain file kept.
+        let reopened = try Self.open(disk)
+        #expect(reopened.value == Prefs(speed: 900, name: "me"))
+        #expect(try AtomicFile(fileSystem: disk).read(Self.path) != nil, "enveloped now")
+        let kept = try #require(try AtomicFile(fileSystem: disk, options: .init(envelope: false)).read(Self.path + ".legacy"))
+        #expect(String(decoding: kept.bytes, as: UTF8.self) == legacy)
+        #expect(try !disk.list(directory: "/d").contains { $0.contains(".corrupt-") })
+    }
+
+    /// Plain JSON the schema cannot read is not adopted: it is as unusable as
+    /// any other unreadable file, and quarantined.
+    @Test(.failureMode("design/18", "the file is plain JSON from before the store")) func plainJSONTheSchemaCannotReadIsQuarantined() throws {
+        let disk = try Self.disk()
+        try Self.place(#"["not", "settings"]"#, on: disk, format: .handEdited)
+        let settings = try Self.open(disk)
+        #expect(settings.source == .defaults(.unusable))
+        #expect(try disk.list(directory: "/d").contains { $0.contains(".corrupt-") })
+    }
+
     @Test(.failureMode("design/18", "the document is a newer version")) func aNewerFormatIsReadOnlyAndNeverOverwritten() throws {
         let disk = try Self.disk()
         let newer = #"{"version": 3, "speed": 1500, "hyperdrive": true}"#
