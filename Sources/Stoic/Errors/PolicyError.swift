@@ -5,8 +5,10 @@
 /// or refused to run it (or stopped waiting for it). The two are different
 /// facts with different remedies, so they are different cases.
 ///
-/// Policies flatten: wrapping an operation that already throws
-/// `PolicyError<F>` throws `PolicyError<F>`, never a nested `PolicyError`.
+/// Policies composed in a ``Pipeline`` flatten: the pipeline throws one
+/// `PolicyError<F>` however many stages refuse, never a nested `PolicyError`.
+/// A policy written by hand around another throws the nested type, which
+/// ``flattened()`` makes flat.
 public enum PolicyError<Failure: Error>: Error, CustomStringConvertible {
     /// The operation never ran, or was abandoned before it finished.
     case rejected(Rejection)

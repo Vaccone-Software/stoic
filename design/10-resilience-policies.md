@@ -164,6 +164,24 @@ whose failure type is `PolicyError<F>`, and maps the stage's error back down —
 as the operation's error, which is what lets a breaker decline to count them
 and `Retrying` honour a rejection's `retryAfter`.
 
+**Nest through a pipeline.** Written by hand, `breaker.execute { try await
+bulkhead.execute { … } }` throws `PolicyError<PolicyError<F>>`: Swift cannot
+choose an overload by a closure's thrown type (an `execute` for operations that
+throw `PolicyError<F>` is ambiguous with the requirement, and crashes the type
+checker on an existential), so the flattening cannot happen by itself.
+`Pipeline(breaker, bulkhead)` is the way to nest; `flattened()` turns a hand
+nesting's error into the flat `PolicyError<F>`.
+
+**The order is checked.** `Pipeline` checks its stages when it is built:
+`Retrying` outside `CircuitBreaker` outside `RateLimiter` outside `Bulkhead`,
+and one `Retrying` at most; other policies may stand anywhere, and a pipeline
+used as a stage counts as its stages written in place. A `Retrying` inside a
+breaker would have the breaker judge a whole retry series as one call; a
+bulkhead outside a retry would hold its slot through every backoff; a limiter
+outside one would let retries skip it; a second `Retrying` would only collapse
+to one attempt. Each is a precondition failure naming the stages, so the
+mistake is found the first time the pipeline is built, in a test.
+
 **A timeout is not a stage.** A timeout has to run the operation in a child
 task so that a deadline can cancel it without cancelling the caller
 (design/01); its closure is therefore `@Sendable` and `sending`, which a
@@ -510,6 +528,9 @@ the operation off the caller's task, which is why a timeout is an option of
 | a hedge runs inside a retry's attempt                                     | Its key is derived from the retry's: the same on every retry attempt                                      |
 | a stage inside a pipeline rejects                                         | The caller sees one `.rejected(r)`, never a nested `PolicyError`                                          |
 | a pipeline's operation fails                                              | The caller sees `.failed(error)` with the operation's own error                                           |
+| a pipeline's stages are out of the recommended order                      | Precondition failure when it is built, naming the two stages and the order                                |
+| a pipeline has two `Retrying` stages                                      | Precondition failure when it is built: retry at one layer                                                 |
+| a policy runs an operation that is itself guarded by a policy             | `PolicyError<PolicyError<F>>`; `flattened()` makes it one flat `PolicyError<F>`, as a `Pipeline` does     |
 | a pipeline has no stages                                                  | The operation runs; a failure is `.failed`                                                                |
 | `Retrying` meets `.circuitOpen` with a `retryAfter` longer than its next delay | Stops at once: the breaker's `.rejected(.circuitOpen)` with its `retryAfter`; `retry.breaker_open`  |
 | `Retrying` meets `.circuitOpen` with a `retryAfter` no longer than its next delay | Waits that long, jittered upward by up to 10% — stretched by the device's conditions, capped at five minutes, still bounded by the deadline |

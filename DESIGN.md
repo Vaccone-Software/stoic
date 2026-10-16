@@ -271,9 +271,12 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
   }
   ```
 
-  Policies flatten: a policy wrapping an operation that already throws
-  `PolicyError<F>` throws `PolicyError<F>`, never `PolicyError<PolicyError<F>>`.
-  Pipelines of policies therefore compose without nested unwrapping.
+  Policies flatten in a `Pipeline`: it throws one `PolicyError<F>` however
+  many stages refuse, never `PolicyError<PolicyError<F>>`, so pipelines of
+  policies compose without nested unwrapping. (Nested by hand, a policy
+  around a policy throws the nested type; `flattened()` makes it flat. Swift
+  cannot choose an overload by a closure's thrown type, so it cannot happen
+  by itself.)
 
 - **Concurrent failures are all kept.** Where several children can fail,
   none is lost. Scopes with forks throw `ConcurrentFailure<Failure>`: a

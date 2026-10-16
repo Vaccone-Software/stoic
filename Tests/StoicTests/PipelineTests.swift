@@ -24,6 +24,84 @@ struct Tracer: Policy {
 
 @Suite("Pipeline")
 struct PipelineTests {
+    // MARK: - Order and nesting
+
+    /// A trap cannot be caught in-process, so each check runs in a child
+    /// process that must die on it.
+    @Test(.failureMode("design/10", "a pipeline's stages are out of the recommended order"))
+    func aPipelineOutOfOrderIsRefusedWhenBuilt() async {
+        await #expect(processExitsWith: .failure) {
+            _ = Pipeline(Bulkhead(maxConcurrent: 1, label: "api"), Retrying(.fixed(.seconds(1)).attempts(2)))
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = Pipeline(CircuitBreaker(label: "api"), Retrying(.fixed(.seconds(1)).attempts(2)))
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = Pipeline(Bulkhead(maxConcurrent: 1, label: "api"), RateLimiter(rate: 1, label: "api"))
+        }
+        await #expect(processExitsWith: .failure) {
+            // A nested pipeline counts as its stages written in place.
+            _ = Pipeline(Pipeline(RateLimiter(rate: 1, label: "api")), CircuitBreaker(label: "api"))
+        }
+    }
+
+    @Test(.failureMode("design/10", "a pipeline has two `Retrying` stages"))
+    func aPipelineThatRetriesTwiceIsRefusedWhenBuilt() async {
+        await #expect(processExitsWith: .failure) {
+            _ = Pipeline(Retrying(.fixed(.seconds(1)).attempts(2)), Pipeline(Retrying(.fixed(.seconds(1)).attempts(2))))
+        }
+    }
+
+    @Test func theRecommendedOrderAndOtherPoliciesAnywhereAreAccepted() {
+        let log = OrderLog()
+        let full = Pipeline(
+            Tracer(name: "a", log: log),
+            Retrying(.fixed(.seconds(1)).attempts(2)),
+            Tracer(name: "b", log: log),
+            CircuitBreaker(label: "api"),
+            Pipeline(RateLimiter(rate: 1, label: "api"), Tracer(name: "c", log: log)),
+            Bulkhead(maxConcurrent: 1, label: "api"),
+            Bulkhead(maxConcurrent: 1, label: "global")
+        )
+        #expect(full.stageCount == 7)
+        #expect(Pipeline(Bulkhead(maxConcurrent: 1, label: "api")).stageCount == 1)
+    }
+
+    @Test(.failureMode("design/10", "a policy runs an operation that is itself guarded by a policy"))
+    func nestingTwoPoliciesByHandFlattensToOnePolicyError() async {
+        let breaker = CircuitBreaker(label: "api", testConfiguration(minimumCalls: 1))
+        let bulkhead = Bulkhead(maxConcurrent: 1, label: "api")
+        func call(_ fails: Bool) async -> PolicyError<Boom>? {
+            // Nested by hand, the error is PolicyError<PolicyError<Boom>>;
+            // flattened() makes it the PolicyError<Boom> a Pipeline throws.
+            do throws(PolicyError<PolicyError<Boom>>) {
+                _ = try await breaker.execute { () async throws(PolicyError<Boom>) -> Int in
+                    try await bulkhead.execute { () async throws(Boom) -> Int in
+                        if fails { throw .failed }
+                        return 1
+                    }
+                }
+                return nil
+            } catch {
+                return error.flattened()
+            }
+        }
+        #expect(await call(false) == nil)
+        let failure = await call(true)
+        #expect(failure?.failure == .failed)
+        breaker.forceClosed()
+        // An inner refusal is `.rejected`, and the breaker does not count it.
+        let gate = AsyncGate()
+        let holder = Task { _ = await outcome(of: bulkhead) { await gate.wait() } }
+        await waitUntil { gate.waiterCount == 1 }
+        let refused = await call(false)
+        #expect(refused?.rejection?.reason == .bulkheadFull)
+        #expect(breaker.state == .closed)
+        #expect(breaker.snapshot.calls == 0)
+        gate.open()
+        await holder.value
+    }
+
     @Test(.failureMode("design/10", "a pipeline has no stages")) func anEmptyPipelineJustRunsTheOperation() async {
         let pipeline = Pipeline([])
         let value = await outcome(of: pipeline) { 5 }

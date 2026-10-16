@@ -34,17 +34,62 @@
 ///             try await client.send(request)                 // each attempt: Retrying bounds it
 ///         }
 ///     }
+///
+/// The order is checked when the pipeline is built: a `Retrying` inside a
+/// breaker (which would judge a whole retry series as one call), a bulkhead
+/// outside a retry (which would hold its slot through every backoff), a
+/// limiter outside a retry (which would let retries skip it), or two
+/// `Retrying` stages, is a precondition failure that names the stages.
+/// Policies of other kinds may stand anywhere; a pipeline used as a stage is
+/// checked as if its stages were written in place.
 public struct Pipeline: Policy {
     private let stages: [any Policy]
 
     /// A pipeline of `stages`, outermost first.
     public init(_ stages: [any Policy]) {
+        Self.checkOrder(of: stages)
         self.stages = stages
     }
 
     /// A pipeline of `stages`, outermost first.
     public init(_ stages: any Policy...) {
+        Self.checkOrder(of: stages)
         self.stages = stages
+    }
+
+    /// Where a stage belongs, outermost first, or `nil` for a policy that may
+    /// stand anywhere.
+    private static func rank(of stage: any Policy) -> (rank: Int, name: String)? {
+        switch stage {
+        case is Retrying: (0, "Retrying")
+        case is CircuitBreaker: (1, "CircuitBreaker")
+        case is RateLimiter: (2, "RateLimiter")
+        case is Bulkhead: (3, "Bulkhead")
+        default: nil
+        }
+    }
+
+    /// The stages in order, a nested pipeline's written in place.
+    private static func flattened(_ stages: [any Policy]) -> [any Policy] {
+        stages.flatMap { stage -> [any Policy] in
+            if let pipeline = stage as? Pipeline { return flattened(pipeline.stages) }
+            return [stage]
+        }
+    }
+
+    private static func checkOrder(of stages: [any Policy]) {
+        let ranked = flattened(stages).compactMap(rank(of:))
+        let order = "the order is Retrying → CircuitBreaker → RateLimiter → Bulkhead, outermost first (design/10)"
+        precondition(
+            ranked.filter { $0.rank == 0 }.count <= 1,
+            "a pipeline retries at one layer: it has more than one Retrying stage, and the inner one would only collapse to a single attempt"
+        )
+        for (outer, inner) in zip(ranked, ranked.dropFirst()) {
+            precondition(
+                outer.rank <= inner.rank,
+                "pipeline stages out of order: \(outer.name) is outside \(inner.name), but \(order)"
+            )
+        }
     }
 
     /// The number of stages.
@@ -80,7 +125,19 @@ public struct Pipeline: Policy {
 extension PolicyError {
     /// A doubly wrapped error, as one: the nested policy's refusal or the
     /// operation's own failure, never `PolicyError` inside `PolicyError`.
-    func flattened<Inner: Error>() -> PolicyError<Inner> where Failure == PolicyError<Inner> {
+    ///
+    /// A ``Pipeline`` flattens by itself. A policy written by hand around
+    /// another throws the nested type (Swift cannot pick an overload by a
+    /// closure's thrown type), and this makes it flat:
+    ///
+    ///     do throws(PolicyError<PolicyError<APIError>>) {
+    ///         try await breaker.execute { () async throws(PolicyError<APIError>) in
+    ///             try await bulkhead.execute { () async throws(APIError) in try await api.send(request) }
+    ///         }
+    ///     } catch {
+    ///         throw error.flattened()   // PolicyError<APIError>
+    ///     }
+    public func flattened<Inner: Error>() -> PolicyError<Inner> where Failure == PolicyError<Inner> {
         switch self {
         case .rejected(let rejection): .rejected(rejection)
         case .failed(.rejected(let rejection)): .rejected(rejection)
