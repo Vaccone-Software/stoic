@@ -251,6 +251,11 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         var successes = 0
         var inFlight: [UInt64: AnyClock.Instant] = [:]
         var nextProbe: UInt64 = 0
+        // When calls in flight left an inner stage's queue (see
+        // `DispatchMark`). Entries are removed as their calls complete, so
+        // the storage is reused and steady traffic allocates nothing.
+        var nextCall: UInt64 = 0
+        var dispatchedAt: [UInt64: AnyClock.Instant] = [:]
         // States entered but not yet published to stateChanges.
         var outbox: [State] = []
     }
@@ -420,11 +425,15 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             throw .rejected(rejection)
         }
 
-        let result: Result<R, Failure>
-        do throws(Failure) {
-            result = .success(try await operation())
-        } catch {
-            result = .failure(error)
+        // Inner queueing stages (a bulkhead, a rate limiter) mark when the
+        // call left their queue, so time spent waiting locally is not taken
+        // for the dependency's latency.
+        let result: Result<R, Failure> = await DispatchMark.$current.withValue(DispatchMark(breaker: self, call: ticket.call)) {
+            do throws(Failure) {
+                return .success(try await operation())
+            } catch {
+                return .failure(error)
+            }
         }
 
         let end = clock.now
@@ -433,12 +442,12 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         // the caller could give it. Cancelled for any other reason (a user, a
         // superseding request, a scope ending), it says nothing.
         let cancellation: CancellationCause? = Task.isCancelled ? CancellationCause.current : nil
-        let verdict = judge(result, duration: start.duration(to: end), cancellation: cancellation)
+        let verdict = judge(result, cancellation: cancellation)
         // Building a debug event per call is most of a closed breaker's cost;
         // skip it when nothing would record it.
         let debug = instrumentation.isEnabled(.debug)
         let completion = core.withLock { core -> [Change] in
-            complete(&core, ticket: ticket, verdict: verdict, now: end, random: random, debug: debug)
+            complete(&core, ticket: ticket, verdict: verdict, start: start, now: end, random: random, debug: debug)
         }
         finish(completion, to: instrumentation)
 
@@ -487,6 +496,8 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
 
     private struct Ticket: Sendable {
         let generation: UInt64
+        /// Names the call for an inner stage's dispatch mark.
+        let call: UInt64
         let probe: UInt64?
     }
 
@@ -497,7 +508,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
 
     private enum Verdict: Sendable {
         case ignored(String)
-        case recorded(failed: Bool, slow: Bool, timedOut: Bool = false)
+        case recorded(failed: Bool, timedOut: Bool = false)
     }
 
     /// A decision to report once the lock is released.
@@ -532,7 +543,8 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     private func admit(_ core: inout Core, now: AnyClock.Instant) -> Admission {
         switch core.phase {
         case .closed:
-            return .run(Ticket(generation: core.generation, probe: nil))
+            core.nextCall &+= 1
+            return .run(Ticket(generation: core.generation, call: core.nextCall, probe: nil))
         case .open(let until):
             let retryAfter = until.map { max(.zero, now.duration(to: $0)) }
             return .reject(Rejection(.circuitOpen, label: label, retryAfter: retryAfter), .open)
@@ -543,32 +555,43 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             let id = core.nextProbe
             core.nextProbe += 1
             core.inFlight[id] = now
-            return .run(Ticket(generation: core.generation, probe: id))
+            core.nextCall &+= 1
+            return .run(Ticket(generation: core.generation, call: core.nextCall, probe: id))
         }
     }
 
     /// What a finished call says about the dependency.
-    private func judge<R, Failure: Error>(
-        _ result: Result<R, Failure>, duration: Duration, cancellation: CancellationCause?
-    ) -> Verdict {
-        let slow = duration > configuration.slowCallDuration
+    ///
+    /// Slowness is decided later, under the lock, where the instant the call
+    /// left any inner queue is known.
+    private func judge<R, Failure: Error>(_ result: Result<R, Failure>, cancellation: CancellationCause?) -> Verdict {
         switch result {
         case .success:
-            return .recorded(failed: false, slow: slow)
+            return .recorded(failed: false)
         case .failure(let error):
             if containsDefect(error) { return .ignored("defect") }
-            if cancellation == .deadline { return .recorded(failed: true, slow: true, timedOut: true) }
+            if cancellation == .deadline { return .recorded(failed: true, timedOut: true) }
             if cancellation != nil { return .ignored("cancelled") }
             let inner = error.unwrappedForClassification
             let failed = configuration.recordWhen(inner)
             if inner is Rejection && !failed { return .ignored("rejection") }
-            return .recorded(failed: failed, slow: slow)
+            return .recorded(failed: failed)
         }
     }
 
+    /// Notes that call `call` left an inner stage's queue now.
+    fileprivate func dispatched(call: UInt64) {
+        let now = clock.now
+        core.withLock { $0.dispatchedAt[call] = now }
+    }
+
     private func complete(
-        _ core: inout Core, ticket: Ticket, verdict: Verdict, now: AnyClock.Instant, random: RandomSource, debug: Bool
+        _ core: inout Core, ticket: Ticket, verdict: Verdict, start: AnyClock.Instant, now: AnyClock.Instant,
+        random: RandomSource, debug: Bool
     ) -> [Change] {
+        // Measured from when the call left the last local queue, if an inner
+        // stage said; a call cut short by a deadline is slow by definition.
+        let dispatched = core.dispatchedAt.isEmpty ? nil : core.dispatchedAt.removeValue(forKey: ticket.call)
         guard ticket.generation == core.generation else {
             return [Change(name: "breaker.ignored", level: .debug, fields: [
                 .init("reason", .string("stale"), privacy: .public),
@@ -584,7 +607,8 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
                 fields: [.init("reason", .string(reason), privacy: .public)]
             )]
 
-        case .recorded(let failed, let slow, let timedOut):
+        case .recorded(let failed, let timedOut):
+            let slow = timedOut || (dispatched ?? start).duration(to: now) > configuration.slowCallDuration
             var recorded: [Change] = []
             if debug {
                 var fields: [Event.Field] = [
@@ -723,5 +747,28 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     public var description: String {
         let snapshot = self.snapshot
         return "CircuitBreaker(\(label): \(snapshot.state), \(snapshot.failures)/\(snapshot.calls) failed, \(snapshot.trips) trips)"
+    }
+}
+
+/// Where an inner queueing stage tells the nearest enclosing breaker that a
+/// call has left its queue and is on its way to the dependency.
+///
+/// A breaker outside a bulkhead or a rate limiter (the recommended order)
+/// would otherwise measure the time a call spent waiting for a slot or a
+/// permit as the dependency's latency, and open on `slow_calls`, or re-open
+/// on a slow probe, when every call the dependency served was quick. The
+/// breaker installs the mark around its operation; a queueing stage calls
+/// ``dispatched()`` once it admits the call. Only the nearest breaker hears
+/// it: an outer breaker around an inner one measures from its own admission.
+struct DispatchMark: Sendable {
+    let breaker: CircuitBreaker
+    let call: UInt64
+
+    @TaskLocal static var current: DispatchMark?
+
+    /// Called by a queueing stage as it lets a call through.
+    static func dispatched() {
+        guard let mark = current else { return }
+        mark.breaker.dispatched(call: mark.call)
     }
 }

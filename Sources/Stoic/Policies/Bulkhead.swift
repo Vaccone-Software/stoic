@@ -67,7 +67,12 @@ public final class Bulkhead: Policy, CustomStringConvertible {
             throw .rejected(refusal)
         }
         let queueing = AsyncSemaphore.Queueing(limit: queueLimit, fullReason: .bulkheadFull, rejectedEvent: "bulkhead.rejected")
-        return try await semaphore.withPermit(queueing: queueing, operation)
+        return try await semaphore.withPermit(queueing: queueing) { () async throws(Failure) -> R in
+            // Time queued here is not the dependency's: a breaker outside
+            // measures from now.
+            DispatchMark.dispatched()
+            return try await operation()
+        }
     }
 
     public var description: String {

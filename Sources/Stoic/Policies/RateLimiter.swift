@@ -244,6 +244,9 @@ public final class RateLimiter: Policy, CustomStringConvertible {
         } catch {
             throw .rejected(error)
         }
+        // Time waiting for a permit is not the dependency's: a breaker
+        // outside measures from now.
+        DispatchMark.dispatched()
         do throws(Failure) {
             return try await operation()
         } catch {

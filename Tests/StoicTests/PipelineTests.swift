@@ -417,6 +417,64 @@ struct PipelineTests {
         }
     }
 
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/10", "a call waits in an inner bulkhead's or limiter's queue"))
+    func timeQueuedInAnInnerBulkheadIsNotTheDependencysLatency() async {
+        // Every call the dependency serves takes 0.9 s, under the 1 s
+        // slow-call duration; the second also waits 0.9 s for the slot.
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(
+                label: "api", testConfiguration(window: .calls(10), minimumCalls: 2, slowAfter: .seconds(1), slowRate: 0.5),
+                clock: clock.erased
+            )
+            let bulkhead = Bulkhead(maxConcurrent: 1, queueLimit: 1, label: "api")
+            let pipeline = Pipeline(breaker, bulkhead)
+            let call = { @Sendable () async -> Result<Int, PolicyError<any Error>> in
+                await outcome(of: pipeline) { () async throws -> Int in
+                    try await clock.sleep(for: .milliseconds(900))
+                    return 1
+                }
+            }
+            let first = Task { await call() }
+            await clock.waitForSleepers(count: 1)
+            let second = Task { await call() }
+            await waitUntil { bulkhead.queuedCount == 1 }
+            await clock.advance(by: .milliseconds(900))
+            _ = await first.value
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .milliseconds(900))
+            _ = await second.value
+            #expect(breaker.state == .closed)
+            #expect(breaker.snapshot.calls == 2)
+            #expect(breaker.snapshot.slowCalls == 0, "opened on \(events.events(named: "breaker.opened").first?.text("trigger") ?? "-")")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1))) func timeWaitingForAnInnerLimitersPermitIsNotTheDependencysLatency() async {
+        await withBreakerWorld { clock, _ in
+            let breaker = CircuitBreaker(
+                label: "api", testConfiguration(window: .calls(10), minimumCalls: 1, slowAfter: .seconds(1), slowRate: 0.5),
+                clock: clock.erased
+            )
+            let limiter = RateLimiter(rate: 1, per: .seconds(5), label: "api", clock: clock.erased)
+            #expect(limiter.tryAcquire())   // the bucket is empty: the next permit is 5 s away
+            let pipeline = Pipeline(breaker, limiter)
+            let task = Task {
+                await outcome(of: pipeline) { () async throws -> Int in
+                    try await clock.sleep(for: .milliseconds(100))
+                    return 1
+                }
+            }
+            await clock.waitForSleepers(count: 1)   // waiting for the permit
+            await clock.advance(by: .seconds(5))
+            await clock.waitForSleepers(count: 1)   // the call itself
+            await clock.advance(by: .milliseconds(100))
+            _ = await task.value
+            #expect(breaker.snapshot.calls == 1)
+            #expect(breaker.snapshot.slowCalls == 0)
+            #expect(breaker.state == .closed)
+        }
+    }
+
     @Test func anAttemptTimeoutInsideTheOperationIsSeenByTheBreakerAsAFailure() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(minimumCalls: 1), clock: clock.erased)

@@ -251,6 +251,15 @@ threshold must be in (0, 1]. A call is _slow_ when it took longer than
 `slowCallDuration` on the breaker's clock; a slow call that also failed counts
 in both rates. For a count-based window, `minimumCalls` must not exceed `N`.
 
+**Latency is the dependency's, not the queue's.** A call is timed from when it
+left the last local queue: a bulkhead or rate limiter inside the breaker marks
+the moment it lets the call through (a task-local mark the breaker installs
+around its operation), and the breaker measures from there. Otherwise, in the
+recommended order, the time a call spent waiting for a slot or a permit would
+count as the dependency's latency, and a breaker would open on `slow_calls`
+(or re-open on a slow probe) while every call the dependency served was quick.
+Only the nearest enclosing breaker hears the mark.
+
 **Probes are stricter.** A probe that is _slow_ (longer than
 `slowCallDuration`) counts as a failed probe (`probe_slow`): a dependency that
 still cannot answer in time has not recovered. The `halfOpenProbes` permits are
@@ -465,6 +474,7 @@ the operation off the caller's task, which is why a timeout is an option of
 | an inner policy rejects (bulkhead full, limiter, budget)                  | Passed through; not recorded by default; `breaker.ignored` (reason `rejection`)                           |
 | the operation throws `CancellationError` and the caller is not cancelled  | Recorded like any error (an inner timeout cut the call short)                                             |
 | `recordWhen` returns `false` for an error                                 | Recorded as a success; the error still propagates                                                         |
+| a call waits in an inner bulkhead's or limiter's queue                    | Timed from when it left the queue: local waiting is never counted as slow                                |
 | a call finishes after the breaker changed state                           | Ignored as stale; `breaker.ignored` (reason `stale`)                                                      |
 | the task is cancelled, or the deadline has passed, before admission       | `.rejected(.cancelled)` / `.rejected(.deadlineExceeded)`; no probe permit used                            |
 | `forceOpen()`                                                             | Rejects every call (`retryAfter` nil) until `forceClosed()` or `reset()`; never half-opens                |
