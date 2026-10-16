@@ -118,6 +118,7 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
     machine.send(.start)
     try await Ambient.sleep(for: .milliseconds(100))
     print("  state: \(machine.state); history: \(machine.history.map { "\($0.from)→\($0.to)" })")
+    await machine.shutdown()   // its owner is done: no state work outlives it
 
     section("Supervisor: restart, then escalate when restarting stops helping")
     let supervisor = Supervisor(label: "app", intensity: .init(maxRestarts: 2, within: .seconds(5)), backoff: .fixed(.milliseconds(20))) {
