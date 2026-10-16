@@ -84,3 +84,4 @@ struct Settings {
 - Typed-throws closures need `{ _ throws(MyError) in … }`; Swift does not infer them.
 - `withTimeout`, `retry(_:attemptTimeout:)`, `TaskSlot.run`, `withTaskScope` run work in a child task: results must be `Sendable`, captured mutable locals are rejected; on an actor, the closure runs on that actor.
 - `race` takes two to four closures, or `[Racer]`.
+- `TaskSlot.run(for: self) { [api] in … } deliver: { @MainActor model, result in … }`: called on an actor; `deliver` gets the owner, so neither closure captures `self`.

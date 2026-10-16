@@ -67,23 +67,25 @@ struct ConcurrencyFailureModeTests {
     @Test(.stoic(seed: 7), .timeLimit(.minutes(1)),
           .failureMode("design/03", "a TaskSlot task ignores cancellation forever"),
           .failureMode("design/03", "a superseded TaskSlot task finishes after the new one"))
-    func workThatIgnoresCancellationForeverDoesNotBlockTheNextRun() async {
+    @MainActor func workThatIgnoresCancellationForeverDoesNotBlockTheNextRun() async {
         let slot = TaskSlot<String, Never>(label: "stubborn")
+        let owner = SlotOwner()
         let forever = TestGate()
         let started = TestGate()
         let delivered = SendableBox<[String]>([])
-        slot.run {
+        slot.run(for: owner) {
             started.open()
             await forever.wait()
             return "old"
-        } deliver: { result in delivered.mutate { $0.append(result.get()) } }
+        } deliver: { _, result in delivered.mutate { $0.append(result.get()) } }
         await started.wait()
-        slot.run { "fresh" } deliver: { result in delivered.mutate { $0.append(result.get()) } }
+        slot.run(for: owner) { "fresh" } deliver: { _, result in delivered.mutate { $0.append(result.get()) } }
 
         #expect(await eventually { delivered.value == ["fresh"] }, "the next run waited for the stubborn one")
         #expect(slot.unfinishedCount == 1, "the straggler stays accounted for")
         let tag = Ambient.current.ledgerTag!
-        #expect(TaskLedger.entries(tag: tag).map(\.label) == ["stubborn"], "and visible in the task ledger")
+        // The fresh work leaves the ledger just after it delivers.
+        #expect(await eventually { TaskLedger.entries(tag: tag).map(\.label) == ["stubborn"] }, "and visible in the task ledger")
 
         // When it finally returns, its answer is dropped and reported.
         forever.open()

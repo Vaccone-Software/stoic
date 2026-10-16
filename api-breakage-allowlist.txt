@@ -13,3 +13,17 @@ API breakage: func mapConcurrentResults(_:limit:transform:) is now throwing
 API breakage: func mapConcurrentResults(_:limit:transform:) has parameter 2 type change from (C.Element) async throws(Failure) -> R to Swift.String?
 API breakage: func mapConcurrent(_:limit:transform:) has been renamed to func mapConcurrent(_:limit:label:fileID:line:transform:)
 API breakage: func mapConcurrentResults(_:limit:transform:) has been renamed to func mapConcurrentResults(_:limit:label:transform:)
+API breakage: func TaskSlot.run(isolation:_:deliver:) has generic signature change from <Success, Failure where Success : Swift.Sendable, Failure : Swift.Error> to <Success, Failure, Owner where Success : Swift.Sendable, Failure : Swift.Error, Owner : AnyObject>
+API breakage: func TaskSlot.run(isolation:_:deliver:) has parameter 0 type change from (any _Concurrency.Actor)? to Owner
+API breakage: func TaskSlot.run(isolation:_:deliver:) has removed default argument from parameter 0
+API breakage: func TaskSlot.run(isolation:_:deliver:) has parameter 1 type change from () async throws(Failure) -> Success to any _Concurrency.Actor
+API breakage: func TaskSlot.run(isolation:_:deliver:) has parameter 1 changing from Owned to Default
+API breakage: func TaskSlot.run(isolation:_:deliver:) has parameter 2 type change from (Swift.Result<Success, Failure>) -> Swift.Void to () async throws(Failure) -> Success
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has generic signature change from <Success, Failure where Success : Swift.Sendable, Failure : Swift.Error> to <Success, Failure, Owner where Success : Swift.Sendable, Failure : Swift.Error, Owner : AnyObject>
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has parameter 0 type change from (any _Concurrency.Actor)? to Owner
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has removed default argument from parameter 0
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has parameter 1 type change from () async throws(Failure) -> Success to any _Concurrency.Actor
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has parameter 1 changing from Owned to Default
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has parameter 2 type change from (Swift.Result<Success, Failure>) -> Swift.Void to () async throws(Failure) -> Success
+API breakage: func TaskSlot.run(isolation:_:deliver:) has been renamed to func run(for:isolation:_:deliver:)
+API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has been renamed to func runExclusively(for:isolation:_:deliver:)

@@ -64,10 +64,14 @@ try await withScope { scope in
 }
 ```
 
-**TaskSlot** replaces generation counters: only the newest work delivers.
+**TaskSlot** replaces generation counters: only the newest work delivers,
+to an owner the slot holds weakly, so a view model that goes away takes its
+request with it.
 
 ```swift
-search.run { try await api.search(query) } deliver: { @MainActor in self.results = (try? $0.get()) ?? [] }
+search.run(for: self) { [api] in try await api.search(query) } deliver: { @MainActor model, result in
+    model.results = (try? result.get()) ?? []
+}
 ```
 
 **State machines** make work belong to a state, and explore their own

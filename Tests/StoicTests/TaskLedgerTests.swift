@@ -9,7 +9,8 @@ struct TaskLedgerTests {
             let tag = Ambient.current.ledgerTag!
             let gate = TestGate()
             let slot = TaskSlot<Void, Never>(label: "search")
-            slot.run { await gate.wait() } deliver: { _ in }
+            let owner = SlotOwner()
+            await SlotCaller().run(slot, for: owner) { await gate.wait() } deliver: { _, _ in }
             for _ in 0..<100 where TaskLedger.entries(tag: tag).isEmpty { await Task.yield() }
             let entries = TaskLedger.entries(tag: tag)
             #expect(entries.count == 1)
@@ -38,7 +39,8 @@ struct TaskLedgerTests {
         await withTestAmbient(clock: TestClock()) {
             let gate = TestGate()
             let slot = TaskSlot<Void, Never>(label: "report-me")
-            slot.run { await gate.wait() } deliver: { _ in }
+            let owner = SlotOwner()
+            await SlotCaller().run(slot, for: owner) { await gate.wait() } deliver: { _, _ in }
             for _ in 0..<100 where TaskLedger.current.allSatisfy({ $0.label != "report-me" }) { await Task.yield() }
             #expect(Diagnostics.snapshot().contains("slot report-me running for"))
             gate.open()

@@ -10,13 +10,14 @@ internal import Synchronization
 ///
 ///     @MainActor final class SearchModel {
 ///         private let search = TaskSlot<[Hit], any Error>(label: "search")
+///         private let api: SearchAPI
 ///         var hits: [Hit] = []
 ///
 ///         func queryChanged(_ query: String) {
-///             search.run {
+///             search.run(for: self) { [api] in
 ///                 try await api.search(query)
-///             } deliver: { @MainActor result in
-///                 self.hits = (try? result.get()) ?? []
+///             } deliver: { @MainActor model, result in
+///                 model.hits = (try? result.get()) ?? []
 ///             }
 ///         }
 ///     }
@@ -27,14 +28,25 @@ internal import Synchronization
 /// is cancelled with ``CancellationCause/superseded``; if it finishes anyway,
 /// its result is dropped and reported (`slot.superseded_late`).
 ///
-/// ``run(isolation:_:deliver:)`` starts the new work at once, while the old
-/// may still be winding down. When the two must never overlap — both use the
-/// microphone, say — use ``runExclusively(isolation:_:deliver:)``, which
-/// waits for *every* earlier piece of work, superseded or cancelled, to
+/// **The owner goes, the work goes.** The slot holds `owner` weakly and
+/// hands it to `deliver`, so nothing the slot keeps holds the owner alive,
+/// and `deliver` never needs to capture `self`. A slot belongs to its owner (a
+/// stored property), so when the owner goes the slot goes, and a released
+/// slot cancels its work; if the work finishes anyway, there is no owner to
+/// deliver to and nothing is delivered. Capture what the work needs (`[api]`
+/// above), not `self`: work that holds its owner keeps it, and itself, alive.
+///
+/// ``run(for:isolation:_:deliver:)`` starts the new work at once, while the
+/// old may still be winding down. When the two must never overlap — both use
+/// the microphone, say — use ``runExclusively(for:isolation:_:deliver:)``,
+/// which waits for *every* earlier piece of work, superseded or cancelled, to
 /// finish first.
 ///
-/// `deliver` runs on the caller's actor. To touch that actor's state in it,
-/// say so in the closure — `{ @MainActor result in … }`, as above — since
+/// Both must be called on an actor: the check that nothing newer has started
+/// and the delivery are atomic only because that actor runs them, with any
+/// `run` that could come between. The compiler refuses a call from
+/// nonisolated code. `deliver` runs on that actor; to touch its state, say so
+/// in the closure — `{ @MainActor model, result in … }`, as above — since
 /// Swift does not infer a closure parameter's isolation from the call site.
 public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     /// Names the slot in events.
@@ -80,29 +92,35 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     /// Supersedes any current work and starts `operation` at once.
     ///
     /// - Parameters:
+    ///   - owner: What the result is for, usually `self`: held weakly, and
+    ///     handed to `deliver`. Once it is gone nothing is delivered.
     ///   - isolation: The actor `deliver` runs on; the caller's, by default.
     ///   - operation: The new work. Like `Task {}`, it inherits the caller's actor.
-    ///   - deliver: Receives the outcome, on the caller's actor, only if no
-    ///     newer work has been started by then.
-    public func run(
-        isolation: isolated (any Actor)? = #isolation,
+    ///   - deliver: Receives the owner and the outcome, on the caller's actor,
+    ///     only if no newer work has been started by then and the owner is
+    ///     still there.
+    public func run<Owner: AnyObject>(
+        for owner: Owner,
+        isolation: isolated any Actor = #isolation,
         @_inheritActorContext _ operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
-        deliver: sending @escaping (Result<Success, Failure>) -> Void
+        deliver: sending @escaping (Owner, Result<Success, Failure>) -> Void
     ) {
-        start(exclusive: false, isolation: isolation, operation: operation, deliver: deliver)
+        start(exclusive: false, owner: owner, isolation: isolation, operation: operation, deliver: deliver)
     }
 
     /// Supersedes any current work, waits for every earlier piece of work to
     /// finish, then starts `operation`, so no two ever overlap.
     ///
     /// If yet newer work arrives while waiting, this work is superseded
-    /// before it starts and never runs.
-    public func runExclusively(
-        isolation: isolated (any Actor)? = #isolation,
+    /// before it starts and never runs. The parameters are
+    /// ``run(for:isolation:_:deliver:)``'s.
+    public func runExclusively<Owner: AnyObject>(
+        for owner: Owner,
+        isolation: isolated any Actor = #isolation,
         @_inheritActorContext _ operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
-        deliver: sending @escaping (Result<Success, Failure>) -> Void
+        deliver: sending @escaping (Owner, Result<Success, Failure>) -> Void
     ) {
-        start(exclusive: true, isolation: isolation, operation: operation, deliver: deliver)
+        start(exclusive: true, owner: owner, isolation: isolation, operation: operation, deliver: deliver)
     }
 
     /// Cancels all work in the slot. No result will be delivered.
@@ -127,11 +145,12 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
 
     // MARK: Internals
 
-    private func start(
+    private func start<Owner: AnyObject>(
         exclusive: Bool,
-        isolation: isolated (any Actor)?,
+        owner: Owner,
+        isolation: isolated any Actor,
         operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
-        deliver: sending @escaping (Result<Success, Failure>) -> Void
+        deliver: sending @escaping (Owner, Result<Success, Failure>) -> Void
     ) {
         // Supersede: everything already in the slot is cancelled, and is
         // what exclusive work waits for.
@@ -155,7 +174,9 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
         // is superseded before registration never runs at all — and every
         // task that does run is registered, so nothing escapes cancellation.
         let registered = OnceCell<Bool>()
-        let task = TaskLedger.task(.slot, label: label) { [weak self] in
+        // Neither the slot nor the owner is held by the work: a released
+        // owner releases its slot, and a released slot cancels the work.
+        let task = TaskLedger.task(.slot, label: label) { [weak self, weak owner] in
             guard await registered.value else { return }
             if exclusive {
                 for task in earlier { await task.value }
@@ -174,7 +195,8 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
             }
             // Between finishing and delivering: where newer work may arrive.
             await FaultPoint.hit("slot.deliver")
-            TaskSlot.complete(isolation: isolation, slot: self, generation: generation, label: label, result: result, deliver: deliver)
+            TaskSlot.complete(isolation: isolation, slot: self, owner: owner, generation: generation, label: label,
+                              result: result, deliver: deliver)
         }
         let isCurrent = state.withLock { state -> Bool in
             guard state.generation == generation else { return false }
@@ -187,17 +209,19 @@ public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
 
     /// Delivers on the caller's actor. The check and the delivery happen
     /// together, with no suspension in between, so no `run` can slip in.
-    private static func complete(
-        isolation: isolated (any Actor)?,
+    private static func complete<Owner: AnyObject>(
+        isolation: isolated any Actor,
         slot: TaskSlot?,
+        owner: Owner?,
         generation: UInt64,
         label: String,
         result: Result<Success, Failure>,
-        deliver: sending (Result<Success, Failure>) -> Void
+        deliver: sending (Owner, Result<Success, Failure>) -> Void
     ) {
         guard let slot else { return }
         if slot.isCurrent(generation) {
-            deliver(result)
+            // An owner that has gone has nothing to deliver to.
+            if let owner { deliver(owner, result) }
         } else if !Task.isCancelled || result.isSuccess {
             Ambient.record(Event("slot.superseded_late", label: label))
         }

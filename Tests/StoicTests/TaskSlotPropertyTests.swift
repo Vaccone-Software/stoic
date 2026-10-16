@@ -60,7 +60,7 @@ struct TaskSlotPropertyTests {
                 }
                 return index
             }
-            let deliver: (Result<Int, any Error>) -> Void = { result in
+            let deliver: (Log, Result<Int, any Error>) -> Void = { log, result in
                 log.deliveries[index, default: 0] += 1
                 if log.newest != index {
                     log.wrongDeliveries.append("#\(index) delivered while the newest was \(log.newest.map(String.init) ?? "nothing")")
@@ -70,9 +70,9 @@ struct TaskSlotPropertyTests {
                 }
             }
             if exclusive {
-                slot.runExclusively(work, deliver: deliver)
+                slot.runExclusively(for: log, work, deliver: deliver)
             } else {
-                slot.run(work, deliver: deliver)
+                slot.run(for: log, work, deliver: deliver)
             }
         }
 

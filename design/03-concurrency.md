@@ -22,12 +22,13 @@ cancellation and failure semantics written down.
 ## API
 
 ```swift
-// Only the newest work delivers, on the caller's actor.
+// Only the newest work delivers, to its owner, on the caller's actor.
 public final class TaskSlot<Success: Sendable, Failure: Error>: Sendable {
     public init(label: String)
-    public func run(isolation: isolated (any Actor)? = #isolation,
+    public func run<Owner: AnyObject>(for owner: Owner,                    // held weakly; handed to deliver
+                    isolation: isolated any Actor = #isolation,            // an actor is required
                     @_inheritActorContext _ operation: sending @escaping @isolated(any) () async throws(Failure) -> Success,
-                    deliver: sending @escaping (Result<Success, Failure>) -> Void)
+                    deliver: sending @escaping (Owner, Result<Success, Failure>) -> Void)
     public func runExclusively(…)            // waits for the superseded work to finish first
     public func cancel(); public func cancelAndWait() async
     public var isRunning: Bool
@@ -78,6 +79,21 @@ in; SingleFlight, StateMachine and Supervisor make the same reset). Late results
 superseded work are dropped and reported (`slot.superseded_late`). The work
 holds the slot weakly, and a released slot cancels its work: a view model
 that goes away takes its in-flight request with it.
+
+That promise needs the work not to hold the view model, and the first design
+made holding it the natural spelling: `deliver` had to capture `self` to
+reach the model's state, the running work held `deliver`, and the slot held
+the work, so the model could not go until its request ended. So the owner is
+part of the call: `run(for: self)` holds it weakly and hands it to `deliver`
+(`{ @MainActor model, result in model.hits = … }`), and an owner that has
+gone gets nothing. The work captures what it needs (`[api]`), not `self`.
+
+`run` requires an actor (`isolated any Actor`, not optional). The check and
+the delivery are atomic only because one actor runs both, with any `run`
+that could come between; from nonisolated code there is no such actor, and
+the alternative, calling `deliver` under the slot's lock, would run user
+code under a lock. The compiler refuses the call (`#isolation` is `nil`
+there); a caller without an actor passes one.
 
 **race.** Every operation runs as a child task. The first success wins; the
 rest are cancelled (`superseded`) and then awaited, so `race` never returns
@@ -186,6 +202,8 @@ that keeps the promise, and the lint rule against
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | a superseded `TaskSlot` task finishes after the new one               | Its result is dropped inside the slot; `slot.superseded_late` event                                                                                                                                              |
 | a `TaskSlot` task ignores cancellation forever                        | Next `run` does not wait for it (it is not structured to the slot's caller); it stays in `unfinishedCount` and the task ledger, so `stoicTasksStillRunning` names it; if it ever returns, `slot.superseded_late` |
+| the owner of a TaskSlot's work goes away                              | Nothing the slot keeps holds it, so it goes; its slot goes with it and cancels the work; a result that arrives anyway is not delivered                                                                           |
+| a TaskSlot is called off an actor                                     | A compile error: `run` and `runExclusively` take `isolated any Actor`, which nonisolated code does not have                                                                                                      |
 | every racer fails                                                     | The first failure is thrown; `race.all_failed` carries all of them, completion order                                                                                                                             |
 | the caller of a race is cancelled                                     | Every racer is cancelled and awaited; the first racer's error passes through; no `race.all_failed`                                                                                                               |
 | a racer ignores cancellation after another won                        | `race` waits for it (structured); give such work its own timeout                                                                                                                                                 |

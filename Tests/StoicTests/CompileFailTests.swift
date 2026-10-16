@@ -75,6 +75,15 @@ struct CompileFailTests {
         #expect(outcome.errors.contains(expected), "\(name) failed, but not with \"\(expected)\":\n\(outcome.errors)")
     }
 
+    @Test(.failureMode("design/03", "a TaskSlot is called off an actor"))
+    func aTaskSlotRefusesACallOffAnActor() throws {
+        let found = try Self.expectedError(in: "task-slot-off-an-actor")
+        let expected = try #require(found)
+        let outcome = try Self.compile("task-slot-off-an-actor")
+        #expect(!outcome.compiled, "a slot accepted a call from nonisolated code")
+        #expect(outcome.errors.contains(expected), "failed, but not with \"\(expected)\":\n\(outcome.errors)")
+    }
+
     @Test(.failureMode("design/02", "the schedule is unbounded"))
     func retryRefusesAnUnboundedSchedule() throws {
         let found = try Self.expectedError(in: "retry-unbounded-schedule")

@@ -41,8 +41,9 @@ struct TaskExecutorPreferenceTests {
 
             // Superseding work.
             let slot = TaskSlot<Void, Never>(label: "probe")
+            let owner = SlotOwner()
             let delivered = AsyncGate()
-            slot.run { probe("slot work") } deliver: { _ in delivered.open() }
+            await SlotCaller().run(slot, for: owner) { probe("slot work") } deliver: { _, _ in delivered.open() }
             await delivered.wait()
 
             // A supervised child.
@@ -64,7 +65,8 @@ struct TaskExecutorPreferenceTests {
         let ran = AsyncGate()
         let onExecutor = SendableBox<Bool?>(nil)
         let slot = TaskSlot<Void, Never>(label: "probe")
-        slot.run { onExecutor.mutate { $0 = executor.isCurrent } } deliver: { _ in ran.open() }
+        let owner = SlotOwner()
+        await SlotCaller().run(slot, for: owner) { onExecutor.mutate { $0 = executor.isCurrent } } deliver: { _, _ in ran.open() }
         await ran.wait()
         #expect(onExecutor.value == false)
     }

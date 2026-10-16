@@ -60,6 +60,9 @@ written as `// stoic:allow(<rule>): <why>` on that line or the one above
   `Sendable`, and captured mutable locals are not allowed. Written on an
   actor, the closure runs on that actor.
 - `race` takes two to four closures or an array of `Racer`s.
+- `TaskSlot.run(for: self)` must be called on an actor, and `deliver` gets
+  the owner: write `{ @MainActor model, result in model.x = … }`, and capture
+  what the work needs (`[api]`), never `self`, or the owner cannot go.
 
 ## Working on Stoic
 

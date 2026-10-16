@@ -220,9 +220,11 @@ struct SimulationTests {
         // comes from dictionaries, which must not leak into the schedule.
         @Sendable func scenario(_ sim: SimulationContext) async throws -> [Int] {
             let slot = TaskSlot<Int, Never>(label: "replay")
+            let owner = SlotOwner()
             let delivered = SendableBox<[Int]>([])
+            let caller = SlotCaller()
             for value in 0..<8 {
-                slot.run { await Task.yield(); return value } deliver: { result in
+                await caller.run(slot, for: owner) { await Task.yield(); return value } deliver: { _, result in
                     delivered.mutate { $0.append(result.get()) }
                 }
             }
