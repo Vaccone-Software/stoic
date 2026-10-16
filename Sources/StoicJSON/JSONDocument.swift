@@ -92,6 +92,40 @@ public struct JSONDocument: Sendable {
         )
     }
 
+    // MARK: Offsets
+
+    /// The bytes the value at `path` occupies: what ``range(of:)`` says,
+    /// without the lines and columns.
+    ///
+    /// A column costs a walk along its line, and a minified document is one
+    /// line, so asking ``range(of:)`` for each of a thousand problems in a
+    /// megabyte costs a thousand megabyte walks. Code that reports many
+    /// positions collects offsets as it goes and turns them into ranges once,
+    /// with ``ranges(ofOffsets:)``.
+    public func offsets(of path: JSONPath) -> Range<Int>? {
+        guard let id = node(at: path) else { return nil }
+        let node = nodes[Int(id)]
+        return Int(node.start)..<Int(node.end)
+    }
+
+    /// The bytes of the key that names the value at `path`: what
+    /// ``keyRange(of:)`` says, without the lines and columns.
+    public func keyOffsets(of path: JSONPath) -> Range<Int>? {
+        guard let id = node(at: path) else { return nil }
+        let node = nodes[Int(id)]
+        guard node.keyStart != RangeNode.noKey else { return nil }
+        return Int(node.keyStart)..<Int(node.keyEnd)
+    }
+
+    /// The source range of each offset range, in the same order, found in
+    /// one pass over the text however many there are: O(bytes + n log n)
+    /// where asking one at a time is O(n × line length).
+    public func ranges(ofOffsets offsets: [Range<Int>]) -> [SourceRange] {
+        let ends = offsets.flatMap { [$0.lowerBound, $0.upperBound] }
+        let locations = lineMap.locations(ofOffsets: ends, in: source)
+        return offsets.indices.map { SourceRange(start: locations[2 * $0], end: locations[2 * $0 + 1]) }
+    }
+
     /// Walks the value and the range tree together: the value says which
     /// child a key or index means, the tree says where that child was.
     private func node(at path: JSONPath) -> UInt32? {

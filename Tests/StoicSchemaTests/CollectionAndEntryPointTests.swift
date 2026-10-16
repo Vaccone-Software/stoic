@@ -221,6 +221,27 @@ struct EntryPointTests {
         #expect(result.issues.dropLast().allSatisfy { $0.code == .typeMismatch })
     }
 
+    @Test func positionsOfAThousandIssuesOnOneLongLineCostOnePass() {
+        // A minified response is one line. Each issue's column used to be
+        // found by walking its line, so a thousand issues after a megabyte
+        // cost a thousand megabyte walks: seconds in release, minutes in debug.
+        let padding = String(repeating: "a", count: 1_000_000)
+        let bad = Array(repeating: "\"x\"", count: 1000).joined(separator: ",")
+        let text = #"{"p":""# + padding + #"","v":["# + bad + "]}"
+        let schema = Schema.object([String: [Int]].self, unknownKeys: .ignore) { f in
+            let v = f.field("v", \.["v"], .optional(.array(of: .int())))
+            return f.build { values in ["v": values[v] ?? []] }
+        }
+        let clock = ContinuousClock()
+        let start = clock.now
+        let result = schema.decodeReporting(text)
+        let elapsed = clock.now - start
+        #expect(result.issues.count == 1000)
+        #expect(result.issues[999].source?.start.column == 1_000_014 + 4 * 999)
+        // Parsing and one pass take well under a second in a debug build.
+        #expect(elapsed < .seconds(5), "\(elapsed)")
+    }
+
     @Test func decodedGetThrowsOrReturns() throws {
         let good = Schema.int().decode(json("5"))
         #expect(try good.get() == 5)

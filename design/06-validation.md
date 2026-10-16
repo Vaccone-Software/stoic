@@ -480,6 +480,15 @@ element order within an array; there is no better "path order" for them,
 since sorting paths alphabetically would be worse than the declaration.
 A missing key sorts with the object that lacks it.
 
+**Detecting is apart from explaining.** A column is a walk along its line,
+and a minified response is one line, so finding each issue's line and column
+as it was found made a thousand issues after a megabyte cost a thousand
+megabyte walks (4.6 s in release for one 1 MB document that parsed in 4 ms).
+A decode records each issue's byte offsets (a path walk) and resolves them
+all at the end with `JSONDocument.ranges(ofOffsets:)`, one pass over the
+text. `offsets(of:)` and `keyOffsets(of:)` are the same split for any code
+that reports many positions.
+
 ### Generators
 
 - **`schema.generator`** is a `SchemaGenerator<Value>` derived from the node

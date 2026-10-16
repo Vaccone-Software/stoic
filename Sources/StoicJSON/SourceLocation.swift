@@ -98,6 +98,32 @@ struct LineMap: Sendable {
         )
     }
 
+    /// The locations of many offsets, in their order, in one pass: visited
+    /// from first to last, each byte of the text is counted at most once,
+    /// however many offsets share its line.
+    func locations(ofOffsets offsets: [Int], in bytes: [UInt8]) -> [SourceLocation] {
+        var result = [SourceLocation](repeating: SourceLocation(offset: 0, line: 1, column: 1), count: offsets.count)
+        var line = 0
+        var counted = lineStarts[0]  // scalars are counted up to here
+        var column = 0  // scalars from the start of `line` to `counted`
+        for index in offsets.indices.sorted(by: { offsets[$0] < offsets[$1] }) {
+            let offset = min(max(offsets[index], 0), bytes.count)
+            while line + 1 < lineStarts.count, lineStarts[line + 1] <= offset {
+                line += 1
+                counted = lineStarts[line]
+                column = 0
+            }
+            // Only an offset inside a byte order mark, before the text, is
+            // behind the start of the first line.
+            if offset > counted {
+                column += Self.scalarCount(in: bytes, from: counted, to: offset)
+                counted = offset
+            }
+            result[index] = SourceLocation(offset: offset, line: line + 1, column: 1 + (offset < counted ? 0 : column))
+        }
+        return result
+    }
+
     /// Locates one offset by scanning the bytes before it.
     static func locate(offset: Int, in bytes: [UInt8], textStart: Int) -> SourceLocation {
         let clamped = min(max(offset, 0), bytes.count)

@@ -18,7 +18,18 @@ struct DecodeState {
     /// alias.
     var inputPath = JSONPath()
 
-    var issues: [Issue] = []
+    /// What was found, in the order found. Their ``Issue/source`` is filled
+    /// in by ``resolvedIssues()`` at the end, from `offsets`.
+    private(set) var issues: [Issue] = []
+    /// Where in the text each issue is, as bytes, parallel to `issues`.
+    ///
+    /// Detecting a problem and explaining it are kept apart: a line and
+    /// column cost a walk along the line, and a minified document is one
+    /// line, so computing them as each issue is found made a thousand issues
+    /// at the end of a megabyte cost a thousand megabyte walks. Offsets are
+    /// a path walk; the lines and columns of all of them are found at the
+    /// end in one pass.
+    private var offsets: [Range<Int>?] = []
     /// Errors raised, including any too numerous to record.
     var errorCount = 0
     private var truncated = false
@@ -90,6 +101,7 @@ struct DecodeState {
                     Issue(
                         severity: .warning, code: .tooManyIssues,
                         parameters: ["limit": .number(JSONNumber(options.maxIssues))]))
+                offsets.append(nil)
             }
             return
         }
@@ -102,8 +114,26 @@ struct DecodeState {
                 parameters: parameters,
                 expected: expected,
                 actual: redacted ? nil : actual,
-                suggestions: redacted && suggestionsAreFromInput ? [] : suggestions,
-                source: source(at: explicitSourcePath ?? inputPath, target: target)))
+                suggestions: redacted && suggestionsAreFromInput ? [] : suggestions))
+        offsets.append(offsets(at: explicitSourcePath ?? inputPath, target: target))
+    }
+
+    /// The issues, each with its line and column when the input was text,
+    /// all found in one pass over the text.
+    func resolvedIssues() -> [Issue] {
+        guard let document else { return issues }
+        var positioned: [Int] = []
+        var ranges: [Range<Int>] = []
+        for (index, offsets) in offsets.enumerated() {
+            guard let offsets else { continue }
+            positioned.append(index)
+            ranges.append(offsets)
+        }
+        var resolved = issues
+        for (index, range) in zip(positioned, document.ranges(ofOffsets: ranges)) {
+            resolved[index].source = range
+        }
+        return resolved
     }
 
     /// Records the problems a constraint list finds in `value`, which sits
@@ -122,16 +152,16 @@ struct DecodeState {
         return violations.isEmpty
     }
 
-    /// The text at `path`, or the nearest enclosing text that exists: a
-    /// missing key has no range of its own, but the object that lacks it
-    /// does.
-    private func source(at path: JSONPath, target: Target) -> SourceRange? {
+    /// The bytes of the text at `path`, or of the nearest enclosing text that
+    /// exists: a missing key has no range of its own, but the object that
+    /// lacks it does.
+    private func offsets(at path: JSONPath, target: Target) -> Range<Int>? {
         guard let document else { return nil }
-        if let region = migratedRegion { return document.range(of: region) }
+        if let region = migratedRegion { return document.offsets(of: region) }
         var current = path
-        if target == .key, let range = document.keyRange(of: current) { return range }
+        if target == .key, let range = document.keyOffsets(of: current) { return range }
         while true {
-            if let range = document.range(of: current) { return range }
+            if let range = document.offsets(of: current) { return range }
             guard let parent = current.parent else { return nil }
             current = parent
         }
@@ -180,6 +210,7 @@ extension DecodeState {
     mutating func dropElement(at index: Int, since mark: Int, errorsBefore: Int) {
         let reason = issues[mark...].first { $0.severity == .error }?.message
         issues.removeSubrange(mark...)
+        offsets.removeSubrange(mark...)
         errorCount = errorsBefore
         var parameters: JSONObject = ["index": .number(JSONNumber(index))]
         if let reason { parameters["reason"] = .string(reason) }

@@ -168,6 +168,60 @@ struct DocumentTests {
         }
     }
 
+    @Test func rangesResolvedTogetherAreTheRangesAskedOneByOne() throws {
+        // Multibyte text, every kind of line ending, a BOM: the one-pass
+        // resolution must agree with the per-query one on every value and key.
+        let text = "{\r\n \"caf\u{E9}\": [1, \"\u{1F600}\"],\r \"b\":\n {\"\u{301}k\": null}, \"\": [[], {}]}"
+        let bytes = [0xEF, 0xBB, 0xBF] + Array(text.utf8)
+        let document = try JSONDocument(parsing: bytes, options: JSONParseOptions(allowBOM: true))
+        var expected: [SourceRange] = []
+        var offsets: [Range<Int>] = []
+        func walk(_ value: JSONValue, _ path: JSONPath) {
+            if let range = document.range(of: path), let bytes = document.offsets(of: path) {
+                expected.append(range)
+                offsets.append(bytes)
+            }
+            if let range = document.keyRange(of: path), let bytes = document.keyOffsets(of: path) {
+                expected.append(range)
+                offsets.append(bytes)
+            }
+            switch value {
+            case .array(let elements):
+                for (index, element) in elements.enumerated() { walk(element, path.appending(index: index)) }
+            case .object(let object):
+                for member in object { walk(member.value, path.appending(key: member.key)) }
+            default:
+                break
+            }
+        }
+        walk(document.value, .root)
+        #expect(expected.count == 13)
+        // Out of order, repeated, and before the text (inside the BOM).
+        let shuffled = Array(offsets.reversed()) + offsets + [0..<1]
+        let resolved = document.ranges(ofOffsets: shuffled)
+        #expect(Array(resolved.prefix(offsets.count)) == Array(expected.reversed()))
+        #expect(Array(resolved.dropFirst(offsets.count).prefix(offsets.count)) == expected)
+        #expect(resolved.last?.start == document.location(ofOffset: 0))
+        #expect(resolved.last?.end == document.location(ofOffset: 1))
+    }
+
+    @Test func manyRangesOnOneLongLineCostOnePass() throws {
+        // A thousand positions at the end of a megabyte on one line: asked one
+        // at a time that is a thousand megabyte walks.
+        let text = "[\"" + String(repeating: "a", count: 1_000_000) + "\"," + Array(repeating: "1", count: 1000).joined(separator: ",") + "]"
+        let document = try #require(parseDocument(text))
+        let offsets = (1...1000).compactMap { document.offsets(of: [.index($0)]) }
+        let clock = ContinuousClock()
+        let start = clock.now
+        let ranges = document.ranges(ofOffsets: offsets)
+        let elapsed = clock.now - start
+        #expect(ranges.count == 1000)
+        #expect(ranges[999].start.column == 1_000_005 + 2 * 999)
+        // One pass over a megabyte takes milliseconds even in a debug build;
+        // a thousand passes take tens of seconds.
+        #expect(elapsed < .seconds(1), "\(elapsed)")
+    }
+
     @Test func locationOfOffsetClampsAndMatchesRanges() throws {
         let document = try #require(parseDocument("[1,\n2]"))
         #expect(document.location(ofOffset: 0) == SourceLocation(offset: 0, line: 1, column: 1))
