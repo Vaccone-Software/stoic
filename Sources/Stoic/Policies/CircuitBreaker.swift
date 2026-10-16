@@ -280,7 +280,12 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     ///   - configuration: Its settings; the defaults are described there.
     ///   - clock: The clock to measure time on; by default the ambient clock
     ///     when the breaker is created. A breaker compares instants across
-    ///     calls, so it measures time on one clock for its whole life.
+    ///     calls, so it measures time on one clock for its whole life. Mind
+    ///     where that is: a breaker in a `static let` is created by its first
+    ///     use, and if that is inside a test's `withTestAmbient`, it keeps
+    ///     the test's virtual clock for good (and, once opened, stays open
+    ///     for every later test and caller). Pass `clock:`, or create the
+    ///     breaker where its owner is built.
     ///   - fileID: The call site, captured for events.
     ///   - line: The call site, captured for events.
     public init(

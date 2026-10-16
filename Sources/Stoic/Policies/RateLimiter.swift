@@ -93,7 +93,9 @@ public final class RateLimiter: Policy, CustomStringConvertible {
     ///   - label: Names the limiter in events.
     ///   - clock: The clock to measure time on; by default the ambient clock
     ///     when the limiter is created. A limiter measures time on one clock
-    ///     for its whole life.
+    ///     for its whole life, so one in a `static let` keeps the clock of
+    ///     its first use, a test's virtual clock included (see
+    ///     ``CircuitBreaker/init(label:_:clock:fileID:line:)``).
     public init(
         rate: Int,
         per interval: Duration = .seconds(1),

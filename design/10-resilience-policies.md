@@ -348,7 +348,14 @@ read, not at the instant the open period ends.
 **Clock.** A breaker measures time on one clock for its whole life: `clock:`
 if given, else the ambient clock at construction. (A policy with state that
 is compared across calls cannot follow an ambient clock that changes between
-them.) Events go to the ambient instrumentation at the time of the call.
+them.) Events go to the ambient instrumentation at the time of the call. The
+cost of binding at construction: a breaker (or limiter) in a `static let` is
+built by its first use, and if that use is inside a test's `withTestAmbient`
+it keeps that test's virtual clock for good; opened there, it stays open for
+everyone after. Budgets avoid this by living in the ambient context
+(`Ambient.budgets`); a registry of policies per dependency in the ambient
+context is the planned fix, and until then the advice is to pass `clock:` or
+to build policies with their owner.
 
 ### RateLimiter
 
