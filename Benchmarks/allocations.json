@@ -1,7 +1,8 @@
 {
   "Ambient.current" : 0,
   "AsyncSemaphore.withPermit (uncontended)" : 0,
-  "CircuitBreaker.execute (closed, success)" : 1,
+  "CircuitBreaker.execute (closed, .calls(10_000) window)" : 0,
+  "CircuitBreaker.execute (closed, success)" : 0,
   "Schedule step (exponential, jittered)" : 3,
   "StateMachine.send" : 6.16,
   "retry, first attempt succeeds" : 5,

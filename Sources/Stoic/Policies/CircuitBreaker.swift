@@ -386,19 +386,23 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     public nonisolated(nonsending) func execute<R, Failure: Error>(
         _ operation: nonisolated(nonsending) () async throws(Failure) -> R
     ) async throws(PolicyError<Failure>) -> R {
+        // Read once: the ambient context is a task-local lookup, and a closed
+        // breaker's whole cost is a handful of these and two short locks.
+        let ambient = Ambient.current
+        let instrumentation = ambient.instrumentation
         if let refusal = Rejection.refusedBeforeStart(label: label) {
-            Ambient.record(Event("breaker.rejected", level: .debug, label: label, fields: [
+            record(Event("breaker.rejected", level: .debug, label: label, fields: [
                 .init("reason", .string(refusal.reason.rawValue), privacy: .public),
-            ]))
+            ]), to: instrumentation)
             throw .rejected(refusal)
         }
-        let random = Ambient.current.random
+        let random = ambient.random
         let start = clock.now
         let (admission, changes) = core.withLock { core -> (Admission, [Change]) in
             let changes = refresh(&core, now: start, random: random)
             return (admit(&core, now: start), changes)
         }
-        finish(changes)
+        finish(changes, to: instrumentation)
 
         let ticket: Ticket
         switch admission {
@@ -407,7 +411,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         case .reject(let rejection, let state):
             var fields: [Event.Field] = [.init("state", .string(state.description), privacy: .public)]
             if let retryAfter = rejection.retryAfter { fields.append(.init("retry_after", .duration(retryAfter))) }
-            Ambient.record(Event("breaker.rejected", level: .debug, label: label, fields: fields))
+            record(Event("breaker.rejected", level: .debug, label: label, fields: fields), to: instrumentation)
             throw .rejected(rejection)
         }
 
@@ -422,11 +426,11 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         let verdict = judge(result, duration: start.duration(to: end), callerCancelled: Task.isCancelled)
         // Building a debug event per call is most of a closed breaker's cost;
         // skip it when nothing would record it.
-        let debug = Ambient.current.instrumentation.isEnabled(.debug)
+        let debug = instrumentation.isEnabled(.debug)
         let completion = core.withLock { core -> [Change] in
             complete(&core, ticket: ticket, verdict: verdict, now: end, random: random, debug: debug)
         }
-        finish(completion)
+        finish(completion, to: instrumentation)
 
         switch result {
         case .success(let value): return value
@@ -664,16 +668,25 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
 
     /// Reports what happened under the lock, then publishes the states
     /// entered, in order.
-    private func finish(_ changes: [Change]) {
+    ///
+    /// Every critical section that enters a state also returns a change for
+    /// it, so a call that saw no change has nothing of its own to publish and
+    /// skips the extra lock round trip: the fast path takes the core lock
+    /// twice, once to admit and once to record.
+    private func finish(_ changes: [Change], to instrumentation: any Instrumentation = Ambient.current.instrumentation) {
+        guard !changes.isEmpty else { return }
         for change in changes {
-            Ambient.record(Event(change.name, level: change.level, label: label, fields: change.fields))
+            record(Event(change.name, level: change.level, label: label, fields: change.fields), to: instrumentation)
         }
         publish()
     }
 
+    private func record(_ event: Event, to instrumentation: any Instrumentation) {
+        guard instrumentation.isEnabled(event.level) else { return }
+        instrumentation.record(event)
+    }
+
     private func publish() {
-        let pending = core.withLock { !$0.outbox.isEmpty }
-        guard pending else { return }
         publishing.withLock { _ in
             while true {
                 let batch = core.withLock { core -> [State] in

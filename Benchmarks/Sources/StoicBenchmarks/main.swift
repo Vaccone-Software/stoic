@@ -79,6 +79,14 @@ try await withAmbient({ $0.instrumentation = NoInstrumentation() }) {
         try await breaker.execute { () throws(Failure) in }
     }
 
+    // A count window, filled first so every call evicts: recording must not
+    // cost in proportion to the window.
+    let counting = CircuitBreaker(label: "bench", .init(window: .calls(10_000), minimumCalls: 10_000))
+    for _ in 0..<10_000 { try await counting.execute { () throws(Failure) in } }
+    try await measure("CircuitBreaker.execute (closed, .calls(10_000) window)") {
+        try await counting.execute { () throws(Failure) in }
+    }
+
     var stepper = Schedule.exponential(base: .milliseconds(100)).makeStepper(random: RandomSource.seeded(1).generator())
     await measure("Schedule step (exponential, jittered)", iterations: 1_000_000) {
         _ = stepper.next(elapsed: .zero)

@@ -35,58 +35,70 @@ struct OutcomeWindow: Sendable {
         var totals = Totals()
     }
 
-    private enum Storage: Sendable {
-        // `outcomes` is a ring of the last calls; each element packs
-        // bit 0 = failed, bit 1 = slow.
-        case calls(capacity: Int, outcomes: [UInt8], next: Int, totals: Totals)
-        case time(bucketWidth: Int128, buckets: [Bucket])
+    private enum Kind: Sendable {
+        case calls(capacity: Int)
+        case time(bucketWidth: Int128)
     }
 
-    private var storage: Storage
+    // The arrays are stored properties, not an enum's payloads: a payload
+    // bound with `var` is a copy, so mutating it copied the whole array on
+    // every recorded call (a count window of a million calls cost a
+    // megabyte per call). Stored properties of a window held in one place
+    // mutate in place, and recording allocates nothing.
+    private let kind: Kind
+    // A count window's ring of the last calls; each element packs
+    // bit 0 = failed, bit 1 = slow.
+    private var outcomes: [UInt8] = []
+    private var next = 0
+    private var ringTotals = Totals()
+    // A time window's buckets.
+    private var buckets: [Bucket] = []
 
     /// A window of the last `capacity` calls.
     init(lastCalls capacity: Int) {
         precondition(capacity >= 1)
-        storage = .calls(capacity: capacity, outcomes: [], next: 0, totals: Totals())
+        kind = .calls(capacity: capacity)
     }
 
     /// A window of the last `span`, in ten buckets.
     init(lastSpan span: Duration) {
         let width = span.attoseconds / Int128(Self.bucketCount)
         precondition(width >= 1, "a time window needs a span of at least ten attoseconds")
-        storage = .time(bucketWidth: width, buckets: Array(repeating: Bucket(), count: Self.bucketCount))
+        kind = .time(bucketWidth: width)
+        buckets = Array(repeating: Bucket(), count: Self.bucketCount)
     }
 
-    /// Forgets every call.
+    /// Forgets every call, keeping the storage for the next ones.
     mutating func clear() {
-        switch storage {
-        case .calls(let capacity, _, _, _):
-            storage = .calls(capacity: capacity, outcomes: [], next: 0, totals: Totals())
-        case .time(let width, let buckets):
-            storage = .time(bucketWidth: width, buckets: Array(repeating: Bucket(), count: buckets.count))
+        switch kind {
+        case .calls:
+            outcomes.removeAll(keepingCapacity: true)
+            next = 0
+            ringTotals = Totals()
+        case .time:
+            for index in buckets.indices { buckets[index] = Bucket() }
         }
     }
 
     /// Adds one call that ended at `now`.
     mutating func record(failed: Bool, slow: Bool, at now: AnyClock.Instant) {
-        switch storage {
-        case .calls(let capacity, var outcomes, var next, var totals):
+        switch kind {
+        case .calls(let capacity):
             let packed: UInt8 = (failed ? 1 : 0) | (slow ? 2 : 0)
             if outcomes.count < capacity {
                 outcomes.append(packed)
             } else {
                 let evicted = outcomes[next]
-                totals.calls -= 1
-                if evicted & 1 != 0 { totals.failures -= 1 }
-                if evicted & 2 != 0 { totals.slowCalls -= 1 }
+                ringTotals.calls -= 1
+                if evicted & 1 != 0 { ringTotals.failures -= 1 }
+                if evicted & 2 != 0 { ringTotals.slowCalls -= 1 }
                 outcomes[next] = packed
             }
             next = (next + 1) % capacity
-            totals.calls += 1
-            if failed { totals.failures += 1 }
-            if slow { totals.slowCalls += 1 }
-            storage = .calls(capacity: capacity, outcomes: outcomes, next: next, totals: totals)
-        case .time(let width, var buckets):
+            ringTotals.calls += 1
+            if failed { ringTotals.failures += 1 }
+            if slow { ringTotals.slowCalls += 1 }
+        case .time(let width):
             let epoch = Self.epoch(of: now, width: width)
             let slot = Self.slot(of: epoch, count: buckets.count)
             if let existing = buckets[slot].epoch, existing > epoch {
@@ -98,16 +110,15 @@ struct OutcomeWindow: Sendable {
             buckets[slot].totals.calls += 1
             if failed { buckets[slot].totals.failures += 1 }
             if slow { buckets[slot].totals.slowCalls += 1 }
-            storage = .time(bucketWidth: width, buckets: buckets)
         }
     }
 
     /// The calls remembered at `now`.
     func totals(at now: AnyClock.Instant) -> Totals {
-        switch storage {
-        case .calls(_, _, _, let totals):
-            return totals
-        case .time(let width, let buckets):
+        switch kind {
+        case .calls:
+            return ringTotals
+        case .time(let width):
             let epoch = Self.epoch(of: now, width: width)
             var total = Totals()
             for bucket in buckets {
