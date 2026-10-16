@@ -144,9 +144,12 @@ public struct Retrying: Policy {
     public nonisolated(nonsending) func execute<R, Failure: Error>(
         _ operation: nonisolated(nonsending) () async throws(Failure) -> R
     ) async throws(PolicyError<Failure>) -> R {
+        // The classifier sees the operation's own error, not the PolicyError
+        // a pipeline wraps it in, so the stage decides the same way alone and
+        // in a pipeline (and as a breaker's recordWhen would).
         let classify = self.classify
         let typed = RetryClassifier<Failure> { failure in
-            classify.decision(for: failure, attemptTimedOut: false)
+            classify.decision(for: failure.unwrappedForClassification, attemptTimedOut: false)
         }
         do throws(Failure) {
             if let attemptTimeout {

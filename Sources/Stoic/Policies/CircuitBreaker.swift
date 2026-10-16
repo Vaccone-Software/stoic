@@ -144,9 +144,10 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         public var halfOpenTimeout: Duration
         /// Whether a call that ended in this error is recorded as a failure.
         ///
-        /// Called with the operation's own error (inside a pipeline the
-        /// ``PolicyError`` layers are removed first), or with the
-        /// ``Rejection`` an inner policy raised. `true` records a failure;
+        /// Called with the operation's own error, or with the ``Rejection``
+        /// an inner policy raised: ``PolicyError`` layers, a ``Report`` from
+        /// `withContext` and a ``ConcurrentFailure`` are removed first, as
+        /// for a `Retrying` stage's classifier. `true` records a failure;
         /// `false` records a success — a `404` is the dependency answering —
         /// except for a rejection, which is then not recorded at all.
         ///
@@ -548,7 +549,7 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         case .failure(let error):
             if containsDefect(error) { return .ignored("defect") }
             if callerCancelled { return .ignored("cancelled") }
-            let inner = error.strippingPolicyLayers
+            let inner = error.unwrappedForClassification
             let failed = configuration.recordWhen(inner)
             if inner is Rejection && !failed { return .ignored("rejection") }
             return .recorded(failed: failed, slow: slow)

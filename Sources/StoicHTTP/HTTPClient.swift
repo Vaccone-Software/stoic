@@ -336,8 +336,10 @@ public final class HTTPClient: Sendable {
         // stages throw. Anything a policy refused (an open breaker, a full
         // bulkhead, the deadline) ends the retrying: waiting for a breaker
         // that said "fail fast" would defeat it.
+        // The stage hands its classifier the attempt's own error, unwrapped;
+        // a policy's refusal arrives as a `Rejection`.
         let classifier = RetryClassifier<any Error> { failure in
-            guard let attempt = (failure as? PolicyError<AttemptError>)?.failure else { return .stop }
+            guard let attempt = failure as? AttemptError else { return .stop }
             return attempt.decision(policy: policy, safeToRepeat: safeToRepeat)
         }
         var stages: [any Policy] = [

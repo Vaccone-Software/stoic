@@ -159,6 +159,28 @@ struct PipelineTests {
         }
     }
 
+    @Test(.failureMode("design/10", "a `Retrying` stage with a custom classifier runs inside a pipeline"))
+    func aCustomRetryingClassifierSeesTheOperationsOwnErrorAloneAndInAPipeline() async {
+        // Retry `.failed`, stop on anything else: written against the
+        // operation's error type, as a caller would write it.
+        let classifier = RetryClassifier<any Error> { ($0 as? Boom) == .failed ? .retry : .stop }
+        let stage = Retrying(.fixed(.seconds(1)).attempts(3), budget: .unlimited, classify: classifier)
+        let alone = SendableBox(0)
+        let inPipeline = SendableBox(0)
+        await withTestAmbient(clock: ImmediateClock()) {
+            _ = await outcome(of: stage) { () throws(Boom) -> Int in
+                alone.mutate { $0 += 1 }
+                throw .failed
+            }
+            _ = await outcome(of: Pipeline(stage, Bulkhead(maxConcurrent: 1, label: "api"))) { () throws(Boom) -> Int in
+                inPipeline.mutate { $0 += 1 }
+                throw .failed
+            }
+        }
+        #expect(alone.value == 3)
+        #expect(inPipeline.value == 3, "the classifier was handed the PolicyError, not Boom")
+    }
+
     @Test func aRetryThatMeetsAnOpenBreakerGetsItsRetryAfterAndEndsWithTheOperationsOwnError() async {
         await withBreakerWorld { clock, events in
             let breaker = CircuitBreaker(label: "api", testConfiguration(minimumCalls: 2), clock: clock.erased)

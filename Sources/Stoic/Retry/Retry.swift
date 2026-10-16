@@ -167,18 +167,11 @@ public struct RetryClassifier<Failure: Error>: Sendable {
 
 /// The decision for errors whose nature Stoic knows, or `nil`.
 private func standardDecision(for failure: any Error) -> RetryDecision? {
-    switch failure {
-    case let report as Report:
-        return standardDecision(for: report.root)
+    switch failure.unwrappedForClassification {
     case let retryable as any Retryable:
         return retryable.retryDecision
     case let rejection as Rejection:
         return decision(for: rejection)
-    case let policy as any RejectionCarrying:
-        if let rejection = policy.carriedRejection { return decision(for: rejection) }
-        return policy.carriedFailure.flatMap(standardDecision(for:))
-    case let concurrent as any PrimaryFailureCarrying:
-        return standardDecision(for: concurrent.primaryFailure)
     case is DecodingError, is EncodingError:
         return .stop
     default:

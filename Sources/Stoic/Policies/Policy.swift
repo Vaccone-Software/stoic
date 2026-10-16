@@ -40,18 +40,31 @@ extension Rejection {
 }
 
 extension Error {
-    /// This error with every ``PolicyError`` layer removed: the operation's
-    /// own error, or the ``Rejection`` that a policy raised.
+    /// This error with every wrapper removed: the operation's own error, or
+    /// the ``Rejection`` that a policy raised.
     ///
-    /// What classification (a breaker's `recordWhen`) should look at, so that
-    /// a policy placed in a pipeline sees the same errors as one run alone.
-    var strippingPolicyLayers: any Error {
+    /// The wrappers are the ones Stoic adds on the way out: ``PolicyError``
+    /// layers (a stage inside a pipeline sees its inner stages' errors
+    /// wrapped), a ``Report`` (`withContext` adds one), and a
+    /// ``ConcurrentFailure`` (its primary failure stands for it). Everything
+    /// that classifies an error — a breaker's `recordWhen`, a `Retrying`
+    /// stage's classifier, the standard retry classifier — looks at this, so
+    /// a policy decides the same way alone, in a pipeline, or around code
+    /// that adds context.
+    var unwrappedForClassification: any Error {
         var current: any Error = self
-        while let policy = current as? any RejectionCarrying {
-            if let rejection = policy.carriedRejection { return rejection }
-            guard let inner = policy.carriedFailure else { return current }
-            current = inner
+        while true {
+            if let report = current as? Report {
+                current = report.root
+            } else if let policy = current as? any RejectionCarrying {
+                if let rejection = policy.carriedRejection { return rejection }
+                guard let inner = policy.carriedFailure else { return current }
+                current = inner
+            } else if let concurrent = current as? any PrimaryFailureCarrying {
+                current = concurrent.primaryFailure
+            } else {
+                return current
+            }
         }
-        return current
     }
 }

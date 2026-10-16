@@ -442,6 +442,42 @@ struct CircuitBreakerTests {
         }
     }
 
+    @Test(.failureMode("design/10", "an inner policy's refusal arrives wrapped by `withContext`"))
+    func anInnerRefusalWrappedInContextIsStillARefusal() async {
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(label: "context", testConfiguration(minimumCalls: 1), clock: clock.erased)
+            for _ in 0..<5 {
+                _ = await outcome(of: breaker) { () async throws -> Int in
+                    try withContext("loading the profile") { () throws -> Int in
+                        throw PolicyError<Boom>.rejected(Rejection(.bulkheadFull, label: "inner-bulkhead"))
+                    }
+                }
+            }
+            #expect(breaker.state == .closed)
+            #expect(breaker.snapshot.calls == 0)
+            #expect(events.events(named: "breaker.ignored").count == 5)
+            #expect(events.events(named: "breaker.ignored").allSatisfy { $0.text("reason") == "rejection" })
+        }
+    }
+
+    @Test func recordWhenSeesThroughReportsAndConcurrentFailures() async {
+        await withBreakerWorld { clock, _ in
+            let seen = SendableBox<[String]>([])
+            let config = testConfiguration(minimumCalls: 10, recordWhen: { error in
+                seen.mutate { $0.append(String(describing: type(of: error))) }
+                return true
+            })
+            let breaker = CircuitBreaker(label: "unwrap", config, clock: clock.erased)
+            _ = await outcome(of: breaker) { () async throws -> Int in
+                try withContext("syncing") { () throws -> Int in throw Boom.failed }
+            }
+            _ = await outcome(of: breaker) { () throws(ConcurrentFailure<Boom>) -> Int in
+                throw ConcurrentFailure([Boom.notFound, Boom.failed])
+            }
+            #expect(seen.value == ["Boom", "Boom"])
+        }
+    }
+
     @Test func aClassifierCanOptIntoCountingARejection() async {
         await withBreakerWorld { clock, _ in
             let config = testConfiguration(minimumCalls: 2, recordWhen: { error in

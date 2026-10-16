@@ -272,9 +272,12 @@ an inner policy) returns it.
    A `404` is the dependency answering, and a probe that gets one should close
    the breaker.
 
-`recordWhen` receives the operation's own error: `PolicyError` layers are
-removed first, so inside a pipeline it sees `F` or, for an inner policy's
-refusal, a `Rejection`. The default, `countsByDefault`, returns `false` for
+`recordWhen` receives the operation's own error: `PolicyError` layers, a
+`Report` (what `withContext` wraps an error in) and a `ConcurrentFailure` (its
+primary failure stands for it) are removed first, so inside a pipeline, or
+around code that adds context, it sees `F` or, for an inner policy's refusal,
+a `Rejection`. A `Retrying` stage's classifier sees the same error, through
+the same helper, so retry and breaker never classify one error two ways. The default, `countsByDefault`, returns `false` for
 `Rejection`s — an inner bulkhead being full, an inner limiter refusing or an
 inner budget running dry say nothing about the dependency — and `true` for
 everything else, including a `CancellationError` thrown while the caller is
@@ -388,8 +391,9 @@ breaker, so a breaker's `.circuitOpen` rejection reaches the retry classifier
 as the attempt's error; the standard classifier already honours its `retryAfter`
 (a half-open rejection, with none, is retried on the schedule). Its classifier
 is typed `RetryClassifier<any Error>` because a stage does not know the
-failure type of the pipeline it will be placed in; the standard classifier
-sees through `PolicyError`. The budget is per call site of `Retrying(…)`.
+failure type of the pipeline it will be placed in, and it is handed the
+operation's own error with the wrappers removed (as `recordWhen` is), so a
+classifier that matches `F` decides the same way alone and in a pipeline. The budget is per call site of `Retrying(…)`.
 
 With `attemptTimeout`, each attempt runs under the engine of
 `retry(attemptTimeout:)`: a timeout that cancels the attempt and awaits it. A
@@ -415,6 +419,8 @@ the operation off the caller's task, which is why a timeout is an option of
 | a probe is still running after `halfOpenTimeout`                          | The next call or read re-opens it (`probe_timeout`); the late probe is ignored as stale                   |
 | the caller is cancelled while the operation runs                          | Not recorded; a probe's permit is returned; `breaker.ignored` (reason `cancelled`)                        |
 | the operation throws a `Defect`                                           | Rethrown; not recorded; `breaker.defect` at error level; a probe's permit is returned                     |
+| an inner policy's refusal arrives wrapped by `withContext`                | Still a refusal: not recorded; `breaker.ignored` (reason `rejection`)                                     |
+| a `Retrying` stage with a custom classifier runs inside a pipeline        | The classifier is handed the operation's own error, as when the stage runs alone                          |
 | an inner policy rejects (bulkhead full, limiter, budget)                  | Passed through; not recorded by default; `breaker.ignored` (reason `rejection`)                           |
 | the operation throws `CancellationError` and the caller is not cancelled  | Recorded like any error (an inner timeout cut the call short)                                             |
 | `recordWhen` returns `false` for an error                                 | Recorded as a success; the error still propagates                                                         |
