@@ -56,27 +56,35 @@ public struct Constraint: Sendable, Hashable, CustomStringConvertible {
     /// A number within `bounds`: `.range(200...4000)`, `.range(0.1...10)`,
     /// `.range(1...)`, `.range(..<100)`. Integer bounds are exact; a
     /// `Double` bound is the shortest decimal that reads back as it, so
-    /// `.range(0.1...10)` admits `0.1`. An infinite bound is no bound.
+    /// `.range(0.1...10)` admits `0.1`. An infinite bound on its own side
+    /// (`0...Double.infinity`) is no bound; one that admits nothing
+    /// (`Double.infinity...`) or a NaN traps where it is written, rather
+    /// than becoming no bound and admitting everything.
     public static func range(_ bounds: some NumberBounds) -> Constraint {
         Constraint(.range(bounds.numberRange))
     }
 
     /// A number strictly above `bound`. `.greaterThan(0)` is a positive
-    /// number, which no closed range can say.
+    /// number, which no closed range can say. `.greaterThan(.infinity)` and
+    /// NaN admit nothing and trap.
     public static func greaterThan(_ bound: some NumericBound) -> Constraint {
-        Constraint(.range(NumberRange(lower: bound.jsonNumber.map { NumberBound($0, isInclusive: false) })))
+        Constraint(.range(NumberRange(lower: lowerEnd(bound, isInclusive: false))))
     }
 
-    /// A number strictly below `bound`.
+    /// A number strictly below `bound`. `.lessThan(-.infinity)` and NaN
+    /// admit nothing and trap.
     public static func lessThan(_ bound: some NumericBound) -> Constraint {
-        Constraint(.range(NumberRange(upper: bound.jsonNumber.map { NumberBound($0, isInclusive: false) })))
+        Constraint(.range(NumberRange(upper: upperEnd(bound, isInclusive: false))))
     }
 
     /// A number that is a whole multiple of `step`. A step of zero or less
     /// is a mistake in the schema and is reported as an
-    /// ``IssueCode/invalidConstraint`` issue when checked.
+    /// ``IssueCode/invalidConstraint`` issue when checked; a step that is
+    /// not a finite number traps where it is written.
     public static func multipleOf(_ step: some NumericBound) -> Constraint {
-        guard let number = step.jsonNumber else { return Constraint(.multipleOf(JSONNumber(0))) }
+        guard let number = step.jsonNumber else {
+            preconditionFailure("multipleOf(\(step)): a step must be a finite number")
+        }
         return Constraint(.multipleOf(number))
     }
 
@@ -351,36 +359,49 @@ public protocol NumberBounds {
 
 extension ClosedRange: NumberBounds where Bound: NumericBound {
     public var numberRange: NumberRange {
-        NumberRange(
-            lower: lowerBound.jsonNumber.map { NumberBound($0) },
-            upper: upperBound.jsonNumber.map { NumberBound($0) })
+        NumberRange(lower: lowerEnd(lowerBound, isInclusive: true), upper: upperEnd(upperBound, isInclusive: true))
     }
 }
 
 extension Range: NumberBounds where Bound: NumericBound {
     public var numberRange: NumberRange {
-        NumberRange(
-            lower: lowerBound.jsonNumber.map { NumberBound($0) },
-            upper: upperBound.jsonNumber.map { NumberBound($0, isInclusive: false) })
+        NumberRange(lower: lowerEnd(lowerBound, isInclusive: true), upper: upperEnd(upperBound, isInclusive: false))
     }
 }
 
 extension PartialRangeFrom: NumberBounds where Bound: NumericBound {
     public var numberRange: NumberRange {
-        NumberRange(lower: lowerBound.jsonNumber.map { NumberBound($0) })
+        NumberRange(lower: lowerEnd(lowerBound, isInclusive: true))
     }
 }
 
 extension PartialRangeThrough: NumberBounds where Bound: NumericBound {
     public var numberRange: NumberRange {
-        NumberRange(upper: upperBound.jsonNumber.map { NumberBound($0) })
+        NumberRange(upper: upperEnd(upperBound, isInclusive: true))
     }
 }
 
 extension PartialRangeUpTo: NumberBounds where Bound: NumericBound {
     public var numberRange: NumberRange {
-        NumberRange(upper: upperBound.jsonNumber.map { NumberBound($0, isInclusive: false) })
+        NumberRange(upper: upperEnd(upperBound, isInclusive: false))
     }
+}
+
+/// A range's lower end. Minus infinity bounds nothing, so it is no bound;
+/// NaN and plus infinity admit no number at all, a mistake in the declaration
+/// that traps where it is written instead of quietly admitting everything.
+private func lowerEnd(_ bound: some NumericBound, isInclusive: Bool) -> NumberBound? {
+    if let number = bound.jsonNumber { return NumberBound(number, isInclusive: isInclusive) }
+    precondition(bound as? Double == -.infinity, "a lower bound of \(bound) admits no number")
+    return nil
+}
+
+/// A range's upper end; see ``lowerEnd(_:isInclusive:)``, with the signs
+/// swapped.
+private func upperEnd(_ bound: some NumericBound, isInclusive: Bool) -> NumberBound? {
+    if let number = bound.jsonNumber { return NumberBound(number, isInclusive: isInclusive) }
+    precondition(bound as? Double == .infinity, "an upper bound of \(bound) admits no number")
+    return nil
 }
 
 /// A Swift range of `Int`s that ``Constraint/length(_:unit:)`` and

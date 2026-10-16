@@ -282,7 +282,10 @@ above left open:
   cannot slip past `.range(0...10)` with forty digits that a `Double` would
   round to `10`.
   A constraint is silent about kinds of value it is not about, as JSON
-  Schema's keywords are.
+  Schema's keywords are. An infinite bound on its own side is no bound; a
+  bound that admits nothing (`.greaterThan(.infinity)`, `Double.infinity...`,
+  any NaN, a non-finite step) traps where it is written, where it used to
+  become no bound and admit everything.
 - **String length has a unit.** `.characters` is Unicode scalars, the only
   unit JSON Schema counts; `.graphemes` and `.utf8Bytes` export as
   `x-stoic-length`. A pattern is skipped when a length constraint on the

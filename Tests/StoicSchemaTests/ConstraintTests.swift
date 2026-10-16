@@ -49,6 +49,18 @@ struct RangeConstraintTests {
         #expect(codes(c, "-1") == [.outOfRange])
         guard case .range(let range) = c.kind else { return fail("not a range") }
         #expect(range.upper == nil)
+        guard case .range(let open) = Constraint.greaterThan(-Double.infinity).kind else { return fail("not a range") }
+        #expect(open.lower == nil)
+    }
+
+    @Test func boundsThatAdmitNothingTrapWhereTheyAreWritten() async {
+        // They used to become no bound, admitting everything.
+        await #expect(processExitsWith: .failure) { _ = Constraint.greaterThan(Double.infinity) }
+        await #expect(processExitsWith: .failure) { _ = Constraint.lessThan(-Double.infinity) }
+        await #expect(processExitsWith: .failure) { _ = Constraint.greaterThan(Double.nan) }
+        await #expect(processExitsWith: .failure) { _ = Constraint.range(Double.infinity...) }
+        await #expect(processExitsWith: .failure) { _ = Constraint.range(..<(-Double.infinity)) }
+        await #expect(processExitsWith: .failure) { _ = Constraint.multipleOf(Double.nan) }
     }
 
     @Test func decimalBoundsAreExact() {
