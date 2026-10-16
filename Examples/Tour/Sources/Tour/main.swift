@@ -22,9 +22,9 @@ final class Server: Sendable {
     private let calls = Mutex(0)
     let failures: Int
     init(failures: Int) { self.failures = failures }
-    func fetch() async throws(Flaky) -> String {
+    func fetch() async throws -> String {
         let call = calls.withLock { $0 += 1; return $0 }
-        try? await Task.sleep(for: .milliseconds(20))
+        try await Ambient.sleep(for: .milliseconds(20))
         if call <= failures { throw Flaky() }
         return "profile #\(call)"
     }
@@ -32,25 +32,31 @@ final class Server: Sendable {
 
 func section(_ title: String) { print("\n▸ \(title)") }
 
+/// A call that outlives its timeout: the work is cancelled, with a cause, and
+/// the call ends in the cancellation its work threw.
+func slowCall() async throws {
+    do {
+        try await withTimeout(.milliseconds(100), label: "slow call") {
+            do { try await Ambient.sleep(for: .seconds(10)) } catch {
+                print("  cancelled because: \(CancellationCause.current?.rawValue ?? "?")")
+                throw error
+            }
+        }
+    } catch is CancellationError {
+        print("  threw CancellationError")
+    }
+}
+
 try await withAmbient({ $0.instrumentation = PrintEvents() }) {
     section("retry: a bounded, jittered, budgeted policy")
     let server = Server(failures: 2)
-    let profile = try await retry(.exponential(base: .milliseconds(50)).attempts(5), label: "fetch profile") { _ throws(Flaky) in
+    let profile = try await retry(.exponential(base: .milliseconds(50)).attempts(5), label: "fetch profile") { _ in
         try await server.fetch()
     }
     print("  got \(profile)")
 
     section("withTimeout: the work is cancelled, with a cause")
-    do {
-        try await withTimeout(.milliseconds(100), label: "slow call") {
-            do { try await Task.sleep(for: .seconds(10)) } catch {
-                print("  cancelled because: \(CancellationCause.current?.rawValue ?? "?")")
-                throw error
-            }
-        }
-    } catch {
-        print("  threw \(type(of: error))")
-    }
+    try await slowCall()
 
     section("withScope: release in reverse, even on failure")
     do {
@@ -59,8 +65,8 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
             _ = await scope.acquire({ "file" }, release: { name, _ in print("  released \(name)") })
             throw Flaky()
         }
-    } catch {
-        print("  body's error passed through: \(type(of: error))")
+    } catch let flaky as Flaky {
+        print("  body's error passed through: \(type(of: flaky))")
     }
 
     section("StateMachine: work belongs to a state")
@@ -75,11 +81,11 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
         }
     }
     machine.whileIn(.listening, label: "microphone") { sender in
-        try? await Task.sleep(for: .milliseconds(30))
+        do { try await Ambient.sleep(for: .milliseconds(30)) } catch { return }   // left the state: cancelled
         sender.send(.heard)
     }
     machine.send(.start)
-    try await Task.sleep(for: .milliseconds(100))
+    try await Ambient.sleep(for: .milliseconds(100))
     print("  state: \(machine.state); history: \(machine.history.map { "\($0.from)→\($0.to)" })")
 
     section("Supervisor: restart, then escalate when restarting stops helping")
@@ -108,45 +114,54 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
         """
     do {
         _ = try Settings.schema.decode(text) { warning in print("  warning: \(warning)") }
-    } catch {
-        print("\(error)".split(separator: "\n").map { "  \($0)" }.joined(separator: "\n"))
+    } catch let failure as ValidationFailure {
+        print("\(failure)".split(separator: "\n").map { "  \($0)" }.joined(separator: "\n"))
     }
 
-    let directory = FileManager.default.temporaryDirectory.appending(path: "stoic-tour-\(UUID().uuidString)").path()
-    try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(atPath: directory) }
+    // The files these sections write go when the scope ends, however it ends.
+    try await withScope(label: "tour files") { scope in
+        let directory = try await scope.acquire(label: "tour directory", {
+            let path = FileManager.default.temporaryDirectory.appending(path: "stoic-tour-\(UUID().uuidString)").path()
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+            return path
+        }, release: { path, _ in try FileManager.default.removeItem(atPath: path) })
 
-    section("SettingsStore: validated, crash-safe, and an older build cannot ruin it")
-    let settings = try SettingsStore.open(at: directory + "/settings.json", schema: Settings.schema)
-    print("  first launch: \(settings.value.scrollSpeed) from \(settings.source)")
-    try settings.update { $0.scrollSpeed = 900 }
-    do {
-        try settings.update { $0.scrollSpeed = 99_999 }
-    } catch {
-        print("  refused: \(error)")
-    }
-    let reopened = try SettingsStore.open(at: directory + "/settings.json", schema: Settings.schema)
-    print("  next launch: \(reopened.value.scrollSpeed) from \(reopened.source)")
+        section("SettingsStore: validated, crash-safe, and an older build cannot ruin it")
+        let settings = try SettingsStore.open(at: directory + "/settings.json", schema: Settings.schema)
+        print("  first launch: \(settings.value.scrollSpeed) from \(settings.source)")
+        try settings.update { $0.scrollSpeed = 900 }
+        do {
+            try settings.update { $0.scrollSpeed = 99_999 }
+        } catch SettingsStore<Settings>.UpdateError.invalid(let issues) {
+            print("  refused: \(issues.map(\.description).joined(separator: "; "))")
+        }
+        let reopened = try SettingsStore.open(at: directory + "/settings.json", schema: Settings.schema)
+        print("  next launch: \(reopened.value.scrollSpeed) from \(reopened.source)")
 
-    section("FlightRecorder: the next launch reads what this one was doing")
-    do {
+        section("FlightRecorder: the next launch reads what this one was doing")
+        do {
+            let recorder = try FlightRecorder(path: directory + "/flight.rec", capacity: 64 * 1024)
+            recorder.record(Event("tour.sync_started", level: .info, label: "sync"))
+            recorder.record(Event("tour.retrying", level: .warning, label: "sync", fields: [.init("attempt", .int(2))]))
+            // …and the process dies here, without markCleanExit().
+        }
         let recorder = try FlightRecorder(path: directory + "/flight.rec", capacity: 64 * 1024)
-        recorder.record(Event("tour.sync_started", level: .info, label: "sync"))
-        recorder.record(Event("tour.retrying", level: .warning, label: "sync", fields: [.init("attempt", .int(2))]))
-        // …and the process dies here, without markCleanExit().
-    }
-    let recorder = try FlightRecorder(path: directory + "/flight.rec", capacity: 64 * 1024)
-    if let last = recorder.previousRun {
-        print("  previous run ended cleanly: \(last.endedCleanly); its last events:")
-        for event in last.events { print("    \(event)") }
+        if let last = recorder.previousRun {
+            print("  previous run ended cleanly: \(last.endedCleanly); its last events:")
+            for event in last.events { print("    \(event)") }
+        }
     }
 
     section("Quarantine: never close a handle a wedged call may still be using")
-    await withScope { scope in
+    try await withScope { scope in
         scope.onExit(label: "close audio handle", ifWorkAbandoned: .quarantine) { _ in print("  closed the handle") }
-        _ = try? await abandoningAfter(.milliseconds(50), label: "tour.audio") { () throws(Flaky) -> Int in
-            Thread.sleep(forTimeInterval: 0.2)   // a call that ignores every deadline
-            return 1
+        do {
+            _ = try await abandoningAfter(.milliseconds(50), label: "tour.audio") { () throws(Flaky) -> Int in
+                Thread.sleep(forTimeInterval: 0.2)   // a call that ignores every deadline
+                return 1
+            }
+        } catch let error as PolicyError<Flaky> {
+            print("  stopped waiting: \(error)")
         }
         print("  abandoned work in this scope: \(scope.abandonedWork)")
     }

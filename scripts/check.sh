@@ -82,6 +82,11 @@ step "self-lint, against Stoic's escape budget (design/13)"
 # A new `stoic:allow` fails here until .stoic-lint-baseline.json records it.
 swift run --traits Lint stoic-lint --baseline .stoic-lint-baseline.json Sources Plugins Package.swift
 
+step "examples lint: what agents copy is clean, with no baseline"
+# Examples are exemplary or they are wrong: a finding here fails the build,
+# and nothing is accepted.
+swift run --traits Lint stoic-lint Examples
+
 step "public API: no breaking change since the last release, unless allowed in writing"
 # Compares every library product with the newest tag. An intentional break
 # is listed, one API per line, in api-breakage-allowlist.txt, in the change
