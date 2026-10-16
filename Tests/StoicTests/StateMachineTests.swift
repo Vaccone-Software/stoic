@@ -69,6 +69,117 @@ struct StateMachineTests {
         #expect(observed.value == .stateExited)
     }
 
+    /// Work started in one phase never overlaps the next: the new visit's work
+    /// starts once the old visit's work has finished its cleanup.
+    @Test(.failureMode("design/07", "a state is left while its work is still cleaning up"))
+    func theNextVisitsWorkStartsOnceTheLastVisitsWorkHasStopped() async {
+        let machine = StateMachine<Int, Int>(initial: 0, label: "dictation", clock: TestClock().erased) { state, _ in
+            .to(state == 0 ? 1 : 0)
+        }
+        let recording = AsyncGate()
+        let finishClosing = AsyncGate()
+        let closed = SendableBox(false)
+        let closedBeforeTranscribing = SendableBox<Bool?>(nil)
+        let transcribing = AsyncGate()
+        machine.whileIn(0, label: "recorder") { _ in
+            recording.open()
+            try? await Task.sleep(for: .seconds(3600))
+            // Cleanup that takes a moment: stopping an engine, closing a file.
+            await withTaskCancellationShield { await finishClosing.wait() }
+            closed.mutate { $0 = true }
+        }
+        machine.whileIn(1, label: "transcriber") { _ in
+            closedBeforeTranscribing.mutate { $0 = closed.value }
+            transcribing.open()
+        }
+        await recording.wait()
+        machine.send(0)
+        #expect(await holdsThroughout { closedBeforeTranscribing.value == nil }, "the transcriber waits for the recorder")
+        finishClosing.open()
+        await transcribing.wait()
+        #expect(closedBeforeTranscribing.value == true)
+    }
+
+    @Test func aVisitLeftBeforeItsWorkCouldBeginRunsNone() async {
+        let machine = StateMachine<Int, Int>(initial: 0, label: "hops", clock: TestClock().erased) { _, next in .to(next) }
+        let started = AsyncGate()
+        let release = AsyncGate()
+        let ran = SendableBox<[Int]>([])
+        machine.whileIn(where: { _ in true }, label: "probe") { _ in
+            ran.mutate { $0.append(0) }
+            started.open()
+            try? await Task.sleep(for: .seconds(3600))
+            await withTaskCancellationShield { await release.wait() }
+        }
+        await started.wait()
+        machine.send(1)   // its work waits for state 0's cleanup …
+        machine.send(2)   // … and the visit is over before that ends
+        release.open()
+        #expect(await eventually { ran.value.count == 2 })
+        #expect(await holdsThroughout { ran.value.count == 2 }, "state 1's work never ran: \(ran.value)")
+        await machine.shutdown()
+    }
+
+    @Test(.failureMode("design/07", "state work does not stop within its shutdown timeout"))
+    func workThatOverrunsItsShutdownTimeoutIsAbandonedAndReported() async {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let release = AsyncGate()
+        let nextStarted = AsyncGate()
+        await withTestAmbient(clock: clock, events: events) {
+            let machine = StateMachine<Int, Int>(initial: 0, label: "player") { state, _ in .to(state == 0 ? 1 : 0) }
+            machine.whileIn(0, label: "engine", shutdownTimeout: .seconds(2)) { _ in
+                await release.wait()   // ignores cancellation
+            }
+            machine.whileIn(1, label: "next") { _ in nextStarted.open() }
+            #expect(await eventually { TaskLedger.current.contains { $0.label == "player.engine" } })
+            machine.send(0)
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(2))
+            await nextStarted.wait()
+            #expect(AbandonedWork.current.contains { $0.label == "state machine player work engine" })
+            release.open()
+            #expect(await eventually { !AbandonedWork.current.contains { $0.label == "state machine player work engine" } })
+            await machine.shutdown()
+        }
+        let abandoned = events.events(named: "statemachine.work_abandoned")
+        #expect(abandoned.count == 1)
+        #expect(abandoned.first?.label == "player")
+        #expect(abandoned.first?.fields.first { $0.key == "work" }.map { "\($0.value)" } == "engine")
+        #expect(await eventually { events.names.contains("abandoned.completed") })
+    }
+
+    @Test(.failureMode("design/07", "the machine is shut down"))
+    func shuttingDownCancelsAndAwaitsTheWorkAndEndsTheMachine() async {
+        let events = RecordingInstrumentation()
+        let started = AsyncGate()
+        let cleanedUp = SendableBox(false)
+        let observed = SendableBox<CancellationCause?>(nil)
+        await withTestAmbient(clock: TestClock(), events: events) {
+            let machine = StateMachine(initial: Phase.idle, label: "dictation", transition: Self.transitions)
+            machine.whileIn(.listening, label: "microphone") { _ in
+                started.open()
+                do { try await Task.sleep(for: .seconds(3600)) } catch { observed.mutate { $0 = CancellationCause.current } }
+                await Task.yield()
+                cleanedUp.mutate { $0 = true }
+            }
+            let states = machine.states()
+            let observer = Task { await states.reduce(into: 0) { count, _ in count += 1 } }
+            machine.send(.start)
+            await started.wait()
+            await machine.shutdown()
+            #expect(cleanedUp.value, "shutdown returns once the work has stopped")
+            #expect(observed.value == .stateExited)
+            _ = await observer.value   // the observer's stream finished
+            machine.send(.heard)
+            #expect(machine.state == .listening, "a shut-down machine takes no more events")
+            var late = machine.states().makeAsyncIterator()
+            #expect(await late.next() == .listening)
+            #expect(await late.next() == nil)
+        }
+        #expect(events.names.contains("statemachine.stale_event"))
+    }
+
     /// Cancelling a task runs its cancellation handlers on the cancelling
     /// thread, at once. The old visit's work is cancelled after the machine
     /// releases its lock, so a handler that uses the machine — or work that

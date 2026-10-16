@@ -61,3 +61,7 @@ API breakage: enumelement HTTPError.redirectRefused has been added as a new enum
 API breakage: constructor HTTPPolicy.init(attemptTimeout:schedule:retryBudget:retryStatuses:maxRetryAfter:breaker:maxConcurrentPerHost:queueLimitPerHost:rateLimit:maxResponseBytes:errorExcerptBytes:decodeOptions:coalesceGETs:ignoreHeadersForCoalescing:retryOnResponse:wallClock:) has been removed
 API breakage: constructor URLSessionTransport.init(session:) has been removed
 API breakage: constructor Ambient.init(clock:livenessClock:random:instrumentation:budgets:conditions:) has been removed
+API breakage: func StateMachine.whileIn(where:label:_:) has parameter 2 type change from (Stoic.StateMachine<State, Event>.Sender) async -> Swift.Void to Swift.Duration
+API breakage: func StateMachine.whileIn(_:label:_:) has parameter 2 type change from (Stoic.StateMachine<State, Event>.Sender) async -> Swift.Void to Swift.Duration
+API breakage: func StateMachine.whileIn(where:label:_:) has been renamed to func whileIn(where:label:shutdownTimeout:_:)
+API breakage: func StateMachine.whileIn(_:label:_:) has been renamed to func whileIn(_:label:shutdownTimeout:_:)

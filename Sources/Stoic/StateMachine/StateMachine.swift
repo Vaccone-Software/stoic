@@ -44,13 +44,26 @@ public struct StateTimeout<Event: Sendable>: Sendable {
 ///         }
 ///     }
 ///
-/// **Work belongs to a state.** ``whileIn(_:label:_:)`` registers work that
-/// starts each time the machine enters a matching state and is cancelled
-/// (``CancellationCause/stateExited``) the moment it leaves. Events that work
-/// sends back are delivered only while the machine is still in the *same
-/// visit* to that state; a late event from an earlier visit is dropped and
-/// reported (`statemachine.stale_event`). This is the structured replacement
-/// for phase booleans and the generation counters that guard them.
+/// **Work belongs to a state.** ``whileIn(_:label:shutdownTimeout:_:)``
+/// registers work that starts each time the machine enters a matching state
+/// and is cancelled (``CancellationCause/stateExited``) the moment it leaves.
+/// The next visit's work starts only once the old visit's work has finished
+/// — its cleanup included — or been abandoned after its `shutdownTimeout`, so
+/// the two never overlap. Events that work sends back are delivered only
+/// while the machine is still in the *same visit* to that state; a late event
+/// from an earlier visit is dropped and reported (`statemachine.stale_event`).
+/// This is the structured replacement for phase booleans and the generation
+/// counters that guard them.
+///
+///     dictation.whileIn(.listening, label: "microphone") { sender in
+///         for await level in microphone.levels() where level > threshold {
+///             sender.send(.heard)
+///         }
+///     }
+///
+/// The work gets everything it needs from its ``Sender``: it need not, and
+/// should not, capture the machine, which holds the work and would never be
+/// freed. ``shutdown()`` ends the machine and waits for its work.
 ///
 /// **States can time out.** A transition may carry a ``StateTimeout``: if the
 /// machine is still in that visit when the time is up, it sends itself the
@@ -92,8 +105,18 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     private struct Activity: Sendable {
         let label: String
+        let shutdownTimeout: Duration
         let matches: @Sendable (State) -> Bool
         let work: @Sendable (Sender) async -> Void
+    }
+
+    /// One visit's running work, how long it may take to stop, and the
+    /// scopes it was started in, which count it if it is abandoned.
+    private struct Running: Sendable {
+        let task: Task<Void, Never>
+        let label: String
+        let shutdownTimeout: Duration
+        let watch: AbandonmentWatch?
     }
 
     private struct Core {
@@ -102,7 +125,12 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         // A ring once full: `historyHead` is the oldest record's index.
         var history: [Record] = []
         var historyHead = 0
-        var stateWork: [Task<Void, Never>] = []
+        var stateWork: [Running] = []
+        var timer: Task<Void, Never>?
+        // Ends once the work of every earlier visit has stopped or been
+        // abandoned: a new visit's work waits for it before it begins.
+        var exit: Task<Void, Never>?
+        var isShutDown = false
         var activities: [Activity] = []
         var observers: [UInt64: AsyncStream<State>.Continuation] = [:]
         var nextObserver: UInt64 = 0
@@ -135,7 +163,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     deinit {
         let (work, observers) = core.withLock { core in
-            (core.stateWork, core.observers.valuesInKeyOrder)
+            (core.stateWork.map { $0.task } + [core.timer].compactMap { $0 }, core.observers.valuesInKeyOrder)
         }
         for task in work { task.cancel() }
         for observer in observers { observer.finish() }
@@ -169,25 +197,59 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// Runs `work` whenever the machine is in a state matching `predicate`,
     /// and cancels it when the machine leaves that state. If the machine is
     /// already in a matching state, the work starts now.
+    ///
+    /// - Parameters:
+    ///   - label: Names the work in events and diagnostics.
+    ///   - shutdownTimeout: How long the work may take to stop once its visit
+    ///     ends. The next visit's work waits for it that long at most; then
+    ///     it is abandoned and reported (`statemachine.work_abandoned`).
+    ///   - work: Sends its events through the ``Sender`` it is given.
     public func whileIn(
         where predicate: @escaping @Sendable (State) -> Bool,
         label: String,
+        shutdownTimeout: Duration = .seconds(5),
         _ work: @escaping @Sendable (Sender) async -> Void
     ) {
         checkNotInTransition()
-        let activity = Activity(label: label, matches: predicate, work: work)
+        let activity = Activity(label: label, shutdownTimeout: shutdownTimeout, matches: predicate, work: work)
         core.withLock { core in
             core.activities.append(activity)
-            if Self.inTransition({ predicate(core.state) }) {
-                core.stateWork.append(start(activity, visit: core.visit))
+            if !core.isShutDown, Self.inTransition({ predicate(core.state) }) {
+                core.stateWork.append(start(activity, visit: core.visit, after: core.exit))
             }
         }
     }
 
     /// Runs `work` whenever the machine is in `state`; cancels it when the
     /// machine leaves.
-    public func whileIn(_ state: State, label: String, _ work: @escaping @Sendable (Sender) async -> Void) {
-        whileIn(where: { $0 == state }, label: label, work)
+    public func whileIn(
+        _ state: State,
+        label: String,
+        shutdownTimeout: Duration = .seconds(5),
+        _ work: @escaping @Sendable (Sender) async -> Void
+    ) {
+        whileIn(where: { $0 == state }, label: label, shutdownTimeout: shutdownTimeout, work)
+    }
+
+    /// Ends the machine: cancels its work and timer and waits for the work to
+    /// stop, each piece for at most its `shutdownTimeout` before it is
+    /// abandoned. Observers' streams finish, and every later event is
+    /// dropped (`statemachine.stale_event`).
+    ///
+    /// Call it where the machine's owner ends — a view model's teardown, a
+    /// service's stop — so no state work outlives it.
+    public func shutdown() async {
+        checkNotInTransition()
+        let (leaving, exit, observers) = core.withLock { core in
+            let leaving = core.isShutDown ? [] : leave(&core)
+            core.isShutDown = true
+            let observers = core.observers.valuesInKeyOrder
+            core.observers.removeAll()
+            return (leaving, core.exit, observers)
+        }
+        for task in leaving { task.cancel() }
+        for observer in observers { observer.finish() }
+        await exit?.value
     }
 
     /// The machine's states as they change, starting with the current one.
@@ -196,11 +258,16 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     public func states() -> AsyncStream<State> {
         checkNotInTransition()
         let (stream, continuation) = AsyncStream<State>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let id = core.withLock { core -> UInt64 in
+        let id = core.withLock { core -> UInt64? in
             continuation.yield(core.state)
+            if core.isShutDown { return nil }
             defer { core.nextObserver += 1 }
             core.observers[core.nextObserver] = continuation
             return core.nextObserver
+        }
+        guard let id else {
+            continuation.finish()
+            return stream
         }
         // An observer that stops listening is forgotten, so views that
         // subscribe on every appearance cannot slow every transition down.
@@ -241,6 +308,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     private func apply(_ event: Event, onlyDuring visit: UInt64?) {
         let outcome = core.withLock { core -> Outcome in
+            if core.isShutDown { return .stale }
             if let visit, core.visit != visit { return .stale }
             switch Self.inTransition({ transition(core.state, event) }) {
             case .stay, .ignore:
@@ -248,7 +316,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             case .invalid(let reason):
                 return .invalid(core.state, reason)
             case .to(let next, let timeout):
-                let leaving = core.stateWork
+                let leaving = leave(&core)
                 return .moved(enter(next, timeout: timeout, cause: event, core: &core), leaving: leaving)
             }
         }
@@ -289,10 +357,60 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         }
     }
 
-    /// Moves to `next`. The caller cancels the work the old visit started,
-    /// once the lock is released.
+    /// Ends the current visit's work: returns its tasks, for the caller to
+    /// cancel once the lock is released, and makes the next visit's work wait
+    /// until they have stopped or been abandoned.
+    private func leave(_ core: inout Core) -> [Task<Void, Never>] {
+        var leaving: [Task<Void, Never>] = []
+        if let timer = core.timer {
+            leaving.append(timer)
+            core.timer = nil
+        }
+        guard !core.stateWork.isEmpty else { return leaving }
+        let running = core.stateWork
+        core.stateWork.removeAll(keepingCapacity: true)
+        for work in running { leaving.append(work.task) }
+        let previous = core.exit
+        let clock = clock
+        let label = label
+        // Each piece's time to stop counts from the moment its visit ended.
+        let leftAt = clock.now
+        core.exit = Task.stoic {
+            await previous?.value
+            await Self.awaitStop(of: running, leftAt: leftAt, clock: clock, machine: label)
+        }
+        return leaving
+    }
+
+    /// Waits for each piece of a visit's work to stop, abandoning one that
+    /// overruns its `shutdownTimeout`: listed in `AbandonedWork` until it
+    /// ends, reported, and not waited for.
+    private static func awaitStop(of running: [Running], leftAt: AnyClock.Instant, clock: AnyClock, machine: String) async {
+        for work in running {
+            let deadline = leftAt.advanced(by: work.shutdownTimeout)
+            let allowed = max(.zero, clock.now.duration(to: deadline))
+            guard case .timedOut = await waitForTask(work.task, within: allowed, clock: clock) else { continue }
+            let ledger = AbandonedWork.ledger
+            let id = ledger.admit(label: "state machine \(machine) work \(work.label)")
+            _ = ledger.abandon(id, deadline: deadline, clock: clock, watch: work.watch)
+            Ambient.record(Stoic.Event("statemachine.work_abandoned", level: .error, label: machine, fields: [
+                .init("work", .string(work.label), privacy: .public),
+                .init("timeout", .duration(work.shutdownTimeout)),
+            ]))
+            Task.stoic {
+                await work.task.value
+                if let lateness = ledger.finish(id) {
+                    Ambient.record(Stoic.Event("abandoned.completed", level: .notice, label: machine, fields: [
+                        .init("work", .string(work.label), privacy: .public),
+                        .init("late_by", .duration(lateness)),
+                    ]))
+                }
+            }
+        }
+    }
+
+    /// Moves to `next`, after ``leave(_:)``, and starts the new visit's work.
     private func enter(_ next: State, timeout: StateTimeout<Event>?, cause event: Event, core: inout Core) -> Record {
-        core.stateWork.removeAll()
         let record = Record(from: core.state, event: event, to: next, at: clock.now)
         core.visit += 1
         core.state = next
@@ -309,7 +427,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         // Enter: start the new visit's work and its timer.
         let visit = core.visit
         for activity in core.activities where Self.inTransition({ activity.matches(next) }) {
-            core.stateWork.append(start(activity, visit: visit))
+            core.stateWork.append(start(activity, visit: visit, after: core.exit))
         }
         if let timeout {
             let clock = clock
@@ -317,19 +435,19 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             // runs: advancing a test clock right after a transition must fire it.
             let fireAt = clock.now.advanced(by: timeout.after)
             let sender = makeSender(visit: visit)
-            core.stateWork.append(TaskLedger.task(.stateTimeout, label: label) {
+            core.timer = TaskLedger.task(.stateTimeout, label: label) {
                 do {
                     try await clock.sleep(until: fireAt, tolerance: nil)
                 } catch {
                     return
                 }
                 sender.send(timeout.event)
-            })
+            }
         }
         return record
     }
 
-    private func start(_ activity: Activity, visit: UInt64) -> Task<Void, Never> {
+    private func start(_ activity: Activity, visit: UInt64, after previous: Task<Void, Never>?) -> Running {
         let cause = CancellationCauseBox(parent: nil)
         let sender = makeSender(visit: visit)
         let work = activity.work
@@ -338,13 +456,18 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             // that entered it: it does not inherit the sender's deadline.
             await Deadline.$stored.withValue(nil) {
                 await CancellationCauseBox.$current.withValue(cause) {
+                    // The earlier visits' work has stopped, or been
+                    // abandoned, before this visit's begins; a visit left
+                    // before then runs none.
+                    await previous?.value
+                    guard !Task.isCancelled else { return }
                     // Late-starting work meets events from a later visit.
                     await FaultPoint.hit("statemachine.work")
                     await work(sender)
                 }
             }
         }
-        return Task.stoic {
+        let wrapper = Task.stoic {
             await withTaskCancellationHandler {
                 await task.value
             } onCancel: {
@@ -352,6 +475,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 task.cancel()
             }
         }
+        return Running(task: wrapper, label: activity.label, shutdownTimeout: activity.shutdownTimeout, watch: AbandonmentWatch.current)
     }
 
     private func makeSender(visit: UInt64) -> Sender {

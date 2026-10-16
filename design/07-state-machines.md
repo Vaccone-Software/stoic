@@ -26,9 +26,11 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     public var state: State { get }
     public var history: [Record] { get }
     public func send(_ event: Event)
-    public func whileIn(_ state: State, label: String, _ work: @escaping @Sendable (Sender) async -> Void)
-    public func whileIn(where: @escaping @Sendable (State) -> Bool, label: String, _ work: …)
+    public func whileIn(_ state: State, label: String, shutdownTimeout: Duration = .seconds(5),
+                        _ work: @escaping @Sendable (Sender) async -> Void)
+    public func whileIn(where: @escaping @Sendable (State) -> Bool, label: String, shutdownTimeout: …, _ work: …)
     public func states() -> AsyncStream<State>
+    public func shutdown() async
 }
 
 public struct StateGraph<State, Event> {
@@ -58,6 +60,24 @@ matching state and is cancelled with cause `stateExited` on exit. The
 from an earlier visit is dropped and reported (`statemachine.stale_event`).
 This is what replaces generation counters: the machine does the
 comparison, every time, so no callback can forget to.
+
+**Visits never overlap.** Leaving a state cancels its work, and the next
+visit's work starts only once that work has stopped — its cleanup included
+— so a recorder still closing its file never meets the transcriber that
+opens it. The wait is bounded: each piece of work has a `shutdownTimeout`
+(five seconds by default, as a supervisor child's), counted from the moment
+its visit ended; work that overruns it is abandoned, listed in
+`AbandonedWork` until it ends, and reported (`statemachine.work_abandoned`),
+and the next visit's work starts. `send` itself never waits: the transition
+is immediate, and only the new visit's work waits. A visit that is left
+before its work could begin runs none.
+
+**An owner ends it.** `shutdown()` cancels the machine's work and timer,
+waits for the work to stop (each piece bounded by its `shutdownTimeout`),
+finishes every `states()` stream and drops every later event as stale. The
+work gets everything it needs from its `Sender` and should not capture the
+machine: the machine holds its work, so a strong capture is a cycle that
+keeps both alive.
 
 **State timeouts.** `.to(state, timeout: .init(after:, send:))` arms a
 timer on the machine's clock for that visit; leaving cancels it.
@@ -100,13 +120,18 @@ events; use typestate for values whose protocol a single caller drives.
 | a thousand tasks send events at once          | Applied one at a time; none lost                     |
 | state work's cancellation handler uses the machine | Safe: work is cancelled once the lock is released |
 | a transition function uses the machine        | Precondition failure naming the rule                 |
+| a state is left while its work is still cleaning up | The next visit's work starts once that work has stopped |
+| state work does not stop within its shutdown timeout | Abandoned and reported; the next visit's work starts |
+| the machine is shut down                      | Work cancelled and awaited (bounded); observers finish; later events dropped |
 | the machine is deallocated                    | Its state work is cancelled and its observers finish |
 | a declared state can never be reached         | `StateGraph.unreachable(of:)` lists it in a test     |
 
 ## Testing
 
-Transitions and history; invalid events; cancellation of state work with
-its cause; stale-event rejection across visits; timeouts that fire and
+Transitions and history (the ring at several limits); invalid events;
+cancellation of state work with its cause; the next visit's work waiting
+for the last one's cleanup, abandonment after the shutdown timeout, and
+shutdown; stale-event rejection across visits; timeouts that fire and
 timeouts cancelled by leaving; observation; a thousand concurrent senders;
 exploration, unreachable states, invalid pairs, dead ends, the Mermaid
 output, and truncation at the state limit. 300 repetitions are clean.

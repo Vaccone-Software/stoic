@@ -48,7 +48,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `Secret<T>` (`reveal()`), `IdempotencyKey.random()` (create outside retry, or use `attempt.idempotencyKey`).
 
 ## State machines
-- `StateMachine<S, E>(initial:label:) { state, event in .to(next, timeout:) / .stay / .ignore / .invalid("why") }`; `.send(e)`; `.whileIn(state, label:) { sender in … }` (cancelled on exit; stale events dropped); `.states()`.
+- `StateMachine<S, E>(initial:label:) { state, event in .to(next, timeout:) / .stay / .ignore / .invalid("why") }`; `.send(e)`; `.whileIn(state, label:, shutdownTimeout:) { sender in … }` (set up once; cancelled on exit, and the next visit's work waits for it to stop; stale events dropped; send through `sender`, never capture the machine); `.states()`; `await .shutdown()` where its owner ends.
 - `StateGraph.explore(from:events:transition:)`: `.states`, `.invalid`, `.unreachable(of:)`, `.deadEnds`, `.mermaid`.
 
 ## Supervision and services

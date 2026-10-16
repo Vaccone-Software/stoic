@@ -110,6 +110,7 @@ public enum EventCatalog {
         Entry(name: "statemachine.invalid", level: .error, meaning: "An event arrived in a state that declares it invalid."),
         Entry(name: "statemachine.stale_event", level: .info, meaning: "An event from an earlier visit to a state was dropped."),
         Entry(name: "statemachine.transition", level: .debug, meaning: "A state machine changed state."),
+        Entry(name: "statemachine.work_abandoned", level: .error, meaning: "State work did not stop within its shutdown timeout after its visit ended; it was abandoned so the next visit's work could start."),
         Entry(name: "store.corrupt_quarantined", level: .warning, meaning: "A stored file failed its checksum or validation and was renamed aside; reports where it went."),
         Entry(name: "store.fullsync_unavailable", level: .notice, meaning: "F_FULLFSYNC is unsupported on this volume; durability fell back to fsync."),
         Entry(name: "store.journal_compacted", level: .info, meaning: "A journal's records were folded into a snapshot and the log truncated."),
