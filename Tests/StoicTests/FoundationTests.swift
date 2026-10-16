@@ -40,6 +40,16 @@ struct FoundationTests {
         #expect(test.sleeperCount == 0)
     }
 
+    /// The century clamp has a lower half: an instant further in the past
+    /// than the underlying clock can represent returns at once instead of
+    /// trapping in the clock's conversion to seconds.
+    @Test func sleepingUntilAnInstantFarInThePastReturnsAtOnce() async {
+        await #expect(processExitsWith: .success) {
+            try? await AnyClock.continuous.sleep(until: AnyClock.Instant(offset: .minimum))
+            try? await AnyClock.suspending.sleep(until: AnyClock.Instant(offset: .minimum))
+        }
+    }
+
     // MARK: Saturating arithmetic
 
     @Test func durationArithmeticSaturates() {
