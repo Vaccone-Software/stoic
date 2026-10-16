@@ -25,6 +25,10 @@ extension Schema {
     /// told that `scrol_speed` was ignored and `scrollSpeed` was probably
     /// meant. Choose `.reject` for a wire format.
     ///
+    /// **Spellings** default to ``KeySpellings/forgiving``: `scroll_speed`
+    /// is read as `scrollSpeed`, with a `deprecated_key` warning, because a
+    /// person typed it. Choose `.exact` for a document other programs read.
+    ///
     /// **Versions.** `version:` makes the object a versioned document: its
     /// version is written to the reserved `versionKey` on every encode, and a
     /// document that states an older one is migrated, step by step through
@@ -51,6 +55,7 @@ extension Schema {
         name: String? = nil,
         default defaultValue: Value,
         unknownKeys: UnknownKeyPolicy = .warn,
+        spellings: KeySpellings = .forgiving,
         doc: String? = nil,
         version: Int? = nil,
         versionKey: String = "version",
@@ -61,7 +66,8 @@ extension Schema {
     ) -> Schema<Value> {
         let name = name ?? String(describing: Value.self)
         let fields = makeFields()
-        let keys = DeclaredKeys(fields.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }, in: name)
+        let keys = DeclaredKeys(
+            fields.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }, spellings: spellings, in: name)
         let versioning = makeVersioning(
             version: version, key: versionKey, missing: missingVersion, migrations: migrations,
             declared: keys.declared, in: name)

@@ -16,13 +16,17 @@ public import StoicSchema
 /// enumeration schema; on one whose cases carry values, a tagged union.
 ///
 /// The arguments are passed to the schema as written. A struct takes
-/// `name`, `unknownKeys`, `version`, `versionKey`, `missingVersion` and
-/// `migrations`; a union takes `name`, `discriminator` and `valueKey`.
+/// `name`, `unknownKeys`, `spellings`, `version`, `versionKey`,
+/// `missingVersion` and `migrations`; a union takes `name`, `discriminator`
+/// and `valueKey`. The defaults shown are those of a struct whose properties
+/// all have defaults; one with a required property is a wire model, and
+/// defaults to `unknownKeys: .reject` and `spellings: .exact`.
 @attached(member, names: named(schema))
 @attached(extension, conformances: Schematic, CaseIterable)
 public macro Schema(
     name: String? = nil,
     unknownKeys: UnknownKeyPolicy = .warn,
+    spellings: KeySpellings = .forgiving,
     version: Int? = nil,
     versionKey: String = "version",
     missingVersion: MissingVersion = .oldest,

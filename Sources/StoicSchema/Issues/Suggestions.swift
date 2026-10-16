@@ -12,15 +12,21 @@ enum Suggestions {
     /// separate words in snake_case, kebab-case and "Title Case" but not in
     /// camelCase. `scroll_speed`, `ScrollSpeed` and `scrollspeed` are one
     /// word as far as a typo is concerned.
+    ///
+    /// Case is folded in ASCII only. Unicode's case mapping makes keys that
+    /// no ASCII reader would match into ASCII ones (the Kelvin sign `K`
+    /// lower-cases to `k`), and the same normal form decides which input keys
+    /// an object reads as its own, where that would be a parser differential.
     static func normalized(_ text: String) -> String {
-        var out = ""
+        var out = String.UnicodeScalarView()
         for scalar in text.unicodeScalars {
             switch scalar {
             case "_", "-", " ": continue
-            default: out.unicodeScalars.append(scalar)
+            case "A"..."Z": out.append(Unicode.Scalar(UInt8(truncatingIfNeeded: scalar.value) | 0x20))
+            default: out.append(scalar)
             }
         }
-        return out.lowercased()
+        return String(out)
     }
 
     /// The largest distance that still counts as a typo for an input of

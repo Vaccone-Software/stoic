@@ -108,10 +108,12 @@ is an error (or, under `.lenient`, after repairs).
   launch and tell the user exactly what it ignored.
 - `unknownKeys: .reject | .warn | .ignore` per object, with did-you-mean.
 
-**Did-you-mean.** Candidates are declared keys plus aliases. Case and
-snake/camel differences are an exact alias match (`scroll_speed` →
-`scrollSpeed`, reported as a deprecated spelling, not an unknown key).
-Otherwise Damerau–Levenshtein with threshold `min(2, length/3)`, at most
+**Did-you-mean.** Candidates are declared keys plus aliases. In an object
+that forgives respellings (configuration; see "Respelled keys" below), ASCII
+case and snake/camel differences are an exact alias match (`scroll_speed` →
+`scrollSpeed`, reported as a deprecated spelling, not an unknown key); in a
+wire model they are an unknown key whose first suggestion is the declared
+spelling. Otherwise Damerau–Levenshtein with threshold `min(2, length/3)`, at most
 three suggestions, deterministic order. The same machinery serves enum
 values and union tags. Type confusion gets its own hint: `"10"` where a
 number is expected says "did you mean `10`?".
@@ -211,7 +213,8 @@ schema and throws one `DecodingError` listing every issue.
 | -------------------------------------------- | ------------------------------------------------------------------------- |
 | three fields are invalid                     | Three issues, each with its path (and line/column from text); no value    |
 | a key is misspelt                            | `unknown_key` with "did you mean"; rejected, warned or ignored per policy |
-| a key uses the snake_case spelling           | Accepted as an alias; `deprecated_key` warning                            |
+| a key uses the snake_case spelling           | In an object with defaults, accepted as an alias; `deprecated_key` warning |
+| a wire model meets another spelling of a key | `unknown_key`, the declared spelling suggested first; it reads its keys and aliases exactly unless declared `spellings: .forgiving`. Only ASCII case is ever folded: `\u{212A}ind` (a Kelvin sign) is never `kind` |
 | a number is out of range under `.strict`     | `out_of_range` error with the bounds                                      |
 | the same under `.lenient`                    | Default used; `repaired` issue saying so                                  |
 | an integer exceeds 2^53 for a `Double` field | `precision_loss` error                                                    |
@@ -272,9 +275,17 @@ above left open:
   token, so every field's issues exist before the initialiser runs; see the
   note in `Schema+ReadObject.swift`. Form (a) defaults to `unknownKeys:
   .warn`, form (b) to `.reject`.
-- **Respelled keys** (case and snake_case, plus declared aliases) are
+- **Respelled keys** (ASCII case and snake_case, plus declared aliases) are
   accepted with a `deprecated_key` warning; the same field under two
-  spellings is `duplicate_key`. The table of normalised
+  spellings is `duplicate_key`. Respelling is `KeySpellings.forgiving`, the
+  default of form (a), whose documents people type; form (b), the wire
+  model, defaults to `.exact` (aliases still count, being declared). A
+  reader that accepts spellings no other reader of the same message accepts
+  reads it differently from them, and that disagreement is what
+  parser-differential attacks are made of: a gateway that checks `isAdmin`
+  while the service behind it also takes `is_admin`. Case is folded in ASCII
+  only for the same reason, since Unicode case mapping turns the Kelvin sign
+  into `k`. The table of normalised
   spellings that finds them is built per object, and only when a field's
   key is missing *and* some member has a key the object does not declare;
   a document that merely leaves out keys whose defaults it accepts never
@@ -660,6 +671,7 @@ write when they hold a `Settings`.
   parameter, so it is refused). The memberwise initialiser exists only while
   the type declares no initialiser, so form (b) needs the type to declare
   none (put initialisers in an extension). Unknown keys default to `.reject`
+  and spellings to `.exact`
   as in the hand-written form (b); `@Schema(unknownKeys: .ignore)` is the
   usual choice for a model of someone else's API.
 - **Types are read as written.** The macro sees syntax. `Bool`, `Int`,
@@ -682,8 +694,8 @@ write when they hold a `Settings`.
   `doc:`. Lines of a paragraph are joined by a space; a blank `///` line
   starts a new paragraph.
 - **`@Schema`'s arguments** are copied to `Schema.object` unread:
-  `name`, `unknownKeys`, `version`, `versionKey`, `missingVersion`,
-  `migrations`. `@PreserveUnknownKeys` marks the `JSONObject` property that
+  `name`, `unknownKeys`, `spellings`, `version`, `versionKey`,
+  `missingVersion`, `migrations`. `@PreserveUnknownKeys` marks the `JSONObject` property that
   becomes `preservingUnknownKeysIn:` and is not a field.
 - **Access.** `public` and `package` types get a `public`/`package` `schema`,
   because the conformance needs a witness as visible as the type.

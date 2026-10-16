@@ -34,7 +34,7 @@ func expandStruct(
     var options = ["\(name).self"]
     options += arguments.passed(["name"])
     options.append("default: \(name)()")
-    options += arguments.passed(["unknownKeys"])
+    options += arguments.passed(["unknownKeys", "spellings"])
     if let doc = documentation(of: declaration) { options.append("doc: \(swiftLiteral(doc))") }
     options += arguments.passed(["version", "versionKey", "missingVersion", "migrations"])
     if let preserving = model.preserving { options.append("preservingUnknownKeysIn: \\\(name).\(preserving)") }
@@ -72,7 +72,7 @@ private func readerSchema(
     lines.append("    return f.build { v in \(name)(\(labels.joined(separator: ", "))) }")
 
     var options = ["\(name).self"]
-    options += arguments.passed(["name", "unknownKeys"])
+    options += arguments.passed(["name", "unknownKeys", "spellings"])
     if let doc = documentation(of: declaration) { options.append("doc: \(swiftLiteral(doc))") }
     options += arguments.passed(["version", "versionKey", "missingVersion", "migrations"])
     return """

@@ -30,40 +30,56 @@ struct DeclaredKey: Sendable {
 /// ones, and the names a did-you-mean is drawn from.
 struct DeclaredKeys: Sendable {
     let declared: [DeclaredKey]
+    /// Which spellings of a key are read.
+    let spellings: KeySpellings
     /// Every key and alias the object declares. A member with one of these
     /// exact spellings belongs to its own field, so the fuzzy matching in
     /// ``ObjectScan`` never hands it to a different one.
     let known: Set<ExactKey>
+    /// Each key and alias, and the field key it belongs to.
+    private let exactOwners: [ExactKey: String]
     /// Each normalised key and alias, and the field key it belongs to.
-    let owners: [String: String]
+    private let normalizedOwners: [String: String]
     /// Each alias, and the field key it is an alias of.
     private let canonical: [String: String]
     private let names: SuggestionIndex
 
     /// Traps on a key or alias declared twice: a mistake in the schema,
     /// found by the first test that touches it.
-    init(_ declared: [DeclaredKey], in name: String) {
+    init(_ declared: [DeclaredKey], spellings: KeySpellings, in name: String) {
         checkDeclaredKeys(declared, in: name)
         self.declared = declared
-        var known: Set<ExactKey> = []
-        var owners: [String: String] = [:]
+        self.spellings = spellings
+        var exactOwners: [ExactKey: String] = [:]
+        var normalizedOwners: [String: String] = [:]
         var canonical: [String: String] = [:]
         var names: [String] = []
         for declaration in declared {
-            known.insert(ExactKey(declaration.key))
-            owners[Suggestions.normalized(declaration.key)] = declaration.key
+            exactOwners[ExactKey(declaration.key)] = declaration.key
+            normalizedOwners[Suggestions.normalized(declaration.key)] = declaration.key
             names.append(declaration.key)
             for alias in declaration.aliases {
-                known.insert(ExactKey(alias))
-                owners[Suggestions.normalized(alias)] = declaration.key
+                exactOwners[ExactKey(alias)] = declaration.key
+                normalizedOwners[Suggestions.normalized(alias)] = declaration.key
                 canonical[alias] = declaration.key
                 names.append(alias)
             }
         }
-        self.known = known
-        self.owners = owners
+        known = Set(exactOwners.keys)
+        self.exactOwners = exactOwners
+        self.normalizedOwners = normalizedOwners
         self.canonical = canonical
         self.names = SuggestionIndex(names)
+    }
+
+    /// The field a spelling belongs to, under the object's ``spellings``:
+    /// a key or alias exactly, or, when respellings are read, anything that
+    /// normalises to one.
+    func owner(of key: String) -> String? {
+        switch spellings {
+        case .exact: exactOwners[ExactKey(key)]
+        case .forgiving: normalizedOwners[Suggestions.normalized(key)]
+        }
     }
 
     /// The fields `key` was probably meant to be, nearest first: a
@@ -112,10 +128,11 @@ struct ObjectScan {
     }
 
     /// The member for a field: its own key; failing that one of its
-    /// aliases; failing that a spelling that differs only in case or word
-    /// separators (`scroll_speed` for `scrollSpeed`). The last two are
-    /// accepted with a `deprecated_key` warning, which is reported here
-    /// because only here is the spelling known.
+    /// aliases; failing that, when the object reads respellings, a spelling
+    /// that differs only in ASCII case or word separators (`scroll_speed`
+    /// for `scrollSpeed`). The last two are accepted with a `deprecated_key`
+    /// warning, which is reported here because only here is the spelling
+    /// known.
     mutating func find(key: String, aliases: [String], state: inout DecodeState) -> KeyHit? {
         if let index = object.index(forKey: key) {
             claimed.insert(index)
@@ -130,6 +147,7 @@ struct ObjectScan {
         // Spellings that differ only by case or separators. Built once per
         // object, and only if some field is missing its exact key and some
         // member could be a respelling of it.
+        guard keys.spellings == .forgiving else { return nil }
         if hasUndeclaredMember == nil {
             hasUndeclaredMember = object.contains { !keys.known.contains(ExactKey($0.key)) }
         }
@@ -174,7 +192,7 @@ struct ObjectScan {
         var kept = JSONObject()
         for index in object.indices where !claimed.contains(index) {
             let member = object[index]
-            guard keys.owners[Suggestions.normalized(member.key)] == nil else { continue }
+            guard keys.owner(of: member.key) == nil else { continue }
             claimed.insert(index)
             kept[member.key] = member.value
         }
@@ -195,7 +213,7 @@ struct ObjectScan {
             let key = object[index].key
             let path = state.path.appending(key: key)
             let sourcePath = state.inputPath.appending(key: key)
-            if let owner = keys.owners[Suggestions.normalized(key)] {
+            if let owner = keys.owner(of: key) {
                 state.report(
                     .duplicateKey, path: path, sourcePath: sourcePath, target: .key,
                     parameters: ["key": .string(key), "other": .string(owner)],

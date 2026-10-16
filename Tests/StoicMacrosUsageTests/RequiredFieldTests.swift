@@ -123,5 +123,28 @@ struct RequiredFieldTests {
         let report = expectSchemaSuite(Account.schema, seed: 3, cases: 150)
         #expect(report.isClean, "\(report)")
     }
+
+    @Test func aWireModelReadsItsKeysExactlyUnlessToldOtherwise() {
+        // `Created_At` is not `created_at` to anyone else who reads the message.
+        let respelled: JSONValue = ["id": 1, "name": "Ada", "Created_At": "2024-01-01T00:00:00Z"]
+        #expect(Account.schema.decode(respelled).issues.map(\.code) == [.missingKey])
+        #expect(Forgiving.schema.decode(["user_id": 3]).value == Forgiving(userId: 3))
+        expectEquivalent(Forgiving.schema, Forgiving.byHand)
+    }
+}
+
+/// A wire model that chose to read respelled keys.
+@Schema(spellings: .forgiving)
+struct Forgiving: Equatable {
+    var userId: Int
+}
+
+extension Forgiving {
+    static let byHand = Schema.object(
+        Forgiving.self, spellings: .forgiving, doc: "A wire model that chose to read respelled keys."
+    ) { f in
+        let userId = f.field("userId", \.userId, .int())
+        return f.build { v in Forgiving(userId: v[userId]) }
+    }
 }
 #endif

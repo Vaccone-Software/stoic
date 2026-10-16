@@ -17,8 +17,10 @@ public import StoicJSON
 /// Compose schemas from the primitives (``bool``, ``int(_:)``,
 /// ``double(_:)``, ``string(_:)``, ``array(of:_:)``, ``dictionary(of:_:)``,
 /// ``optional(_:nullable:)``, ``enumeration(_:)``, ``json(_:)``,
-/// ``lazy(_:_:)``) and from objects (``object(_:name:default:unknownKeys:doc:fields:)``
-/// for configuration with defaults, ``object(_:name:unknownKeys:doc:declare:)``
+/// ``lazy(_:_:)``) and from objects
+/// (``object(_:name:default:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:)``
+/// for configuration with defaults,
+/// ``object(_:name:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:declare:)``
 /// for types without them).
 ///
 /// Inside, a schema is two closures and a tree. The closures are

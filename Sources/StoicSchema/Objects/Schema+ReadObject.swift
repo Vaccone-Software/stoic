@@ -53,7 +53,7 @@ public struct Construction<Root: Sendable>: Sendable {
 }
 
 /// Reads the fields of an object that has no default instance; see
-/// ``Schema/object(_:name:unknownKeys:doc:declare:)``.
+/// ``Schema/object(_:name:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:declare:)``.
 public final class ObjectReader<Root: Sendable> {
     private enum Mode {
         case describing
@@ -73,7 +73,7 @@ public final class ObjectReader<Root: Sendable> {
     init() {
         mode = .describing
         state = DecodeState(options: .strict)
-        scan = ObjectScan(object: JSONObject(), keys: DeclaredKeys([], in: ""))
+        scan = ObjectScan(object: JSONObject(), keys: DeclaredKeys([], spellings: .exact, in: ""))
     }
 
     /// A reader that decodes `object`. The state is a placeholder until the
@@ -207,11 +207,15 @@ extension Schema {
     ///
     /// Unknown keys default to ``UnknownKeyPolicy/reject``: a type with no
     /// defaults is usually a wire message, where an unrecognised key is a
-    /// disagreement about the format, not a typo to forgive.
+    /// disagreement about the format, not a typo to forgive. For the same
+    /// reason spellings default to ``KeySpellings/exact``: `user_id` is not
+    /// read as `userId` unless declared as its alias, so the object reads a
+    /// message the way every other reader of it does.
     public static func object(
         _ type: Value.Type,
         name: String? = nil,
         unknownKeys: UnknownKeyPolicy = .reject,
+        spellings: KeySpellings = .exact,
         doc: String? = nil,
         version: Int? = nil,
         versionKey: String = "version",
@@ -226,7 +230,8 @@ extension Schema {
         let codecs = describer.codecs
         let preserved = describer.preserved
         let policy: UnknownKeyPolicy = preserved == nil ? unknownKeys : .preserve
-        let keys = DeclaredKeys(nodes.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }, in: name)
+        let keys = DeclaredKeys(
+            nodes.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }, spellings: spellings, in: name)
         let versioning = makeVersioning(
             version: version, key: versionKey, missing: missingVersion, migrations: migrations,
             declared: keys.declared, in: name)

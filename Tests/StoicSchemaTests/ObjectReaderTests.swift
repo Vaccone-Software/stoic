@@ -207,11 +207,31 @@ struct ObjectReaderTests {
         }
     }
 
-    @Test func aliasesAndRespellingsWork() {
+    @Test(.failureMode("design/06", "a wire model meets another spelling of a key"))
+    func aWireModelReadsItsKeysExactlyAndItsAliases() {
+        // An alias is a declared spelling; a respelling is not, so a wire
+        // model reads a message the way every other reader of it does.
         let result = Account.schema.decodeReporting(#"{"account_id": 7, "Name": "A", "token": "12345678"}"#)
+        #expect(result.value == nil)
+        #expect(result.issues.locations == ["$.name missing_key", "$.id deprecated_key", "$.Name unknown_key"])
+        #expect(result.issues[2].suggestions == ["name"])
+    }
+
+    @Test func aWireModelCanChooseToForgiveRespellings() {
+        let schema = Schema.object(Account.self, spellings: .forgiving) { f in
+            let id = f.field("id", \.id, .uint64(), aliases: ["account_id"])
+            let name = f.field("name", \.name, .string(.length(1...40)))
+            let token = f.field("token", \.token, .string(.length(8...)), secret: true)
+            let tags = f.field("tags", \.tags, .array(of: .string()), default: [])
+            return f.build { v in Account(id: v[id], name: v[name], token: v[token], tags: v[tags]) }
+        }
+        let result = schema.decodeReporting(#"{"account_id": 7, "Name": "A", "token": "12345678"}"#)
         #expect(result.value == Account(id: 7, name: "A", token: "12345678", tags: []))
         #expect(result.issues.map(\.code) == [.deprecatedKey, .deprecatedKey])
         #expect(result.issues.allSatisfy { $0.severity == .warning })
+        // Only ASCII is folded: a Kelvin sign is not a K.
+        let kelvin = schema.decodeReporting(#"{"id": 7, "Name": "A", "token": "12345678", "tKags": []}"#)
+        #expect(kelvin.issues.locations == ["$.name deprecated_key", "$[\"t\u{212A}ags\"] unknown_key"])
     }
 
     @Test(.failureMode("design/06", "the same under .lenient")) func lenientRepairsFieldsWithDefaultsAndLeavesTheRestErrors() {

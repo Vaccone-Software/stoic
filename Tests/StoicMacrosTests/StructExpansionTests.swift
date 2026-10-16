@@ -266,6 +266,45 @@ struct StructExpansionTests {
                 """)
     }
 
+    @Test func spellingsArePassedOnInBothForms() {
+        expand(
+            """
+            @Schema(unknownKeys: .ignore, spellings: .forgiving)
+            struct Message {
+                var userId: Int
+            }
+            @Schema(spellings: .exact)
+            struct Prefs {
+                var theme = "dark"
+            }
+            """,
+            to: """
+                struct Message {
+                    var userId: Int
+
+                    static let schema: StoicSchema::Schema<Message> = StoicSchema::Schema.object(Message.self, unknownKeys: .ignore, spellings: .forgiving) { f in
+                        let slot0 = f.field("userId", \\.userId, .int())
+                        return f.build { v in
+                            Message(userId: v[slot0])
+                        }
+                    }
+                }
+                struct Prefs {
+                    var theme = "dark"
+
+                    static let schema: StoicSchema::Schema<Prefs> = StoicSchema::Schema.object(Prefs.self, default: Prefs(), spellings: .exact) {
+                        StoicSchema::Field("theme", \\.theme, .string())
+                    }
+                }
+
+                extension Message: StoicSchema::Schematic {
+                }
+
+                extension Prefs: StoicSchema::Schematic {
+                }
+                """)
+    }
+
     @Test func constantsAreFilledByTheInitialiser() {
         expand(
             """

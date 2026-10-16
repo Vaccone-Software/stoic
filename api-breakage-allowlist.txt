@@ -29,3 +29,18 @@ API breakage: func TaskSlot.run(isolation:_:deliver:) has been renamed to func r
 API breakage: func TaskSlot.runExclusively(isolation:_:deliver:) has been renamed to func runExclusively(for:isolation:_:deliver:)
 API breakage: enumelement Mutation.Kind.notFinite has been removed
 API breakage: constructor JSONValue.init(reading:) has been removed
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has been renamed to func object(_:name:default:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:)
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 4 type change from Swift.String? to StoicSchema.KeySpellings
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 5 type change from Swift.Int? to Swift.String?
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 6 type change from Swift.String to Swift.Int?
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 7 type change from StoicSchema.MissingVersion to Swift.String
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 8 type change from [StoicSchema.Migration] to StoicSchema.MissingVersion
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 9 type change from (any Swift.WritableKeyPath<Value, StoicJSON.JSONObject> & Swift.Sendable)? to [StoicSchema.Migration]
+API breakage: func Schema.object(_:name:default:unknownKeys:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:) has parameter 10 type change from () -> [StoicSchema.Field<Value>] to (any Swift.WritableKeyPath<Value, StoicJSON.JSONObject> & Swift.Sendable)?
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has been renamed to func object(_:name:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:declare:)
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 3 type change from Swift.String? to StoicSchema.KeySpellings
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 4 type change from Swift.Int? to Swift.String?
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 5 type change from Swift.String to Swift.Int?
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 6 type change from StoicSchema.MissingVersion to Swift.String
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 7 type change from [StoicSchema.Migration] to StoicSchema.MissingVersion
+API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 8 type change from (StoicSchema.ObjectReader<Value>) -> StoicSchema.Construction<Value> to [StoicSchema.Migration]

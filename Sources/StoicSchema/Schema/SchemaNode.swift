@@ -326,6 +326,31 @@ public enum UnknownKeyPolicy: Sendable, Hashable {
     case preserve
 }
 
+/// Which spellings of a declared key an object reads.
+///
+/// A file a person edits is forgiven a `scroll_speed` for `scrollSpeed`; a
+/// wire format is not. A reader that accepts spellings other readers do not
+/// reads a document differently from them, and two readers that disagree
+/// about a document are the raw material of a parser-differential attack: a
+/// gateway that checks `isAdmin` while the service behind it also accepts
+/// `is_admin`. So respelling is the default only where a person types the
+/// document.
+public enum KeySpellings: Sendable, Hashable {
+    /// The key and its declared aliases, exactly as declared. Anything else
+    /// is an unknown key, with the declared spelling suggested. The default
+    /// for ``Schema/object(_:name:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:declare:)``,
+    /// the form for wire models.
+    case exact
+    /// Also any spelling that differs only in ASCII letter case or in the
+    /// `_`, `-` and space between words, read with a `deprecated_key`
+    /// warning naming the declared key; the same field under two spellings
+    /// is `duplicate_key`. The default for
+    /// ``Schema/object(_:name:default:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:)``,
+    /// the form for configuration. Only ASCII is folded: Unicode case
+    /// mapping would read `\u{212A}ind` (a Kelvin sign) as `kind`.
+    case forgiving
+}
+
 /// One field of an object, as the tree records it.
 public struct FieldNode: Sendable {
     /// The key as written in JSON.

@@ -32,7 +32,9 @@ struct SchemaArguments {
         labels.compactMap { label in text(label).map { "\(label): \($0)" } }
     }
 
-    static let structLabels = ["name", "unknownKeys", "version", "versionKey", "missingVersion", "migrations"]
+    static let structLabels = [
+        "name", "unknownKeys", "spellings", "version", "versionKey", "missingVersion", "migrations",
+    ]
     static let unionLabels = ["name", "discriminator", "valueKey"]
 
     /// Reports every argument that does not belong to the kind of type.
