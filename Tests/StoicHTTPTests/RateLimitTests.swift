@@ -150,6 +150,15 @@ struct HTTPRateLimitTests {
         }
     }
 
+    @Test func everyHostsQueueHasABound() async throws {
+        #expect(HTTPRateLimit(rate: 1).queueLimit == 100)
+        try await withRig(.testing(rateLimit: HTTPRateLimit(rate: 1))) { (rig) async throws in
+            rig.transport.on(.get("/a"), respond: [], then: .status(200))
+            _ = try await rig.start(.get("/a")).value
+            #expect(rig.api.rateLimiter(forHost: "api.example.com")?.queueLimit == 100)
+        }
+    }
+
     @Test func noRateLimitMeansNoLimiter() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/a"), respond: [], then: .status(200))

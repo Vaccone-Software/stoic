@@ -218,16 +218,18 @@ public struct HTTPRateLimit: Sendable, Hashable {
     public var interval: Duration
     /// The bucket's size; `nil` for one interval's worth (``rate``).
     public var burst: Int?
-    /// The most requests that may wait for a permit (default 100); `nil` for
-    /// no limit beyond cancellation and the caller's deadline. Past it a
-    /// request is refused with `.rejected(rate_limited)`.
-    public var queueLimit: Int?
+    /// The most requests that may wait for a permit (default 100); past it a
+    /// request is refused with `.rejected(rate_limited)`. There is no
+    /// unbounded setting: a caller without a deadline would otherwise wait
+    /// behind every other for as long as the queue grows (DESIGN.md,
+    /// principle 2).
+    public var queueLimit: Int
 
-    public init(rate: Int, per interval: Duration = .seconds(1), burst: Int? = nil, queueLimit: Int? = 100) {
+    public init(rate: Int, per interval: Duration = .seconds(1), burst: Int? = nil, queueLimit: Int = 100) {
         precondition(rate >= 1, "a rate limit needs a rate of at least one request")
         precondition(interval > .zero, "a rate limit's interval must be positive")
         precondition(burst.map { $0 >= 1 } ?? true, "a rate limit's burst must be at least one request")
-        precondition(queueLimit.map { $0 >= 0 } ?? true, "a rate limit's queue cannot have a negative size")
+        precondition(queueLimit >= 0, "a rate limit's queue cannot have a negative size")
         self.rate = rate
         self.interval = interval
         self.burst = burst

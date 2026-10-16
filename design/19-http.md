@@ -88,7 +88,8 @@ A hook that throws is `.reauthenticationFailed`, and the request is not replayed
 **Rate limit.** `HTTPPolicy.rateLimit` is a token bucket for each host (a Stoic
 `RateLimiter` on the ambient clock): every attempt, retries included, takes a
 permit, waiting in order for one; a wait that would outlast the caller's
-deadline, or a full queue, is `.rejected(rate_limited)` with the wait in
+deadline, or a full queue (`queueLimit`, 100 by default, and always a number:
+there is no unbounded queue), is `.rejected(rate_limited)` with the wait in
 `retryAfter`.
 
 **Responses are bounded.** At most `maxResponseBytes` (10 MB by default)
@@ -347,7 +348,10 @@ the first version, on the same pipeline):
   breaker refuses takes no permit) and outside the bulkhead (waiting for a
   permit holds no slot). Refusals are `Rejection(.rateLimited)`, never retried:
   like an open breaker, "fail fast" means fail. `HTTPClient.rateLimiter(forHost:)`
-  exposes it as `breaker(forHost:)` does.
+  exposes it as `breaker(forHost:)` does. `HTTPRateLimit.queueLimit` was an
+  `Int?` whose `nil` meant no bound but cancellation and the deadline, and a
+  caller with no deadline could then wait behind a queue that only grew; it is
+  an `Int` now (a listed API break), as principle 2 asks.
 
 **Not built.** A hedging stage (it exists as a `Policy` value and would slot
 into the pipeline); streaming uploads and downloads; delivering through the

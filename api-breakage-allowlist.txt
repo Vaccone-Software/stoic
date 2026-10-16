@@ -53,3 +53,7 @@ API breakage: func KeyedDecodingContainer.decodeSchema(_:forKey:) has been renam
 API breakage: func KeyedDecodingContainer.decodeSchemaIfPresent(_:forKey:) has been renamed to func decodeSchemaIfPresent(_:forKey:warnings:)
 API breakage: func UnkeyedDecodingContainer.decodeSchema(_:) has been renamed to func decodeSchema(_:warnings:)
 API breakage: enumelement Mutation.Kind.integralFraction has been added as a new enum case
+API breakage: var HTTPRateLimit.queueLimit has declared type change from Swift.Int? to Swift.Int
+API breakage: accessor HTTPRateLimit.queueLimit.Get() has return type change from Swift.Int? to Swift.Int
+API breakage: accessor HTTPRateLimit.queueLimit.Set() has parameter 0 type change from Swift.Int? to Swift.Int
+API breakage: constructor HTTPRateLimit.init(rate:per:burst:queueLimit:) has parameter 3 type change from Swift.Int? to Swift.Int
