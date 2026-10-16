@@ -384,6 +384,20 @@ so hedging a non-idempotent call means writing a lie in the source. An
 `Attempt` tells the operation which attempt it is, so it can send an
 idempotency key or a `hedged` header.
 
+No hedge starts that could not finish before `Deadline.current`, by
+`retry`'s rule: no attempt has finished yet, so one takes at least as long as
+the first has been running, and a hedge that would end after the deadline
+only adds load.
+
+**Retry outside, hedge inside.** Each hedged attempt runs as an attempt (the
+task-local `retry` reads), so a `retry` inside one is nested and makes a
+single attempt. Otherwise a retry inside a hedge turns failures into
+slowness, its backoff, which the hedge answers with a second copy that
+retries in full too: `maxAttempts` times the retry's load on a failing
+dependency. Put the `retry` around the `hedge`. A hedge started inside a
+retry's attempt is a sub-operation of it (design/02): its key is derived
+from the retry's, the same on every retry attempt.
+
 ### Retrying
 
 `Retrying` runs design/02's `retry` as a pipeline stage. It sits outside the
@@ -454,7 +468,9 @@ the operation off the caller's task, which is why a timeout is an option of
 | `maxAttempts` attempts have started                                       | No more hedges                                                                                            |
 | hedged attempts send `attempt.idempotencyKey`                             | The same key on every attempt of one hedge, however many ask at once                                      |
 | the caller is cancelled                                                   | Every attempt cancelled and awaited; the first failure returned                                           |
-| the deadline has passed when a hedge is due                               | No hedge; `hedge.deadline_skip`                                                                           |
+| a hedge could not finish before the deadline                              | No hedge; `hedge.deadline_skip`; the attempts running carry on                                            |
+| a retry runs inside a hedged attempt                                      | One attempt only (`retry.nested`): failure belongs to a retry around the hedge                            |
+| a hedge runs inside a retry's attempt                                     | Its key is derived from the retry's: the same on every retry attempt                                      |
 | a stage inside a pipeline rejects                                         | The caller sees one `.rejected(r)`, never a nested `PolicyError`                                          |
 | a pipeline's operation fails                                              | The caller sees `.failed(error)` with the operation's own error                                           |
 | a pipeline has no stages                                                  | The operation runs; a failure is `.failed`                                                                |

@@ -280,13 +280,15 @@ struct HedgeTests {
         #expect(clock.sleeperCount == 0)
     }
 
-    @Test(.failureMode("design/10", "the deadline has passed when a hedge is due")) func noHedgeStartsOnceTheDeadlineHasPassed() async {
+    @Test(.failureMode("design/10", "a hedge could not finish before the deadline")) func noHedgeStartsThatCouldNotFinishBeforeTheDeadline() async {
+        // The hedge is due at 100 ms with 50 ms left: an attempt as slow as
+        // the first (still running after 100 ms) would end after the deadline.
         let clock = TestClock()
         let events = RecordingInstrumentation()
         let log = Log()
         let task = Task {
             await withTestAmbient(clock: clock, events: events) {
-                await Deadline.$stored.withValue(.after(.milliseconds(50))) { () async -> Result<String, HedgeError> in
+                await Deadline.$stored.withValue(.after(.milliseconds(150))) { () async -> Result<String, HedgeError> in
                     do throws(HedgeError) {
                         return .success(try await hedge(.idempotent, after: .milliseconds(100)) { attempt throws(HedgeError) in
                             try await self.nap(attempt, .milliseconds(300), clock: clock, log: log, returning: "only")
@@ -298,12 +300,55 @@ struct HedgeTests {
             }
         }
         await clock.waitForSleepers(count: 2)
-        await clock.advance(by: .milliseconds(100))   // the deadline passed at 50 ms
+        await clock.advance(by: .milliseconds(100))   // 50 ms left: too little for a hedge
         await clock.waitForSleepers(count: 1)
         #expect(log.started == [1])
+        #expect(events.events(named: "hedge.deadline_skip").first?.duration("remaining") == .milliseconds(50))
         await clock.advance(by: .milliseconds(200))
         #expect(await task.value == .success("only"))
         #expect(events.names == ["hedge.deadline_skip"])
+    }
+
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/10", "a retry runs inside a hedged attempt"))
+    func aRetryInsideAHedgedAttemptMakesOneAttempt() async {
+        // The retry's backoff would look like slowness, and the hedge would
+        // answer it with a copy that retries in full too.
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let calls = SendableBox(0)
+        let task = Task {
+            await withTestAmbient(clock: clock, events: events) { () async -> Int in
+                do {
+                    return try await hedge(.idempotent, after: .milliseconds(50), maxAttempts: 2, budget: .unlimited) { _ in
+                        try await retry(.fixed(.milliseconds(100)).attempts(3), budget: .unlimited) { _ in
+                            calls.mutate { $0 += 1 }
+                            throw HedgeError.failed(0)
+                        }
+                    }
+                } catch {
+                    return -1
+                }
+            }
+        }
+        #expect(await task.value == -1)
+        #expect(calls.value == 1, "the retry collapsed, and its failure ended the hedge")
+        #expect(events.events(named: "retry.nested").count == 1)
+        #expect(clock.sleeperCount == 0)
+    }
+
+    @Test(.failureMode("design/10", "a hedge runs inside a retry's attempt"))
+    func aHedgeInsideARetryKeepsItsKeyOnEveryRetryAttempt() async {
+        let keys = SendableBox<[IdempotencyKey]>([])
+        await withTestAmbient(clock: ImmediateClock()) {
+            _ = try? await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { _ in
+                try await hedge(.idempotent, after: .seconds(10), maxAttempts: 1, budget: .unlimited) { attempt in
+                    keys.mutate { $0.append(attempt.idempotencyKey) }
+                    throw HedgeError.failed(attempt.number)
+                }
+            }
+        }
+        #expect(keys.value.count == 3)
+        #expect(Set(keys.value).count == 1)
     }
 
     @Test func aSingleAttemptJustRunsTheOperation() async {

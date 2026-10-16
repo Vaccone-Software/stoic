@@ -31,8 +31,17 @@ public enum Idempotency: Sendable, Hashable {
 /// **Hedges are budgeted.** The first attempt deposits into `budget` and each
 /// hedge spends a token, exactly as a retry does, so hedging cannot amplify
 /// load during an outage beyond the budget's ratio. With no token there is no
-/// hedge, and the attempts already running carry on. No hedge starts once
-/// ``Deadline/current`` has passed.
+/// hedge, and the attempts already running carry on. No hedge starts that
+/// could not finish before ``Deadline/current``: one as slow as the attempt
+/// still running would end after it, so it would only add load.
+///
+/// **Retry outside, hedge inside.** Each hedged attempt runs as an attempt,
+/// so a `retry` inside one is nested and makes a single attempt. A retry
+/// inside a hedge would otherwise turn failures into slowness (its backoff),
+/// which the hedge answers with a second copy that retries in full too:
+/// twice the load on a failing dependency. Put the `retry` around the
+/// `hedge`; a hedge started inside a retry's attempt shares its key scheme
+/// (its key is derived from the retry's, the same on every retry attempt).
 ///
 ///     let profile = try await hedge(.idempotent, after: .milliseconds(150)) { attempt in
 ///         try await client.get(profileURL, hedged: attempt.isRetry)
@@ -68,8 +77,9 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
     storage?.deposit()
     let start = clock.now
     let cause = CancellationCauseBox()
-    // Every hedged copy is the same operation, so they share one key.
-    let identity = OperationIdentity(fileID: fileID, line: line)
+    // Every hedged copy is the same operation, so they share one key; inside
+    // another operation's attempt, the key is derived from that operation's.
+    let identity = OperationIdentity.starting(fileID: fileID, line: line)
 
     func report(_ name: EventName, _ fields: [Event.Field], level: Event.Level = .info) {
         ambient.instrumentation.record(Event(name, level: level, label: label, fields: fields, fileID: fileID, line: line))
@@ -86,11 +96,14 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
             running += 1
             let attempt = Attempt(number: started, elapsed: start.duration(to: clock.now), operation: identity)
             group.addTask {
-                await CancellationCauseBox.$current.withValue(cause) {
-                    do throws(Failure) {
-                        return .attempt(attempt.number, .success(try await operation(attempt)))
-                    } catch {
-                        return .attempt(attempt.number, .failure(error))
+                // A live attempt: a retry inside it is nested and collapses.
+                await identity.running(attempt: attempt.number) {
+                    await CancellationCauseBox.$current.withValue(cause) {
+                        do throws(Failure) {
+                            return .attempt(attempt.number, .success(try await operation(attempt)))
+                        } catch {
+                            return .attempt(attempt.number, .failure(error))
+                        }
                     }
                 }
             }
@@ -137,8 +150,14 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
 
             case .tick:
                 guard winner == nil, running > 0, started < maxAttempts else { break }
-                if let deadline = Deadline.current, deadline.hasPassed {
-                    report("hedge.deadline_skip", [.init("attempt", .int(started + 1))], level: .notice)
+                // Retry's rule: no attempt that could not finish in time. No
+                // attempt has finished yet, so one takes at least as long as
+                // the first has been running.
+                if let deadline = Deadline.current, start.duration(to: clock.now) >= deadline.remaining {
+                    report("hedge.deadline_skip", [
+                        .init("attempt", .int(started + 1)),
+                        .init("remaining", .duration(max(.zero, deadline.remaining))),
+                    ], level: .notice)
                     break
                 }
                 if let storage, !storage.withdraw(clock: clock) {
