@@ -134,10 +134,11 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     }
 
     deinit {
-        core.withLock { core in
-            for task in core.stateWork { task.cancel() }
-            for observer in core.observers.valuesInKeyOrder { observer.finish() }
+        let (work, observers) = core.withLock { core in
+            (core.stateWork, core.observers.valuesInKeyOrder)
         }
+        for task in work { task.cancel() }
+        for observer in observers { observer.finish() }
     }
 
     /// The current state.
@@ -145,12 +146,14 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// Observable: a SwiftUI view (or anything using Observation) that reads
     /// it is updated after every transition.
     public var state: State {
+        checkNotInTransition()
         registrar.access(self, keyPath: stateKeyPath)
         return core.withLock { $0.state }
     }
 
     /// The most recent transitions, oldest first, for diagnostics.
     public var history: [Record] {
+        checkNotInTransition()
         registrar.access(self, keyPath: historyKeyPath)
         return core.withLock { core in
             Array(core.history[core.historyHead...] + core.history[..<core.historyHead])
@@ -159,6 +162,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     /// Handles `event`: computes the transition and applies it.
     public func send(_ event: Event) {
+        checkNotInTransition()
         apply(event, onlyDuring: nil)
     }
 
@@ -170,10 +174,11 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         label: String,
         _ work: @escaping @Sendable (Sender) async -> Void
     ) {
+        checkNotInTransition()
         let activity = Activity(label: label, matches: predicate, work: work)
         core.withLock { core in
             core.activities.append(activity)
-            if predicate(core.state) {
+            if Self.inTransition({ predicate(core.state) }) {
                 core.stateWork.append(start(activity, visit: core.visit))
             }
         }
@@ -189,6 +194,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// Buffers only the newest: an observer sees where the machine is, not
     /// every step it took to get there.
     public func states() -> AsyncStream<State> {
+        checkNotInTransition()
         let (stream, continuation) = AsyncStream<State>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let id = core.withLock { core -> UInt64 in
             continuation.yield(core.state)
@@ -215,20 +221,42 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         case none
         case invalid(State, String)
         case stale
-        case moved(Record)
+        case moved(Record, leaving: [Task<Void, Never>])
+    }
+
+    /// Runs one of the caller's closures that the machine calls under its lock.
+    private static func inTransition<R>(_ body: () -> R) -> R {
+        Transitioning.$active.withValue(true, operation: body)
+    }
+
+    /// A transition function or predicate that used a machine would take a
+    /// lock its own thread already holds: a precondition failure that says
+    /// so, rather than the lock's own abort.
+    private func checkNotInTransition() {
+        precondition(
+            !Transitioning.active,
+            "StateMachine \(label): a transition function or whileIn predicate must not use a state machine (send, state, history, whileIn, states): it runs while the machine is locked. Return a Transition instead."
+        )
     }
 
     private func apply(_ event: Event, onlyDuring visit: UInt64?) {
         let outcome = core.withLock { core -> Outcome in
             if let visit, core.visit != visit { return .stale }
-            switch transition(core.state, event) {
+            switch Self.inTransition({ transition(core.state, event) }) {
             case .stay, .ignore:
                 return .none
             case .invalid(let reason):
                 return .invalid(core.state, reason)
             case .to(let next, let timeout):
-                return .moved(enter(next, timeout: timeout, cause: event, core: &core))
+                let leaving = core.stateWork
+                return .moved(enter(next, timeout: timeout, cause: event, core: &core), leaving: leaving)
             }
+        }
+        // The old visit's work is cancelled after the lock is released:
+        // cancellation runs the work's cancellation handlers on this thread,
+        // at once, and one that touches the machine must not find it locked.
+        if case .moved(_, let leaving) = outcome {
+            for task in leaving { task.cancel() }
         }
         // Observers and events are notified outside the lock: neither an
         // observation callback nor an instrumentation sink may be able to
@@ -250,7 +278,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 .init("event", .string("\(event)"), privacy: .public),
                 .init("reason", .string(reason), privacy: .public),
             ]))
-        case .moved(let record):
+        case .moved(let record, _):
             Ambient.record(level: .debug) {
                 Stoic.Event("statemachine.transition", level: .debug, label: label, fields: [
                     .init("from", .string("\(record.from)"), privacy: .public),
@@ -261,9 +289,9 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         }
     }
 
+    /// Moves to `next`. The caller cancels the work the old visit started,
+    /// once the lock is released.
     private func enter(_ next: State, timeout: StateTimeout<Event>?, cause event: Event, core: inout Core) -> Record {
-        // Leave: everything the old visit started stops now.
-        for task in core.stateWork { task.cancel() }
         core.stateWork.removeAll()
         let record = Record(from: core.state, event: event, to: next, at: clock.now)
         core.visit += 1
@@ -280,7 +308,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
         // Enter: start the new visit's work and its timer.
         let visit = core.visit
-        for activity in core.activities where activity.matches(next) {
+        for activity in core.activities where Self.inTransition({ activity.matches(next) }) {
             core.stateWork.append(start(activity, visit: visit))
         }
         if let timeout {
@@ -331,6 +359,13 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             self?.apply(event, onlyDuring: visit)
         }
     }
+}
+
+/// Whether the current task (or thread) is inside a transition function or
+/// a `whileIn` predicate, which run while a machine holds its lock. (A
+/// generic type cannot hold a task-local.)
+private enum Transitioning {
+    @TaskLocal static var active = false
 }
 
 extension CancellationCause {

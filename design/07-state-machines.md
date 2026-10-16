@@ -64,7 +64,13 @@ timer on the machine's clock for that visit; leaving cancels it.
 
 **Concurrency.** The machine is `Sendable`: events may come from any task
 and are applied one at a time, in order, under a lock. Events are reported
-outside the lock, so an instrumentation sink can never deadlock it.
+outside the lock, so an instrumentation sink can never deadlock it, and the
+old visit's work is cancelled outside it too: cancellation runs the work's
+cancellation handlers on the cancelling thread, at once, and a handler that
+reads the machine (or work observing `states()`, whose stream ends on
+cancellation) must not find it locked. The transition function and
+`whileIn` predicates do run under the lock; one that uses a machine is a
+precondition failure that says so, not the lock's own abort.
 `states()` streams the current state with newest-only buffering — a UI
 wants where the machine is, not every step it took.
 
@@ -92,6 +98,8 @@ events; use typestate for values whose protocol a single caller drives.
 | a state's timeout elapses during its visit    | The machine sends itself the timeout event           |
 | the state is left before its timeout          | The timer is cancelled; no event                     |
 | a thousand tasks send events at once          | Applied one at a time; none lost                     |
+| state work's cancellation handler uses the machine | Safe: work is cancelled once the lock is released |
+| a transition function uses the machine        | Precondition failure naming the rule                 |
 | the machine is deallocated                    | Its state work is cancelled and its observers finish |
 | a declared state can never be reached         | `StateGraph.unreachable(of:)` lists it in a test     |
 

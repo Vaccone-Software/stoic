@@ -69,6 +69,66 @@ struct StateMachineTests {
         #expect(observed.value == .stateExited)
     }
 
+    /// Cancelling a task runs its cancellation handlers on the cancelling
+    /// thread, at once. The old visit's work is cancelled after the machine
+    /// releases its lock, so a handler that uses the machine — or work that
+    /// observes it, whose stream ends on cancellation — is safe. A trap
+    /// cannot be caught in-process, so each case runs in a child process.
+    @Test(.failureMode("design/07", "state work's cancellation handler uses the machine"))
+    func aCancellationHandlerInStateWorkMayUseTheMachine() async {
+        await #expect(processExitsWith: .success) {
+            let machine = StateMachine<Int, Int>(initial: 0, label: "reentrant", clock: AnyClock.continuous) { state, _ in
+                .to(state == 0 ? 1 : 0)
+            }
+            let started = AsyncGate()
+            machine.whileIn(0, label: "watcher") { [weak machine] _ in
+                await withTaskCancellationHandler {
+                    started.open()
+                    try? await Task.sleep(for: .seconds(3600))
+                } onCancel: {
+                    _ = machine?.state
+                }
+            }
+            await started.wait()
+            // Lets the work's tasks suspend inside their cancellation handlers.
+            try? await Task.sleep(for: .milliseconds(100))
+            machine.send(0)
+        }
+    }
+
+    @Test func stateWorkMayObserveItsOwnMachine() async {
+        await #expect(processExitsWith: .success) {
+            let machine = StateMachine<Int, Int>(initial: 0, label: "observer", clock: AnyClock.continuous) { state, _ in
+                .to(state == 0 ? 1 : 0)
+            }
+            let started = AsyncGate()
+            machine.whileIn(0, label: "watcher") { [weak machine] _ in
+                guard let states = machine?.states() else { return }
+                for await _ in states { started.open() }
+            }
+            await started.wait()
+            try? await Task.sleep(for: .milliseconds(100))
+            machine.send(0)
+        }
+    }
+
+    /// A transition function runs while the machine is locked; one that uses
+    /// a machine fails with a message that says why, not the lock's abort.
+    @Test(.failureMode("design/07", "a transition function uses the machine"))
+    func aTransitionFunctionThatUsesTheMachineFailsWithItsReason() async throws {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let holder = SendableBox<StateMachine<Int, Int>?>(nil)
+            let machine = StateMachine<Int, Int>(initial: 0, label: "impure", clock: AnyClock.continuous) { state, _ in
+                _ = holder.value?.state
+                return .to(state + 1)
+            }
+            holder.mutate { $0 = machine }
+            machine.send(1)
+        }
+        let stderr = String(decoding: try #require(result).standardErrorContent, as: UTF8.self)
+        #expect(stderr.contains("StateMachine impure: a transition function or whileIn predicate must not use a state machine"))
+    }
+
     @Test(.failureMode("design/07", "the work sends an event after its visit ended")) func eventsFromAnEarlierVisitAreDropped() async {
         let events = RecordingInstrumentation()
         let clock = TestClock()
