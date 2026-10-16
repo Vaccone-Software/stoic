@@ -164,7 +164,10 @@ for the swap: elsewhere it is `.unsupported` when the destination exists.
 Permissions: the temporary is created, then given the permission bits of the
 file it will replace (`fchmod`, before a byte is written), so a write never
 widens a private file; a path with no file yet gets `Options.newFileMode`
-(default `0o644`; the settings store asks for `0o600`). The previous
+(default `0o644`; the settings store asks for `0o600`). The bits are set
+exactly, so the process's umask does not apply: under a umask of `077`, where
+`open` alone would give `0o600`, the default still makes the file readable by
+every user; ask for `0o600` for anything private. The previous
 generation is the old inode renamed, so it keeps its bits. A `FileSystem` that
 does not implement `permissions(of:)` reports "unknown" and every file gets
 the new-file mode. The journal's own files are still opened `0o644`.

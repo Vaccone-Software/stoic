@@ -76,7 +76,10 @@ public struct AtomicFile: Sendable {
 
         /// The permission bits of a file this write *creates*: `0o600` for
         /// anything private. A file that already exists keeps the bits it
-        /// has, whatever this says (see ``AtomicFile``).
+        /// has, whatever this says (see ``AtomicFile``). They are set
+        /// exactly, with `fchmod`, so the process's umask does not narrow
+        /// them: the default `0o644` is readable by every user even under a
+        /// umask of `077`.
         public var newFileMode: UInt16
 
         public init(
