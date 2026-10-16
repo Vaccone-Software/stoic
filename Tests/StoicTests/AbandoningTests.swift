@@ -149,6 +149,37 @@ struct AbandoningTests {
         }
     }
 
+    /// The same through a task scope, whose cancellation handler once
+    /// recorded "the user cancelled" over the enclosing deadline's cause.
+    @Test(.failureMode("design/01", "an enclosing deadline cancels an abandoning call"))
+    func anEnclosingDeadlineSeenThroughATaskScopeIsStillDeadlineExceeded() async throws {
+        let clock = TestClock()
+        let wedge = Wedge()
+        defer { wedge.release() }
+        let label = Self.uniqueLabel("scoped")
+        let reason = SendableBox<Rejection.Reason?>(nil)
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    try await withTaskScope { _ in
+                        do {
+                            _ = try await abandoningAfter(.seconds(60), label: label) { () throws(Failure) -> Int in
+                                wedge.block()
+                                return 1
+                            }
+                        } catch {
+                            reason.mutate { $0 = (error as? PolicyError<Failure>)?.rejection?.reason }
+                        }
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)
+        await clock.advance(by: .seconds(1))
+        _ = try? await task.value
+        #expect(reason.value == .deadlineExceeded)
+    }
+
     @Test(.failureMode("design/01", "the caller is already cancelled on entry (abandoning)")) func anAlreadyCancelledCallerStartsNothing() async throws {
         let ran = SendableBox(false)
         let label = Self.uniqueLabel("cancelled.first")

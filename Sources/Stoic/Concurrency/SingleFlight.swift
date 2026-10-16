@@ -87,6 +87,9 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         }
         await FaultPoint.hit("singleflight.arriving")
         let deadline = Deadline.current
+        // Read here, in the caller: a cancellation handler runs in whoever
+        // cancels, and must still say why this caller was cancelled.
+        let callerCauses = CancellationCauseBox.current
         // A waiting caller's task can be escalated (something more urgent now
         // awaits it); its continuation would not pass that on, so pass it on.
         let outcome: Outcome = await withTaskPriorityEscalationHandler {
@@ -95,7 +98,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
                     group.addTask {
                         do {
                             try await deadline.clock.sleep(until: deadline.instant, tolerance: nil)
-                            self.leave(waiterID, because: Rejection(.deadlineExceeded, label: self.label))
+                            self.leave(waiterID, because: Rejection(.deadlineExceeded, label: self.label), cause: .deadline)
                         } catch {}
                     }
                 }
@@ -104,7 +107,8 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
                         join(waiterID, key: key, operation: operation, waiter: waiter)
                     }
                 } onCancel: {
-                    leave(waiterID, because: Rejection(.cancelled, label: label))
+                    leave(waiterID, because: Rejection(.cancelled, label: label),
+                          cause: CancellationCauseBox.outsideCause(seenBy: callerCauses))
                 }
                 group.cancelAll()
                 return outcome
@@ -205,13 +209,16 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         // A more urgent caller joined before the task existed.
         if wanted > launchedAt { task.escalatePriority(to: wanted) }
         if orphaned {
-            // Every caller left between the flight's creation and its task's.
-            cause.record(.userRequested)
+            // Every caller left between the flight's creation and its task's;
+            // the last one recorded why when it retired the flight.
             task.cancel()
         }
     }
 
-    private func leave(_ waiterID: UInt64, because rejection: Rejection) {
+    /// Takes `waiterID` out of its flight. If it was the last caller, the
+    /// flight is cancelled, and `cause` (why that caller left) is what the
+    /// operation reads as its cancellation cause.
+    private func leave(_ waiterID: UInt64, because rejection: Rejection, cause: CancellationCause) {
         let (waiter, retired) = state.withLock { state -> (Waiter?, Flight?) in
             if let arriving = state.arriving[waiterID] {
                 // Not joined yet: it will find this on arrival.
@@ -226,7 +233,11 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
             if flight.waiters.isEmpty {
                 // The last caller left: retire the key now, so newcomers
                 // start afresh rather than join a flight being cancelled.
+                // The cause is recorded before the flight can be seen
+                // retired, so a launch that finds it orphaned cancels a
+                // task whose cause is already set.
                 state.flights[key] = nil
+                flight.cause.record(cause)
                 return (waiter, flight)
             }
             state.flights[key] = flight
@@ -234,7 +245,6 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         }
         waiter?.resume(returning: .failure(.rejected(rejection)))
         if let retired {
-            retired.cause.record(.userRequested)
             retired.task?.cancel()
             Ambient.record(Event("singleflight.abandoned", label: label))
         }

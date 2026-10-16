@@ -103,9 +103,12 @@ public nonisolated(nonsending) func withTaskScope<R: Sendable>(
     let bodyResult = await withTaskCancellationHandler {
         await bodyTask.value
     } onCancel: {
-        tasks.cause.record(.userRequested)
+        // The caller was cancelled: by an enclosing Stoic scope, which
+        // recorded why before it cancelled, or by someone else.
+        let cause = CancellationCauseBox.outsideCause(seenBy: tasks.cause.parent)
+        tasks.cause.record(cause)
         bodyTask.cancel()
-        tasks.cancelForks(cause: .userRequested)
+        tasks.cancelForks(cause: cause)
     }
 
     // The body has ended: no new forks; stop and await the running ones.

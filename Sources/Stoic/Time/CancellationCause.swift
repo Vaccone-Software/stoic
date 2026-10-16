@@ -52,7 +52,7 @@ final class CancellationCauseBox: Sendable {
     private let storage = Mutex<CancellationCause?>(nil)
 
     /// The box of the enclosing Stoic scope, when this one is nested.
-    private let parent: CancellationCauseBox?
+    let parent: CancellationCauseBox?
 
     @TaskLocal static var current: CancellationCauseBox?
 
@@ -76,5 +76,18 @@ final class CancellationCauseBox: Sendable {
         storage.withLock { stored in
             if stored == nil { stored = cause }
         }
+    }
+
+    /// The cause of a cancellation that reached a task from outside, as a
+    /// cancellation handler in it should record it: the cause the nearest
+    /// enclosing Stoic scope (`box` and its parents) recorded before it
+    /// cancelled, and ``CancellationCause/userRequested`` only when none did.
+    ///
+    /// A handler that records `.userRequested` outright hides the real
+    /// cause: inside a scope under an expiring deadline, the scope's work
+    /// would read "the user cancelled" and every policy in it would answer
+    /// `.cancelled` instead of `.deadlineExceeded`.
+    static func outsideCause(seenBy box: CancellationCauseBox?) -> CancellationCause {
+        box?.resolvedCause ?? .userRequested
     }
 }

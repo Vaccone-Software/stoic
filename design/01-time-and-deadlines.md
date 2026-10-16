@@ -101,7 +101,14 @@ scopes' boxes. Cancellation no Stoic scope initiated reads as
 `userRequested`, SE-0526's default. A first version recorded the caller's
 cancellation from a cancellation handler; 300 repeated runs showed the child
 can observe its cancellation before the handler runs, so the cause is now
-resolved by elimination instead of by a racing write.
+resolved by elimination instead of by a racing write. Where a scope must
+record something when it is cancelled from outside (a task scope has to tell
+its forks' cancellation from their failures), it records the cause its
+enclosing scopes recorded before they cancelled, and `userRequested` only
+when none did; a handler that wrote `userRequested` outright told a task
+scope under an expiring deadline that the user had cancelled, and every
+policy inside it answered `.cancelled` instead of `.deadlineExceeded`. A
+test fails on any `record(.userRequested)` in Stoic's sources.
 
 **Already passed.** If the deadline has passed before `withDeadline` is
 entered, the operation is still run, already cancelled, so cancellation-aware

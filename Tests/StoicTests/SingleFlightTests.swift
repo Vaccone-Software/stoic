@@ -123,4 +123,77 @@ struct SingleFlightTests {
         gate.open()
         #expect(try await patient.value == "done")
     }
+
+    /// A flight cancelled because its last caller left reads why that
+    /// caller left: its deadline passed.
+    @Test func aFlightWhoseLastCallerRanOutOfTimeIsCancelledForTheDeadline() async throws {
+        let clock = TestClock()
+        let flight = SingleFlight<Int, String, any Error>(label: "cause.deadline")
+        let observed = SendableBox<CancellationCause?>(nil)
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    try await flight.run(1) {
+                        do { try await Task.sleep(for: .seconds(60)) } catch {
+                            observed.mutate { $0 = CancellationCause.current }
+                            throw error
+                        }
+                        return "unreachable"
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the caller's deadline and the flight's wait
+        await clock.advance(by: .seconds(1))
+        _ = try? await task.value
+        #expect(await eventually { observed.value != nil })
+        #expect(observed.value == .deadline)
+    }
+
+    /// ...and, cancelled by an enclosing Stoic scope, the cause that scope
+    /// recorded, not "the user cancelled".
+    @Test func aFlightWhoseLastCallerWasCancelledByAScopeReadsTheScopesCause() async throws {
+        let flight = SingleFlight<Int, String, any Error>(label: "cause.scope")
+        let observed = SendableBox<CancellationCause?>(nil)
+        let started = AsyncGate()
+        _ = try? await withTaskScope { scope in
+            scope.fork(label: "breaks") {
+                await started.wait()
+                throw Failure.boom
+            }
+            _ = try await flight.run(1) {
+                started.open()
+                do { try await Task.sleep(for: .seconds(60)) } catch {
+                    observed.mutate { $0 = CancellationCause.current }
+                    throw error
+                }
+                return "unreachable"
+            }
+        }
+        #expect(await eventually { observed.value != nil })
+        #expect(observed.value == .siblingFailed)
+    }
+
+    /// With no Stoic scope behind the cancellation, the flight reads
+    /// `.userRequested`.
+    @Test func aFlightWhoseLastCallerWasCancelledReadsUserRequested() async throws {
+        let flight = SingleFlight<Int, String, any Error>(label: "cause.user")
+        let observed = SendableBox<CancellationCause?>(nil)
+        let started = AsyncGate()
+        let task = Task {
+            try await flight.run(1) {
+                started.open()
+                do { try await Task.sleep(for: .seconds(60)) } catch {
+                    observed.mutate { $0 = CancellationCause.current }
+                    throw error
+                }
+                return "unreachable"
+            }
+        }
+        await started.wait()
+        task.cancel()
+        _ = try? await task.value
+        #expect(await eventually { observed.value != nil })
+        #expect(observed.value == .userRequested)
+    }
 }

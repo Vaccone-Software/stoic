@@ -1,3 +1,4 @@
+import Foundation
 @testable import Stoic
 import StoicTesting
 import Testing
@@ -304,6 +305,29 @@ struct DeadlineTests {
             counter.value += 1
         }
         #expect(counter.value == 1)
+    }
+
+    /// No cancellation handler in Stoic records `.userRequested` outright:
+    /// one that does writes over the cause an enclosing scope recorded
+    /// before it cancelled (a task scope under an expiring deadline once
+    /// told its body "the user cancelled"). Handlers record
+    /// `CancellationCauseBox.outsideCause(seenBy:)`, which falls back to
+    /// `.userRequested` only when no enclosing scope recorded a cause.
+    @Test func noCancellationHandlerRecordsUserRequestedOverAnEnclosingCause() throws {
+        let sources = URL(filePath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "Sources")
+        var offenders: [String] = []
+        let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
+        while let file = enumerator?.nextObject() as? URL {
+            guard file.pathExtension == "swift" else { continue }
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+            where line.contains("record(.userRequested)") || line.contains("cause: .userRequested") {
+                offenders.append("\(file.lastPathComponent):\(index + 1): \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+        #expect(offenders.isEmpty, "record CancellationCauseBox.outsideCause(seenBy:) instead:\n\(offenders.joined(separator: "\n"))")
     }
 
     @Test func remainingIsZeroOncePassed() async {

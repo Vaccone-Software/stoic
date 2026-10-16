@@ -380,4 +380,64 @@ struct ScopeTests {
         }
         #expect(counter.value == 1)
     }
+
+    /// A task scope cancelled by an enclosing deadline passes the deadline
+    /// on as the cause, to its body and its forks: the scope's cancellation
+    /// handler must not record "the user cancelled" over it.
+    @Test func aTaskScopeUnderAnExpiringDeadlineGivesTheDeadlineAsTheCause() async {
+        let clock = TestClock()
+        let bodyCause = SendableBox<CancellationCause?>(nil)
+        let forkCause = SendableBox<CancellationCause?>(nil)
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withTimeout(.seconds(1)) {
+                    try await withTaskScope { scope in
+                        scope.fork(label: "pump") {
+                            do { try await Ambient.sleep(for: .seconds(60)) } catch {
+                                forkCause.mutate { $0 = CancellationCause.current }
+                                throw error
+                            }
+                        }
+                        do { try await Ambient.sleep(for: .seconds(60)) } catch {
+                            bodyCause.mutate { $0 = CancellationCause.current }
+                            throw error
+                        }
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 3)
+        await clock.advance(by: .seconds(1))
+        _ = try? await task.value
+        #expect(bodyCause.value == .deadline)
+        #expect(forkCause.value == .deadline)
+    }
+
+    /// Cancelled by someone no Stoic scope speaks for, a task scope's body
+    /// and forks still read `.userRequested`.
+    @Test func aCancelledTaskScopeGivesUserRequestedAsTheCause() async {
+        let bodyCause = SendableBox<CancellationCause?>(nil)
+        let forkCause = SendableBox<CancellationCause?>(nil)
+        let started = AsyncGate()
+        let task = Task {
+            try await withTaskScope { scope in
+                scope.fork(label: "pump") {
+                    do { try await Task.sleep(for: .seconds(60)) } catch {
+                        forkCause.mutate { $0 = CancellationCause.current }
+                        throw error
+                    }
+                }
+                started.open()
+                do { try await Task.sleep(for: .seconds(60)) } catch {
+                    bodyCause.mutate { $0 = CancellationCause.current }
+                    throw error
+                }
+            }
+        }
+        await started.wait()
+        task.cancel()
+        _ = try? await task.value
+        #expect(bodyCause.value == .userRequested)
+        #expect(forkCause.value == .userRequested)
+    }
 }

@@ -76,7 +76,9 @@ in debug on a reported failure: it would crash every test of that path.
 **TaskScope.** Children forked into a task scope are cancelled
 (`scopeEnded`) and awaited when the body ends, *before* any finalizer runs,
 so no fork can use a released resource. A failing fork cancels the body and
-its siblings (`siblingFailed`); the scope then throws `ConcurrentFailure`
+its siblings (`siblingFailed`); a scope cancelled from outside passes on the
+cause its enclosing scopes recorded (an expiring deadline's `deadline`), and
+`userRequested` only when there is none. The scope then throws `ConcurrentFailure`
 with every fork failure followed by the body's own error if it failed for
 another reason. The body runs as a child task — the only way a fork's
 failure can cancel it without cancelling the caller — so, like `Task {}`, it

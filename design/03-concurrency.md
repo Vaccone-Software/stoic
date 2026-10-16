@@ -126,7 +126,10 @@ one-permit form: the cure for actor reentrancy's check–await–act race.
 rejection (`cancelled` or `deadlineExceeded`) when they stop waiting; the
 operation is cancelled only when the last caller leaves, and the key is
 retired at once so newcomers start fresh instead of joining a flight being
-cancelled. The operation runs without the first caller's deadline; each
+cancelled. The operation's cancellation cause is why that last caller left:
+`deadline` when its deadline passed, and when it was cancelled, the cause an
+enclosing Stoic scope recorded for it (`userRequested` only when none did).
+The operation runs without the first caller's deadline; each
 caller's wait is bounded by its own. The operation runs at the most urgent
 priority any waiting caller has: a caller waits on a continuation, which
 escalates nothing, so the flight escalates the task itself when a
