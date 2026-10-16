@@ -66,6 +66,16 @@ struct PathTests {
         #expect(JSONPath(pointer: "/0") == [.index(0)])
     }
 
+    @Test func tokensThatBeginWithACombiningMarkStayApart() {
+        // `/` and U+0301 are one Character; splitting on Characters would
+        // fuse the second token into the first, and drop the mark from the
+        // first token of all.
+        #expect(JSONPath(pointer: "/a/\u{301}b") == [.key("a"), .key("\u{301}b")])
+        #expect(JSONPath(pointer: "/\u{301}") == [.key("\u{301}")])
+        let path: JSONPath = [.key("x"), .key("\u{301}~/")]
+        #expect(JSONPath(pointer: path.pointer) == path)
+    }
+
     @Test(arguments: ["a", "a/b", "/a~", "/a~2", "/~", "/a~b", "~0"])
     func rejectsMalformedPointers(_ pointer: String) {
         #expect(JSONPath(pointer: pointer) == nil)

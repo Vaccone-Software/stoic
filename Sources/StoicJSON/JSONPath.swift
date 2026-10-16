@@ -149,7 +149,11 @@ public struct JSONPath: Sendable, Hashable, RandomAccessCollection, ExpressibleB
         guard pointer.utf8.first == UInt8(ascii: "/") else { return nil }
         var components: [Component] = []
         var current = root
-        for rawToken in pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false) {
+        // Split on scalars, not Characters: a token that begins with a
+        // combining mark would otherwise fuse with the `/` before it into one
+        // Character, and the two tokens would be read as one.
+        let tokens = pointer.unicodeScalars.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        for rawToken in tokens {
             guard let token = Self.unescapePointerToken(rawToken) else { return nil }
             let digitIndex = Self.arrayIndex(token)
             let component: Component
@@ -168,9 +172,9 @@ public struct JSONPath: Sendable, Hashable, RandomAccessCollection, ExpressibleB
         self.init(components)
     }
 
-    private static func unescapePointerToken(_ token: Substring) -> String? {
+    private static func unescapePointerToken(_ token: Substring.UnicodeScalarView) -> String? {
         var out = ""
-        var scalars = token.unicodeScalars.makeIterator()
+        var scalars = token.makeIterator()
         while let scalar = scalars.next() {
             if scalar == "~" {
                 switch scalars.next() {
