@@ -317,8 +317,9 @@ the first version, on the same pipeline):
 - **`HTTPOverrides`** is a struct of optionals (`attemptTimeout`, `schedule`,
   `coalesce`) and flags (`bypassBreaker`, `reauthenticate`), plus
   `retryOnResponse`. A call only shares a coalesced flight with calls that ask
-  for the same timeout, schedule, bypass and reauthentication (the flight runs
-  the starter's pipeline); a call with its own `retryOnResponse` is never
+  for the same timeout, schedule, bypass and reauthentication, compared as
+  values (two schedules can share a hash), since the flight runs the
+  starter's pipeline; a call with its own `retryOnResponse` is never
   coalesced, since a closure cannot be compared. A bypassing call skips the
   breaker stage entirely: it is sent while the breaker is open and its outcome
   is not recorded.

@@ -200,17 +200,19 @@ struct FlightKey: Hashable, Sendable {
     var headers: [String]
     /// What else makes a pipeline behave differently: the overrides that can
     /// be compared, so a call with a longer timeout does not join a flight
-    /// that will cut it short.
-    var variant: String
+    /// that will cut it short. Kept as values, not hashes: two schedules can
+    /// share a hash, and a call must never run on another's schedule.
+    var attemptTimeout: Duration?
+    var schedule: BoundedSchedule?
+    var bypassBreaker: Bool
+    var reauthenticate: Bool
 
     init(_ request: HTTPRequest, ignoring ignored: [String], overrides: HTTPOverrides = .none) {
         url = request.url?.absoluteString ?? ""
-        var variant: [String] = []
-        if let timeout = overrides.attemptTimeout { variant.append("timeout=\(timeout)") }
-        if let schedule = overrides.schedule { variant.append("schedule=\(schedule.hashValue)") }
-        if overrides.bypassBreaker { variant.append("bypass") }
-        if !overrides.reauthenticate { variant.append("noreauth") }
-        self.variant = variant.joined(separator: ";")
+        attemptTimeout = overrides.attemptTimeout
+        schedule = overrides.schedule
+        bypassBreaker = overrides.bypassBreaker
+        reauthenticate = overrides.reauthenticate
         let skipped = Set(ignored.map { $0.lowercased() })
         headers = request.headers.fields
             .map { (name: $0.name.lowercased(), value: $0.value) }

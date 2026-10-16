@@ -113,6 +113,31 @@ struct HTTPOverrideTests {
         }
     }
 
+    @Test func callsWithDifferentSchedulesDoNotShareAFlight() async throws {
+        try await withRig { (rig) async throws in
+            rig.transport.on(.get("/avatar"), respond: [Step.bytes([1]).after(.seconds(1))])
+            let twice = HTTPOverrides(schedule: Schedule.fixed(.seconds(5)).attempts(2))
+            let once = HTTPOverrides(schedule: Schedule.fixed(.seconds(5)).attempts(1))
+            let tasks = [rig.start(.get("/avatar"), overrides: twice), rig.start(.get("/avatar"), overrides: once),
+                         rig.start(.get("/avatar"), overrides: twice)]
+            await eventually { rig.transport.inFlightCount == 2 }
+            await rig.clock.waitForSleepers(count: 4)
+            await rig.clock.advance(by: .seconds(1))
+            for task in tasks { _ = try await task.value }
+            #expect(rig.transport.requestCount == 2, "the two alike share, the third does not")
+        }
+    }
+
+    @Test func aFlightIsKeyedByTheOverridesValuesNotTheirHashes() {
+        let request = HTTPRequest(method: .get, target: .url(apiBase))
+        let schedule = Schedule.exponential(base: .seconds(1)).attempts(3)
+        let key = FlightKey(request, ignoring: [], overrides: HTTPOverrides(schedule: schedule))
+        #expect(key.schedule == schedule)
+        #expect(key == FlightKey(request, ignoring: [], overrides: HTTPOverrides(schedule: Schedule.exponential(base: .seconds(1)).attempts(3))))
+        #expect(key != FlightKey(request, ignoring: [], overrides: HTTPOverrides(schedule: schedule.capped(at: .seconds(2)))))
+        #expect(key != FlightKey(request, ignoring: [], overrides: .none))
+    }
+
     @Test func callsWithDifferentTimeoutsDoNotShareAFlight() async throws {
         try await withRig { (rig) async throws in
             rig.transport.on(.get("/avatar"), respond: [Step.bytes([1]).after(.seconds(1))])
