@@ -982,17 +982,22 @@ final class SimulationExecutor: TaskExecutor {
         return arrival.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success
     }
 
-    /// Waits up to `limit` of real time for the cooperative thread pool to run
-    /// a trivial task: proof that a task the app started a moment ago has
-    /// had its chance to run, even on a machine that is busy. Called from the
-    /// driver's own thread, outside any task, so the probe has no executor
-    /// preference and goes where an app's unstructured `Task {}` goes.
+    /// Waits up to `limit` of real time for the cooperative thread pool and
+    /// Dispatch's global queue each to run a trivial job: proof that work the
+    /// app started a moment ago, a `Task {}` or a `DispatchQueue.global()`
+    /// block, has had its chance to run, even on a machine that is busy.
+    /// Both, because they are separate pools and a loaded machine starves
+    /// them separately. Called from the driver's own thread, outside any
+    /// task, so the task probe has no executor preference and goes where an
+    /// app's unstructured `Task {}` goes.
     func waitForPoolsToAnswer(within limit: Duration) -> Bool {
         let answered = DispatchSemaphore(value: 0)
         Task { answered.signal() }
+        DispatchQueue.global().async { answered.signal() }
         let (seconds, attoseconds) = limit.components
         let nanoseconds = Int(min(max(seconds, 0), 86_400)) * 1_000_000_000 + Int(attoseconds / 1_000_000_000)
-        return answered.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success
+        let deadline = DispatchTime.now() + .nanoseconds(nanoseconds)
+        return answered.wait(timeout: deadline) == .success && answered.wait(timeout: deadline) == .success
     }
 
     /// Wakes a driver waiting for arrivals, to notice a cancellation.
