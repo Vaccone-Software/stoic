@@ -64,7 +64,12 @@ stops matching; use `report.first(MyError.self)`.
 **The root stays reachable.** `first(_:)` looks through reports, rejected
 and failed `PolicyError`s and `ConcurrentFailure`s; Stoic's classification
 (retry decisions, `containsDefect`, `containsCancellation`) does the same, so
-adding context never changes how an error is handled.
+adding context never changes how an error is handled. Inside a
+`ConcurrentFailure` the rules differ on purpose: it is a defect when *any*
+child's failure is one (a bug anywhere must be reported), and a cancellation
+when its *primary* failure is one (the first child to end was cancelled; the
+rest is fallout). A sibling cancelled because another child failed does not
+turn the failure into a cancellation.
 
 **Untyped on purpose.** A report's job is to cross layers, and each layer
 has its own error type; Swift has no error unions. Typed errors stay typed
@@ -90,6 +95,7 @@ left out. `debugDescription` prints everything.
 | the error is a `CancellationError`                 | Passed through unwrapped                                |
 | a defect is wrapped in a report                    | `isDefect` is true; retry stops                         |
 | a report wraps a `PolicyError` wrapping the root   | `first(Root.self)` finds it                             |
+| a report wraps a `ConcurrentFailure` whose primary is a cancellation | `isCancellation` is true; a primary failure with cancelled siblings is not |
 | cleanup fails while handling an error              | `suppressing(_:)` keeps it; shown in `debugDescription` |
 
 ## Testing

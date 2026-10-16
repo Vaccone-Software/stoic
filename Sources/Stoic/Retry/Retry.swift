@@ -193,6 +193,12 @@ func containsDefect(_ error: any Error) -> Bool {
 }
 
 /// Whether `error` is, or wraps, a cancellation.
+///
+/// A ``ConcurrentFailure`` is a cancellation when its *primary* failure is:
+/// the first child to end was cancelled, and the rest is the fallout. A
+/// sibling cancelled because another child failed does not make the failure
+/// a cancellation. (A defect is the other way round: any child's defect
+/// makes the whole a defect, since a bug anywhere must be reported.)
 func containsCancellation(_ error: any Error) -> Bool {
     if error.isCancellation { return true }
     if let report = error as? Report { return containsCancellation(report.root) }
@@ -200,6 +206,9 @@ func containsCancellation(_ error: any Error) -> Bool {
     if let policy = error as? any RejectionCarrying {
         if let rejection = policy.carriedRejection { return rejection.reason == .cancelled }
         if let inner = policy.carriedFailure { return containsCancellation(inner) }
+    }
+    if let concurrent = error as? any PrimaryFailureCarrying {
+        return containsCancellation(concurrent.primaryFailure)
     }
     return false
 }

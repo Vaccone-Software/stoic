@@ -87,6 +87,19 @@ struct ReportTests {
         #expect(!Report(FileError.missing).isCancellation)
     }
 
+    @Test(.failureMode("design/05", "a report wraps a `ConcurrentFailure` whose primary is a cancellation"))
+    func aConcurrentFailureIsACancellationWhenItsPrimaryIs() {
+        let cancelled = ConcurrentFailure<any Error>([CancellationError(), FileError.missing])
+        #expect(Report(cancelled).isCancellation)
+        #expect(PolicyError<ConcurrentFailure<any Error>>.failed(cancelled).isCancellation)
+        // A real failure whose siblings were then cancelled is a failure.
+        let failed = ConcurrentFailure<any Error>([FileError.missing, CancellationError()])
+        #expect(!Report(failed).isCancellation)
+        #expect(!PolicyError<ConcurrentFailure<any Error>>.failed(failed).isCancellation)
+        // A defect is the other way round: any child's makes the whole one.
+        #expect(Report(ConcurrentFailure<any Error>([FileError.missing, Bug()])).isDefect)
+    }
+
     @Test func reportingAReportAddsAFrameInsteadOfNesting() {
         let first = FileError.missing.context("inner")
         let second = first.context("outer")
