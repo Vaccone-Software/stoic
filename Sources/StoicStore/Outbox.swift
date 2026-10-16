@@ -252,6 +252,11 @@ public actor Outbox<Item: Sendable> {
                 }
             } catch let cancellation as CancellationError {
                 throw cancellation
+            } catch where Task.isCancelled {
+                // `retry` cancelled during its backoff rethrows the last
+                // attempt's error, not `CancellationError`. The entry did not
+                // fail: the run was cancelled, and it stays pending.
+                throw CancellationError()
             } catch {
                 report.failed.append(.init(key: stored.key, error: error, attempts: attempts))
                 StoreEvents.record(Event("store.outbox_delivery_failed", level: .warning, fields: [
@@ -266,7 +271,8 @@ public actor Outbox<Item: Sendable> {
                 .init("key", .string(stored.key.rawValue)), .init("attempts", .int(attempts)),
             ]))
         }
-        compactIfNeeded()
+        // Maintenance is not worth starting for a caller that has gone.
+        if !Task.isCancelled { compactIfNeeded() }
         report.remaining = pending.count
         return report
     }

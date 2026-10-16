@@ -256,7 +256,7 @@ what the key is for.
 | it dies after the ack returned                        | The entry is never delivered again                                                                |
 | the closure throws a `Retryable` error saying `.stop` | One attempt; the entry stays pending; the run stops (`.stopAtFirst`) or moves on (`.continueWithNext`) |
 | the schedule is spent                                 | Same: pending, reported in `DeliveryReport.failed` (`store.outbox_delivery_failed`)               |
-| `deliverPending` is cancelled                         | `CancellationError`; the entry in flight stays pending                                            |
+| `deliverPending` is cancelled                         | `CancellationError`, also while a retry waits out its backoff (when `retry` rethrows the attempt's error); the entry in flight stays pending, no failure is reported, and no compaction starts |
 | a second `deliverPending` starts during a run         | Returns at once with `wasAlreadyRunning`                                                          |
 | an item no longer decodes                             | Reported as a failed entry with `.corrupt` and zero attempts; `discard(key)` drops it durably      |
 | the ack cannot be written                             | `deliverPending` throws the `StoreError`; the entry stays pending and will be redelivered        |

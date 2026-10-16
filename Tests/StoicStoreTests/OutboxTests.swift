@@ -220,6 +220,31 @@ struct OutboxTests {
         #expect(await outbox.pendingCount == 1)
     }
 
+    /// `retry` cancelled while it waits out a backoff rethrows the attempt's
+    /// error, not `CancellationError`; the outbox must still read it as
+    /// cancellation, report no failure, and not compact.
+    @Test(.failureMode("design/15", "deliverPending is cancelled"), .timeLimit(.minutes(1)))
+    func cancellationDuringABackoffIsCancellationNotAFailure() async throws {
+        let disk = try disk()
+        let outbox = try open(disk, policy: DeliveryPolicy(schedule: .fixed(.seconds(1)).attempts(3), budget: .unlimited), threshold: 1)
+        try await outbox.enqueue("a")
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let run = Task {
+            try await withTestAmbient(clock: clock) {
+                try await withAmbient({ $0.instrumentation = events }) {
+                    try await outbox.deliverPending { _ in throw Unavailable() }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)   // the first attempt failed; backing off
+        run.cancel()
+        await #expect(throws: CancellationError.self) { try await run.value }
+        #expect(events.events(named: "store.outbox_delivery_failed").isEmpty)
+        #expect(events.events(named: "store.journal_compacted").isEmpty)
+        #expect(await outbox.pendingCount == 1)
+    }
+
     @Test func discardDropsAnEntryDurably() async throws {
         let disk = try disk()
         let outbox = try open(disk)
