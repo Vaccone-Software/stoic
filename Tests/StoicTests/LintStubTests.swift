@@ -12,7 +12,9 @@ struct LintStubTests {
 
     static var tool: URL? {
         let build = root.appending(path: ".build")
-        var candidates = [build.appending(path: "out/Products/Debug"), build.appending(path: "debug")]
+        // The test runner sits in the products directory on Linux, wherever
+        // `--build-path` put it; elsewhere this finds nothing and the rest apply.
+        var candidates = [Bundle.main.bundleURL, build.appending(path: "out/Products/Debug"), build.appending(path: "debug")]
         if let triples = try? FileManager.default.contentsOfDirectory(atPath: build.path()) {
             candidates += triples.map { build.appending(path: "\($0)/debug") }
         }

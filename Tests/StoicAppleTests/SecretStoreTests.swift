@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(Security)
 import Security
+#endif
 import Stoic
 import StoicTesting
 import Testing
@@ -85,6 +87,8 @@ struct SecretStoreTests {
         }
     }
 
+    // The Keychain is Apple's; these exercise its status codes and defaults.
+    #if canImport(Security)
     @Test(.failureMode("design/21", "the app is not entitled to the Keychain"))
     func aMissingEntitlementIsRecognised() {
         #expect(SecretStoreError(status: errSecMissingEntitlement) == .missingEntitlement)
@@ -106,4 +110,5 @@ struct SecretStoreTests {
         #expect(store.accessGroup == nil)
         #expect(Set(KeychainSecretStore.Accessibility.allCases.map { $0.attribute as String }).count == 5)
     }
+    #endif
 }

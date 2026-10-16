@@ -17,7 +17,9 @@ struct CompileFailTests {
     /// layout (Xcode build system or the native one) produced this run.
     static var products: URL? {
         let build = root.appending(path: ".build")
-        var candidates = [build.appending(path: "out/Products/Debug"), build.appending(path: "debug")]
+        // The test runner sits in the products directory on Linux, wherever
+        // `--build-path` put it; elsewhere this finds nothing and the rest apply.
+        var candidates = [Bundle.main.bundleURL, build.appending(path: "out/Products/Debug"), build.appending(path: "debug")]
         if let triples = try? FileManager.default.contentsOfDirectory(atPath: build.path()) {
             candidates += triples.map { build.appending(path: "\($0)/debug") }
         }
@@ -35,7 +37,11 @@ struct CompileFailTests {
             return Outcome(compiled: false, errors: "")
         }
         let process = Process()
+        #if canImport(Darwin)
         process.executableURL = URL(filePath: "/usr/bin/xcrun")
+        #else
+        process.executableURL = URL(filePath: "/usr/bin/env")
+        #endif
         process.arguments = [
             "swiftc", "-emit-sil", "-o", "/dev/null",
             "-I", products.path(), "-I", products.appending(path: "Modules").path(),

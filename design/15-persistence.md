@@ -524,8 +524,14 @@ acknowledgement that is never written) each fail the suite.
   holder's lock is not in the suite (no test here starts a process); the
   release is the kernel's documented `flock` behaviour and is tested as
   descriptor close.
-- **Linux is untested.** The `Glibc` branch compiles in principle but this
-  package has only been built on macOS; directory `fsync` is `fsync` there.
+- **Linux runs the suite, except `replaceItem` over an existing item.**
+  `scripts/linux.sh` builds StoicStore on Glibc and runs its tests; directory
+  `fsync` is `fsync` there. `PosixFileSystem.exchange` is `renamex_np`, which
+  Linux does not have, so it throws `.unsupported` and `replaceItem` fails
+  when the destination exists (a missing destination is a plain rename and
+  works). The tests of that path against the real file system run on Apple
+  platforms only; the simulated file system covers its crash points
+  everywhere.
 - **No disk-space check on the journal.** Only `AtomicFile` preflights;
   `append` surfaces `ENOSPC` when the write fails and rolls back.
 - **A failed ack and a failed enqueue are thrown, not retried by the outbox.**

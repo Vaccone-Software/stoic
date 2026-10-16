@@ -1,3 +1,5 @@
+// Thermal state, Low Power Mode and Dispatch memory-pressure sources are Darwin's.
+#if canImport(Darwin)
 public import Stoic
 internal import Foundation
 internal import Dispatch
@@ -62,3 +64,4 @@ public final class DeviceConditions: SystemConditionsSource {
         return SystemConditions(memoryPressure: memory, thermal: thermal, lowPowerMode: info.isLowPowerModeEnabled)
     }
 }
+#endif

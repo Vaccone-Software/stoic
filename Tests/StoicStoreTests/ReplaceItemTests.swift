@@ -8,6 +8,9 @@ import Testing
 struct ReplaceItemTests {
     let fs = PosixFileSystem()
 
+    // `exchange` is `renamex_np`, which PosixFileSystem has on Apple platforms
+    // only; elsewhere replacing an existing item throws `.unsupported`.
+    #if canImport(Darwin)
     @Test func aFileIsReplacedAndTheOldOneIsGone() throws {
         let dir = try TempDirectory()
         try AtomicFile(options: .init(envelope: false)).write(bytes("old"), to: dir.file("a"))
@@ -16,6 +19,7 @@ struct ReplaceItemTests {
         #expect(text(try fs.readAll(dir.file("a"))) == "new")
         #expect(try fs.list(directory: dir.path) == ["a"])
     }
+    #endif
 
     @Test func aMissingDestinationIsJustRenamedInto() throws {
         let dir = try TempDirectory()
@@ -25,6 +29,9 @@ struct ReplaceItemTests {
         #expect(try fs.list(directory: dir.path) == ["a"])
     }
 
+    // `exchange` is `renamex_np`, which PosixFileSystem has on Apple platforms
+    // only; elsewhere replacing an existing item throws `.unsupported`.
+    #if canImport(Darwin)
     @Test func aDirectoryTreeIsReplacedWholeAndTheOldTreeIsRemoved() throws {
         let dir = try TempDirectory()
         let file = AtomicFile(options: .init(envelope: false))
@@ -63,6 +70,7 @@ struct ReplaceItemTests {
         #expect(error?.kind == .notFound)
         #expect(text(try fs.readAll(dir.file("a"))) == "old")
     }
+    #endif
 }
 
 @Suite("AtomicFile.replaceItem failures")
