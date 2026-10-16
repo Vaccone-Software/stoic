@@ -88,6 +88,7 @@ func readFields(of declaration: StructDeclSyntax, enclosing: String, reporter: R
             readIgnored(variable, markers: found, model: model, reporter: reporter)
             continue
         }
+        guard storesWhatItDeclares(variable, reporter: reporter) else { continue }
         for binding in variable.bindings {
             if let field = readField(binding, in: variable, markers: found, enclosing: enclosing, model: &model, reporter: reporter) {
                 model.fields.append(field)
@@ -103,6 +104,41 @@ func readFields(of declaration: StructDeclSyntax, enclosing: String, reporter: R
     }
     return model
 }
+
+/// Whether a property stores a value of the type it declares, which is what
+/// the macro reads. A `lazy` property stores nothing until it is first read,
+/// and a property wrapper stores its wrapper: the schema would describe one
+/// thing and the value hold another, so both are refused rather than read
+/// as if they were plain. `@Ignored` leaves either out.
+private func storesWhatItDeclares(_ variable: VariableDeclSyntax, reporter: Reporter) -> Bool {
+    // A computed property is no field, whatever its attributes.
+    guard variable.bindings.contains(where: { !isComputed($0) }) else { return true }
+    var plain = true
+    if let lazy = variable.modifiers.first(where: { $0.name.text == "lazy" }) {
+        reporter.error(
+            lazy,
+            Problem(
+                id: "lazy-property",
+                message: "@Schema does not read `lazy` properties: one is computed when first used, so a decoded value would have nothing to fill and the default instance nothing to read; drop `lazy`, or mark the property `@Ignored`"))
+        plain = false
+    }
+    for element in variable.attributes {
+        guard case .attribute(let attribute) = element else { continue }
+        let name = attribute.attributeName.trimmedDescription
+        let last = name.split(separator: ".").last.map(String.init) ?? name
+        guard MarkerKind(rawValue: last) == nil, !permittedAttributes.contains(last) else { continue }
+        reporter.error(
+            attribute,
+            Problem(
+                id: "wrapped-property",
+                message: "`@\(name)` is not a @Schema attribute, and a property wrapper or macro there changes what the property stores, which the schema reads as written; remove it, or mark the property `@Ignored`"))
+        plain = false
+    }
+    return plain
+}
+
+/// Attributes that say nothing about what a property stores.
+private let permittedAttributes: Set<String> = ["available"]
 
 private func isStatic(_ variable: VariableDeclSyntax) -> Bool {
     variable.modifiers.contains { $0.name.text == "static" || $0.name.text == "class" }

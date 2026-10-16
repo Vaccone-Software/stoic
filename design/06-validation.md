@@ -823,7 +823,7 @@ member `schema`". Every diagnostic has a test with its line and column.
 | Where | Mistake |
 | --- | --- |
 | the type | not a struct or enum; generic; an enum with no cases; already declares `schema`; initialisers but no `init()` |
-| a property | `@Lossy` on anything but an array, `@Codable` on a type that has a schema of its own (fix-it removes it); a `let` in form (a) or one with a value (fix-it: `var`); an `@Ignored` property with no default when the value is built by the initialiser; type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`) |
+| a property | `@Lossy` on anything but an array, `@Codable` on a type that has a schema of its own (fix-it removes it); a `let` in form (a) or one with a value (fix-it: `var`); an `@Ignored` property with no default when the value is built by the initialiser; type not visible (no annotation, non-literal default); type with no schema, by name; a pattern binding (`var (a, b)`); a `lazy` property, or one under a property wrapper or any other attribute that is not a marker (it stores something other than its declared type), unless `@Ignored` |
 | use of markers | any marker on a static or computed property, on an `@Ignored` property, or outside a `@Schema` type; the same marker twice (fix-it removes the second); `@Key("")`; a non-literal key, alias or deprecation message |
 | keys | a key or alias used twice (the runtime precondition, moved to compile time); an alias equal to its own key; the version key used by a field |
 | constraints | one that does not fit the type (`@Length` on `Int`, `@Range` on `String` or on a named type, `@Count` on a scalar, `@Unique` on a dictionary; fix-it removes it); an empty range (`10...1`); a negative length or count; `@MultipleOf(0)`; constraints that exclude each other; a pattern that does not compile; a literal default that breaks its own constraint |
@@ -885,9 +885,13 @@ trait.
   is phase 2's rule showing through.
 - **A non-literal constraint argument is unchecked** at compile time and traps
   (the library's own precondition) when the schema is first built.
-- **Property wrappers, `lazy` properties and observed macros** such as
-  `@Observable` are not understood; a macro that rewrites stored properties
-  before `@Schema` sees them is outside what it reads.
+- **Property wrappers, `lazy` properties and attached macros** are refused,
+  not understood: each stores something other than the type the macro reads
+  (a lazy property nothing until used, a wrapped one its wrapper), so reading
+  them as plain would describe one value and decode another. `@Ignored`
+  keeps such a property out of the schema. A macro that rewrites stored
+  properties before `@Schema` sees them, such as `@Observable` (which needs
+  a class, and `@Schema` refuses classes), is still outside what it reads.
 - **Linux and Windows** are outside the platform floor, as for the rest of
   Stoic; the plugin itself has no platform dependency.
 

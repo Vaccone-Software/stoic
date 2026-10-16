@@ -304,6 +304,39 @@ struct PropertyDiagnosticTests {
                 }
                 """)
     }
+
+    @Test func lazyAndWrappedPropertiesAreRefusedNotMisread() {
+        // Each stores something other than its declared type, which the
+        // macro reads as written: a lazy one nothing until used, a wrapped
+        // one its wrapper. Ignored, either may stay.
+        expand(
+            """
+            @Schema
+            struct Panel {
+                lazy var cache: [Int] = []
+                @Clamped var level: Int = 1
+                @UserDefault("k") @Range(1...5) var size = 3
+                @Ignored lazy var memo = 0
+                @Ignored @Clamped var other: Int = 1
+                @available(*, deprecated) var old = 0
+            }
+            """,
+            diagnostics: [
+                problem("@Schema does not read `lazy` properties: one is computed when first used, so a decoded value would have nothing to fill and the default instance nothing to read; drop `lazy`, or mark the property `@Ignored`", 3, 5),
+                problem("`@Clamped` is not a @Schema attribute, and a property wrapper or macro there changes what the property stores, which the schema reads as written; remove it, or mark the property `@Ignored`", 4, 5),
+                problem("`@UserDefault` is not a @Schema attribute, and a property wrapper or macro there changes what the property stores, which the schema reads as written; remove it, or mark the property `@Ignored`", 5, 5),
+            ],
+            to: """
+                struct Panel {
+                    lazy var cache: [Int] = []
+                    @Clamped var level: Int = 1
+                    @UserDefault("k") var size = 3
+                    lazy var memo = 0
+                    @Clamped var other: Int = 1
+                    @available(*, deprecated) var old = 0
+                }
+                """)
+    }
 }
 
 @Suite("@Schema: diagnostics about the attributes")
