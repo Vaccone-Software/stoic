@@ -307,6 +307,30 @@ struct StateMachineTests {
         await machine.shutdown()
     }
 
+    /// A view that registers its work on every appearance must not start it
+    /// twice per visit: registration is setup, and a repeat is loud.
+    @Test(.failureMode("design/07", "work is registered again under the same label"))
+    func registeringTheSameWorkTwiceIsReportedAndIgnored() async {
+        let events = RecordingInstrumentation()
+        let starts = SendableBox(0)
+        await withTestAmbient(clock: TestClock(), events: events) {
+            let machine = StateMachine(initial: Phase.idle, label: "dictation", transition: Self.transitions)
+            for _ in 0..<3 {
+                machine.whileIn(.listening, label: "microphone") { _ in starts.mutate { $0 += 1 } }
+            }
+            // The same label for another state, or as a predicate, is other work.
+            machine.whileIn(.transcribing, label: "microphone") { _ in }
+            machine.whileIn(where: { $0 == .listening }, label: "microphone") { _ in starts.mutate { $0 += 1 } }
+            machine.send(.start)
+            #expect(await eventually { starts.value == 2 })
+            #expect(await holdsThroughout { starts.value == 2 })
+            await machine.shutdown()
+        }
+        let duplicates = events.events(named: "statemachine.duplicate_work")
+        #expect(duplicates.count == 2)
+        #expect(duplicates.allSatisfy { $0.level == .error && $0.label == "dictation" })
+    }
+
     @Test(.failureMode("design/07", "the state is left before its timeout"), .failureMode("design/07", "a state's timeout elapses during its visit")) func aStateTimeoutFiresOnlyIfTheStateIsStillCurrent() async {
         let clock = TestClock()
         let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: clock.erased, transition: Self.transitions)

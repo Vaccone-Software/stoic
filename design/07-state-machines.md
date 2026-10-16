@@ -75,6 +75,12 @@ and the next visit's work starts. `send` itself never waits: the transition
 is immediate, and only the new visit's work waits. A visit that is left
 before its work could begin runs none.
 
+**Registration is setup.** `whileIn` is called once, where the machine is
+made. Registering work again under a label it already has — for the same
+state, or as a predicate — is reported at error level
+(`statemachine.duplicate_work`) and ignored, so a view that registers on
+every appearance cannot start its work twice per visit.
+
 **An owner ends it.** `shutdown()` cancels the machine's work and timer,
 waits for the work to stop (each piece bounded by its `shutdownTimeout`),
 finishes every `states()` stream and drops every later event as stale. The
@@ -126,6 +132,7 @@ events; use typestate for values whose protocol a single caller drives.
 | a transition function uses the machine        | Precondition failure naming the rule                 |
 | a state is left while its work is still cleaning up | The next visit's work starts once that work has stopped |
 | state work does not stop within its shutdown timeout | Abandoned and reported; the next visit's work starts |
+| work is registered again under the same label | Reported at error level; ignored              |
 | the machine is shut down                      | Work cancelled and awaited (bounded); observers finish; later events dropped |
 | the machine is deallocated                    | Its state work is cancelled and its observers finish |
 | a declared state can never be reached         | `StateGraph.unreachable(of:)` lists it in a test     |

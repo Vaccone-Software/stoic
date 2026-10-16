@@ -105,6 +105,8 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     private struct Activity: Sendable {
         let label: String
+        // The state it was registered for, or nil for a predicate.
+        let state: State?
         let shutdownTimeout: Duration
         let matches: @Sendable (State) -> Bool
         let work: @Sendable (Sender) async -> Void
@@ -203,6 +205,12 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// and cancels it when the machine leaves that state. If the machine is
     /// already in a matching state, the work starts now.
     ///
+    /// Registration is setup, done once, where the machine is made: work
+    /// registered again under a label it already has (for the same state, or
+    /// as a predicate) is reported at error level
+    /// (`statemachine.duplicate_work`) and ignored, so a view that registers
+    /// on every appearance cannot start its work twice per visit.
+    ///
     /// - Parameters:
     ///   - label: Names the work in events and diagnostics.
     ///   - shutdownTimeout: How long the work may take to stop once its visit
@@ -215,14 +223,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         shutdownTimeout: Duration = .seconds(5),
         _ work: @escaping @Sendable (Sender) async -> Void
     ) {
-        checkNotInTransition()
-        let activity = Activity(label: label, shutdownTimeout: shutdownTimeout, matches: predicate, work: work)
-        core.withLock { core in
-            core.activities.append(activity)
-            if !core.isShutDown, Self.inTransition({ predicate(core.state) }) {
-                core.stateWork.append(start(activity, visit: core.visit, after: core.exit))
-            }
-        }
+        register(Activity(label: label, state: nil, shutdownTimeout: shutdownTimeout, matches: predicate, work: work))
     }
 
     /// Runs `work` whenever the machine is in `state`; cancels it when the
@@ -233,7 +234,25 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         shutdownTimeout: Duration = .seconds(5),
         _ work: @escaping @Sendable (Sender) async -> Void
     ) {
-        whileIn(where: { $0 == state }, label: label, shutdownTimeout: shutdownTimeout, work)
+        register(Activity(label: label, state: state, shutdownTimeout: shutdownTimeout, matches: { $0 == state }, work: work))
+    }
+
+    private func register(_ activity: Activity) {
+        checkNotInTransition()
+        let registered = core.withLock { core -> Bool in
+            guard !core.activities.contains(where: { $0.label == activity.label && $0.state == activity.state }) else { return false }
+            core.activities.append(activity)
+            if !core.isShutDown, Self.inTransition({ activity.matches(core.state) }) {
+                core.stateWork.append(start(activity, visit: core.visit, after: core.exit))
+            }
+            return true
+        }
+        if !registered {
+            Ambient.record(Stoic.Event("statemachine.duplicate_work", level: .error, label: label, fields: [
+                .init("work", .string(activity.label), privacy: .public),
+                .init("state", .string(activity.state.map { "\($0)" } ?? "(predicate)"), privacy: .public),
+            ]))
+        }
     }
 
     /// Ends the machine: cancels its work and timer and waits for the work to
