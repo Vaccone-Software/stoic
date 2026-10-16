@@ -414,7 +414,7 @@ struct StateMachineTests {
         #expect(graph.invalid.map(\.event) == ["finished"])
         #expect(graph.deadEnds.isEmpty)
         #expect(graph.mermaid.contains("idle --> listening: start (after 13.0 seconds)"))
-        #expect(!graph.truncated)
+        #expect(graph.isComplete)
     }
 
     @Test func explorationFollowsTheEventsStateTimeoutsSend() {
@@ -435,8 +435,43 @@ struct StateMachineTests {
     @Test func explorationStopsAtTheStateLimit() {
         enum Step: Sendable { case next }
         let graph = StateGraph<Int, Step>.explore(from: 0, events: [.next], maximumStates: 50) { n, _ in .to(n + 1) }
-        #expect(graph.truncated)
+        #expect(!graph.isComplete)
         #expect(graph.states.count == 50)
+    }
+
+    /// Events are told apart by value: two that print alike (a payload shown
+    /// redacted, say) are both tried, listed or sent by a timeout.
+    @Test(.failureMode("design/07", "two events print the same"))
+    func explorationTellsEventsApartByValueNotDescription() {
+        enum Input: Hashable, Sendable, CustomStringConvertible {
+            case open, close, expire, lapse
+            var description: String { "input" }
+        }
+        let graph = StateGraph.explore(from: 0, events: [Input.open, Input.close]) { state, input in
+            switch (state, input) {
+            case (0, .open): .to(1, timeout: .init(after: .seconds(1), send: .expire))
+            case (0, .close): .to(2)
+            case (1, .expire): .to(3, timeout: .init(after: .seconds(1), send: .lapse))
+            case (3, .lapse): .to(4)
+            default: .ignore
+            }
+        }
+        #expect(graph.isComplete)
+        #expect(graph.unreachable(of: [0, 1, 2, 3, 4]).isEmpty)
+    }
+
+    /// A timeout that re-enters its own state arms the same event again;
+    /// exploration still ends.
+    @Test func explorationEndsOnATimeoutThatReentersItsState() {
+        enum Tick: Hashable, Sendable { case start, tick }
+        let graph = StateGraph<Int, Tick>.explore(from: 0, events: [.start]) { state, tick in
+            switch (state, tick) {
+            case (0, .start), (1, .tick): .to(1, timeout: .init(after: .seconds(1), send: .tick))
+            default: .ignore
+            }
+        }
+        #expect(graph.isComplete)
+        #expect(graph.states == [0, 1])
     }
 }
 

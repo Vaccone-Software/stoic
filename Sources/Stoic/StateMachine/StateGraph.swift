@@ -12,8 +12,13 @@
 /// It also draws the machine, as a Mermaid diagram for the docs.
 ///
 ///     let graph = StateGraph.explore(from: Phase.idle, events: Input.allCases, transition: dictationTransitions)
+///     #expect(graph.isComplete)
 ///     #expect(graph.invalid.isEmpty)
 ///     #expect(graph.unreachable(of: Phase.allCases).isEmpty)
+///
+/// Check ``isComplete`` first: every other answer holds only for the states
+/// exploration reached, and a graph cut off at `maximumStates` would pass
+/// the rest without having looked.
 public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable {
     /// One transition found.
     public struct Edge: Sendable, Hashable {
@@ -36,17 +41,22 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
     public let edges: [Edge]
     /// Every pair declared invalid.
     public let invalid: [InvalidPair]
-    /// Whether exploration stopped at `maximumStates` before finishing.
-    public let truncated: Bool
+    /// Whether exploration finished: false when it stopped at
+    /// `maximumStates` with states still unexplored.
+    public let isComplete: Bool
 
-    /// A state and event pair to try, by the event's description.
-    private struct Attempt: Hashable {
+    /// A state and event pair to try.
+    private struct Attempt<E: Hashable>: Hashable {
         let state: State
-        let event: String
+        let event: E
     }
 
     /// Explores `transition` from `initial`, trying every one of `events`
     /// in every reached state.
+    ///
+    /// Events are told apart by value, so two that print alike — a payload
+    /// shown redacted, say — are both tried. (Their descriptions only label
+    /// the edges.)
     ///
     /// Events that a state's timeouts send need not be listed: when a
     /// transition into a state carries a ``StateTimeout``, its event is also
@@ -58,19 +68,19 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
         events: [Event],
         maximumStates: Int = 10_000,
         transition: (State, Event) -> Transition<State, Event>
-    ) -> StateGraph {
+    ) -> StateGraph where Event: Hashable {
         var states = [initial]
         var seen: Set<State> = [initial]
         var edges: [Edge] = []
         var edgeSet: Set<Edge> = []
         var invalid: [InvalidPair] = []
-        var truncated = false
+        var complete = true
 
         // Every (state, event) still to try, in discovery order.
         var queue: [(state: State, event: Event)] = []
-        var queued: Set<Attempt> = []
+        var queued: Set<Attempt<Event>> = []
         func enqueue(_ state: State, _ event: Event) {
-            if queued.insert(Attempt(state: state, event: "\(event)")).inserted { queue.append((state, event)) }
+            if queued.insert(Attempt(state: state, event: event)).inserted { queue.append((state, event)) }
         }
         for event in events { enqueue(initial, event) }
 
@@ -87,7 +97,7 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
                 let edge = Edge(from: state, event: "\(event)", to: next, timeout: timeout?.after)
                 if edgeSet.insert(edge).inserted { edges.append(edge) }
                 if !seen.contains(next) {
-                    guard states.count < maximumStates else { truncated = true; continue }
+                    guard states.count < maximumStates else { complete = false; continue }
                     seen.insert(next)
                     states.append(next)
                     for event in events { enqueue(next, event) }
@@ -96,7 +106,7 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
                 if let timeout, seen.contains(next) { enqueue(next, timeout.event) }
             }
         }
-        return StateGraph(states: states, edges: edges, invalid: invalid, truncated: truncated)
+        return StateGraph(states: states, edges: edges, invalid: invalid, isComplete: complete)
     }
 
     /// The states in `declared` that exploration never reached.

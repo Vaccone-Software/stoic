@@ -35,8 +35,9 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
 public struct StateGraph<State, Event> {
     public static func explore(from: State, events: [Event], maximumStates: Int = 10_000,
-                               transition: (State, Event) -> Transition<State, Event>) -> StateGraph
+                               transition: (State, Event) -> Transition<State, Event>) -> StateGraph where Event: Hashable
     public let states: [State]; public let edges: [Edge]; public let invalid: [InvalidPair]
+    public let isComplete: Bool
     public func unreachable(of declared: some Sequence<State>) -> [State]
     public var deadEnds: [State]
     public var mermaid: String
@@ -104,10 +105,17 @@ precondition failure that says so, not the lock's own abort.
 wants where the machine is, not every step it took.
 
 **Exploration.** `StateGraph.explore` runs the transition function over
-every event in every reachable state. A test asserts there are no invalid
+every event in every reachable state, and over the events reached states'
+timeouts send. A test asserts first that exploration is complete
+(`#expect(graph.isComplete)`: a graph cut off at `maximumStates` would pass
+every other check without having looked), then that there are no invalid
 pairs it did not expect, no unreachable declared states (`CaseIterable`),
 and no dead ends; the same graph renders as a Mermaid diagram for the docs.
-This is model checking at the scale a state machine needs.
+This is model checking at the scale a state machine needs. Events are told
+apart by value, which is why `explore` needs them `Hashable` (an event enum
+without payloads already is; one with payloads synthesises it): telling
+them apart by description would explore two events that print alike — a
+redacted payload — as one, and silently miss what the second reaches.
 
 ## Typestate
 
@@ -136,6 +144,7 @@ events; use typestate for values whose protocol a single caller drives.
 | the machine is shut down                      | Work cancelled and awaited (bounded); observers finish; later events dropped |
 | the machine is deallocated                    | Its state work is cancelled and its observers finish |
 | a declared state can never be reached         | `StateGraph.unreachable(of:)` lists it in a test     |
+| two events print the same                     | Both explored: events are told apart by value        |
 
 ## Testing
 

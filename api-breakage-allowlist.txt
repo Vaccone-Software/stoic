@@ -65,3 +65,5 @@ API breakage: func StateMachine.whileIn(where:label:_:) has parameter 2 type cha
 API breakage: func StateMachine.whileIn(_:label:_:) has parameter 2 type change from (Stoic.StateMachine<State, Event>.Sender) async -> Swift.Void to Swift.Duration
 API breakage: func StateMachine.whileIn(where:label:_:) has been renamed to func whileIn(where:label:shutdownTimeout:_:)
 API breakage: func StateMachine.whileIn(_:label:_:) has been renamed to func whileIn(_:label:shutdownTimeout:_:)
+API breakage: func StateGraph.explore(from:events:maximumStates:transition:) has generic signature change from <State, Event where State : Swift.Hashable, State : Swift.Sendable, Event : Swift.Sendable> to <State, Event where State : Swift.Hashable, State : Swift.Sendable, Event : Swift.Hashable, Event : Swift.Sendable>
+API breakage: var StateGraph.truncated has been removed
