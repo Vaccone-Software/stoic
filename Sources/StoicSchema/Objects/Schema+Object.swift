@@ -61,12 +61,10 @@ extension Schema {
     ) -> Schema<Value> {
         let name = name ?? String(describing: Value.self)
         let fields = makeFields()
-        let declared = fields.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }
-        checkDeclaredKeys(declared, in: name)
+        let keys = DeclaredKeys(fields.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }, in: name)
         let versioning = makeVersioning(
-            version: version, key: versionKey, missing: missingVersion, migrations: migrations, declared: declared,
-            in: name)
-        let known = Set(declared.flatMap { [ExactKey($0.key)] + $0.aliases.map(ExactKey.init) })
+            version: version, key: versionKey, missing: missingVersion, migrations: migrations,
+            declared: keys.declared, in: name)
         let codecs = fields.map(\.codec)
         let policy: UnknownKeyPolicy = preserved == nil ? unknownKeys : .preserve
         let preservedReader = readPreserved(preserved)
@@ -88,14 +86,14 @@ extension Schema {
                     object = gate.object
                     if gate.migrated { state.migratedRegion = state.inputPath }
                 }
-                var scan = ObjectScan(object: object, known: known)
+                var scan = ObjectScan(object: object, keys: keys)
                 var result = defaultValue
                 let errorsBefore = state.errorCount
                 for field in fields {
                     _ = field.read(&result, defaultValue, &scan, &state)
                 }
-                if let preserved { result[keyPath: preserved] = scan.takePreserved(declared: declared) }
-                scan.finish(declared: declared, policy: policy, state: &state)
+                if let preserved { result[keyPath: preserved] = scan.takePreserved() }
+                scan.finish(policy: policy, state: &state)
                 return state.errorCount == errorsBefore ? result : nil
             },
             encoder: { value, state in

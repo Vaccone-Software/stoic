@@ -66,8 +66,6 @@ public final class ObjectReader<Root: Sendable> {
     var succeeded = true
     var nodes: [FieldNode] = []
     var codecs: [FieldCodec<Root>] = []
-    /// What the object declared, for deciding which keys are unknown.
-    private var declared: [DeclaredKey] = []
     /// Set by ``unknownKeys(_:)`` while describing.
     var preserved: (@Sendable (Root) -> JSONObject)?
 
@@ -75,16 +73,15 @@ public final class ObjectReader<Root: Sendable> {
     init() {
         mode = .describing
         state = DecodeState(options: .strict)
-        scan = ObjectScan(object: JSONObject(), known: [])
+        scan = ObjectScan(object: JSONObject(), keys: DeclaredKeys([], in: ""))
     }
 
     /// A reader that decodes `object`. The state is a placeholder until the
     /// caller swaps the real one in.
-    init(object: JSONObject, known: Set<ExactKey>, declared: [DeclaredKey], options: DecodeOptions) {
-        self.declared = declared
+    init(object: JSONObject, keys: DeclaredKeys, options: DecodeOptions) {
         mode = .decoding
         state = DecodeState(options: options)
-        scan = ObjectScan(object: object, known: known)
+        scan = ObjectScan(object: object, keys: keys)
     }
 
     /// Reads one field. Never stops the object: a field that fails leaves an
@@ -173,7 +170,7 @@ public final class ObjectReader<Root: Sendable> {
             preserved = { $0[keyPath: keyPath] }
             return Slot(value: nil)
         case .decoding:
-            return Slot(value: scan.takePreserved(declared: declared))
+            return Slot(value: scan.takePreserved())
         }
     }
 
@@ -229,12 +226,10 @@ extension Schema {
         let codecs = describer.codecs
         let preserved = describer.preserved
         let policy: UnknownKeyPolicy = preserved == nil ? unknownKeys : .preserve
-        let declared = nodes.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }
-        checkDeclaredKeys(declared, in: name)
+        let keys = DeclaredKeys(nodes.map { DeclaredKey(key: $0.key, aliases: $0.aliases) }, in: name)
         let versioning = makeVersioning(
-            version: version, key: versionKey, missing: missingVersion, migrations: migrations, declared: declared,
-            in: name)
-        let known = Set(declared.flatMap { [ExactKey($0.key)] + $0.aliases.map(ExactKey.init) })
+            version: version, key: versionKey, missing: missingVersion, migrations: migrations,
+            declared: keys.declared, in: name)
         let node = ObjectNode(name: name, doc: doc, fields: nodes, unknownKeys: policy, versioning: versioning)
         return Schema(
             node: .object(node),
@@ -252,14 +247,13 @@ extension Schema {
                     if gate.migrated { state.migratedRegion = state.inputPath }
                 }
                 let errorsBefore = state.errorCount
-                let reader = ObjectReader<Value>(
-                    object: object, known: known, declared: declared, options: state.options)
+                let reader = ObjectReader<Value>(object: object, keys: keys, options: state.options)
                 // The reader works on the caller's state by holding it for the
                 // duration: swapping moves it, where assigning would copy the
                 // issue list at every nesting level.
                 swap(&reader.state, &state)
                 let construction = declare(reader)
-                reader.scan.finish(declared: declared, policy: policy, state: &reader.state)
+                reader.scan.finish(policy: policy, state: &reader.state)
                 swap(&reader.state, &state)
                 guard reader.succeeded, state.errorCount == errorsBefore else { return nil }
                 do throws(ValidationFailure) {

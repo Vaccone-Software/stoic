@@ -92,7 +92,9 @@ extension Schema {
             name: name, doc: doc, discriminator: discriminator, valueKey: valueKey,
             cases: cases.map { UnionCaseNode(tag: $0.tag, doc: $0.doc, node: $0.node, isFlat: $0.isFlat) },
             unknownCase: unknown?.name)
-        let tags = node.tags
+        let tagList = JSONValue.array(node.tags.map { .string($0) })
+        let tagNames = SuggestionIndex(node.tags)
+        let memberNames = SuggestionIndex([discriminator, valueKey])
         let tagExpectation = node.tagExpectation
         return Schema(
             node: .union(node),
@@ -120,7 +122,7 @@ extension Schema {
                         state.report(
                             .unknownCase, severity: .warning, parameters: ["fallback": .string(unknown.name)],
                             expected: tagExpectation, actual: tagJSON.briefDescription,
-                            suggestions: Suggestions.nearest(to: tag, among: tags))
+                            suggestions: tagNames.nearest(to: tag))
                         state.pop()
                         var rest = JSONObject()
                         for member in object where !ExactKey(member.key).isEqual(to: discriminator) {
@@ -129,9 +131,9 @@ extension Schema {
                         return unknown.read(tag, rest)
                     }
                     state.report(
-                        .notOneOf, parameters: ["tags": .array(tags.map { .string($0) })],
+                        .notOneOf, parameters: ["tags": tagList],
                         expected: tagExpectation, actual: tagJSON.briefDescription,
-                        suggestions: Suggestions.nearest(to: tag, among: tags))
+                        suggestions: tagNames.nearest(to: tag))
                     state.pop()
                     return nil
                 }
@@ -144,7 +146,7 @@ extension Schema {
                     }
                     return entry.decode(.object(rest), &state)
                 }
-                return decodeKeyed(entry, object: object, node: node, state: &state)
+                return decodeKeyed(entry, object: object, node: node, memberNames: memberNames, state: &state)
             },
             encoder: { value, state in
                 for entry in cases {
@@ -182,6 +184,7 @@ private func decodeKeyed<Root: Sendable>(
     _ entry: Case<Root>,
     object: JSONObject,
     node: UnionNode,
+    memberNames: SuggestionIndex,
     state: inout DecodeState
 ) -> Root? {
     let errorsBefore = state.errorCount
@@ -202,7 +205,7 @@ private func decodeKeyed<Root: Sendable>(
             target: .key,
             parameters: state.isLenient
                 ? ["key": .string(member.key), "repair": .string("ignored it")] : ["key": .string(member.key)],
-            suggestions: Suggestions.nearest(to: member.key, among: [node.discriminator, node.valueKey]),
+            suggestions: memberNames.nearest(to: member.key),
             suggestionsAreFromInput: false)
     }
     return state.errorCount == errorsBefore ? payload : nil

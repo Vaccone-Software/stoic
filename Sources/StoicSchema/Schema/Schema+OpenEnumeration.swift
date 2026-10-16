@@ -43,6 +43,7 @@ extension Schema {
         write: @escaping @Sendable (Value) -> String
     ) -> Schema<Value> {
         let known = Set(cases.map { ExactKey($0) })
+        let names = SuggestionIndex(cases)
         let expectation = "one of " + cases.map { "\"\($0)\"" }.joined(separator: ", ") + ", or any other string"
         let node = TransformNode(
             base: .string(constraints: []), name: String(describing: Value.self),
@@ -60,7 +61,7 @@ extension Schema {
                     state.report(
                         .unknownCase, severity: .warning, parameters: ["fallback": .string(fallback)],
                         expected: expectation, actual: json.briefDescription,
-                        suggestions: Suggestions.nearest(to: text, among: cases))
+                        suggestions: names.nearest(to: text))
                 }
                 return read(text)
             },

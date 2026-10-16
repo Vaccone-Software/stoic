@@ -81,6 +81,12 @@ struct DecodeState {
     /// Records an issue at the current position (or at `path`, for a child
     /// that does not exist). Anything derived from the input's value is
     /// dropped inside a secret field.
+    ///
+    /// `suggestions` is evaluated only if the issue is recorded: past
+    /// `maxIssues` an issue is counted, not explained, and a did-you-mean is
+    /// the expensive part of an explanation (an edit distance per candidate),
+    /// so a document of a hundred thousand misspelt keys costs a hundred
+    /// thousand lookups, not a hundred thousand searches.
     mutating func report(
         _ code: IssueCode,
         severity: Issue.Severity = .error,
@@ -90,7 +96,7 @@ struct DecodeState {
         parameters: JSONObject = JSONObject(),
         expected: String? = nil,
         actual: String? = nil,
-        suggestions: [String] = [],
+        suggestions: @autoclosure () -> [String] = [],
         suggestionsAreFromInput: Bool = true
     ) {
         if severity == .error { errorCount += 1 }
@@ -114,7 +120,7 @@ struct DecodeState {
                 parameters: parameters,
                 expected: expected,
                 actual: redacted ? nil : actual,
-                suggestions: redacted && suggestionsAreFromInput ? [] : suggestions))
+                suggestions: redacted && suggestionsAreFromInput ? [] : suggestions()))
         offsets.append(offsets(at: explicitSourcePath ?? inputPath, target: target))
     }
 

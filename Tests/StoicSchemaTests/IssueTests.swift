@@ -141,6 +141,48 @@ struct SuggestionTests {
         #expect(d("flaw", "lawn") == 2)
     }
 
+    @Test func theBandedDistanceIsTheFullOneWithinItsLimit() {
+        // The full Lowrance–Wagner table, written out, as the reference.
+        func reference(_ a: [Unicode.Scalar], _ b: [Unicode.Scalar]) -> Int {
+            let (n, m) = (a.count, b.count)
+            if n == 0 { return m }
+            if m == 0 { return n }
+            let infinity = n + m
+            var lastRow: [Unicode.Scalar: Int] = [:]
+            var d = [[Int]](repeating: [Int](repeating: 0, count: m + 2), count: n + 2)
+            d[0][0] = infinity
+            for i in 0...n { d[i + 1][0] = infinity; d[i + 1][1] = i }
+            for j in 0...m { d[0][j + 1] = infinity; d[1][j + 1] = j }
+            for i in 1...n {
+                var lastMatchingColumn = 0
+                for j in 1...m {
+                    let k = lastRow[b[j - 1]] ?? 0
+                    let l = lastMatchingColumn
+                    var cost = 1
+                    if a[i - 1] == b[j - 1] { cost = 0; lastMatchingColumn = j }
+                    d[i + 1][j + 1] = min(
+                        d[i][j] + cost, d[i + 1][j] + 1, d[i][j + 1] + 1, d[k][l] + (i - k - 1) + 1 + (j - l - 1))
+                }
+                lastRow[a[i - 1]] = i
+            }
+            return d[n + 1][m + 1]
+        }
+        var random = SeededGenerator(seed: 0xD15)
+        let alphabet: [Unicode.Scalar] = ["a", "b", "c", "d"]
+        for _ in 0..<600 {
+            let a = (0..<Int.random(in: 0...8, using: &random)).map { _ in alphabet.randomElement(using: &random)! }
+            let b = (0..<Int.random(in: 0...8, using: &random)).map { _ in alphabet.randomElement(using: &random)! }
+            let exact = reference(a, b)
+            for limit in 0...3 {
+                let banded = Suggestions.distance(a, b, within: limit)
+                #expect(banded == (exact <= limit ? exact : nil), "\(a) \(b) within \(limit)")
+            }
+            #expect(Suggestions.damerauLevenshtein(a, b) == exact)
+            // The prefilter may only rule out what the distance would.
+            #expect(Suggestions.bagDistance(a.sorted(), b.sorted()) <= exact, "\(a) \(b)")
+        }
+    }
+
     @Test func thresholdIsAThirdOfTheLengthCappedAtTwo() {
         #expect(Suggestions.threshold(forLength: 0) == 0)
         #expect(Suggestions.threshold(forLength: 2) == 0)

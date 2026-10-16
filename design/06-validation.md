@@ -116,6 +116,17 @@ three suggestions, deterministic order. The same machinery serves enum
 values and union tags. Type confusion gets its own hint: `"10"` where a
 number is expected says "did you mean `10`?".
 
+A suggestion is an explanation, and explaining is kept apart from detecting:
+it is computed only for an issue that is recorded (past `maxIssues` an issue
+is counted, not explained), from names a schema normalises once when it is
+built, and with a distance that cannot be expensive. Candidates whose
+letters alone are too far apart are ruled out by one merge of sorted
+scalars; the rest get the table in a band two cells wide either side of its
+diagonal, saturating at the threshold. Before this, an object of 8,000
+near-miss keys took 160 s to decode in a debug build (4 s in release, and a
+100,000-member object about 50 s); it now takes under a second in debug, the
+worst case being keys that are anagrams of every declared name.
+
 **Objects, two ways.**
 
 (a) Config-like types with an `init()`: the default instance is the single

@@ -211,6 +211,7 @@ extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue ==
     /// `"e\u{301}"`. The suggestion is the courtesy.
     public static func enumeration(_ type: Value.Type) -> Schema<Value> {
         let cases = Value.allCases.map(\.rawValue)
+        let names = SuggestionIndex(cases)
         var byName: [ExactKey: Value] = [:]
         for value in Value.allCases { byName[ExactKey(value.rawValue)] = value }
         let lookup = byName
@@ -226,7 +227,7 @@ extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue ==
                 guard let value = lookup[ExactKey(text)] else {
                     state.report(
                         .notOneOf, expected: expectation, actual: json.briefDescription,
-                        suggestions: Suggestions.nearest(to: text, among: cases))
+                        suggestions: names.nearest(to: text))
                     return nil
                 }
                 return value

@@ -25,6 +25,59 @@ struct DeclaredKey: Sendable {
     var aliases: [String]
 }
 
+/// An object's keys, with everything reading needs to know about them worked
+/// out once, when the schema is built: the exact spellings, the normalised
+/// ones, and the names a did-you-mean is drawn from.
+struct DeclaredKeys: Sendable {
+    let declared: [DeclaredKey]
+    /// Every key and alias the object declares. A member with one of these
+    /// exact spellings belongs to its own field, so the fuzzy matching in
+    /// ``ObjectScan`` never hands it to a different one.
+    let known: Set<ExactKey>
+    /// Each normalised key and alias, and the field key it belongs to.
+    let owners: [String: String]
+    /// Each alias, and the field key it is an alias of.
+    private let canonical: [String: String]
+    private let names: SuggestionIndex
+
+    /// Traps on a key or alias declared twice: a mistake in the schema,
+    /// found by the first test that touches it.
+    init(_ declared: [DeclaredKey], in name: String) {
+        checkDeclaredKeys(declared, in: name)
+        self.declared = declared
+        var known: Set<ExactKey> = []
+        var owners: [String: String] = [:]
+        var canonical: [String: String] = [:]
+        var names: [String] = []
+        for declaration in declared {
+            known.insert(ExactKey(declaration.key))
+            owners[Suggestions.normalized(declaration.key)] = declaration.key
+            names.append(declaration.key)
+            for alias in declaration.aliases {
+                known.insert(ExactKey(alias))
+                owners[Suggestions.normalized(alias)] = declaration.key
+                canonical[alias] = declaration.key
+                names.append(alias)
+            }
+        }
+        self.known = known
+        self.owners = owners
+        self.canonical = canonical
+        self.names = SuggestionIndex(names)
+    }
+
+    /// The fields `key` was probably meant to be, nearest first: a
+    /// misspelt alias suggests the field's own key.
+    func suggestions(for key: String) -> [String] {
+        var suggestions: [String] = []
+        for name in names.nearest(to: key) {
+            let field = canonical[name] ?? name
+            if !suggestions.contains(field) { suggestions.append(field) }
+        }
+        return suggestions
+    }
+}
+
 /// How a key in the input was matched to a field.
 struct KeyHit {
     var value: JSONValue
@@ -39,15 +92,12 @@ struct KeyHit {
 ///
 /// Reading is two passes over the same state. Each field asks for its key
 /// (``find(key:aliases:state:)``) and decodes what it gets; when all fields
-/// have asked, ``finish(declared:policy:state:)`` looks at the members nobody
+/// have asked, ``finish(policy:state:)`` looks at the members nobody
 /// claimed and decides which are unknown keys, which are second spellings of
 /// a field already read, and what to suggest for each.
 struct ObjectScan {
     let object: JSONObject
-    /// Every key and alias the object declares. A member with one of these
-    /// exact spellings belongs to its own field, so the fuzzy matching below
-    /// never hands it to a different one.
-    private let known: Set<ExactKey>
+    private let keys: DeclaredKeys
     private var claimed: Set<Int> = []
     private var byNormalizedKey: [String: [Int]]?
     /// Whether some member has a key the object does not declare. A
@@ -56,9 +106,9 @@ struct ObjectScan {
     /// whose defaults it accepts costs no more than the keys it has.
     private var hasUndeclaredMember: Bool?
 
-    init(object: JSONObject, known: Set<ExactKey>) {
+    init(object: JSONObject, keys: DeclaredKeys) {
         self.object = object
-        self.known = known
+        self.keys = keys
     }
 
     /// The member for a field: its own key; failing that one of its
@@ -81,7 +131,7 @@ struct ObjectScan {
         // object, and only if some field is missing its exact key and some
         // member could be a respelling of it.
         if hasUndeclaredMember == nil {
-            hasUndeclaredMember = object.contains { !known.contains(ExactKey($0.key)) }
+            hasUndeclaredMember = object.contains { !keys.known.contains(ExactKey($0.key)) }
         }
         guard hasUndeclaredMember == true else { return nil }
         if byNormalizedKey == nil {
@@ -93,7 +143,7 @@ struct ObjectScan {
         }
         for spelling in [key] + aliases {
             for index in byNormalizedKey?[Suggestions.normalized(spelling)] ?? [] {
-                guard !claimed.contains(index), !known.contains(ExactKey(object[index].key)) else { continue }
+                guard !claimed.contains(index), !keys.known.contains(ExactKey(object[index].key)) else { continue }
                 claimed.insert(index)
                 return alternate(at: index, field: key, state: &state)
             }
@@ -120,16 +170,11 @@ struct ObjectScan {
     /// The answer does not depend on which fields have been read so far,
     /// because it is decided by the declared names alone, so a reader may
     /// ask at any point.
-    mutating func takePreserved(declared: [DeclaredKey]) -> JSONObject {
-        var owners: Set<String> = []
-        for declaration in declared {
-            owners.insert(Suggestions.normalized(declaration.key))
-            for alias in declaration.aliases { owners.insert(Suggestions.normalized(alias)) }
-        }
+    mutating func takePreserved() -> JSONObject {
         var kept = JSONObject()
         for index in object.indices where !claimed.contains(index) {
             let member = object[index]
-            guard !owners.contains(Suggestions.normalized(member.key)) else { continue }
+            guard keys.owners[Suggestions.normalized(member.key)] == nil else { continue }
             claimed.insert(index)
             kept[member.key] = member.value
         }
@@ -144,25 +189,13 @@ struct ObjectScan {
     ///   two readers is the kind of ambiguity attacks live in.
     /// - Anything else is an unknown key, handled per `policy`, with up to
     ///   three suggestions from the declared keys and aliases.
-    mutating func finish(declared: [DeclaredKey], policy: UnknownKeyPolicy, state: inout DecodeState) {
+    mutating func finish(policy: UnknownKeyPolicy, state: inout DecodeState) {
         guard claimed.count < object.count else { return }
-        var owners: [String: String] = [:]  // normalized spelling -> field key
-        var names: [String] = []
-        var canonical: [String: String] = [:]  // alias -> field key
-        for declaration in declared {
-            names.append(declaration.key)
-            owners[Suggestions.normalized(declaration.key)] = declaration.key
-            for alias in declaration.aliases {
-                names.append(alias)
-                canonical[alias] = declaration.key
-                owners[Suggestions.normalized(alias)] = declaration.key
-            }
-        }
         for index in object.indices where !claimed.contains(index) {
             let key = object[index].key
             let path = state.path.appending(key: key)
             let sourcePath = state.inputPath.appending(key: key)
-            if let owner = owners[Suggestions.normalized(key)] {
+            if let owner = keys.owners[Suggestions.normalized(key)] {
                 state.report(
                     .duplicateKey, path: path, sourcePath: sourcePath, target: .key,
                     parameters: ["key": .string(key), "other": .string(owner)],
@@ -173,11 +206,6 @@ struct ObjectScan {
             case .ignore, .preserve:
                 continue
             case .reject, .warn:
-                var suggestions: [String] = []
-                for name in Suggestions.nearest(to: key, among: names) {
-                    let field = canonical[name] ?? name
-                    if !suggestions.contains(field) { suggestions.append(field) }
-                }
                 // Under lenient decoding a rejected key is ignored and
                 // reported as such: the file is still read.
                 let severity: Issue.Severity
@@ -192,7 +220,7 @@ struct ObjectScan {
                 }
                 state.report(
                     .unknownKey, severity: severity, path: path, sourcePath: sourcePath, target: .key,
-                    parameters: parameters, suggestions: suggestions, suggestionsAreFromInput: false)
+                    parameters: parameters, suggestions: keys.suggestions(for: key), suggestionsAreFromInput: false)
             }
         }
     }

@@ -167,6 +167,46 @@ struct ObjectReaderTests {
         #expect(result.issues[1].suggestions == ["name"])
     }
 
+    @Test func suggestionsAreNotEvaluatedPastTheIssueLimit() {
+        var state = DecodeState(options: DecodeOptions(maxIssues: 1))
+        var asked = 0
+        state.report(.unknownKey, suggestions: { asked += 1; return ["a"] }())
+        state.report(.unknownKey, suggestions: { asked += 1; return ["b"] }())
+        state.report(.unknownKey, suggestions: { asked += 1; return ["c"] }())
+        #expect(asked == 1)
+        #expect(state.errorCount == 3)
+        #expect(state.issues.map(\.code) == [.unknownKey, .tooManyIssues])
+    }
+
+    @Test func didYouMeanIsComputedOnlyForIssuesThatAreRecorded() {
+        // Every unknown key below is a near miss of forty declared ones, so
+        // each did-you-mean is forty edit distances. Computed for all of them,
+        // this took 160 s in a debug build (4 s in release); past `maxIssues`
+        // an issue is counted, not explained. The bound is loose for a loaded
+        // machine; the test above holds the rule itself.
+        let names = (0..<40).map { "settingNumber" + String($0 + 10) }
+        let schema = Schema.object([String: Int].self, unknownKeys: .reject) { f in
+            for name in names { _ = f.field(name, \.[name], .optional(.int())) }
+            return f.build { _ in [:] }
+        }
+        // Keys with other letters, which the letters alone rule out, and keys
+        // that are anagrams of every name, for which each distance is
+        // computed in full.
+        let unlike = (0..<8000).map { #""unknownKey\#(10_000 + $0)x":1"# }
+        let alike = (0..<8000).map { #""settingNumbre\#(10 + $0 % 40)\#($0 / 40)":1"# }
+        for members in [unlike, alike] {
+            let text = "{" + members.joined(separator: ",") + "}"
+            let clock = ContinuousClock()
+            let start = clock.now
+            let result = schema.decodeReporting(text)
+            let elapsed = clock.now - start
+            #expect(result.value == nil)
+            #expect(result.issues.count == 1001)
+            #expect(result.issues.last?.code == .tooManyIssues)
+            #expect(elapsed < .seconds(10), "\(elapsed)")
+        }
+    }
+
     @Test func aliasesAndRespellingsWork() {
         let result = Account.schema.decodeReporting(#"{"account_id": 7, "Name": "A", "token": "12345678"}"#)
         #expect(result.value == Account(id: 7, name: "A", token: "12345678", tags: []))
