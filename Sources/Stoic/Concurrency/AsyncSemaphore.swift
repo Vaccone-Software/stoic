@@ -16,7 +16,9 @@ internal import Synchronization
 /// A task that already holds a permit and asks for another from the same
 /// semaphore can deadlock itself once permits run out; in debug builds Stoic
 /// reports that as a `semaphore.reentrant` event at error level the moment
-/// it happens.
+/// it happens. Child tasks count as the holder (it waits for them). Tasks
+/// Stoic starts on its own — a slot's work, a flight, a scope's fork — do
+/// not; a hand-written `Task {}` copies its creator's task-locals and does.
 public final class AsyncSemaphore: Sendable, CustomStringConvertible {
     /// Names the semaphore in events and diagnostics.
     public let label: String

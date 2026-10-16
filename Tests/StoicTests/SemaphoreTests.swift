@@ -198,6 +198,28 @@ struct SemaphoreTests {
         #expect(events.names == ["semaphore.reentrant"])
     }
 
+    /// Work Stoic starts as a task of its own (a slot's work, a flight, a
+    /// fork) is not waited for as a child is, so its permit is contention.
+    /// A hand-written `Task {}` copies the task-local and is still reported.
+    @Test func aTaskStoicStartsDoesNotInheritItsCreatorsPermits() async throws {
+        let events = RecordingInstrumentation()
+        let semaphore = AsyncSemaphore(permits: 2, label: "unstructured")
+        try await withTestAmbient(clock: ImmediateClock(), events: events) {
+            try await semaphore.withPermit {
+                await Task.stoic { try? await semaphore.withPermit {} }.value
+                let flights = SingleFlight<Int, Void, Never>(label: "flight")
+                try? await flights.run(1) { try? await semaphore.withPermit {} }
+            }
+        }
+        #expect(events.names.filter { $0 == "semaphore.reentrant" }.isEmpty, "previously reported as a self-deadlock")
+        try await withTestAmbient(clock: ImmediateClock(), events: events) {
+            try await semaphore.withPermit {
+                await Task { try? await semaphore.withPermit {} }.value
+            }
+        }
+        #expect(events.names.filter { $0 == "semaphore.reentrant" }.count == 1)
+    }
+
     @Test func randomCancellationsNeverLeakPermits() async throws {
         // Model check: many waiters, a random third cancelled at random
         // moments. At the end every permit is back and nobody is queued.

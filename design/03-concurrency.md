@@ -121,7 +121,10 @@ permit — arrivals are tracked so even a cancellation that lands before the
 waiter queues is honoured. Cancellation caused by an enclosing deadline is
 reported as `deadlineExceeded`. `withPermit` is the only way to hold a
 permit. Re-acquiring a semaphore the task already holds is reported as
-`semaphore.reentrant` — a self-deadlock in waiting. `AsyncMutex` is the
+`semaphore.reentrant` — a self-deadlock in waiting. The task's child tasks
+count as holding it; tasks Stoic starts on its own (a slot's work, a flight,
+a fork) do not, since nothing waits for them as for a child. A hand-written
+`Task {}` copies task-locals, so it counts. `AsyncMutex` is the
 one-permit form: the cure for actor reentrancy's check–await–act race.
 
 **SingleFlight.** The flight owns the operation. Callers leave with a
