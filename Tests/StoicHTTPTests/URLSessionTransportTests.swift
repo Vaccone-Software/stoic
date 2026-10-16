@@ -84,6 +84,11 @@ final class StubProtocol: URLProtocol {
             next.allHTTPHeaderFields = headers
             let redirect = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
             client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: redirect)
+            // As the system's HTTP loading does: a redirect the delegate
+            // declines is delivered as the response, body and all.
+            client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("moved".utf8))
+            client?.urlProtocolDidFinishLoading(self)
         case "/final":
             respond(200)
             client?.urlProtocol(self, didLoad: Data("arrived".utf8))
@@ -164,14 +169,23 @@ struct URLSessionTransportTests {
         #expect(error?.code == .notConnectedToInternet)
     }
 
-    @Test func aRedirectToAnotherHostDropsCredentials() async throws {
+    @Test func aRedirectIsTheResponseNotFollowed() async throws {
         let transport = Self.transport()
-        let headers: HTTPHeaders = ["Authorization": "Bearer t", "Cookie": "sid=1", "Accept": "text/plain"]
-        let response = try await transport.send(Self.request("/redirect", headers: headers), maxResponseBytes: 1000)
+        let response = try await transport.send(Self.request("/redirect", headers: ["X-API-Key": "secret-key"]), maxResponseBytes: 1000)
+        #expect(response.status == 302)
+        #expect(response.headers["Location"] == "https://other.example.com/final")
+        #expect(response.text == "moved")
+        #expect(StubProtocol.seen.map(\.url.path) == ["/redirect"], "the transport went nowhere else")
+    }
+
+    @Test func theClientFollowsARedirectOverTheRealTransportWithoutTheClientsHeaders() async throws {
+        let api = HTTPClient(base: URL(string: "https://api.example.com")!, transport: Self.transport(), headers: ["X-API-Key": "secret-key"])
+        let response = try await api.send(.get("/redirect", headers: ["Accept": "text/plain"]))
         #expect(response.text == "arrived")
-        let final = try #require(StubProtocol.seen.first { $0.url.path == "/final" })
-        #expect(final.headers["Authorization"] == nil)
-        #expect(final.headers["Cookie"] == nil)
+        #expect(StubProtocol.seen.map(\.url.host) == ["api.example.com", "other.example.com"])
+        #expect(StubProtocol.seen.first?.headers["X-API-Key"] == "secret-key")
+        let final = try #require(StubProtocol.seen.last)
+        #expect(final.headers["X-API-Key"] == nil, "a custom credential stays with its origin")
         #expect(final.headers["Accept"] == "text/plain")
     }
 

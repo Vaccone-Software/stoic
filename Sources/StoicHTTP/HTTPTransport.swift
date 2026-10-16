@@ -1,9 +1,11 @@
 /// Carries one request to a server and brings back its response.
 ///
 /// The seam where tests replace the network: ``HTTPClient`` owns every
-/// policy (retries, breaker, timeouts), and a transport owns none. It makes
-/// exactly one HTTP exchange per call, returns the response whatever its
-/// status, and ends promptly when its task is cancelled.
+/// policy (retries, breaker, timeouts, redirects), and a transport owns
+/// none. It makes exactly one HTTP exchange per call, returns the response
+/// whatever its status, and ends promptly when its task is cancelled. It does
+/// not follow a redirect: a 3xx is a response like any other, and the client
+/// decides where, and with which headers, the request goes next.
 ///
 /// A transport receives a request whose target is an absolute URL
 /// (``HTTPRequest/url`` is non-`nil`), with the final headers, the

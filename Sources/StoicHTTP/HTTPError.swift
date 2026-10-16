@@ -54,11 +54,31 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// the hook runs at most once per request.
     case reauthenticationFailed(status: Int, attempts: Int)
 
+    /// The server redirected the request and the client would not follow
+    /// (``RedirectRefusal`` says why). `status` and `location` are the
+    /// redirect's, `location` as the server sent it: a caller that wants to
+    /// follow it some other way (an OAuth callback on an app's own scheme)
+    /// reads it here. It may hold a token, so ``description`` never shows it.
+    /// Never retried: the server will redirect the same way again.
+    case redirectRefused(RedirectRefusal, status: Int, location: String, attempts: Int)
+
+    /// Why the client did not follow a redirect.
+    public enum RedirectRefusal: String, Sendable, Hashable {
+        /// The request was `https` and the `Location` is `http`: following it
+        /// would send the request, and anything in it, in the clear.
+        case downgrade
+        /// The request had already followed ``HTTPPolicy/maxRedirects``.
+        case limit
+        /// The `Location` is not an `http` or `https` URL.
+        case invalidLocation = "invalid_location"
+    }
+
     /// How many requests reached the transport before this failure.
     public var attempts: Int {
         switch self {
         case .status(_, _, _, let attempts), .transport(_, let attempts), .responseTooLarge(_, let attempts),
-             .decoding(_, let attempts), .rejected(_, let attempts), .reauthenticationFailed(_, let attempts):
+             .decoding(_, let attempts), .rejected(_, let attempts), .reauthenticationFailed(_, let attempts),
+             .redirectRefused(_, _, _, let attempts):
             attempts
         case .timedOut(let attempt):
             attempt
@@ -89,6 +109,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
         case .decoding(let failure, _): return "response did not match its schema (\(failure.errors.count) errors) after \(tries)"
         case .rejected(let rejection, _): return "rejected: \(rejection) after \(tries)"
         case .reauthenticationFailed(let status, _): return "HTTP \(status), and reauthenticating failed, after \(tries)"
+        case .redirectRefused(let refusal, let status, _, _): return "HTTP \(status) redirect not followed (\(refusal.rawValue)) after \(tries)"
         }
     }
 }
@@ -111,7 +132,7 @@ extension HTTPError: Retryable {
             return URLError(code).retryDecision
         case .timedOut:
             return .retry
-        case .responseTooLarge, .decoding, .reauthenticationFailed:
+        case .responseTooLarge, .decoding, .reauthenticationFailed, .redirectRefused:
             return .stop
         case .rejected(let rejection, _):
             switch rejection.reason {

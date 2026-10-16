@@ -18,8 +18,12 @@ internal import Synchronization
 ///   compression bomb is stopped too.)
 /// - **Cancellation.** Cancelling the calling task cancels the data task, and
 ///   the call ends with `CancellationError`, not with `URLError.cancelled`.
-/// - **Credentials stay with their host.** A redirect to another host does
-///   not carry `Authorization`, `Cookie` or `Proxy-Authorization`.
+/// - **No redirects followed.** A 3xx comes back as the response, as the
+///   protocol asks of a transport, and ``HTTPClient`` follows it under rules
+///   it owns (design/19). URL loading's own following kept only the headers
+///   it knew to be credentials from another host, compared hosts but not
+///   schemes or ports, and on Linux let an `https` request continue over
+///   `http`.
 public final class URLSessionTransport: HTTPTransport {
     private let session: URLSession
     private let ownsSession: Bool
@@ -110,11 +114,8 @@ final class Transfer: NSObject, URLSessionDataDelegate, Sendable {
         _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
-        var next = request
-        if next.url?.host?.lowercased() != task.originalRequest?.url?.host?.lowercased() {
-            for name in HTTPHeaders.sensitiveNames { next.setValue(nil, forHTTPHeaderField: name) }
-        }
-        completionHandler(next)
+        // `nil` declines the redirect: the 3xx and its body are the response.
+        completionHandler(nil)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {

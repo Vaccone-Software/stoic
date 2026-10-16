@@ -12,7 +12,9 @@ internal import Synchronization
 /// slow response arrives. A hang waits on no clock at all, only for
 /// cancellation, so it ends exactly when the client's attempt timeout fires
 /// (or the caller leaves) and a simulation has no timer of it to fire early. Every request is recorded, headers
-/// included, so a test can assert what was sent and how often.
+/// included, so a test can assert what was sent and how often. A redirect is
+/// a step like any other (`.status(302, headers: ["Location": "/next"])`):
+/// the transport returns it, and the client follows it.
 ///
 ///     let transport = ScriptedTransport()
 ///     transport.on(.get("/users/42"), respond: [.status(503), .status(503), .json(#"{"id": 42}"#)])

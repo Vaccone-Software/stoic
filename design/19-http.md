@@ -20,6 +20,9 @@ careful team would write, from the pieces Stoic already has.
   retry budgets so retries cannot multiply an outage; outlier ejection.
 - **Go's `http.Client`.** A transport behind an interface, so tests replace
   the network, not the client.
+- **The WHATWG Fetch standard.** Which redirects turn a request into a
+  `GET`, which headers describe a body, and that a redirect to another origin
+  leaves credentials behind.
 
 ## API
 
@@ -42,7 +45,8 @@ ambient deadline) → retry → circuit breaker → rate limit (if the policy ha
 one) → bulkhead → attempt timeout → transport. `HTTPPolicy.standard`: 10 s per attempt; 3 attempts with
 jittered exponential backoff from 200 ms, capped at 10 s, drawing on a
 retry budget; a breaker that opens after half of at least 20 calls fail;
-at most 8 requests in flight to one host. Every number is a field.
+at most 8 requests in flight to one host; at most 10 redirects followed.
+Every number is a field.
 
 **Only what is safe to repeat is repeated.** `GET`, `HEAD`, `OPTIONS`,
 `PUT` and `DELETE` are retried; `POST` and `PATCH` only with an
@@ -60,7 +64,8 @@ either. Transport errors are classified by `URLError` code (design/05).
 A breaker counts 5xx, timeouts and transport failures, never 4xx.
 
 **Retrying on what came back.** `HTTPPolicy.retryOnResponse` (or a call's own,
-below) sees every response that arrived whole, whatever its status, and answers
+below) sees every response that arrived whole, whatever its status (but a
+redirect the client follows: that is the way to the answer, not the answer), and answers
 with a `RetryDecision` or `nil` to leave it to the status list: `.retry` asks
 again (after the response's `Retry-After` when it has one), `.retryAfter(d)`
 after `d`, `.stop` makes the response final even if its status is on the list.
@@ -84,6 +89,20 @@ renewed headers, and that answer is the answer. Concurrent requests refused for
 the same credentials share one run of the hook; a request refused with
 credentials that were renewed since it was prepared replays without running it.
 A hook that throws is `.reauthenticationFailed`, and the request is not replayed.
+
+**Redirects are the client's.** The transport follows none; the client
+follows 301, 302, 303, 307 and 308 that name a `Location`, up to
+`HTTPPolicy.maxRedirects` (10), each hop through the policies of the host it
+goes to and under the caller's deadline. A `POST` answered 301 or 302, and
+anything but `GET` or `HEAD` answered 303, is followed as a `GET` without its
+body; 307 and 308 keep the method and the body. The client's headers go only
+to the base URL's origin (scheme, host and port); once a redirect leaves the
+request's origin, only the headers that negotiate content go along, never a
+credential, a custom header or the idempotency key, and the client's headers
+never return to that chain. An `https` request is never redirected to `http`.
+A refusal is `.redirectRefused` with why (`downgrade`, `limit`,
+`invalid_location`), the status and the `Location`, for a caller that follows
+it some other way (an OAuth callback on the app's own scheme).
 
 **Rate limit.** `HTTPPolicy.rateLimit` is a token bucket for each host (a Stoic
 `RateLimiter` on the ambient clock): every attempt, retries included, takes a
@@ -112,8 +131,9 @@ answer (`X-Request-Id`, `traceparent`) would defeat sharing; list it in
 excerpt, retryAfter)`, `.transport(URLError.Code)`, `.timedOut(attempt:)`,
 `.responseTooLarge`, `.decoding(ValidationFailure)`, `.rejected(Rejection)`
 (breaker open, bulkhead full, rate limited, budget exhausted, deadline),
-`.reauthenticationFailed(status:)`. Each says
-whether it was retried and how many attempts were made.
+`.reauthenticationFailed(status:)`, `.redirectRefused(reason, status:,
+location:)`. Each says whether it was retried and how many attempts were
+made.
 
 **Privacy.** Events carry the method, host, path and status; the query
 string, request and response bodies are private; `Authorization`,
@@ -152,13 +172,21 @@ inside a simulation.
 | a host's rate limit is spent | The request waits its turn for a permit, in order; retries wait too |
 | a request would wait longer than its deadline or the queue allows | `.rejected(rate_limited)` at once, with the wait in `retryAfter`; nothing is sent |
 | a caller waiting for a rate-limit permit is cancelled | It leaves with `CancellationError`, takes no permit, and the next caller gets it |
+| a redirect leads to another origin | Followed without the client's headers, the request's credentials and custom headers, or its idempotency key; only `Accept`, `Accept-Language` and the like go along |
+| an `https` request is redirected to `http` | `.redirectRefused(downgrade)`; nothing is sent in the clear |
+| a `POST` is answered 301, 302 or 303 | Followed as a `GET`, without the body, its headers or the idempotency key |
+| a request is redirected with 307 or 308 | Followed with the same method and body, keyed or not: the server has not acted on it |
+| a redirect chain is longer than the limit | `.redirectRefused(limit)` once `maxRedirects` (10) have been followed |
+| the caller's deadline passes during a redirect chain | `.rejected(deadline_exceeded)`: one deadline spans every hop |
 
 ## Events
 
 `http.request` (debug: method, host, path, status, duration, attempt),
 `http.retry` (delay, reason), `http.failed`, `http.coalesced`,
 `http.response_too_large`, `http.decoding_failed`, `http.reauthenticated`,
-`http.reauthenticate_failed` (the type of the hook's error, never its text);
+`http.reauthenticate_failed` (the type of the hook's error, never its text),
+`http.redirected` (status, hop, the method, host and path it leads to, and
+whether the origin changed; never a header or a query);
 the breaker, rate limiter, bulkhead and budget emit their own.
 
 ## As built
@@ -191,8 +219,9 @@ transport can stop reading: `URLSessionTransport` collects the body from the
 task's delegate callbacks, refuses a declared `Content-Length` over the limit
 before the first byte, and cancels the task at the first byte over (counted
 after decompression, so a compression bomb is stopped too). The client
-checks the size again, for transports that do not. A redirect to another host
-drops `Authorization`, `Cookie` and `Proxy-Authorization`.
+checks the size again, for transports that do not. It follows no redirect: its
+delegate declines each one, so the 3xx is the response and the client applies
+the rules below.
 
 **`ScriptedTransport` lives in `StoicHTTP`, not a `StoicHTTPTesting`
 product,** as `SimulatedFileSystem` lives in `StoicStore`: it needs nothing
@@ -236,7 +265,8 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
 - **Statuses.** 408, 429, 500, 502, 503 and 504, as the contract lists
   (`HTTPPolicy.retryStatuses`). `HTTPRetry`'s public table also retries 425;
   the client does not use its status table, only its `Retry-After` parser.
-  Other 3xx and 4xx and 5xx are `.status` and final.
+  Any other 3xx (a 304, a 300, a redirect with no `Location`) and other 4xx
+  and 5xx are `.status` and final.
 - **An unkeyed `POST` or `PATCH` is never retried,** on any failure: not on a
   503, not on a failed connection. The contract's rule is "only with a key";
   the exceptions that are safe in principle (the connection was never made)
@@ -263,8 +293,12 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   set of requests through, so the bound would not hold where it matters. The
   table can exceed 256 only by hosts in use at that moment, and is trimmed
   back as their requests end.
-- **Default headers** (`HTTPClient(headers:)`) go only to the base URL's origin.
-  An absolute URL on another host never receives the app's token.
+- **Default headers** (`HTTPClient(headers:)`) go only to the base URL's origin:
+  scheme, host and port, with the scheme's port implied, so
+  `https://api.example.com:443` is the base `https://api.example.com` (it was
+  compared as written, and counted as another origin). An absolute URL on
+  another host never receives the app's token, nor does a redirect once its
+  chain has left that origin.
 - **Nested retries.** The client keeps Stoic's default, `nesting:
   .singleAttempt`: inside another retry's attempt (an `Outbox` delivery, say)
   it makes one attempt and the outer retry owns the retrying.
@@ -310,7 +344,10 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   the query string as a *private* field only). `http.retry` (info) is recorded
   when a retry begins: attempt number, the wait since the last attempt ended,
   and why it failed (`status_503`, `timed_out`, `transport_-1005`).
-  `http.failed` (warning), `http.coalesced` (debug, per caller that joined),
+  `http.redirected` (info) for each redirect followed: the redirected request's
+  method, host and path, its status, the hop number, the method, host and path
+  it leads to (never its query), and `origin_changed`; a refused redirect is an
+  `http.failed`. `http.failed` (warning), `http.coalesced` (debug, per caller that joined),
   `http.response_too_large` (warning) and `http.decoding_failed` (notice; the
   number of errors, never the body). Event labels are `"<client label> <host>"`.
   No event carries a header, a body, or a response excerpt: the pipeline's error
@@ -358,15 +395,85 @@ the first version, on the same pipeline):
   caller with no deadline could then wait behind a queue that only grew; it is
   an `Int` now (a listed API break), as principle 2 asks.
 
+**Redirects** (built after; `URLSession` followed them inside the transport
+until then):
+
+- **Why the client.** Followed inside the transport, a redirect was invisible to
+  the client, and the transport's rule was narrow: a redirect to another host
+  dropped only the four headers `HTTPHeaders.sensitiveNames` lists, so a custom
+  credential set as a default header (`X-API-Key`) reached whatever host the
+  API pointed at; it compared hosts, not schemes or ports, so a same-host
+  downgrade to `http` or a change of port kept `Authorization`; and only Apple's
+  App Transport Security refused `https` to `http`, which Linux followed. Owned
+  by the client, the rules are in one place, the same on every transport and
+  platform, tested on the scripted transport, and every hop is seen by the
+  policies and the events.
+- **Three kinds of header.** The client's (`HTTPClient(headers:)`, and what
+  reauthentication returns) go only to the base URL's origin, and only while
+  the chain has never left it. The request's own headers and its idempotency
+  key go to the origin the request named and along redirects within it. When a
+  redirect changes origin, only `Accept`, `Accept-Encoding`,
+  `Accept-Language`, `User-Agent`, `Range` and the body's `Content-Type`,
+  `Content-Encoding` and `Content-Language` go along: an allow-list, because a
+  header the client has never heard of may be a credential. What is dropped is
+  never restored: a chain from the API to another host and back reaches the API
+  without the client's headers, so a host the client was sent to cannot steer
+  it into authenticated requests to paths of its choosing. The key stays behind
+  because it names an operation to the server it was made for; the hop is then
+  unkeyed, so an unsafe one is not retried there.
+- **Methods,** as the Fetch standard and browsers: 301 and 302 turn a `POST`
+  into a `GET`, 303 turns anything but `GET` and `HEAD` into a `GET`, and the
+  body, the headers that describe it (`Content-Type`, `Content-Length`,
+  `Content-Encoding`, `Content-Language`, `Content-Location`) and the
+  idempotency key go with it: the key named the unsafe operation, and what
+  follows is a safe request for its result. 307 and 308 keep the method and
+  the body.
+- **An unsafe method redirected with 307 or 308 is followed without a key.**
+  The redirect says the server did not act on the request at that URI; sending
+  it to the new one is not a repeat, the reasoning that lets a `401` replay any
+  method. What a key protects against is a request processed twice, and this
+  one has been processed no times; requiring one would refuse the commonest
+  308 there is (a `POST` to a path without its trailing slash) for nothing.
+- **Each hop runs through the policies of the host it goes to:** that host's
+  breaker, rate-limit permit and bulkhead slot, and what it meets there counts
+  against that host. A CDN that is down must not open the API's breaker, and a
+  redirect must not carry a call past the breaker of a host that is failing.
+  The host that redirected releases its slot before the next hop starts, so two
+  hosts that redirect to each other cannot deadlock on each other's bulkheads;
+  for that host the redirect is a healthy answer (a breaker success).
+- **A hop is not a retry, and is bounded.** It takes nothing from the retry
+  budget, records no `http.retry`, and has its own run of the schedule (a 503
+  at the new location is retried as any request there would be), so a call
+  makes at most `(maxRedirects + 1) × attempts` requests; the chain is bounded
+  by `maxRedirects` and by the caller's deadline, which spans every hop. The
+  attempt timeout is per hop, as it is per attempt, and every hop counts in
+  `HTTPError.attempts`: an attempt is a request that reached the transport.
+- **The limit is 10,** Go's, below `URLSession`'s 16 and Fetch's 20: an API needs
+  one or two, a longer chain is a loop or a misconfiguration, and each hop is a
+  round trip of the caller's time. `maxRedirects: 0` follows none, and the
+  first redirect is `.redirectRefused(limit)` with its `Location`.
+- **One new error case,** `redirectRefused(_:status:location:attempts:)`, for
+  the three refusals, rather than `.transport(.httpTooManyRedirects)` and ATS's
+  `appTransportSecurityRequiresSecureConnection`: neither is a network failure,
+  the second is Apple's name for a rule this client applies everywhere, and a
+  caller that follows a redirect itself needs the `Location`, which a
+  `URLError.Code` cannot carry. A new case breaks an exhaustive `switch` over
+  `HTTPError` (listed), as does the new `HTTPPolicy` initializer parameter.
+  `location` may hold a token (an OAuth code): it is in no `description` and no
+  event. A refusal is never retried.
+- **The redirect's body** is read under `maxResponseBytes` and dropped;
+  `retryOnResponse` never sees a redirect the client follows.
+
 **Not built.** A hedging stage (it exists as a `Policy` value and would slot
 into the pipeline); streaming uploads and downloads; delivering through the
 outbox (`StoicStore.Outbox` can call `send` with its entry's `IdempotencyKey`).
 
 **Tests** (`Tests/StoicHTTPTests`; overrides, response retry, reauthentication,
-rate limit and decoding limits each have a file): one per row above, on a `TestClock` and a
+rate limit, redirects and decoding limits each have a file): one per row above, on a `TestClock` and a
 `ScriptedTransport` with no real sleeps (they wait on events and
 `waitForSleepers`); `URLSessionTransport` against a `URLProtocol` stub on a
-real `URLSession`; and `simulate(seeds:)` runs of seventeen concurrent callers
+real `URLSession` (a redirect comes back as the response, and the client
+follows it without its headers); and `simulate(seeds:)` runs of seventeen concurrent callers
 against a flaky server, under the full schedule portfolio (uniform and PCT,
 early timers), which assert that no unkeyed `POST` is ever repeated, every
 keyed attempt carries its key and body, attempts stay within the policy, and

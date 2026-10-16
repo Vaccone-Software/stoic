@@ -93,6 +93,21 @@ public struct HTTPPolicy: Sendable {
     /// The most body bytes read from one response. Default 10 MB.
     public var maxResponseBytes: Int
 
+    /// The most redirects one request follows. Default 10: an API needs one
+    /// or two (a moved path, a trailing slash), and a longer chain is a loop
+    /// or a misconfiguration, each hop a round trip of the caller's time.
+    /// The next is ``HTTPError/redirectRefused(_:status:location:attempts:)``
+    /// with `limit`; 0 follows none.
+    ///
+    /// The client follows redirects itself, not the transport, so the rules
+    /// are the same everywhere: an `https` request never follows a redirect
+    /// to `http`; once a redirect leaves the request's origin (scheme, host
+    /// and port), the client's headers, the request's credentials and its
+    /// idempotency key stay behind; a `POST` answered 301, 302 or 303 is
+    /// followed as a `GET` without its body, and 307 or 308 keep the method
+    /// and body (design/19).
+    public var maxRedirects: Int
+
     /// How responses are decoded by ``HTTPClient/send(_:idempotencyKey:decoding:options:)``;
     /// a call can pass its own. `nil` (the default) means strict decoding of
     /// strict JSON, with the parser's input, string and container limits
@@ -141,6 +156,7 @@ public struct HTTPPolicy: Sendable {
         queueLimitPerHost: Int = 64,
         rateLimit: HTTPRateLimit? = nil,
         maxResponseBytes: Int = 10_000_000,
+        maxRedirects: Int = 10,
         errorExcerptBytes: Int = 512,
         decodeOptions: DecodeOptions? = nil,
         coalesceGETs: Bool = true,
@@ -152,6 +168,7 @@ public struct HTTPPolicy: Sendable {
         precondition(maxResponseBytes >= 0 && errorExcerptBytes >= 0, "byte limits cannot be negative")
         precondition(maxConcurrentPerHost.map { $0 >= 1 } ?? true, "a host needs room for at least one request")
         precondition(queueLimitPerHost >= 0, "a queue cannot have a negative size")
+        precondition(maxRedirects >= 0, "a redirect limit cannot be negative")
         self.attemptTimeout = attemptTimeout
         self.schedule = schedule
         self.retryBudget = retryBudget
@@ -162,6 +179,7 @@ public struct HTTPPolicy: Sendable {
         self.maxConcurrentPerHost = maxConcurrentPerHost
         self.queueLimitPerHost = queueLimitPerHost
         self.maxResponseBytes = maxResponseBytes
+        self.maxRedirects = maxRedirects
         self.errorExcerptBytes = errorExcerptBytes
         self.decodeOptions = decodeOptions
         self.coalesceGETs = coalesceGETs
@@ -173,7 +191,8 @@ public struct HTTPPolicy: Sendable {
     /// The defaults described on each field: 10 s per attempt; 3 attempts
     /// with jittered exponential backoff from 200 ms, capped at 10 s, drawing
     /// on a retry budget; a breaker that opens after half of at least 20
-    /// calls fail; at most 8 requests in flight to one host.
+    /// calls fail; at most 8 requests in flight to one host; at most 10
+    /// redirects followed.
     ///
     /// A new value each time, so each client gets its own retry budget.
     public static var standard: HTTPPolicy { HTTPPolicy() }

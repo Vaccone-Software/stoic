@@ -27,6 +27,10 @@ internal import Synchronization
 ///   and a wait that would outlast it is not started.
 /// - The breaker and bulkhead measure time on the ambient clock in force when
 ///   a host is first used, like every Stoic breaker.
+/// - Redirects are followed by the client, not the transport, each hop
+///   through its own host's policies: never from `https` to `http`, never
+///   past ``HTTPPolicy/maxRedirects``, and with no credential, client header
+///   or idempotency key once a redirect leaves the request's origin.
 public final class HTTPClient: Sendable {
     /// Requests with a path are resolved against this URL. Its own path is
     /// kept: a base of `https://example.com/v1` and a path of `/users` is
@@ -49,9 +53,10 @@ public final class HTTPClient: Sendable {
     ///   - policy: The resilience settings; ``HTTPPolicy/standard`` by default.
     ///   - transport: How requests reach the network; a ``URLSessionTransport``
     ///     by default, a ``ScriptedTransport`` in tests.
-    ///   - headers: Sent with every request to the base URL's host (and
+    ///   - headers: Sent with every request to the base URL's origin (and
     ///     only to it: an absolute URL on another host never receives them,
-    ///     so a token cannot leak to a host the caller merely linked to).
+    ///     nor does a redirect once it has left that origin, so a token
+    ///     cannot leak to a host the caller merely linked to, or was sent to).
     ///   - label: Names the client in events.
     ///   - reauthenticate: Runs when a request to the base URL's origin is
     ///     answered `401`, and returns the headers to send from then on (a new
@@ -265,6 +270,58 @@ public final class HTTPClient: Sendable {
         Ambient.record(Event("http.coalesced", level: .debug, label: prepared.hostLabel(label), fields: prepared.fields))
     }
 
+    // MARK: Redirects
+
+    /// Runs one request, and follows the redirects it is answered with
+    /// (``Redirects`` holds the rules).
+    ///
+    /// Each hop is a request to its own host, through that host's policies:
+    /// its breaker, rate limit and bulkhead protect the host it goes to, and
+    /// what it meets there is counted against that host, not the one that
+    /// redirected. A hop is not a retry: it is the way to the answer, so it
+    /// takes no retry budget and does not use up the schedule's attempts
+    /// (each hop has the schedule's attempts of its own). What bounds the
+    /// chain is ``HTTPPolicy/maxRedirects`` and the caller's deadline, which
+    /// every hop runs under; every hop counts in ``HTTPError/attempts``.
+    private func run(_ prepared: PreparedRequest) async -> Outcome {
+        let log = AttemptLog()
+        var current = prepared
+        var followed = 0
+        while true {
+            let outcome = await exchange(current, log: log)
+            guard case .delivered(let delivered) = outcome, Redirects.isRedirect(delivered.response) else { return outcome }
+            let response = delivered.response
+            let label = current.hostLabel(self.label)
+            switch Redirects.next(after: response, to: current, followed: followed, limit: policy.maxRedirects) {
+            case .refuse(let refusal, let location):
+                let error = HTTPError.redirectRefused(refusal, status: response.status, location: location, attempts: log.count)
+                Ambient.record(Event("http.failed", level: .warning, label: label, fields: current.fields + [
+                    .init("error", .string(String(describing: error)), privacy: .public),
+                    .init("attempts", .int(log.count)),
+                ]))
+                return .failed(error)
+            case .follow(let hop):
+                let next: PreparedRequest
+                do {
+                    next = try prepare(hop.request, key: nil, overrides: current.overrides, clientHeaders: hop.clientHeaders)
+                } catch {
+                    return .failed(error)
+                }
+                followed += 1
+                Ambient.record(Event("http.redirected", level: .info, label: label, fields: current.fields + [
+                    .init("status", .int(response.status)),
+                    .init("hop", .int(followed)),
+                    .init("to_method", .string(next.request.method.rawValue), privacy: .public),
+                    .init("to_host", .string(next.host), privacy: .public),
+                    .init("to_path", .string(next.path), privacy: .public),
+                    .init("origin_changed", .bool(hop.changesOrigin)),
+                ]))
+                log.hop()
+                current = next
+            }
+        }
+    }
+
     // MARK: Reauthentication
 
     /// Runs one request through the policies of its host, and, if the server
@@ -279,8 +336,7 @@ public final class HTTPClient: Sendable {
     /// the hook (`SingleFlight`, keyed by the generation of the credentials
     /// that were refused), and a request that finds the credentials already
     /// renewed since it was prepared replays without running the hook at all.
-    private func run(_ prepared: PreparedRequest) async -> Outcome {
-        let log = AttemptLog()
+    private func exchange(_ prepared: PreparedRequest, log: AttemptLog) async -> Outcome {
         let first = await execute(prepared, log: log)
         guard reauthenticate != nil, prepared.overrides.reauthenticate, prepared.carriesClientHeaders,
               case .failed(.status(401, _, _, _)) = first else {
@@ -305,7 +361,8 @@ public final class HTTPClient: Sendable {
         }
         let replay: PreparedRequest
         do {
-            replay = try prepare(prepared.source, key: prepared.sourceKey, overrides: prepared.overrides)
+            replay = try prepare(
+                prepared.source, key: prepared.sourceKey, overrides: prepared.overrides, clientHeaders: prepared.clientHeadersAllowed)
         } catch {
             return .failed(error)
         }
@@ -434,8 +491,8 @@ public final class HTTPClient: Sendable {
     private func attempt(_ prepared: PreparedRequest, host: HostState, log: AttemptLog) async throws(AttemptError) -> HTTPResponse {
         let clock = Ambient.current.clock
         let started = clock.now
-        let (number, gap, previous) = log.begin(at: started)
-        if number > 1 {
+        let (number, retry, gap, previous) = log.begin(at: started)
+        if retry {
             Ambient.record(Event("http.retry", level: .info, label: host.label, fields: prepared.fields + [
                 .init("attempt", .int(number)),
                 .init("delay", .duration(gap ?? .zero)),
@@ -469,11 +526,14 @@ public final class HTTPClient: Sendable {
         if case .success(let response) = result {
             if response.body.count > limit {
                 result = .failure(.tooLarge(limit: limit))
+            } else if Redirects.isRedirect(response) {
+                // Not the answer but the way to it: the host answered, and the
+                // client follows it (or refuses to) once this hop is over.
             } else {
-                // The predicate sees every response that arrived whole. A
-                // success is only turned into a failure to ask again if it
-                // could be asked again: an unkeyed `POST` that was answered
-                // is answered.
+                // The predicate sees every response that arrived whole, but a
+                // redirect. A success is only turned into a failure to ask
+                // again if it could be asked again: an unkeyed `POST` that was
+                // answered is answered.
                 let verdict = (prepared.overrides.retryOnResponse ?? policy.retryOnResponse)?(response)
                 let asksAgain = prepared.safeToRepeat && verdict.map { $0 != .stop } == true
                 if !response.isSuccess || asksAgain {
@@ -495,8 +555,9 @@ public final class HTTPClient: Sendable {
         if let query = prepared.query, !query.isEmpty { fields.append(.init("query", .string(query), privacy: .private)) }
         switch result {
         case .success(let response):
-            fields += [.init("status", .int(response.status)), .init("outcome", .string("ok"), privacy: .public)]
-            log.end(at: finished, reason: "ok")
+            let outcome = response.isSuccess ? "ok" : "redirect"
+            fields += [.init("status", .int(response.status)), .init("outcome", .string(outcome), privacy: .public)]
+            log.end(at: finished, reason: outcome)
         case .failure(let failure):
             if case .status(let code, _, _, _) = failure { fields.append(.init("status", .int(code))) }
             fields.append(.init("outcome", .string(failure.reason), privacy: .public))
@@ -540,9 +601,12 @@ public final class HTTPClient: Sendable {
     }
 
     /// Resolves the request against the base URL, folds in the query, adds
-    /// the default headers (for the base URL's host only) and the idempotency
-    /// key.
-    private func prepare(_ request: HTTPRequest, key: IdempotencyKey?, overrides: HTTPOverrides) throws(HTTPError) -> PreparedRequest {
+    /// the default headers (for the base URL's origin only, and only if
+    /// `clientHeaders` allows them: a redirect chain that has left that origin
+    /// does not) and the idempotency key.
+    private func prepare(
+        _ request: HTTPRequest, key: IdempotencyKey?, overrides: HTTPOverrides, clientHeaders: Bool = true
+    ) throws(HTTPError) -> PreparedRequest {
         func invalid() -> HTTPError { .transport(.badURL, attempts: 0) }
 
         var components: URLComponents
@@ -569,7 +633,7 @@ public final class HTTPClient: Sendable {
 
         var headers = request.headers
         let current = credentials.withLock { $0 }
-        let sameOrigin = Self.sameOrigin(url, base)
+        let sameOrigin = clientHeaders && Origin(url) != nil && Origin(url) == Origin(base)
         if sameOrigin { headers = defaultHeaders.merging(current.headers).merging(headers) }
         let effectiveKey = key ?? request.idempotencyKey
         if let effectiveKey { headers[HTTPRequest.idempotencyKeyHeader] = effectiveKey.rawValue }
@@ -587,14 +651,9 @@ public final class HTTPClient: Sendable {
             source: request,
             sourceKey: key,
             generation: current.generation,
+            clientHeadersAllowed: clientHeaders,
             carriesClientHeaders: sameOrigin
         )
-    }
-
-    private static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
-        lhs.scheme?.lowercased() == rhs.scheme?.lowercased()
-            && lhs.host?.lowercased() == rhs.host?.lowercased()
-            && lhs.port == rhs.port
     }
 }
 

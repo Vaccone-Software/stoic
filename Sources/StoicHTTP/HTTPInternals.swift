@@ -19,12 +19,16 @@ struct PreparedRequest: Sendable {
     var safeToRepeat: Bool
     /// What the call changed about the policy.
     var overrides: HTTPOverrides
-    /// The request as the caller gave it, and its key, to prepare again with
-    /// fresh credentials.
+    /// The request as the caller gave it (or, after a redirect, as the
+    /// redirect made it), and its key, to prepare again with fresh
+    /// credentials and to derive the next hop from.
     var source: HTTPRequest
     var sourceKey: IdempotencyKey?
     /// The credentials generation the request was prepared with.
     var generation: Int
+    /// Whether the client's own headers may go into the request at all: not
+    /// once a redirect chain has left the base URL's origin.
+    var clientHeadersAllowed: Bool
     /// Whether the client's own headers went into the request (it is for the
     /// base URL's origin), which is what makes a `401` the client's to repair.
     var carriesClientHeaders: Bool
@@ -140,9 +144,13 @@ struct HostTable {
 
 /// How many attempts reached the transport, and when the last one ended:
 /// what `http.retry` reports and what an error says about attempts made.
+/// A redirect's next request is an attempt (it reached the transport) but
+/// not a retry.
 final class AttemptLog: Sendable {
     private struct State {
         var count = 0
+        /// Attempts since the last redirect was followed.
+        var sinceHop = 0
         var lastEnd: AnyClock.Instant?
         var lastReason = ""
     }
@@ -151,14 +159,23 @@ final class AttemptLog: Sendable {
 
     var count: Int { state.withLock { $0.count } }
 
-    /// Starts an attempt; returns its number, and, for a retry, the time
-    /// since the previous attempt ended and why that one failed.
-    func begin(at now: AnyClock.Instant) -> (number: Int, gap: Duration?, previous: String) {
+    /// Starts an attempt; returns its number, whether it is a retry, and, for
+    /// a retry, the time since the previous attempt ended and why that one
+    /// failed.
+    func begin(at now: AnyClock.Instant) -> (number: Int, retry: Bool, gap: Duration?, previous: String) {
         state.withLock { state in
             state.count += 1
+            state.sinceHop += 1
+            let retry = state.sinceHop > 1
             let gap = state.lastEnd.map { $0.duration(to: now) }
-            return (state.count, state.count > 1 ? gap : nil, state.lastReason)
+            return (state.count, retry, retry ? gap : nil, state.lastReason)
         }
+    }
+
+    /// Notes that a redirect is being followed: the next attempt is its
+    /// first, not a retry of the last.
+    func hop() {
+        state.withLock { $0.sinceHop = 0 }
     }
 
     func end(at now: AnyClock.Instant, reason: String) {

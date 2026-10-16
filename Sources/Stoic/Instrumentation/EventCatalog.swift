@@ -42,6 +42,7 @@ public enum EventCatalog {
         Entry(name: "http.failed", level: .warning, meaning: "A request ended in failure after its attempts; reports the error kind and the attempts made."),
         Entry(name: "http.reauthenticate_failed", level: .warning, meaning: "The reauthenticate hook failed after a 401; the request is not replayed. Reports the failure kind, never the credentials."),
         Entry(name: "http.reauthenticated", level: .info, meaning: "The reauthenticate hook succeeded after a 401 and the request is being replayed once."),
+        Entry(name: "http.redirected", level: .info, meaning: "The client is following a redirect; reports the status, the hop number, the method, host and path it goes to, and whether the origin changed (which leaves credentials behind). Never a header or a query string."),
         Entry(name: "http.request", level: .debug, meaning: "One attempt reached the transport; reports method, host, path, status or outcome, duration and attempt number."),
         Entry(name: "http.response_too_large", level: .warning, meaning: "A response body passed the byte limit and the transfer was cancelled."),
         Entry(name: "http.retry", level: .info, meaning: "A request is being retried; reports the attempt number, the wait since the last attempt and why that one failed."),

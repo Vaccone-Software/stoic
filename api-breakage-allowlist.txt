@@ -57,3 +57,5 @@ API breakage: var HTTPRateLimit.queueLimit has declared type change from Swift.I
 API breakage: accessor HTTPRateLimit.queueLimit.Get() has return type change from Swift.Int? to Swift.Int
 API breakage: accessor HTTPRateLimit.queueLimit.Set() has parameter 0 type change from Swift.Int? to Swift.Int
 API breakage: constructor HTTPRateLimit.init(rate:per:burst:queueLimit:) has parameter 3 type change from Swift.Int? to Swift.Int
+API breakage: enumelement HTTPError.redirectRefused has been added as a new enum case
+API breakage: constructor HTTPPolicy.init(attemptTimeout:schedule:retryBudget:retryStatuses:maxRetryAfter:breaker:maxConcurrentPerHost:queueLimitPerHost:rateLimit:maxResponseBytes:errorExcerptBytes:decodeOptions:coalesceGETs:ignoreHeadersForCoalescing:retryOnResponse:wallClock:) has been removed
