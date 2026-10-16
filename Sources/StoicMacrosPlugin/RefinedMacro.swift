@@ -36,10 +36,20 @@ struct RefinedMacro: MemberMacro, ExtensionMacro {
         conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
-        guard refinement(of: declaration, attribute: node, reporter: Reporter(context, silent: true)) != nil,
-            protocols.contains(where: { $0.trimmedDescription.hasSuffix("Refinement") })
+        guard let members = refinement(of: declaration, attribute: node, reporter: Reporter(context, silent: true))
         else { return [] }
-        return [try ExtensionDeclSyntax("extension \(type.trimmed): \(raw: library)Refinement {}")]
+        // Only the protocols the type does not conform to already.
+        func lacks(_ name: String) -> Bool {
+            protocols.contains { type in
+                let text = type.trimmedDescription
+                return text == name || text.hasSuffix("." + name) || text.hasSuffix(":" + name)
+            }
+        }
+        var conformances: [String] = []
+        if lacks("Refinement") { conformances.append("\(library)Refinement") }
+        if members.isClampable, lacks("ClampableRefinement") { conformances.append("\(library)ClampableRefinement") }
+        guard !conformances.isEmpty else { return [] }
+        return [try ExtensionDeclSyntax("extension \(type.trimmed): \(raw: conformances.joined(separator: ", ")) {}")]
     }
 }
 
@@ -47,6 +57,31 @@ private struct RefinementMembers {
     var access: String
     var base: String
     var constraints: [String]
+    /// Whether every value has a nearest admitted one: a number base, and
+    /// only ranges, `.finite` and at most one `.multipleOf`, so the
+    /// refinement can promise `ClampableRefinement`.
+    var isClampable: Bool
+}
+
+/// The number types `Refined.init(clamping:)` is written for.
+private let clampableBases: Set<String> = [
+    "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64", "Double",
+]
+
+/// Whether constraints written as `constraints` can all be clamped to.
+private func clampable(_ constraints: [ExprSyntax]) -> Bool {
+    var steps = 0
+    for expression in constraints {
+        let access = expression.as(FunctionCallExprSyntax.self)?.calledExpression.as(MemberAccessExprSyntax.self)
+            ?? expression.as(MemberAccessExprSyntax.self)
+        guard let access, access.base == nil else { return false }
+        switch access.declName.baseName.text {
+        case "range", "greaterThan", "lessThan", "finite": continue
+        case "multipleOf": steps += 1
+        default: return false
+        }
+    }
+    return steps <= 1
 }
 
 private func refinement(
@@ -111,7 +146,8 @@ private func refinement(
     }
     guard !reporter.hasErrors else { return nil }
     return RefinementMembers(
-        access: accessPrefix(declaration), base: baseText, constraints: constraints.map { $0.expression.trimmedDescription })
+        access: accessPrefix(declaration), base: baseText, constraints: constraints.map { $0.expression.trimmedDescription },
+        isClampable: clampableBases.contains(baseText) && clampable(constraints.map(\.expression)))
 }
 
 /// A `.range(…)`, `.length(…)`, `.unique` and the like, read as the

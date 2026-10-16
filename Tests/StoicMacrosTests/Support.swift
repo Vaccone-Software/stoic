@@ -11,7 +11,7 @@ import Testing
 /// Every macro the plugin provides, as the expander needs to know them.
 let allMacros: [String: MacroSpec] = [
     "Schema": MacroSpec(type: SchemaMacro.self, conformances: ["Schematic", "CaseIterable"]),
-    "Refined": MacroSpec(type: RefinedMacro.self, conformances: ["Refinement"]),
+    "Refined": MacroSpec(type: RefinedMacro.self, conformances: ["Refinement", "ClampableRefinement"]),
     "Key": MacroSpec(type: KeyMacro.self),
     "Secret": MacroSpec(type: SecretMacro.self),
     "Unit": MacroSpec(type: UnitMacro.self),

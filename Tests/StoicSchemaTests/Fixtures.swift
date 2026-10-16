@@ -5,7 +5,7 @@ enum Theme: String, CaseIterable, Sendable {
     case light, dark, system
 }
 
-enum ZoomRule: Refinement {
+enum ZoomRule: ClampableRefinement {
     typealias Base = Double
     static var constraints: [Constraint] { [.range(0.5...5), .finite] }
 }

@@ -56,7 +56,7 @@ public protocol Refinement: Sendable {
 public struct Refined<R: Refinement>: Sendable {
     public let value: R.Base
     public init(_ raw: R.Base) throws(ValidationFailure)  // the only public way in
-    public init(clamping raw: R.Base) where R.Base: Comparable   // the explicit lossy path, for UI
+    public init(clamping raw: R.Base) where R: ClampableRefinement   // the explicit lossy path, for UI
 }
 
 // Integer generic parameters give zero-boilerplate integer ranges:
@@ -230,6 +230,7 @@ schema and throws one `DecodingError` listing every issue.
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
+| a value is clamped into a refinement with a step | Moved into every range, then to the nearest multiple (the lower on a tie); never a trap on the input. A refinement with no nearest value has no `init(clamping:)` |
 | a value read through the Codable bridge nests deeper than `maxDepth` | One `DecodingError.dataCorrupted` naming the limit, before the schema runs; the walk keeps its own stack, so no depth exhausts the thread's (`maxStringBytes` and `maxContainerCount` are enforced the same way) |
 | a value read through the Codable bridge repeats a key | Not seen: the `Decoder` resolved it before the schema was asked (`JSONDecoder` keeps the first value). Wire data and files go through the schema's text entry points, which refuse it with both locations |
 
@@ -266,8 +267,24 @@ above left open:
   (`Regex` is not `Sendable`), with scalar matching semantics.
 - **`Refinement` also names `baseSchema`** (automatic for any `Schematic`
   base), because checking a value means interpreting the constraints on its
-  JSON form. `init(clamping:)` exists for integer and `Double` bases and
-  clamps range constraints only.
+  JSON form.
+- **Clamping is offered only where it cannot fail.** `init(clamping:)`
+  exists for integer and `Double` bases of a `ClampableRefinement`: one whose
+  constraints are ranges, `.finite` and at most one `.multipleOf`. The value
+  is clamped into every range and moved to the nearest multiple inside them
+  (`7` under `.range(0...100), .multipleOf(10)` is `10`; a tie goes down; a
+  `Double` multiple is built from its decimal digits, so `0.3` and never
+  `0.30000000000000004`). It used to clamp ranges only and trap when the
+  result broke another constraint, so a text field could crash the app with
+  a `7`. A pattern, a list of values or a custom check has no nearest value,
+  so a refinement with one does not conform and the compiler refuses the
+  call: unavailable rather than failable, because a failable initialiser
+  would make every `Port(clamping: 8080)` default handle a `nil` that
+  cannot happen. The conformance is a promise the compiler cannot check
+  (constraints are values); one that is broken, or a refinement that admits
+  no value, traps on the first clamp whatever the input, so the first test
+  finds it and no user's input can. `IntRange` conforms, and `@Refined` adds
+  the conformance when its constraints qualify.
 - **`Optional` has three states.** Absent means the field's default (or
   `nil` where there is no default); `null` is a value only for
   `nullable: true`; otherwise `nil` is written by omitting the key.

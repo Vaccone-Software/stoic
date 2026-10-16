@@ -7,7 +7,7 @@ import Testing
 typealias Port = Refined<IntRange<1, 65_535>>
 typealias Percent = Refined<IntRange<0, 100>>
 
-enum ScrollSpeedRule: Refinement {
+enum ScrollSpeedRule: ClampableRefinement {
     typealias Base = Double
     static var constraints: [Constraint] { [.range(0.1...10), .finite] }
 }
@@ -30,7 +30,7 @@ enum OpenAnimalRule: Refinement {
     }
 }
 
-enum PositiveRule: Refinement {
+enum PositiveRule: ClampableRefinement {
     typealias Base = Double
     static var constraints: [Constraint] { [.greaterThan(0), .lessThan(1)] }
 }
@@ -40,7 +40,7 @@ enum UsernameRule: Refinement {
     static var constraints: [Constraint] { [.length(3...16), .pattern("^[a-z][a-z0-9_]*$")] }
 }
 
-enum StepRule: Refinement {
+enum StepRule: ClampableRefinement {
     typealias Base = Int
     static var constraints: [Constraint] { [.range(0...100), .multipleOf(10)] }
 }
@@ -187,18 +187,81 @@ struct ClampingTests {
     }
 
     @Test func fractionalAndExclusiveIntegerBoundsRoundInward() {
-        enum Fractional: Refinement {
+        enum Fractional: ClampableRefinement {
             typealias Base = Int
             static var constraints: [Constraint] { [.range(0.5...9.5)] }
         }
         #expect(Refined<Fractional>(clamping: -4).value == 1)
         #expect(Refined<Fractional>(clamping: 40).value == 9)
-        enum Exclusive: Refinement {
+        enum Exclusive: ClampableRefinement {
             typealias Base = Int
             static var constraints: [Constraint] { [.greaterThan(0), .lessThan(10)] }
         }
         #expect(Refined<Exclusive>(clamping: 0).value == 1)
         #expect(Refined<Exclusive>(clamping: 10).value == 9)
+    }
+
+    @Test(.failureMode("design/06", "a value is clamped into a refinement with a step"))
+    func aStepIsSnappedToNotTrappedOn() {
+        // Clamping used to trap here, on the user's input: 7 is in range and
+        // no multiple of 10.
+        #expect(Refined<StepRule>(clamping: 7).value == 10)
+        #expect(Refined<StepRule>(clamping: 4).value == 0)
+        #expect(Refined<StepRule>(clamping: 5).value == 0)  // a tie goes down
+        #expect(Refined<StepRule>(clamping: 300).value == 100)
+        #expect(Refined<StepRule>(clamping: -5).value == 0)
+        enum Tenths: ClampableRefinement {
+            typealias Base = Double
+            static var constraints: [Constraint] { [.range(0...1), .multipleOf(0.1)] }
+        }
+        #expect(Refined<Tenths>(clamping: 0.33).value == 0.3)
+        #expect(Refined<Tenths>(clamping: 0.36).value == 0.4)
+        #expect(Refined<Tenths>(clamping: 7).value == 1)
+        #expect(Refined<Tenths>(clamping: -1).value == 0)
+        enum Quarters: ClampableRefinement {
+            typealias Base = Double
+            static var constraints: [Constraint] { [.greaterThan(0), .lessThan(1), .multipleOf(0.25)] }
+        }
+        #expect(Refined<Quarters>(clamping: 1).value == 0.75)
+        #expect(Refined<Quarters>(clamping: 0).value == 0.25)
+        enum HalfFives: ClampableRefinement {
+            typealias Base = Int
+            static var constraints: [Constraint] { [.range(0...20), .multipleOf(2.5)] }
+        }
+        // The integers that are multiples of 2.5 are those of 5.
+        #expect(Refined<HalfFives>(clamping: 7).value == 5)
+        #expect(Refined<HalfFives>(clamping: 8).value == 10)
+    }
+
+    @Test func everyClampedValueIsAdmitted() throws {
+        var generator = SeededGenerator(seed: 11)
+        for _ in 0..<300 {
+            let raw = Int.random(in: -1_000...1_000, using: &generator)
+            let clamped = Refined<StepRule>(clamping: raw)
+            #expect(try Refined<StepRule>(clamped.value) == clamped)
+            let real = Double.random(in: -2...3, using: &generator)
+            let zoom = Zoom(clamping: real)
+            #expect(try Zoom(zoom.value) == zoom)
+        }
+    }
+
+    @Test func aRefinementWithNoNearestValueTrapsOnEveryInputNotSome() async {
+        // A broken promise is a declaration mistake: it traps on the first
+        // clamp, whatever is passed, so the first test finds it.
+        await #expect(processExitsWith: .failure) {
+            enum Lying: ClampableRefinement {
+                typealias Base = Int
+                static var constraints: [Constraint] { [.range(0...9), .oneOf([1, 3])] }
+            }
+            _ = Refined<Lying>(clamping: 1)
+        }
+        await #expect(processExitsWith: .failure) {
+            enum Empty: ClampableRefinement {
+                typealias Base = Int
+                static var constraints: [Constraint] { [.range(1...4), .multipleOf(5)] }
+            }
+            _ = Refined<Empty>(clamping: 2)
+        }
     }
 }
 

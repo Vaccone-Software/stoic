@@ -44,3 +44,5 @@ API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missi
 API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 6 type change from StoicSchema.MissingVersion to Swift.String
 API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 7 type change from [StoicSchema.Migration] to StoicSchema.MissingVersion
 API breakage: func Schema.object(_:name:unknownKeys:doc:version:versionKey:missingVersion:migrations:declare:) has parameter 8 type change from (StoicSchema.ObjectReader<Value>) -> StoicSchema.Construction<Value> to [StoicSchema.Migration]
+API breakage: constructor Refined.init(clamping:) has generic signature change from <R where R : StoicSchema.Refinement, R.Base : Swift.FixedWidthInteger> to <R where R : StoicSchema.ClampableRefinement, R.Base : Swift.FixedWidthInteger>
+API breakage: constructor Refined.init(clamping:) has generic signature change from <R where R : StoicSchema.Refinement, R.Base == Swift.Double> to <R where R : StoicSchema.ClampableRefinement, R.Base == Swift.Double>

@@ -41,13 +41,64 @@ struct RefinedExpansionTests {
                     }
                 }
 
-                extension ScrollSpeedRule: StoicSchema::Refinement {
+                extension ScrollSpeedRule: StoicSchema::Refinement, StoicSchema::ClampableRefinement {
                 }
 
                 extension SlugRule: StoicSchema::Refinement {
                 }
 
                 extension TriadRule: StoicSchema::Refinement {
+                }
+                """)
+    }
+
+    @Test func onlyANumberWithRangesAndOneStepCanBeClamped() {
+        // Clamping is arithmetic: a pattern, a list of values or a second step
+        // has no nearest value, so `init(clamping:)` is not offered.
+        expand(
+            """
+            @Refined(Int.self, .range(0...100), .multipleOf(5))
+            enum StepRule {}
+
+            @Refined(Int.self, .oneOf([1, 3]))
+            enum OddRule {}
+
+            @Refined(Int.self, .multipleOf(2), .multipleOf(3))
+            enum SixRule {}
+            """,
+            to: """
+                enum StepRule {
+
+                    typealias Base = Int
+
+                    static var constraints: [StoicSchema::Constraint] {
+                        [.range(0 ... 100), .multipleOf(5)]
+                    }
+                }
+                enum OddRule {
+
+                    typealias Base = Int
+
+                    static var constraints: [StoicSchema::Constraint] {
+                        [.oneOf([1, 3])]
+                    }
+                }
+                enum SixRule {
+
+                    typealias Base = Int
+
+                    static var constraints: [StoicSchema::Constraint] {
+                        [.multipleOf(2), .multipleOf(3)]
+                    }
+                }
+
+                extension StepRule: StoicSchema::Refinement, StoicSchema::ClampableRefinement {
+                }
+
+                extension OddRule: StoicSchema::Refinement {
+                }
+
+                extension SixRule: StoicSchema::Refinement {
                 }
                 """)
     }

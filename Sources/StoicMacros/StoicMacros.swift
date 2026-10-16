@@ -121,9 +121,11 @@ public macro DataFormat(_ format: DataFormat) = #externalMacro(module: "StoicMac
 ///
 /// The macro writes `Base` and `constraints`, and the conformance to
 /// `Refinement`; the constraints are the library's own, checked here for
-/// what the macro can see.
+/// what the macro can see. A number base whose constraints are ranges,
+/// `.finite` and at most one `.multipleOf` also gets `ClampableRefinement`,
+/// and so `Refined.init(clamping:)`.
 @attached(member, names: named(Base), named(constraints))
-@attached(extension, conformances: Refinement)
+@attached(extension, conformances: Refinement, ClampableRefinement)
 public macro Refined<Base: Sendable>(_ base: Base.Type, _ constraints: Constraint...) =
     #externalMacro(module: "StoicMacrosPlugin", type: "RefinedMacro")
 
