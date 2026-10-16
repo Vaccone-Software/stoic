@@ -74,7 +74,7 @@ struct JSONTreeCodingTests {
 
     @Test func negativeZeroAndTinyAndHugeNumbersKeepTheirValue() throws {
         let numbers: [JSONNumber] = [
-            JSONNumber(-0.0) ?? JSONNumber(0), JSONNumber(5e-324) ?? JSONNumber(0), JSONNumber(1.7976931348623157e308) ?? JSONNumber(0),
+            JSONNumber(-0.0) ?? JSONNumber(0), JSONNumber(Double.leastNonzeroMagnitude) ?? JSONNumber(0), JSONNumber(1.7976931348623157e308) ?? JSONNumber(0),
             JSONNumber(0.1) ?? JSONNumber(0),
         ]
         for number in numbers {

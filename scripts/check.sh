@@ -35,10 +35,13 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
-# One test is skipped: it asserts a wall-clock bound that holds in a normal
-# build and not under the sanitizer's several-fold slowdown. It runs, with
-# its bound, in the plain test step above.
-swift test --sanitize=address --skip openingTwentyThousandPendingEntriesIsFast
+# Skipped here, run with their bounds in the plain test step above: the tests
+# that assert a wall-clock bound, which holds in a normal build and not under
+# the sanitizer's several-fold slowdown; and the exit test that expects its
+# child to succeed, which aborts under the sanitizer whatever its body does
+# (a toolchain limitation).
+swift test --sanitize=address \
+    --skip 'openingTwentyThousandPendingEntriesIsFast|didYouMeanIsComputedOnlyForIssuesThatAreRecorded|positionsOfAThousandIssuesOnOneLongLineCostOnePass|deepNestingIsRefusedNotACrash'
 
 step "compile-fail: a Scope, TaskScope or Saga handle cannot escape its body (design/04)"
 # Swift Testing cannot assert that code fails to compile, so each file in

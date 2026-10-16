@@ -148,7 +148,7 @@ struct DoubleSchemaTests {
         #expect(decode(.double(), "-0.25").value == -0.25)
         #expect(decode(.double(), "1e3").value == 1000)
         #expect(decode(.double(), "0.1").value == 0.1)
-        #expect(decode(.double(), "5e-324").value == 5e-324)
+        #expect(decode(.double(), "5e-324").value == Double.leastNonzeroMagnitude)
     }
 
     @Test func aNumberTooBigForDoubleNeverReachesTheSchema() {
