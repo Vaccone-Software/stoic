@@ -312,7 +312,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         case none
         case invalid(State, String)
         case stale
-        case moved(Record, leaving: [Task<Void, Never>])
+        case moved(Record)
     }
 
     /// Runs one of the caller's closures that the machine calls under its lock.
@@ -331,6 +331,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     }
 
     private func apply(_ event: Event, onlyDuring visit: UInt64?) {
+        var leaving: [Task<Void, Never>] = []
         let outcome = core.withLock { core -> Outcome in
             if core.isShutDown { return .stale }
             if let visit, core.visit != visit { return .stale }
@@ -340,16 +341,14 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             case .invalid(let reason):
                 return .invalid(core.state, reason)
             case .to(let next, let timeout):
-                let leaving = leave(&core)
-                return .moved(enter(next, timeout: timeout, cause: event, core: &core), leaving: leaving)
+                if !core.stateWork.isEmpty || core.timer != nil { leaving = leave(&core) }
+                return .moved(enter(next, timeout: timeout, cause: event, core: &core))
             }
         }
         // The old visit's work is cancelled after the lock is released:
         // cancellation runs the work's cancellation handlers on this thread,
         // at once, and one that touches the machine must not find it locked.
-        if case .moved(_, let leaving) = outcome {
-            for task in leaving { task.cancel() }
-        }
+        for task in leaving { task.cancel() }
         // Observers and events are notified outside the lock: neither an
         // observation callback nor an instrumentation sink may be able to
         // deadlock the machine.
@@ -370,7 +369,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 .init("event", .string("\(event)"), privacy: .public),
                 .init("reason", .string(reason), privacy: .public),
             ]))
-        case .moved(let record, _):
+        case .moved(let record):
             Ambient.record(level: .debug) {
                 Stoic.Event("statemachine.transition", level: .debug, label: label, fields: [
                     .init("from", .string("\(record.from)"), privacy: .public),

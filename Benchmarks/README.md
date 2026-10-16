@@ -27,8 +27,8 @@ magnitude, not for comparing machines.
 | `CircuitBreaker.execute`, closed, success  | ~750 ns   | 1           | window bookkeeping; the per-call debug event is skipped when nothing records it |
 | `retry`, first attempt succeeds            | ~850 ns   | 5           | the nesting marker is most of it; the schedule is built only on a failure |
 | Schedule step                              | ~1.2 µs   | 3           | paid once per *retry*, beside a sleep of milliseconds |
-| `StateMachine.send`                        | ~0.9 µs   | 0           | the transition, its record, and the observation and event bookkeeping |
-| `StateMachine.send`, history of 64         | ~0.9 µs   | 0           | the default history, full: a ring, so a record replaces the oldest in place |
+| `StateMachine.send`                        | ~1.1 µs   | 0           | the transition, its record, the observation and event bookkeeping, and the task-locals that guard reentrancy and stale sends |
+| `StateMachine.send`, history of 64         | ~1.1 µs   | 0           | the default history, full: a ring, so a record replaces the oldest in place |
 | `withScope` with one finalizer             | ~27 µs    | 33          | each finalizer runs in its own task so a hung one can be abandoned |
 | `withTimeout`, completing at once          | ~38 µs    | 20          | a task group with two children: the price of cancelling work without cancelling the caller |
 
@@ -47,4 +47,5 @@ allocations: its observation key paths (`\.state`, `\.history` on a generic
 class) and `valuesInKeyOrder`'s `\.value` were rebuilt by the runtime,
 demangling generic arguments, on every call, and a full history shifted
 every record. The key paths are now built once, the map is a closure, and
-the history is a ring.
+the history is a ring: ~0.9 µs, before the reentrancy guard and the
+stale-send check added a task-local each.
