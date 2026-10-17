@@ -17,15 +17,17 @@ struct TestClockSleepersTests {
                 }
                 await clock.waitForSleepers(count: id + 1)
             }
-            await clock.advance(by: .seconds(3))
-            await clock.waitForSleepers(count: 0)
+            // One deadline at a time: sleepers sharing a deadline are resumed
+            // together and then run concurrently, so only the order between
+            // deadlines is observable, and only if each is let finish first.
+            for (second, expected) in [(1, [1, 3]), (2, [2, 5]), (3, [0, 4])] {
+                await clock.advance(by: .seconds(1))
+                await clock.waitForSleepers(count: 6 - 2 * second)
+                #expect(await eventually { woken.withLock { $0.count } == 2 * second })
+                #expect(Set(woken.withLock { $0.suffix(2) }) == Set(expected), "\(woken.withLock { $0 })")
+            }
         }
-        // Sleepers sharing a deadline are resumed together, in the order they
-        // went to sleep, but then run concurrently: only the order between
-        // deadlines is observable from outside.
-        let order = woken.withLock { $0 }
-        #expect(order.count == 6)
-        #expect(Set(order.prefix(2)) == [1, 3] && Set(order.dropFirst(2).prefix(2)) == [2, 5] && Set(order.suffix(2)) == [0, 4], "\(order)")
+        #expect(woken.withLock { $0.count } == 6)
     }
 
     @Test func aCancelledSleeperLeavesNoGhostInTheOrder() async throws {

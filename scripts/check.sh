@@ -51,7 +51,7 @@ step "tests under Address Sanitizer: every suite (memory errors the type system 
 # child to succeed, which aborts under the sanitizer whatever its body does
 # (a toolchain limitation).
 swift test --sanitize=address \
-    --skip 'openingTwentyThousandPendingEntriesIsFast|didYouMeanIsComputedOnlyForIssuesThatAreRecorded|positionsOfAThousandIssuesOnOneLongLineCostOnePass|deepNestingIsRefusedNotACrash'
+    --skip 'openingTwentyThousandPendingEntriesIsFast|theTimeToOpenGrowsLinearlyNotQuadratically|didYouMeanIsComputedOnlyForIssuesThatAreRecorded|positionsOfAThousandIssuesOnOneLongLineCostOnePass|deepNestingIsRefusedNotACrash'
 
 step "compile-fail: a Scope, TaskScope or Saga handle cannot escape its body (design/04)"
 # Swift Testing cannot assert that code fails to compile, so each file in
