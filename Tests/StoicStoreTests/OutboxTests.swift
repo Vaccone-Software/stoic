@@ -353,14 +353,26 @@ struct OutboxTests {
         try journal.close()
     }
 
+    /// The processor time the calling thread has used. Opening runs on one
+    /// thread without suspending, so the difference of two reads is the work
+    /// it did, whatever else the machine was doing: wall-clock time also
+    /// counts every moment the thread was descheduled, which a loaded
+    /// machine makes as long as it likes.
+    static func threadCPUTime() -> Duration {
+        var spec = timespec()
+        // clock_gettime fills the struct whose address it is given; it lives for the call.
+        _ = unsafe clock_gettime(CLOCK_THREAD_CPUTIME_ID, &spec)
+        return .seconds(spec.tv_sec) + .nanoseconds(spec.tv_nsec)
+    }
+
+    /// The processor time opening takes (see ``threadCPUTime()``).
     func timeToOpen(pending: Int, acknowledged: Int) async throws -> Duration {
         let disk = SimulatedFileSystem(recordsHistory: false)
         try disk.createDirectory("/d")
         try writeLongOutbox(disk, pending: pending, acknowledged: acknowledged)
-        let clock = ContinuousClock()
-        let start = clock.now
+        let start = Self.threadCPUTime()
         let outbox = try open(disk)
-        let elapsed = clock.now - start
+        let elapsed = Self.threadCPUTime() - start
         #expect(await outbox.pendingCount == pending)
         return elapsed
     }
