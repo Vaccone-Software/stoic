@@ -8,7 +8,7 @@ internal import StoicJSON
 /// For one host, in a fixed order: the caller's deadline, then retry, then
 /// the circuit breaker, then the bulkhead, then the attempt timeout, then the
 /// transport. The deadline is not a field: it is the caller's, taken from
-/// ``Deadline/current``, and every stage honours it.
+/// `Deadline.current`, and every stage honours it.
 ///
 /// Retry is outside the breaker so that every attempt is judged and a
 /// breaker that opens mid-retry stops the retries; the breaker is outside the
@@ -26,7 +26,7 @@ public struct HTTPPolicy: Sendable {
     public var schedule: BoundedSchedule
 
     /// The cap on how much retrying may add to the load on the host: see
-    /// ``RetryBudget``. Shared by every host of the client that holds this
+    /// `RetryBudget`. Shared by every host of the client that holds this
     /// policy; a copy of the policy shares it too. Each `HTTPPolicy()` makes
     /// its own.
     public var retryBudget: RetryBudget
@@ -46,7 +46,7 @@ public struct HTTPPolicy: Sendable {
     /// `nil` (the default) leaves it to ``retryStatuses``.
     ///
     /// The closure sees every response that arrived whole, whatever its
-    /// status, and answers with a ``RetryDecision``, or `nil` to defer to
+    /// status, and answers with a `RetryDecision`, or `nil` to defer to
     /// ``retryStatuses``:
     ///
     /// - `.retry` asks again after the schedule's delay, or after the
@@ -108,7 +108,7 @@ public struct HTTPPolicy: Sendable {
     /// and body (design/19).
     public var maxRedirects: Int
 
-    /// How responses are decoded by ``HTTPClient/send(_:idempotencyKey:decoding:options:)``;
+    /// How responses are decoded by ``HTTPClient/send(_:idempotencyKey:overrides:decoding:options:)``;
     /// a call can pass its own. `nil` (the default) means strict decoding of
     /// strict JSON, with the parser's input, string and container limits
     /// raised to what a response of ``maxResponseBytes`` can legitimately
@@ -119,7 +119,7 @@ public struct HTTPPolicy: Sendable {
     /// given, limits included.
     ///
     /// Unknown keys are not an option here: each object schema carries its
-    /// own ``UnknownKeyPolicy``, and the default (`warn`) ignores a field the
+    /// own `UnknownKeyPolicy`, and the default (`warn`) ignores a field the
     /// server added; a schema declared `reject` rejects it.
     public var decodeOptions: DecodeOptions?
 
@@ -227,7 +227,7 @@ extension HTTPPolicy {
 ///
 /// The bucket holds up to ``burst`` permits and gains ``rate`` permits per
 /// ``interval``; it starts full, so a quiet app can send a burst and then
-/// settles to the steady rate. It is a Stoic ``RateLimiter`` per host, on the
+/// settles to the steady rate. It is a Stoic `RateLimiter` per host, on the
 /// ambient clock in force when the host is first used, so a test's clock
 /// decides when permits come back.
 public struct HTTPRateLimit: Sendable, Hashable {

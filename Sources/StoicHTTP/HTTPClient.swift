@@ -86,6 +86,7 @@ public final class HTTPClient: Sendable {
     /// Sends `request` and returns the response, whose status is a success.
     ///
     /// - Parameters:
+    ///   - request: The request to send.
     ///   - idempotencyKey: Makes a `POST` or `PATCH` retryable: the key is
     ///     sent as `Idempotency-Key` on every attempt. Create it once per
     ///     *operation*, outside any code that may run again.
@@ -106,6 +107,10 @@ public final class HTTPClient: Sendable {
     /// request names an `Accept` itself.
     ///
     /// - Parameters:
+    ///   - request: The request to send.
+    ///   - idempotencyKey: Makes a `POST` or `PATCH` retryable, as for
+    ///     ``send(_:idempotencyKey:overrides:)``.
+    ///   - schema: What the response body must match.
     ///   - options: How to decode, instead of the policy's
     ///     ``HTTPPolicy/decodeOptions``.
     ///   - overrides: What this call changes about the policy, as for

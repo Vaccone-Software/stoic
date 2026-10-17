@@ -126,13 +126,12 @@ done
 
 step "documentation: DocC builds with no warnings, in every library (broken links, undocumented parameters)"
 # Not here: StoicMacros, whose symbols exist only with the Macros trait, which
-# xcodebuild cannot enable; StoicHTTP, whose warnings are being fixed (add it
-# to the list when they are). A symbol of another Stoic library is written as
+# xcodebuild cannot enable. A symbol of another Stoic library is written as
 # code, not as a ``link``: DocC resolves a link only inside the module it is
 # building. StoicUIKit builds for iOS, where its code compiles.
 docs=$(mktemp)
 for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings \
-    StoicObservability StoicApple StoicAppKit StoicUIKit; do
+    StoicHTTP StoicObservability StoicApple StoicAppKit StoicUIKit; do
     destination='platform=macOS'
     if [ "$scheme" = StoicUIKit ]; then destination='generic/platform=iOS'; fi
     xcodebuild docbuild -scheme "$scheme" -destination "$destination" -derivedDataPath .build/docs > "$docs" 2>&1 || {

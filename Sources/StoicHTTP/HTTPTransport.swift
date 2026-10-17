@@ -13,10 +13,12 @@
 public protocol HTTPTransport: Sendable {
     /// Sends `request` and returns the response.
     ///
-    /// - Parameter maxResponseBytes: The most body bytes to read. A transport
-    ///   that sees more stops reading, abandons the connection and throws
-    ///   ``HTTPTransportError/responseTooLarge(limit:)`` — it does not buffer
-    ///   the excess first.
+    /// - Parameters:
+    ///   - request: The request to send.
+    ///   - maxResponseBytes: The most body bytes to read. A transport
+    ///     that sees more stops reading, abandons the connection and throws
+    ///     ``HTTPTransportError/responseTooLarge(limit:)`` — it does not buffer
+    ///     the excess first.
     /// - Throws: `URLError` for a network failure (the client classifies it
     ///   by code), ``HTTPTransportError``, or `CancellationError`.
     func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse

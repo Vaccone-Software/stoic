@@ -42,7 +42,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// (`rate_limited`), the retry budget is spent (`budget_exhausted`), or
     /// the deadline passed, or would pass before the next attempt could
     /// finish (`deadline_exceeded`). A rejection that carries a
-    /// ``Rejection/retryAfter`` says when to try again.
+    /// `Rejection.retryAfter` says when to try again.
     case rejected(Rejection, attempts: Int)
 
     /// The server answered `401` and the client's reauthentication hook

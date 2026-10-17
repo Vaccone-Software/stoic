@@ -7,7 +7,7 @@ public import StoicJSON
 /// A request names a *path* (resolved against the client's base URL) or an
 /// absolute URL; a query as items, so nothing is concatenated or escaped by
 /// hand; headers; a body of bytes; and, for a request that is not safe to
-/// repeat, the ``IdempotencyKey`` that makes it so.
+/// repeat, the `IdempotencyKey` that makes it so.
 ///
 ///     let order = HTTPRequest.post("/orders", json: order.encoded)
 ///     try await api.send(order, idempotencyKey: order.key)
