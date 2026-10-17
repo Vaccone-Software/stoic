@@ -95,7 +95,47 @@ public nonisolated(nonsending) func withAmbient<R, Failure: Error>(
     return try await Ambient.$stored.withValueTyped(ambient, operation: operation)
 }
 
+/// Runs a synchronous `operation` with a modified ambient context.
+///
+/// For a synchronous entry point: an app's `main`, which runs its run loop
+/// and never returns, and cannot do that inside a task.
+///
+///     withAmbient({ $0.instrumentation = events }) { NSApplication.shared.run() }
+///
+/// Made outside any task, the binding lives in the thread's own storage. It
+/// reaches everything `operation` calls on this thread, and every task those
+/// callees start: a `Task {}` from a delegate method, a run-loop timer or a
+/// main-queue block, and the rest of that task after an `await`. It does not
+/// reach `Task.detached`, nor work on other threads and queues: a global
+/// queue block or a thread you start sees the default context. Inside a task,
+/// it binds as the async form does.
+@discardableResult
+@_disfavoredOverload
+public func withAmbient<R, Failure: Error>(
+    _ transform: (inout Ambient) -> Void,
+    operation: () throws(Failure) -> R
+) throws(Failure) -> R {
+    var ambient = Ambient.current
+    transform(&ambient)
+    return try Ambient.$stored.withValueTyped(ambient, operation: operation)
+}
+
 extension TaskLocal {
+    /// `withValue`, with the operation's error type preserved.
+    func withValueTyped<R, Failure: Error>(
+        _ value: Value,
+        operation: () throws(Failure) -> R
+    ) throws(Failure) -> R {
+        let outcome: Result<R, Failure> = withValue(value) {
+            do throws(Failure) {
+                return .success(try operation())
+            } catch {
+                return .failure(error)
+            }
+        }
+        return try outcome.get()
+    }
+
     /// `withValue`, with the operation's error type preserved.
     nonisolated(nonsending) func withValueTyped<R, Failure: Error>(
         _ value: Value,

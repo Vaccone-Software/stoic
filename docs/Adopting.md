@@ -131,3 +131,9 @@ if let last = recorder.previousRun, !last.endedCleanly {
 // …add `recorder` to the CompositeInstrumentation above, and on the way out:
 recorder.markCleanExit()
 ```
+
+An AppKit `main.swift` is synchronous: `NSApplication.shared.run()` never
+returns and must not run inside a task. Bind with the synchronous form,
+`withAmbient({ … }) { NSApplication.shared.run() }`: the delegate, timers,
+main-queue blocks and every `Task {}` they start see it (`Task.detached` and
+global queues do not).

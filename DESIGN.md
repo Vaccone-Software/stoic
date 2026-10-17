@@ -230,8 +230,23 @@ public nonisolated(nonsending) func withAmbient<R, E: Error>(
     _ transform: (inout Ambient) -> Void,
     operation: nonisolated(nonsending) () async throws(E) -> R
 ) async throws(E) -> R
+
+// And for a synchronous entry point (an app's `main` running its run loop):
+@_disfavoredOverload
+public func withAmbient<R, E: Error>(
+    _ transform: (inout Ambient) -> Void,
+    operation: () throws(E) -> R
+) throws(E) -> R
 ```
 
+- **A synchronous entry point binds it too.** An app's `main` runs its run
+  loop and never returns, and must not do that inside a task, so the
+  synchronous `withAmbient` binds the context outside any task, in the
+  thread's own storage. It reaches what the operation calls on that thread
+  and every task those callees start (a `Task {}` from a delegate method, a
+  timer or a main-queue block, also after an `await`); it does not reach
+  `Task.detached` or other threads and queues. The overload is disfavoured
+  so a call with `await` keeps choosing the async form.
 - Time-based primitives accept an explicit `clock:` that overrides the
   ambient clock for that call. Randomness is always ambient: one seed for a
   whole test is what makes a run reproducible.
