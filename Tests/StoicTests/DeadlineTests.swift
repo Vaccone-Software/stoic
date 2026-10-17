@@ -59,7 +59,8 @@ struct DeadlineTests {
             try await withTestAmbient(clock: clock, events: events) {
                 try await withTimeout(.seconds(30), label: "sleepy") {
                     do {
-                        try await Ambient.sleep(for: .seconds(3600))
+                        // Longer than the jump, so only the deadline can end it.
+                        try await Ambient.sleep(for: .seconds(7200))
                     } catch {
                         observed.mutate { $0 = CancellationCause.current }
                         throw error
