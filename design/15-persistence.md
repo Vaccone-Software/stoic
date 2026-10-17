@@ -73,7 +73,7 @@ type, `StoreError`.
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `FileLock`                       | An advisory `flock` on a sidecar file, held across processes: `tryAcquire`, `acquire(timeout:)`, `release`, `withLock`. Opt-in for `Journal` and `SettingsStore` (`Options.crossProcessLock`). |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine; `replaceItem` swaps in a staged file or directory.                                               |
-| `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot.                                                                       |
+| `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot; read-only replay for a second process.                               |
 | `Outbox<Item>` (actor)           | Durable at-least-once delivery over a `Journal`, under `retry`, with an `IdempotencyKey` per entry.                                                                         |
 | `StoreError`                     | `Kind` + operation + path + errno. Conforms to `Retryable`.                                                                                                                  |
 | `FileWatch`                      | A running watch from `FileSystem.watchFile(at:handler:)`; ends on `cancel()` or when dropped.                                                                                |
@@ -264,6 +264,30 @@ the log. Recovery skips records at or below the snapshot's sequence and, if
 every remaining record is covered, finishes the truncation. That ordering plus
 the sequence number is what makes every crash point correct.
 
+**Read-only replay.** `open` is for the one writer: it repairs, and a second
+process that opened the journal to read it would cut the writer's append in
+flight (a record half written is, to a reader, a torn tail) and leave the
+writer's idea of the end of the file past the real one. `Journal.readOnlyReplay`
+is for the reader. It opens nothing for writing, creates nothing, takes no lock
+and records no event; it reads the **log first, then the snapshot**, because
+compaction writes the new snapshot before it truncates the log: a log read after
+the truncation means the snapshot read next is already the new one, and a log
+read before it is whole. The other order could pair a snapshot from before a
+compaction with a log from after it and lose the records between. What it
+returns is one consistent state of the journal, not necessarily the latest; a
+torn tail is ignored and reported, a lost snapshot refused unless the reader
+accepts the loss, and the damaged bytes and the tombstone are left for the
+writer's next `open`. Tested on every crash image of appends and compactions
+(a reader sees a prefix, the disk is untouched), against a compaction that
+lands between the reader's two reads, and against a writer and a reader running
+at once on the real file system.
+
+**Layers above.** `append(building:)` and `compact(withSequence:)` tell their
+closure the sequence number the records, or the snapshot, will carry, under the
+journal's own lock, so a layer that authenticates the sequence (design/24) never
+has to guess it. `Replay.lastSequence` is the number a compaction of that replay
+is recorded against, and equals `Journal.lastSequence` in every state (tested).
+
 **A lost snapshot stays lost until the app says so.** Quarantining a corrupt
 snapshot moves it out of the way, so the next `open` would find no snapshot
 and start from the log alone, as if it had never existed. Before the snapshot
@@ -288,6 +312,9 @@ and the tombstone is removed.
 | `append`'s write fails (`ENOSPC`)                          | Rolled back by truncating to the last end; the journal stays usable                                |
 | `append`'s `fullSync` fails                                | The journal is poisoned: every call throws `.poisoned` until it is reopened, which re-reads the file |
 | a record exceeds `maxRecordSize`                           | `.invalidArgument`; nothing written                                                                |
+| a second process reads the log while another appends       | `Journal.readOnlyReplay` returns one consistent state, a prefix of what was appended, and changes nothing on disk: the writer's next append lands where it should |
+| a reader finds a torn tail                                 | It is ignored and reported (`droppedBytes`), never cut: it may be an append still in flight        |
+| a reader finds a lost snapshot                             | `.corrupt`, with the snapshot left where it is (only the writer's `open` quarantines it); `lostSnapshot: .acceptLoss` reads what the log holds and says so |
 
 ### Outbox
 

@@ -154,6 +154,11 @@ public final class Journal: Sendable {
     public struct Replay: Sendable, Hashable {
         public let snapshot: Snapshot?
         public let records: [Record]
+
+        /// The sequence a compaction of this replay is recorded against: the
+        /// last record's, or the snapshot's when no record follows it (0 for
+        /// an empty journal). It is ``Journal/lastSequence`` as of the replay.
+        public var lastSequence: UInt64 { records.last?.sequence ?? snapshot?.through ?? 0 }
     }
 
     /// What opening found and repaired.
@@ -615,36 +620,69 @@ public final class Journal: Sendable {
     @discardableResult
     public func append(batch payloads: [[UInt8]]) throws(StoreError) -> [UInt64] {
         guard !payloads.isEmpty else { return [] }
+        try validate(payloads)
+        return try state.withLock { (state) throws(StoreError) -> [UInt64] in
+            let file = try ready(&state)
+            return try write(payloads, to: file, state: &state)
+        }
+    }
+
+    /// Appends the records `build` returns, as ``append(batch:)`` does, but
+    /// tells `build` the sequence number the first of them will be given.
+    ///
+    /// For a layer that binds a record to its place in the log (a sealed
+    /// journal authenticates the sequence along with the payload) and so
+    /// cannot build the record until the number is known. `build` runs under
+    /// the journal's lock, after it has checked the journal is usable and
+    /// before anything is written, so no other append can take the number it
+    /// was told; it must not call back into this journal, and it should be
+    /// quick. The records it returns are numbered `firstSequence`,
+    /// `firstSequence + 1`, and so on. If it returns none, nothing is
+    /// written and this returns `[]`: that is how it declines.
+    @discardableResult
+    public func append(building build: (_ firstSequence: UInt64) -> [[UInt8]]) throws(StoreError) -> [UInt64] {
+        try state.withLock { (state) throws(StoreError) -> [UInt64] in
+            let file = try ready(&state)
+            let payloads = build(state.lastSequence + 1)
+            guard !payloads.isEmpty else { return [] }
+            try validate(payloads)
+            return try write(payloads, to: file, state: &state)
+        }
+    }
+
+    private func validate(_ payloads: [[UInt8]]) throws(StoreError) {
         let limit = min(options.maxRecordSize, Self.largestPayload)
         for payload in payloads where payload.count > limit {
             throw StoreError(kind: .invalidArgument, operation: "append", path: path, detail: "record of \(payload.count) bytes exceeds \(limit)")
         }
-        return try state.withLock { (state) throws(StoreError) -> [UInt64] in
-            let file = try ready(&state)
-            var bytes: [UInt8] = []
-            var sequences: [UInt64] = []
-            for (index, payload) in payloads.enumerated() {
-                sequences.append(state.lastSequence + UInt64(sequences.count) + 1)
-                bytes.append(contentsOf: Journal.frame(
-                    payload, sequence: sequences.last!, more: index < payloads.count - 1, joined: index > 0
-                ))
-            }
-            do throws(StoreError) {
-                try fileSystem.write(file, bytes, at: state.end)
-            } catch {
-                rollBack(file, to: state.end, state: &state)
-                throw error
-            }
-            do throws(StoreError) {
-                try fileSystem.fullSync(file)
-            } catch {
-                state.poison = StoreError(kind: .poisoned, operation: "append", path: path, detail: "fullSync failed (\(error)); reopen to learn what survived")
-                throw error
-            }
-            state.end += bytes.count
-            state.lastSequence = sequences.last!
-            return sequences
+    }
+
+    /// Frames, writes and syncs `payloads` (not empty, already validated) at
+    /// the journal's end, under its lock.
+    private func write(_ payloads: [[UInt8]], to file: OpenFile, state: inout State) throws(StoreError) -> [UInt64] {
+        var bytes: [UInt8] = []
+        var sequences: [UInt64] = []
+        for (index, payload) in payloads.enumerated() {
+            sequences.append(state.lastSequence + UInt64(sequences.count) + 1)
+            bytes.append(contentsOf: Journal.frame(
+                payload, sequence: sequences.last!, more: index < payloads.count - 1, joined: index > 0
+            ))
         }
+        do throws(StoreError) {
+            try fileSystem.write(file, bytes, at: state.end)
+        } catch {
+            rollBack(file, to: state.end, state: &state)
+            throw error
+        }
+        do throws(StoreError) {
+            try fileSystem.fullSync(file)
+        } catch {
+            state.poison = StoreError(kind: .poisoned, operation: "append", path: path, detail: "fullSync failed (\(error)); reopen to learn what survived")
+            throw error
+        }
+        state.end += bytes.count
+        state.lastSequence = sequences.last!
+        return sequences
     }
 
     /// Undoes a failed write. If even that fails, the journal's end is unknown.
@@ -706,11 +744,22 @@ public final class Journal: Sendable {
     /// runs under the journal's lock, so no append can slip in between the
     /// state it sees and the sequence it is recorded against.
     public func compact(_ fold: (Replay) -> [UInt8]) throws(StoreError) {
+        try compact(withSequence: { replay, _ in fold(replay) })
+    }
+
+    /// ``compact(_:)``, telling `fold` the sequence the snapshot will be
+    /// recorded against (`through`: the journal's last sequence).
+    ///
+    /// For a layer that binds a snapshot to the sequence it covers, and so
+    /// needs the number when it builds the snapshot: this is the journal's own,
+    /// read under the lock the fold runs in. `fold` must not call back into
+    /// this journal.
+    public func compact(withSequence fold: (_ replay: Replay, _ through: UInt64) -> [UInt8]) throws(StoreError) {
         try state.withLock { (state) throws(StoreError) in
             let file = try ready(&state)
             let current = try replay(file, state: state)
-            let bytes = fold(current)
             let through = state.lastSequence
+            let bytes = fold(current, through)
             // The truncation below destroys the damaged bytes; keep a copy of
             // the log first, so what could not be read is at least not gone.
             let saved = state.corruption.isEmpty ? nil : try saveDamagedLog(file, end: state.end)
