@@ -75,7 +75,12 @@ final class LoopbackServer: Sendable {
     var acceptedCount: Int { state.withLock { $0.accepted } }
 
     init(_ handler: @escaping Handler) throws {
-        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        #if canImport(Darwin)
+        let stream = SOCK_STREAM
+        #else
+        let stream = Int32(SOCK_STREAM.rawValue)   // Glibc's is an enum
+        #endif
+        let listener = socket(AF_INET, stream, 0)
         guard listener >= 0 else { throw POSIXError(.EIO) }
         var yes: Int32 = 1
         unsafe setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
@@ -122,7 +127,7 @@ final class LoopbackServer: Sendable {
 
     /// Stops accepting; connections already served finish their handlers.
     func stop() {
-        shutdown(listener, SHUT_RDWR)
+        shutdown(listener, Int32(SHUT_RDWR))
         close(listener)
     }
 
