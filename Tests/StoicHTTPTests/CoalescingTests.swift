@@ -30,6 +30,7 @@ struct HTTPCoalescingTests {
             let alice = HTTPRequest.get("/me", headers: ["Authorization": "Bearer alice"])
             let bob = HTTPRequest.get("/me", headers: ["authorization": "Bearer bob"])
             let tasks = [rig.start(alice), rig.start(alice), rig.start(bob)]
+            await eventually("both of alice's calls join one flight") { rig.api.coalescedWaiters(for: alice) == 2 }
             await eventually { rig.transport.inFlightCount == 2 }
             await rig.clock.waitForSleepers(count: 4)
             await rig.clock.advance(by: .seconds(1))

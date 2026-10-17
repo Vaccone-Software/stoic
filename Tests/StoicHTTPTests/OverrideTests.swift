@@ -120,6 +120,7 @@ struct HTTPOverrideTests {
             let once = HTTPOverrides(schedule: Schedule.fixed(.seconds(5)).attempts(1))
             let tasks = [rig.start(.get("/avatar"), overrides: twice), rig.start(.get("/avatar"), overrides: once),
                          rig.start(.get("/avatar"), overrides: twice)]
+            await eventually("the two alike join one flight") { rig.api.coalescedWaiters(for: .get("/avatar"), overrides: twice) == 2 }
             await eventually { rig.transport.inFlightCount == 2 }
             await rig.clock.waitForSleepers(count: 4)
             await rig.clock.advance(by: .seconds(1))
@@ -144,6 +145,9 @@ struct HTTPOverrideTests {
             let short = rig.start(.get("/avatar"), overrides: HTTPOverrides(attemptTimeout: .seconds(5)))
             let long = rig.start(.get("/avatar"), overrides: HTTPOverrides(attemptTimeout: .seconds(50)))
             let same = rig.start(.get("/avatar"), overrides: HTTPOverrides(attemptTimeout: .seconds(5)))
+            await eventually("the two alike join one flight") {
+                rig.api.coalescedWaiters(for: .get("/avatar"), overrides: HTTPOverrides(attemptTimeout: .seconds(5))) == 2
+            }
             await eventually { rig.transport.inFlightCount == 2 }
             await rig.clock.waitForSleepers(count: 4)
             await rig.clock.advance(by: .seconds(1))

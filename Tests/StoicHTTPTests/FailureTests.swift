@@ -155,6 +155,7 @@ struct HTTPFailureTests {
             #expect(refused.rejection?.reason == .bulkheadFull)
             #expect(refused.attempts == 0)
 
+            await rig.clock.waitForSleepers(count: 4)   // each request's attempt timer and scripted delay
             await rig.clock.advance(by: .seconds(5))
             #expect(try await first.value.status == 200)
             #expect(try await second.value.status == 200)
