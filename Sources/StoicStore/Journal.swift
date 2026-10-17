@@ -135,6 +135,13 @@ public final class Journal: Sendable {
         public let lostRecords: Int
         /// The sequence number of the first record lost, if any.
         public let firstLostSequence: UInt64?
+
+        public init(offset: Int, length: Int, lostRecords: Int, firstLostSequence: UInt64? = nil) {
+            self.offset = offset
+            self.length = length
+            self.lostRecords = lostRecords
+            self.firstLostSequence = firstLostSequence
+        }
     }
 
     /// One durable record.
@@ -179,7 +186,12 @@ public final class Journal: Sendable {
         /// How many records were lost to ``corruption``.
         public var corruptRecords: Int { corruption.reduce(0) { $0 + $1.lostRecords } }
 
-        init(droppedBytes: Int, staleRecords: Int, records: Int, corruption: [Corruption] = [], lostSnapshot: Bool = false) {
+        /// A report, for a layer above that builds the replay it hands its own
+        /// callers (and for the tests of that layer's codec). Opening a
+        /// journal makes its own; the defaults are a clean open.
+        public init(
+            droppedBytes: Int = 0, staleRecords: Int = 0, records: Int = 0, corruption: [Corruption] = [], lostSnapshot: Bool = false
+        ) {
             self.droppedBytes = droppedBytes
             self.staleRecords = staleRecords
             self.records = records

@@ -99,6 +99,11 @@ public final class SealedJournal: Sendable {
             public let sequence: UInt64
             /// The plaintext.
             public let bytes: [UInt8]
+
+            public init(sequence: UInt64, bytes: [UInt8]) {
+                self.sequence = sequence
+                self.bytes = bytes
+            }
         }
 
         public struct Snapshot: Sendable, Hashable {
@@ -106,6 +111,11 @@ public final class SealedJournal: Sendable {
             public let through: UInt64
             /// The plaintext.
             public let bytes: [UInt8]
+
+            public init(through: UInt64, bytes: [UInt8]) {
+                self.through = through
+                self.bytes = bytes
+            }
         }
 
         /// A value that could not be opened.
@@ -117,6 +127,11 @@ public final class SealedJournal: Sendable {
 
             public let item: Item
             public let error: SealError
+
+            public init(item: Item, error: SealError) {
+                self.item = item
+                self.error = error
+            }
         }
 
         public let snapshot: Snapshot?
@@ -130,6 +145,19 @@ public final class SealedJournal: Sendable {
         /// in the middle it skipped (design/15). For a read-only replay, what the
         /// look found, with nothing cut.
         public let report: Journal.OpenReport
+
+        /// A replay, for the tests of a codec that reads one: ``replay()``
+        /// and ``readOnlyReplay(at:context:keyring:fileSystem:options:)`` make
+        /// the real ones. Nothing here checks that the records are in order
+        /// or that `failures` agree with them: it is a value, as a test wants it.
+        public init(
+            snapshot: Snapshot? = nil, records: [Record] = [], failures: [Failure] = [], report: Journal.OpenReport = Journal.OpenReport()
+        ) {
+            self.snapshot = snapshot
+            self.records = records
+            self.failures = failures
+            self.report = report
+        }
 
         /// Whether everything in the journal opened.
         public var isComplete: Bool { failures.isEmpty }
