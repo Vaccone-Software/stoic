@@ -121,6 +121,9 @@ let package = Package(
         // The resilient HTTP client (design/19), with a scripted transport
         // for tests.
         .library(name: "StoicHTTP", targets: ["StoicHTTP"]),
+        // Resumable, verified, durable file downloads (design/23), digests by
+        // swift-crypto. Needs the `Crypto` trait: `.package(url: …, traits: ["Crypto"])`.
+        .library(name: "StoicDownloads", targets: ["StoicDownloads"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -137,7 +140,7 @@ let package = Package(
         ),
         .trait(
             name: "Crypto",
-            description: "Build the libraries that seal data (StoicSealed). Pulls in swift-crypto, which is fetched only when this trait is enabled."
+            description: "Build the libraries that use swift-crypto (StoicSealed, StoicDownloads). Pulls in swift-crypto, which is fetched only when this trait is enabled."
         ),
         .trait(name: "Logging", description: "Send Stoic's events to swift-log (StoicObservability). Fetches swift-log only when enabled."),
         .trait(name: "Metrics", description: "Count Stoic's events with swift-metrics (StoicObservability). Fetches swift-metrics only when enabled."),
@@ -291,5 +294,19 @@ let package = Package(
             name: "StoicHTTPTests",
             dependencies: ["StoicHTTP", "Stoic", "StoicSchema", "StoicJSON", "StoicTesting"],
             swiftSettings: strict),
+        // Downloads (design/23): resumable, verified, durable file transfers
+        // over StoicHTTP's streaming and StoicStore's atomic placement. Its
+        // digests come from swift-crypto, so it is behind the `Crypto` trait
+        // with StoicSealed: nobody fetches a package they did not ask for.
+        .target(
+            name: "StoicDownloads",
+            dependencies: ["Stoic", "StoicHTTP", "StoicStore"] + crypto,
+            swiftSettings: strict + [cryptoDefine]
+        ),
+        .testTarget(
+            name: "StoicDownloadsTests",
+            dependencies: ["StoicDownloads", "Stoic", "StoicHTTP", "StoicStore", "StoicTesting"] + crypto,
+            swiftSettings: strict + [cryptoDefine]
+        ),
     ] + macroTargets
 )
