@@ -68,7 +68,7 @@ type, `StoreError`.
 
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSystem`                     | The 21 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `exchange`, `remove`, `removeTree`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, `tryLock`/`unlock`, and `open` in four modes. |
+| `FileSystem`                     | The 22 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `exchange`, `remove`, `removeTree`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, `tryLock`/`unlock`, `watchFile`, and `open` in four modes. |
 | `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `FileLock`                       | An advisory `flock` on a sidecar file, held across processes: `tryAcquire`, `acquire(timeout:)`, `release`, `withLock`. Opt-in for `Journal` and `SettingsStore` (`Options.crossProcessLock`). |
@@ -76,6 +76,7 @@ type, `StoreError`.
 | `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot.                                                                       |
 | `Outbox<Item>` (actor)           | Durable at-least-once delivery over a `Journal`, under `retry`, with an `IdempotencyKey` per entry.                                                                         |
 | `StoreError`                     | `Kind` + operation + path + errno. Conforms to `Retryable`.                                                                                                                  |
+| `FileWatch`                      | A running watch from `FileSystem.watchFile(at:handler:)`; ends on `cancel()` or when dropped.                                                                                |
 | `CRC32C`                         | Castagnoli, table-driven, incremental.                                                                                                                                      |
 
 ### Decisions that differ from, or add to, the sketch above
@@ -396,6 +397,54 @@ enforcement, and `Journal.Options.crossProcessLock` and
 | a journal is opened with `crossProcessLock` while another holds it    | `open` throws `.busy` and reads nothing; `open(…lockTimeout:)` waits                                        |
 | settings are opened with `crossProcessLock` while another holds them  | `open` throws `.busy` and writes nothing; `open(…lockTimeout:)` waits                                       |
 | an open fails after it took the lock                                  | The lock is released before the error is thrown                                                             |
+
+### Watching a file
+
+`FileSystem.watchFile(at:handler:)` calls the handler when something may have
+changed the file at a path: it was created, written in place, replaced by a
+rename (how most editors save), renamed away or removed. It watches the file's
+directory, so a file that does not exist yet is watched, and a replaced file
+does not end the watch. It is how `SettingsStore` learns that a person edited
+the file (design/18).
+
+- **A hint, not a diff.** The handler may be called when nothing that matters
+  changed and more than once for one change, from any thread. It must be quick
+  and must not block: signal a task, and read the file there. Reading and
+  comparing is how a caller finds that nothing changed.
+- **Apple platforms: kqueue.** `PosixFileSystem` opens the directory `O_EVTONLY`
+  and watches it with a `DispatchSource`. A directory descriptor says an entry
+  was created, removed or renamed, never which one, and never that a file was
+  written in place (an editor that truncates and writes, a shell `>`). So the
+  watch also holds a descriptor on the file itself while it exists, opened again
+  whenever the file or the directory says the file may have been replaced. Any
+  entry of the directory calls the handler.
+- **Linux: inotify.** Events name the entry, so the handler is called only for
+  the watched file (and for the directory itself going away, or a queue
+  overflow that lost track). A thread of the watch's own waits in `poll` on the
+  inotify descriptor and on a pipe that `cancel` writes to, so cancelling wakes
+  it at once. A volume inotify does not cover reports nothing, and the
+  per-user watch limit is `fs.inotify.max_user_watches`; nothing falls back to
+  polling.
+- **Symbolic links** are followed once, when the watch starts, as `AtomicFile`
+  follows them when it writes.
+- **`SimulatedFileSystem`** calls the handler on the calling thread, after the
+  call that changed the file and outside its lock: on a create, a write, a
+  truncate, a rename onto or away from the path, a swap and a removal. A test
+  sees exactly when and how often a real watcher would speak, with none of its
+  latency.
+- **A watch lasts as long as its `FileWatch`.** `cancel()` ends it and so does
+  dropping it. The handler is not called for anything that happens afterwards,
+  but a call already under way may still arrive.
+
+| What happens if…                         | Behaviour                                                                           |
+| ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| the watched file is replaced by a rename | The handler is called; the watch follows the new file                               |
+| the watched file does not exist yet      | The handler is called when it is created                                            |
+| the watched file is written in place     | The handler is called                                                               |
+| another file in the directory changes    | Linux: not called. Apple: may be called, and the caller finds nothing changed       |
+| the watch is cancelled or dropped        | The handler is not called again                                                     |
+| the directory does not exist             | `watchFile` throws `.notFound`                                                      |
+| the file system cannot report changes    | `watchFile` throws `.unsupported`                                                   |
 
 ### LaunchGuard
 

@@ -34,6 +34,7 @@ internal import Synchronization
 /// no later sync makes them durable. Paths are `/`-separated strings.
 public final class SimulatedFileSystem: FileSystem {
     let state: Mutex<State>
+    private let watchers = Mutex(Watchers())
 
     /// - Parameters:
     ///   - capacity: The volume size in bytes; writes beyond it fail with
@@ -218,10 +219,56 @@ public final class SimulatedFileSystem: FileSystem {
         state.withLock { $0.faults.removeAll() }
     }
 
+    // MARK: Watching
+
+    private struct Watchers {
+        var next = 0
+        var entries: [Int: (paths: Set<String>, handler: @Sendable () -> Void)] = [:]
+    }
+
+    /// Runs `body` on the state and then, with no lock held, tells the
+    /// watchers of every file it changed (`State.touched`): a handler may read
+    /// the file system, and must find the change made.
+    private func changing<R>(_ body: (inout State) throws(StoreError) -> R) throws(StoreError) -> R {
+        defer { announce() }
+        return try state.withLock { (state) throws(StoreError) in try body(&state) }
+    }
+
+    private func announce() {
+        let touched = state.withLock { state in
+            defer { state.touched = [] }
+            return state.touched
+        }
+        guard !touched.isEmpty else { return }
+        let handlers = watchers.withLock { watchers in
+            watchers.entries.values.filter { !$0.paths.isDisjoint(with: touched) }.map(\.handler)
+        }
+        for handler in handlers { handler() }
+    }
+
+    /// Tells the handler each time a file system call changes the file at
+    /// `path` (or the file a link at `path` names): a create, a write, a
+    /// truncate, a rename onto or away from it, a swap, a removal. Calls are
+    /// made on the calling thread, after the change and outside the file
+    /// system's lock, so a test sees exactly when and how often a real
+    /// watcher would be told, with none of its latency.
+    public func watchFile(at path: String, handler: @escaping @Sendable () -> Void) throws(StoreError) -> FileWatch {
+        let resolved = try state.withLock { (state) throws(StoreError) in
+            guard state.parentExists(path) else { throw StoreError(errno: ENOENT_, operation: "watch", path: path) }
+            return try state.followingLinks(path)
+        }
+        let id = watchers.withLock { watchers in
+            watchers.next += 1
+            watchers.entries[watchers.next] = ([path, resolved], handler)
+            return watchers.next
+        }
+        return FileWatch { [weak self] in self?.watchers.withLock { _ = $0.entries.removeValue(forKey: id) } }
+    }
+
     // MARK: FileSystem
 
     public func open(_ path: String, mode: OpenMode) throws(StoreError) -> OpenFile {
-        try state.withLock { (state) throws(StoreError) in try state.open(path, mode: mode) }
+        try changing { (state) throws(StoreError) in try state.open(path, mode: mode) }
     }
 
     public func read(_ file: OpenFile, at offset: Int, count: Int) throws(StoreError) -> [UInt8] {
@@ -229,7 +276,7 @@ public final class SimulatedFileSystem: FileSystem {
     }
 
     public func write(_ file: OpenFile, _ bytes: [UInt8], at offset: Int) throws(StoreError) {
-        try state.withLock { (state) throws(StoreError) in try state.write(file, bytes, at: offset) }
+        try changing { (state) throws(StoreError) in try state.write(file, bytes, at: offset) }
     }
 
     public func size(of file: OpenFile) throws(StoreError) -> Int {
@@ -237,7 +284,7 @@ public final class SimulatedFileSystem: FileSystem {
     }
 
     public func truncate(_ file: OpenFile, to size: Int) throws(StoreError) {
-        try state.withLock { (state) throws(StoreError) in try state.truncate(file, to: size) }
+        try changing { (state) throws(StoreError) in try state.truncate(file, to: size) }
     }
 
     public func fullSync(_ file: OpenFile) throws(StoreError) {
@@ -253,15 +300,15 @@ public final class SimulatedFileSystem: FileSystem {
     }
 
     public func rename(from source: String, to destination: String) throws(StoreError) {
-        try state.withLock { (state) throws(StoreError) in try state.rename(from: source, to: destination) }
+        try changing { (state) throws(StoreError) in try state.rename(from: source, to: destination) }
     }
 
     public func exchange(_ first: String, _ second: String) throws(StoreError) {
-        try state.withLock { (state) throws(StoreError) in try state.exchange(first, second) }
+        try changing { (state) throws(StoreError) in try state.exchange(first, second) }
     }
 
     public func remove(_ path: String) throws(StoreError) {
-        try state.withLock { (state) throws(StoreError) in try state.remove(path) }
+        try changing { (state) throws(StoreError) in try state.remove(path) }
     }
 
     public func list(directory: String) throws(StoreError) -> [String] {
@@ -437,6 +484,9 @@ extension SimulatedFileSystem {
         var checkpoints: [Checkpoint] = []
         var history: [State] = []
         var faults: [Fault] = []
+        /// The files the call in progress changed, for the watchers (see
+        /// `SimulatedFileSystem.changing`); emptied after each call.
+        var touched: [String] = []
         let capacity: Int?
         let recordsHistory: Bool
 
@@ -474,6 +524,7 @@ extension SimulatedFileSystem {
         func withoutHistory() -> State {
             var copy = self
             copy.history = []
+            copy.touched = []
             return copy
         }
 
@@ -521,6 +572,11 @@ extension SimulatedFileSystem {
         }
 
         mutating func record(_ operation: Operation) {
+            switch operation {
+            case .create(let path), .write(let path, _, _), .truncate(let path, _), .remove(let path): touched.append(path)
+            case .rename(let first, let second), .exchange(let first, let second): touched += [first, second]
+            case .fullSync, .createDirectory, .syncDirectory: break
+            }
             operations.append(operation)
             if recordsHistory { history.append(withoutHistory()) }
         }

@@ -339,7 +339,7 @@ public struct AtomicFile: Sendable {
     /// (through a chain of links, a relative link being relative to its own
     /// directory). A link to nothing resolves to where the file would be:
     /// the write creates it there, as `>` through a dangling link does.
-    private func resolvingLinks(_ path: String) throws(StoreError) -> String {
+    func resolvingLinks(_ path: String) throws(StoreError) -> String {
         var current = path
         for _ in 0..<Self.maxLinkDepth {
             guard let target = try fileSystem.readLink(current) else { return current }

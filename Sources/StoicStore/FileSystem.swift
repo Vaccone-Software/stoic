@@ -142,6 +142,23 @@ public protocol FileSystem: Sendable {
 
     /// Releases the lock ``tryLock(_:)`` took; harmless if the file holds none.
     func unlock(_ file: OpenFile) throws(StoreError)
+
+    /// Calls `handler` whenever something may have changed the file at `path`:
+    /// it is created, written in place, replaced by a rename (the way most
+    /// editors save), renamed away or removed. It watches the file's
+    /// *directory*, so a file that does not exist yet is watched too, and a
+    /// replaced file does not end the watch.
+    ///
+    /// The handler is a hint, not a diff. It may be called when nothing that
+    /// matters changed (a platform that cannot say which entry of the
+    /// directory changed calls it for any of them), several times for one
+    /// change, and from any thread, so it must be quick and must not block:
+    /// start a task or signal one, and read the file there. A symbolic link
+    /// is followed once, when the watch starts, to the file it names.
+    ///
+    /// The directory must exist. The default throws `.unsupported`, for a
+    /// file system that cannot tell.
+    func watchFile(at path: String, handler: @escaping @Sendable () -> Void) throws(StoreError) -> FileWatch
 }
 
 extension FileSystem {
@@ -162,6 +179,10 @@ extension FileSystem {
     public func permissions(of path: String) throws(StoreError) -> UInt16? { nil }
 
     public func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) {}
+
+    public func watchFile(at path: String, handler: @escaping @Sendable () -> Void) throws(StoreError) -> FileWatch {
+        throw StoreError(kind: .unsupported, operation: "watch", path: path, detail: "this file system cannot report changes")
+    }
 }
 
 extension FileSystem {
