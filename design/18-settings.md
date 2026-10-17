@@ -42,6 +42,7 @@ A file a person edits (`.handEdited`) adds:
 var options = SettingsStore<Prefs>.Options(handEdited: HandEditedOptions(
     fileHeader: ["$schema": "prefs-schema.json"],   // written first, ignored on read
     layout: .canonical,                             // sparse, byte-stable (the default); .canonical(order:) gives some keys' order
+    comments: .allowed,                             // .refused: a comment is a parse problem (the default drops it at the next write)
     lockTimeout: .seconds(2)))                      // how long coordinatedUpdate waits
 let settings = try SettingsStore.open(at: path, schema: Prefs.schema, format: .handEdited, options: options)
 
@@ -180,6 +181,14 @@ there is no envelope to check) and is read by plain `read`.
 - **Update.** An update of an unusable file throws `.fileUnusable(problem)` and
   writes nothing. It reads the file first (below), so a fix made a moment ago
   counts.
+- **Comments** are read as whitespace, and an update drops them: the store
+  reads the file into a value and writes the value. An app whose people keep
+  notes in the file would rather refuse than lose them: `comments: .refused`
+  makes a comment a problem like any other text the store cannot read, at the
+  comment's line and column (the `/` that begins it). Trailing commas stay
+  allowed. A file with a comment then behaves as an unparsable one in every
+  respect: the last good value stays, `update` throws `.fileUnusable`, and the
+  file is never rewritten without it. A `/` inside a string is not a comment.
 - **A file deleted** while the app runs gives the defaults at the next reload
   (`.defaults(.missing)`); an update then creates it.
 - **A document with no version key** reads as the schema's `missingVersion`:
@@ -310,6 +319,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | the hand-edited file is not JSON on the first load | Opens with the defaults (`.defaults(.unusable)`); `fileProblem` `.unparsable` with the line and column; the file is untouched, nothing is quarantined; `settings.unparsed` |
 | the hand-edited file is not JSON on a reload  | The last good value stays, `source` as it was; `fileProblem` and `issues` say where; a repeat of the same bytes says nothing more; the next reload that finds it fixed clears it |
 | an update meets a hand-edited file that cannot be read | `.fileUnusable(problem)`; nothing written, the file byte for byte as it was; `settings.update_refused`. The update's own read counts: a file broken since the last reload is found |
+| a hand-edited file holds a comment and comments are refused | `.unparsable` at the comment's line and column, as for any text that cannot be read: the last good value (the defaults, the first time), `update` throws `.fileUnusable`, the file is never rewritten without its comment; removing it clears the problem at the next reload |
 | the hand-edited file is not UTF-8             | As not JSON: `.unparsable`, with the position of the first bad byte; left alone |
 | the hand-edited file cannot be read           | `.unreadable(StoreError)`, not a throw from `open` or `reload`: the defaults or the last good value; tried again at every reload |
 | an issue is found in a hand-edited file       | `Issue.source` is the range of the key or value in the text (`12:5`); after a migration, the whole migrated object |

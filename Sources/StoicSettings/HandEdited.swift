@@ -15,6 +15,9 @@ public struct HandEditedOptions: Sendable, Hashable {
     /// How a write lays the file out. ``Layout/canonical``, by default.
     public var layout: Layout
 
+    /// Whether the file may hold comments. ``Comments/allowed`` by default.
+    public var comments: Comments
+
     /// How long an update that waits (``SettingsStore/coordinatedUpdate(lockTimeout:_:)``)
     /// gives another process that is writing the file (a command-line tool
     /// beside the app, a second instance) to let go, before it throws
@@ -22,10 +25,34 @@ public struct HandEditedOptions: Sendable, Hashable {
     /// writer holds the lock for the length of one small write.
     public var lockTimeout: Duration
 
-    public init(fileHeader: SettingsFileHeader = [:], layout: Layout = .canonical, lockTimeout: Duration = .seconds(2)) {
+    public init(
+        fileHeader: SettingsFileHeader = [:], layout: Layout = .canonical, comments: Comments = .allowed,
+        lockTimeout: Duration = .seconds(2)
+    ) {
         self.fileHeader = fileHeader
         self.layout = layout
+        self.comments = comments
         self.lockTimeout = lockTimeout
+    }
+
+    /// What a comment in the file means. A write never keeps one: the store
+    /// reads the file into a value and writes the value, so a comment is
+    /// dropped at the next update. For a file whose owner would rather be told
+    /// than lose a note, refuse them.
+    public enum Comments: Sendable, Hashable {
+        /// `//` and `/* */` are read as whitespace, and dropped by the next
+        /// write (say so in the UI that offers the file). The default.
+        case allowed
+
+        /// A comment is a problem with the file, at its line and column: the
+        /// store reports it as it reports any text it cannot read
+        /// (``SettingsFileProblem/unparsable(_:)``), keeps the last good value,
+        /// and refuses an update (``SettingsStore/UpdateError/fileUnusable(_:)``),
+        /// never touching the file. The person removes the comment, or the app
+        /// replaces the file on purpose
+        /// (``SettingsStore/replaceUnusableFile(with:keepingCopyAt:waitingUpTo:)``).
+        /// Trailing commas stay allowed.
+        case refused
     }
 
     /// The shape of the file an update writes. Both are sparse (only what

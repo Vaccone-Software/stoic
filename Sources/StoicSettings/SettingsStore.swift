@@ -304,7 +304,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         self.format = format
         self.unknownKeys = unknownKeys
         self.editing = handEdited
-        self.decodeOptions = format == .handEdited ? .lenient : DecodeOptions(mode: .lenient)
+        var decodeOptions = format == .handEdited ? DecodeOptions.lenient : DecodeOptions(mode: .lenient)
+        decodeOptions.parse.allowComments = handEdited.comments == .allowed
+        self.decodeOptions = decodeOptions
         // A hand-edited file has one generation and no envelope: the person's
         // own text, replaced by a single rename. A previous generation would
         // move their file aside first, and for the instant between the two
