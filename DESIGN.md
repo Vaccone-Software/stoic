@@ -112,7 +112,8 @@ meets production and where its API is refined.
     library, `Synchronization`, and `os` for its default log sink only.
     Everything else is a library an app adopts on its own (schemas and JSON
     need no core at all) or a trait: macros, lint, persistence, settings,
-    HTTP, logging, metrics, tracing, ServiceLifecycle. The libraries are
+    HTTP, sealed storage (cryptography), logging, metrics, tracing,
+    ServiceLifecycle. The libraries are
     tested together, and their graph is checked (see Architecture), so
     adopting a second one is never an integration project.
 
@@ -147,6 +148,7 @@ fetches no other package at all.
    StoicTesting ····· clocks, seeds, faults, simulation ← Stoic
    StoicFoundation ·· Foundation's errors classified  ← Stoic
    StoicStore ······· atomic files, journal, outbox   ← Stoic
+     StoicSealed ···· sealed files and journals (Crypto) ← Stoic, StoicStore
    StoicObservability swift-log / swift-metrics       ← Stoic (+ traits)
      StoicSettings ·· settings that cannot corrupt    ← Stoic, StoicStore, StoicSchema
      StoicHTTP ······ the resilient HTTP client       ← Stoic, StoicFoundation, StoicSchema
@@ -155,6 +157,7 @@ fetches no other package at all.
    StoicAppKit, StoicUIKit · lifecycle bridges        ← Stoic
  tools ────────────────────────────────────────────────────────────────────────
    StoicMacros (Macros trait) · StoicLint + stoic-lint (Lint trait): swift-syntax
+   StoicSealed (Crypto trait): swift-crypto, which is BoringSSL off Apple platforms
 ```
 
 | Product              | Contents                                                                       | Depends on                         |
@@ -166,6 +169,7 @@ fetches no other package at all.
 | `StoicFoundation`    | `URLError`, `POSIXError`, `CocoaError` classified for retry                    | `Stoic`, Foundation                |
 | `StoicStore`         | Atomic files, journal, outbox, launch guard, flight recorder                   | `Stoic`                            |
 | `StoicSettings`      | Schema-declared settings in an atomic file                                     | `Stoic`, `StoicStore`, `StoicSchema` |
+| `StoicSealed`        | Sealed files and journals: AES-256-GCM, keys in a keyring the app keeps in custody | `Stoic`, `StoicStore`; swift-crypto, behind `Crypto` |
 | `StoicHTTP`          | Resilient HTTP client; scripted transport for tests                            | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation(Networking) |
 | `StoicObservability` | Events to swift-log and swift-metrics                                          | `Stoic`; the packages, behind traits |
 | `StoicApple`         | Reachability, background tasks, Keychain, device conditions                    | `Stoic`, `StoicFoundation`, Apple frameworks |
@@ -366,6 +370,7 @@ incident review is the wrong default.
 | 20  | [Time shaping](design/20-time-shaping.md) | search-as-you-type firing per keystroke, a cache that serves nothing while it refetches | Built: `Debouncer`, `Throttler`, `ExpiringCache`, `Broadcast` |
 | 21  | [Platform integration](design/21-platform-integration.md) | requests sent into a dead network, background work killed mid-write, tokens in `UserDefaults` | Built: `StoicApple` |
 | 22  | [Operations and backends](design/22-operations.md) | resilience numbers picked per call site, retried `POST`s, interactive taps waiting out background backoffs | Built: `Backend`, `perform`, `withUrgency`; `StoicHTTP` on operations planned |
+| 24  | [Sealed storage](design/24-sealed-storage.md) | private files in backups and synced folders, keys written beside their data, "decryption failed" for a tampered file, a lost key and a plaintext file alike | Built: `StoicSealed` behind the `Crypto` trait |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical

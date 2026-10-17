@@ -84,6 +84,22 @@ swiftSettings: [
    the app. Say `missingVersion: .current` in the schema of such a file.
 10. **Handles closed under a wedged call** → when a scope's work may be
     abandoned, declare the handle's release `ifWorkAbandoned: .quarantine`.
+11. **Private data in plain files, or a key beside the data it protects** →
+    `SealedFile` and `SealedJournal` (`StoicSealed`, behind the `Crypto` trait:
+    `traits: ["Lint", "Crypto"]` above, and `StoicSealed` as a product). The
+    keys live in a `Keyring` the app keeps in a `KeyCustody`; for the Keychain,
+    the app writes the twenty-line adapter over `SecretStore` that
+    [design/24](../design/24-sealed-storage.md#the-keychain-on-apple-platforms)
+    shows (`StoicApple` and `StoicSealed` do not depend on each other). Decide
+    first what a lost key means for each store: a cache starts fresh
+    (`ifMissing: .create`), durable data refuses and says why (`.fail`), and
+    neither ever creates a key, or deletes a file, because the Keychain was
+    locked. On macOS, an app with no application-identifier entitlement uses
+    `KeychainSecretStore(loginKeychainService:)`; design/24 says what that
+    changes (items outlive the app and are in backups). A plaintext file an
+    earlier version wrote is sealed in place with `SealedFile.adopt`, which
+    cannot erase the old blocks: only retiring a key (`compact(…, rotatingKey:
+true)`) makes a deletion real.
 
 ## 6. Make tests deterministic
 
@@ -106,7 +122,7 @@ timings deterministically, and a failure names the seed that replays it:
 }
 ```
 
-Where the *path* matters as much as the result, pin the decisions with a
+Where the _path_ matters as much as the result, pin the decisions with a
 golden trace: `expectTrace(events, """…""")`.
 
 ## 7. Watch the decisions
@@ -126,7 +142,7 @@ try await withAmbient({
 `Diagnostics.snapshot()` then gives a bug report the last decisions Stoic
 made, every Stoic task still running, and any abandoned work.
 
-To know what the *previous* run was doing when it died, add a flight
+To know what the _previous_ run was doing when it died, add a flight
 recorder, and check it at launch:
 
 ```swift

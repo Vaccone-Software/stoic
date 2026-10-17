@@ -190,6 +190,7 @@ that replays exactly.
 | `StoicSchemaTesting` | `expectSchemaSuite`, the Swift Testing glue for `SchemaSuite` | `StoicSchema`, Swift Testing |
 | `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read — checked at every crash point | `Stoic` |
 | `StoicSettings` | Settings that a crash, a bad value, an old format or a newer app version cannot ruin; observable | `StoicSchema`, `StoicStore` |
+| `StoicSealed`  | Files and journals AES-256-GCM sealed, each bound to what it is for; keys in a keyring the app keeps in its own custody; tampered, torn, unknown-key and not-sealed told apart; deleting a record is destroying its key; crash-tested | `Stoic`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
 | `StoicHTTP`    | An HTTP client with the resilience written once: per-host retry honouring `Retry-After`, circuit breaker and bulkhead, idempotency keys on `POST`, bounded responses decoded through schemas, coalesced `GET`s, redirects followed by the client (no credential leaves its origin, never `https` to `http`), no credentials in events; a scripted transport so every failure is a test on virtual time | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation |
 | `StoicFoundation` | Foundation's errors (`URLError`, `POSIXError`, `CocoaError`) classify themselves for retry; portable | `Stoic`, Foundation |
 | `StoicApple`   | Device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, `StoicFoundation`, Apple frameworks |
@@ -256,6 +257,40 @@ without the trait, write that. Mistakes are compile errors at the line that is
 wrong: a `@Length` on an `Int`, a default that
 breaks its own `@Range`, a key used twice. See
 [design/06](design/06-validation.md#as-built-layer-4-stoicmacros).
+
+`StoicSealed` is opt in as well, so that adopting the other libraries fetches
+no cryptography package (and builds no BoringSSL on Linux):
+
+```swift
+.package(url: "https://github.com/Vaccone-Software/stoic", from: "0.4.0", traits: ["Crypto"]),
+// …and on a target:
+dependencies: [.product(name: "StoicSealed", package: "stoic")]
+```
+
+```swift
+import StoicSealed
+
+// The keys live in a keyring the app keeps in its own custody (the Keychain,
+// through an adapter design/24 shows), never beside the data.
+let ring = try Keyring.open(name: "app.keyring", custody: custody, ifMissing: .create).keyring
+let notes = SealedFile(keyring: ring)                          // 0o600, atomic, crash-tested
+try notes.write(data, to: path, context: SealContext("app.notes", note.id))
+let data = try notes.read(path, context: SealContext("app.notes", note.id))   // nil if no file
+
+// A log whose every record is sealed; compacting with rotation makes everything
+// written before it unreadable for ever (crypto-shredding), which is how a
+// deleted record stops existing on a disk that never erases.
+let log = try SealedJournal.open(at: logPath, context: SealContext("app.log", "main"), keyring: ring)
+try log.append(batch: records)
+try log.compact(snapshot: encode(state), rotatingKey: true)
+```
+
+An unreachable custody is never an empty one, and a failure is never "corrupt":
+`.tampered`, `.torn`, `.unknownKey` and `.notSealed` are four different facts. See
+[design/24](design/24-sealed-storage.md) for the threat model (backups, synced
+folders and copied disks, not code running as the app), the formats, rotation
+and the 2³² bound, key custody on Apple platforms, and what deleting a file
+does not do.
 
 ## Design
 

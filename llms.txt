@@ -2,7 +2,7 @@
 
 > Robustness primitives for Swift apps (Swift 6.4, Apple platforms 27+): deadlines, retry, scopes, structured concurrency helpers, state machines, supervision, service graphs, structured errors, strict JSON and schema validation, and test tooling. Plain async functions over Swift concurrency; typed errors pass through.
 
-Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation), `StoicHTTP` (HTTP client), `StoicMacros` (`@Schema`, `@Refined`; package trait `Macros`).
+Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `StoicJSON` (strict parser), `StoicSchema` (validation), `StoicHTTP` (HTTP client), `StoicMacros` (`@Schema`, `@Refined`; package trait `Macros`), `StoicSealed` (sealed files and journals; package trait `Crypto`).
 
 ## Time
 - `withTimeout(_ duration:) { … }` / `withDeadline(_ deadline:) { … }`: cooperative; operation runs as a child task inheriting the caller's actor; result must be Sendable; error passes through. `Deadline.current` narrows, never widens.
@@ -69,6 +69,12 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `LaunchGuard(path:).beginLaunch()` → `.normal` / `.safeMode(uncleanLaunches:)`; `markStable(after:)`, `markCleanExit()`.
 - `FlightRecorder(path:)`: an `Instrumentation` that keeps recent events in a fixed-size file; next launch reads `previousRun` (`events`, `endedCleanly`); `markCleanExit()`, `flush()`. Private values stored as `<private>`.
 - `SimulatedFileSystem` + crash-image exploration for crash-consistency tests.
+
+## Sealed storage (StoicSealed, package trait `Crypto`)
+- `Keyring.open(name:custody:ifMissing: .create/.fail)` → `.keyring`, `.created`; `ring.current`, `ring.key(id:)`, `rotate()` (persisted before returned), `retire(id:)` (crypto-shredding), `destroy()`, `reload()`. A `KeyCustody` (`load(name:)` → `nil` only when definitely absent, `store` atomic, `delete`) keeps the ring; `InMemoryKeyCustody` for tests; an app adapts `SecretStore` to it (design/24, ~20 lines). `CustodyError.unavailable` means the item may exist: never create a keyring or delete data on it.
+- `Sealing.seal(plaintext, context: SealContext("purpose", ids…), key: ring.current)` / `open(sealed, context:, keyring:)`: AES-256-GCM, random nonce, header and context authenticated. `SealError`: `.tampered` (auth failed), `.torn`, `.unknownKey(id)`, `.notSealed`, `.unsupportedFormat`. Use logical ids, never paths. A key seals at most 2³² values: rotate.
+- `SealedFile(keyring:)`: `write` / `read` (nil if absent) over `AtomicFile`, 0o600, previous generation sealed; `adopt(path:context:)` seals a plaintext file in place and removes `.previous`/`.tmp` plaintext (APFS does not erase old blocks).
+- `SealedJournal.open(at:context:keyring:)`: `append`, `append(batch:)`, `replay()` (plaintext `records`, `snapshot`, `failures` per sequence, `report`), `compact(snapshot:rotatingKey:)` (rotate, seal the snapshot under the new key, make it durable, then retire the old keys), `SealedJournal.readOnlyReplay` for a second process. Its keyring is its own: retiring a key destroys whatever else it sealed. design/24.
 
 ## Settings (StoicSettings)
 - `SettingsStore.open(at:schema:)`: `value` (Observable), `try update { $0.x = … }` (validated against the schema, written atomically, then published; throws `.invalid(issues)`, `.newerFormat`, `.storage`), `issues` (what the load repaired/migrated), `source` (`.file`, `.previousGeneration`, `.defaults(.missing/.unusable)`, `.newerFormat`). Never fails because of file contents; a newer app's file is read-only.

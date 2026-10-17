@@ -106,7 +106,7 @@ status Stoic does not know throw, and in each the secret may well exist. The
 decision is one function, `KeychainSecretStore.interpret(copyStatus:result:)`,
 tested over the statuses a locked or refusing keychain answers with. A caller
 must never create a replacement secret, or wipe what the old one protected, on
-an error.
+an error. design/24 builds its key custody on exactly this.
 
 ## Failure modes
 
@@ -149,7 +149,9 @@ an error.
 
 Wiring `SecretStore` into `SettingsStore`; `BGContinuedProcessingTask`;
 interface-specific path monitors (`SystemPathMonitor` watches the default
-path); Keychain access control (biometrics) and iCloud-synchronised items.
+path); Keychain access control (biometrics) and iCloud-synchronised items; a
+`SecretStore`-to-`KeyCustody` adapter (design/24 shows the twenty lines an app
+writes, because `StoicApple` and `StoicSealed` must not depend on each other).
 
 ## Tests
 
