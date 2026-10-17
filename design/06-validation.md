@@ -261,6 +261,16 @@ schema and throws one `DecodingError` listing every issue.
 | a change is applied to a value that has moved on | `ApplyError.conflict` with what is there; nothing changes, unless the caller says `overwriting` |
 | a change's path leads through the wrong kind of value | `ApplyError.blocked` at the step that cannot be taken; with `overwriting`, missing objects on the way are made, anything else still blocks |
 | a change adds or removes an element of an array | `ApplyError.arrayElement`: an array changes as one whole value (an element can be replaced) |
+| a value is set at a path whose objects are not there | The objects on the way are made; a member that exists keeps its place and a new one is appended |
+| a value is set where a value that is not an object is in the way | `JSONPathError.blocked` at the path of what is there, with it (`null` and arrays block too: a value someone wrote is not replaced to make room); nothing changes |
+| a value is set at an index past the end of an array | `JSONPathError.arrayElement` at that index: an element that exists can be replaced, none can be added |
+| a value is removed that is not there | The value, unchanged (so a removal can be repeated), whatever is in the way |
+| the last member of an object is removed with `pruning` | The objects the removal left empty are removed too, up to but not including the root, and not past an array; an object that was already empty is not touched |
+| an element of an array is removed | `JSONPathError.arrayElement`; the root is `.root`. Nothing changes |
+| a dotted address has a free key with dots in it | The shape decides: a free key takes the fewest segments that leave a remainder the shape reads (`web.routes.github.com` is `routes` / `github.com`; `web.links.my.site.url` is `links` / `my.site` / `url`), else all of them |
+| a dotted address names what the shape does not describe | Read as plain keys from there, one per segment, and still a path: saying the key is unknown is the validator's work |
+| a dotted address has an empty segment | `nil`: no key can be addressed by it. The empty address is the root |
+| a comment is met with `allowComments` off | `comment_not_allowed` at the `/` that begins it (line and column); trailing commas and the rest of the dialect are unaffected, and a `/` inside a string is not a comment |
 
 ## Testing
 
@@ -618,6 +628,39 @@ a store can build on them without either knowing the other.
   the one it replaces, so undoing an edit that was changed again since is a
   `conflict` for the app to decide, not a silent overwrite. `overwriting` is
   the explicit "make it so", and creates the objects on the way.
+
+### Paths: setting, removing and addresses
+
+`JSONValue.value(at:)` reads the value at a `JSONPath`; `setting(_:at:)` and
+`removing(at:pruning:)` write one, as pure functions that return the new
+document, for an app that keeps its settings as one JSON value (a `json`
+schema) and changes them by address.
+
+- **Setting makes the objects on the way**, and nothing else: where something
+  that is not an object is in the way (a number, a string, `null`, an array)
+  the call throws `JSONPathError.blocked` at that value, with it, and the
+  document is unchanged. A member that exists keeps its place, so a file's
+  order does not move; a new one is appended. An index replaces an element that
+  exists; arrays change as a whole, as they do for `JSONChange`, so one past the
+  end, or removing an element, is `.arrayElement`.
+- **Removing what is not there is not an error**, so unsetting is repeatable.
+  With `pruning` it also removes the objects it left empty on the way up (an
+  `unset` of the last route should not leave `"routes": {}` and `"web": {}`
+  in a file a person reads), never the root and never past an array, and never
+  an object that was empty before.
+- **A dotted address** (`web.routes.github.com`) is read into a path with
+  `JSONPath(address:shape:)`, where a `JSONPath.Shape` says which levels hold
+  fixed keys (`.fields`), which hold the person's (`.freeKeys`, a dictionary:
+  the key may contain dots), and which are arrays (`.elements`, a segment of
+  digits is an index). A free key takes the fewest segments that leave a
+  remainder the shape can read, else all of them; what the shape does not
+  describe is read as plain keys, because reporting an unknown key is the
+  validator's job. An empty segment is `nil`.
+- **Comments can be refused.** `JSONParseOptions.allowComments` is on by
+  default; with the `.jsonc` dialect and `allowComments` off, a comment is
+  `comment_not_allowed` at its `/`, and trailing commas stay allowed. A store
+  whose writer cannot keep a comment says no to one where the person sees it,
+  instead of dropping it at the next save (design/18).
 
 ### Generators
 

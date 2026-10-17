@@ -120,6 +120,7 @@ struct ParserCore {
     let bytes: [UInt8]
     private let count: Int
     private let jsonc: Bool
+    private let allowComments: Bool
     private let allowBOM: Bool
     private let duplicateKeys: JSONParseOptions.DuplicateKeys
     private let maxDepth: Int
@@ -141,6 +142,7 @@ struct ParserCore {
         self.bytes = bytes
         count = bytes.count
         jsonc = options.dialect == .jsonc
+        allowComments = options.allowComments
         allowBOM = options.allowBOM
         duplicateKeys = options.duplicateKeys
         maxDepth = options.maxDepth
@@ -423,6 +425,12 @@ struct ParserCore {
                 guard position + 1 < count, bytes[position + 1] == UInt8(ascii: "/") || bytes[position + 1] == UInt8(ascii: "*")
                 else {
                     throw unexpected(at: position, expected: "'//' or '/*' to start a comment")
+                }
+                guard allowComments else {
+                    throw fail(
+                        .commentNotAllowed, at: position,
+                        "comments are not allowed here (the options set allowComments to false); remove it"
+                    )
                 }
                 if bytes[position + 1] == UInt8(ascii: "/") {
                     try skipLineComment()

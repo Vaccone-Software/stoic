@@ -35,6 +35,15 @@ public struct JSONParseOptions: Sendable, Hashable {
     public var dialect: Dialect
     public var duplicateKeys: DuplicateKeys
 
+    /// Whether the ``Dialect/jsonc`` dialect accepts comments. On by default.
+    /// Off, a comment is refused (``JSONParseError/Code-swift.struct/commentNotAllowed``,
+    /// at the `/` that begins it) while trailing commas and the rest of the
+    /// dialect stay: for a file people edit by hand whose writer does not keep
+    /// comments, so one would be lost at the next save, and is better refused
+    /// where the person can see it. The strict dialect refuses them whatever
+    /// this says.
+    public var allowComments = true
+
     /// Whether a UTF-8 byte order mark at the start of the input is skipped
     /// rather than rejected. RFC 8259 forbids producing one and permits
     /// ignoring it; editors on some platforms add one anyway. Offsets still

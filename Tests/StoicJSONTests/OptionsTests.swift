@@ -1,4 +1,5 @@
 import StoicJSON
+import StoicTesting
 import Testing
 
 @Suite("Options")
@@ -350,6 +351,36 @@ struct OptionsTests {
         #expect(seen == depth)
         #expect(current == 1)
         #expect(parse(text, JSONParseOptions(maxDepth: depth - 1)).error?.code == .depthLimit)
+    }
+
+    // MARK: Comments refused
+
+    /// JSONC with comments refused: a file whose writer cannot keep them.
+    private static var withoutComments: JSONParseOptions {
+        var options = JSONParseOptions.jsonc
+        options.allowComments = false
+        return options
+    }
+
+    @Test(.failureMode("design/06", "a comment is met with `allowComments` off"))
+    func jsoncWithCommentsRefusedRefusesEachKindAtTheSlash() throws {
+        let line = try #require(parse("{\n  \"a\": 1, // note\n  \"b\": 2\n}", Self.withoutComments).error)
+        #expect(line.code == .commentNotAllowed)
+        #expect(line.location.line == 2)
+        #expect(line.location.column == 11)
+        let block = try #require(parse("/* head */ [1]", Self.withoutComments).error)
+        #expect(block.code == .commentNotAllowed)
+        #expect(block.location.column == 1)
+        #expect(parse("[1] // x", Self.withoutComments).error?.code == .commentNotAllowed)
+        #expect(parse("[1,/* c */]", Self.withoutComments).error?.code == .commentNotAllowed)
+    }
+
+    @Test func jsoncWithCommentsRefusedKeepsTheRestOfTheDialect() {
+        #expect(parse("[1,2,]", Self.withoutComments).value == [1, 2])
+        #expect(parse(#"["// in a string", "/* so is this */"]"#, Self.withoutComments).value == ["// in a string", "/* so is this */"])
+        #expect(parse("[1, /]", Self.withoutComments).error?.code == .unexpectedCharacter, "a lone slash is not a comment")
+        #expect(parse("// x\n1", .jsonc).value == 1, "on by default")
+        #expect(parse("// x\n1").error?.code == .commentNotAllowed, "the strict dialect refuses them whatever the option says")
     }
 }
 
