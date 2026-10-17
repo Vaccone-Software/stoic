@@ -29,7 +29,11 @@ extension SettingsStore {
         }
         let document: JSONDocument
         do throws(JSONParseError) {
-            document = try JSONDocument(parsing: bytes, options: options.parse)
+            // The header is the app's, not a setting: the schema never sees it
+            // (a `json` schema would otherwise hold it in its value, and the
+            // next write would put the app's header over a value that says
+            // another), and what it reports is about the rest of the text.
+            document = try JSONDocument(parsing: bytes, options: options.parse).removingRootMembers(header.keys)
         } catch {
             // The schema turns the parse failure into its typed issue, with the
             // line and column of the character the parser stopped at.
@@ -39,12 +43,7 @@ extension SettingsStore {
                 read: .bytes(bytes))
         }
         let decoded = schema.decode(document, options: options)
-        // A header key is not an unknown key.
-        let headerKeys = Set(header.keys)
-        let issues = decoded.issues.filter { issue in
-            guard issue.code == .unknownKey, issue.path.count == 1, case .key(let key) = issue.path[0] else { return true }
-            return !headerKeys.contains(key)
-        }
+        let issues = decoded.issues
         // A newer document is intact, not unusable: read what can be read, and
         // leave the file alone, as an app-owned store does.
         if let newer = issues.first(where: { $0.code == .versionTooNew }) {
@@ -114,10 +113,10 @@ extension SettingsStore {
     /// hand-edited one the layout its options say, with the file header first.
     func bytes(for json: JSONValue) -> [UInt8] {
         guard format == .handEdited else { return json.encoded(style: .canonical) }
-        let canonical = editing.layout == .canonical
-        let body = canonical ? CanonicalLayout.arranged(json, as: schema.node) : json
+        let arrangement = editing.layout.arrangement
+        let body = arrangement.map { CanonicalLayout.arranged(json, as: schema.node, order: $0) } ?? json
         var bytes = withFileHeader(body).encoded(style: .pretty(indent: 2))
-        if canonical { bytes.append(UInt8(ascii: "\n")) }
+        if arrangement != nil { bytes.append(UInt8(ascii: "\n")) }
         return bytes
     }
 

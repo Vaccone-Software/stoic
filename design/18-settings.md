@@ -41,7 +41,7 @@ A file a person edits (`.handEdited`) adds:
 ```swift
 var options = SettingsStore<Prefs>.Options(handEdited: HandEditedOptions(
     fileHeader: ["$schema": "prefs-schema.json"],   // written first, ignored on read
-    layout: .canonical,                             // sparse, byte-stable (the default)
+    layout: .canonical,                             // sparse, byte-stable (the default); .canonical(order:) gives some keys' order
     lockTimeout: .seconds(2)))                      // how long coordinatedUpdate waits
 let settings = try SettingsStore.open(at: path, schema: Prefs.schema, format: .handEdited, options: options)
 
@@ -212,9 +212,34 @@ order the file had, each number as spelt, no final newline) is a choice an app
 makes only if its users order their own keys. `fileHeader` is a list of members
 written first, before everything and in order (`"$schema": "…"`, a `"version"`
 the schema does not manage), and ignored on read: not an `unknown_key` issue,
-not carried (the header is the one the app configured, whatever the file held).
+not carried (the header is the one the app configured, whatever the file held),
+and never in what the schema sees: it is left out of the document before the
+schema reads it, so a `json` schema's value does not hold it (it would otherwise
+say one `version` while the file, written with the app's header, said another).
+Positions are still the text's.
 A header key may not be a field, an alias or the version key of the schema, and
 the schema must not reject unknown keys, or `open` throws `.invalidArgument`.
+
+**The app may give the order of some keys** (`layout: .canonical(order:)`, with a
+`KeyOrder`). The schema declares an order for the objects it describes; for
+one it does not (a `json` field, a whole file held as `JSONValue`) the layout is
+alphabetical, which is not the order a person reads a file in, and a file whose
+sections have a conventional order (`lode`, `app`, `gestures`, … then the rest)
+needs the app to say so. `KeyOrder(root:nested:)` lists, for the document and
+for any object below it (by the path of keys to it), the keys that come first,
+in that order; at each object the keys are then placed: the version key and a
+union's discriminator first unless the order lists them, the listed keys, the
+schema's declared fields in declaration order, and every other key
+alphabetically. A key the object does not have is skipped, and a key listed twice
+is placed once. The elements of an array share the array's path, so one order
+arranges every object in it; a dictionary's own keys are named like any key, and
+there is no wildcard. It is still *canonical*: the order is part of the layout, so
+two writers that share it write the same bytes, and `.canonical` is unchanged,
+and is `canonical(order: KeyOrder())`. (A writer that lays the file out
+differently, a hand-written emitter for instance, writes different bytes for the
+same value: two writers share a file only if they share the layout. Stoic writes
+a control character in a string as `\b` or `\f` where another emitter may write
+`\u0008` or `\u000c`; both are valid JSON, and that is Stoic's spelling.)
 
 **An update reads the file again, under a lock.** It takes an advisory lock on
 `<path>.lock`, reads the file as it now is, adopts it (publishing what changed
@@ -290,8 +315,9 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | an issue is found in a hand-edited file       | `Issue.source` is the range of the key or value in the text (`12:5`); after a migration, the whole migrated object |
 | the hand-edited file has an old spelling or version | Read through the migration or alias, with its issue; the file is not written on load; the next update writes the new names only |
 | a hand-edited file is written                 | Sparse, canonical (declared order, then unknown keys alphabetical, canonical numbers, final newline), header first, one generation, mode kept |
-| two writers hold the same value               | The same bytes, whatever order, spacing or number spelling their files had |
-| a hand-edited file has a file header          | Written first on every update, ignored on read, never carried; a header key that is a setting, or a schema that rejects unknown keys, is refused by `open` with `.invalidArgument` |
+| two writers hold the same value               | The same bytes, whatever order, spacing or number spelling their files had (the same layout, `KeyOrder` included) |
+| a hand-edited file is written with an order the app gave | The keys it lists first, in its order, at the document and at each object it names (the elements of an array share the array's path); then the declared fields, then the rest alphabetically; the version key stays first unless listed; `canonical(order: KeyOrder())` is `.canonical` |
+| a hand-edited file has a file header          | Written first on every update, ignored on read, never carried, and never seen by the schema (a `json` value does not hold it); a header key that is a setting, or a schema that rejects unknown keys, is refused by `open` with `.invalidArgument` |
 | a hand-edited file was changed since the store read it | The update reads it again under the lock and applies its change to what is there; nothing the other writer did is lost; the store adopts it even when the change is a no-op |
 | another process holds the lock on a hand-edited file | `coordinatedUpdate` waits up to `lockTimeout` on the ambient clock, then `.busy` (`settings.busy`), reading and writing nothing; `update` is `.busy` at once; a cancelled wait is `CancellationError` |
 | two processes update a hand-edited file at once | Serialised by the lock, each applying its change to the other's result: every update lands |

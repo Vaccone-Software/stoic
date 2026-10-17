@@ -30,6 +30,17 @@ public struct JSONDocument: Sendable {
         rootNode = core.rootNode
     }
 
+    private init(
+        value: JSONValue, source: [UInt8], lineMap: LineMap, nodes: [RangeNode], childTable: [UInt32], rootNode: UInt32
+    ) {
+        self.value = value
+        self.source = source
+        self.lineMap = lineMap
+        self.nodes = nodes
+        self.childTable = childTable
+        self.rootNode = rootNode
+    }
+
     /// Parses `bytes`. See ``JSONParseOptions`` for dialects and limits.
     public init(
         parsing bytes: some Collection<UInt8>,
@@ -40,6 +51,33 @@ public struct JSONDocument: Sendable {
 
     public init(parsing text: String, options: JSONParseOptions = .strict) throws(JSONParseError) {
         try self.init(parsing: text.utf8, options: options)
+    }
+
+    /// This document with `keys` left out of its root object, for a reader
+    /// that is to treat them as not being there (a file header the app writes
+    /// and ignores). Every range is still the text it was: ``source`` is the
+    /// same bytes, and what remains is found where it was. A root that is not
+    /// an object, and keys it does not have, change nothing.
+    public func removingRootMembers(_ keys: some Collection<String>) -> JSONDocument {
+        guard case .object(let object) = value, object.contains(where: { member in keys.contains { $0.utf8.elementsEqual(member.key.utf8) } })
+        else { return self }
+        let root = nodes[Int(rootNode)]
+        var kept = JSONObject()
+        var children: [UInt32] = []
+        for (position, member) in object.enumerated()
+        where !keys.contains(where: { $0.utf8.elementsEqual(member.key.utf8) }) {
+            kept[member.key] = member.value
+            children.append(childTable[Int(root.childStart) + position])
+        }
+        // The root's children are re-listed at the end of the table, so no
+        // other node's entries move.
+        var nodes = nodes
+        var childTable = childTable
+        nodes[Int(rootNode)].childStart = UInt32(childTable.count)
+        nodes[Int(rootNode)].childCount = UInt32(children.count)
+        childTable.append(contentsOf: children)
+        return JSONDocument(
+            value: .object(kept), source: source, lineMap: lineMap, nodes: nodes, childTable: childTable, rootNode: rootNode)
     }
 
     // MARK: Locations

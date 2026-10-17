@@ -249,4 +249,25 @@ struct DocumentTests {
         #expect(document.value == (try JSONValue(parsing: nested)))
         #expect(document.value.value(at: [.key("hosts"), .index(0), .key("port")]) == 80)
     }
+
+    @Test func leavingRootMembersOutKeepsEveryRangeOfWhatRemains() throws {
+        let document = try #require(parseDocument(nested))
+        let without = document.removingRootMembers(["name", "tls", "absent"])
+        let hosts = try #require(document.value.value(at: [.key("hosts")]))
+        #expect(without.value == .object(["hosts": hosts]))
+        #expect(without.source == document.source)
+        let port = JSONPath([.key("hosts"), .index(1), .key("port")])
+        #expect(without.range(of: port) == document.range(of: port))
+        #expect(without.keyRange(of: [.key("hosts")]) == document.keyRange(of: [.key("hosts")]))
+        #expect(without.range(of: [.key("name")]) == nil, "what was left out has no range")
+        #expect(without.range == document.range, "the document's own range is the text's")
+    }
+
+    @Test func leavingOutNothingOrFromANonObjectChangesNothing() throws {
+        let document = try #require(parseDocument(nested))
+        #expect(document.removingRootMembers(["absent"]).value == document.value)
+        #expect(document.removingRootMembers([String]()).value == document.value)
+        let array = try #require(parseDocument("[1, 2]"))
+        #expect(array.removingRootMembers(["a"]).value == [1, 2])
+    }
 }
