@@ -567,7 +567,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     }
 
     /// The state after `new` was written as `written`.
-    private func committed(_ new: Value, _ written: Written) -> Current {
+    func committed(_ new: Value, _ written: Written) -> Current {
         Current(
             value: new, issues: [], source: .file, document: unknownKeys == .keep ? written.json : nil, repaired: written.repaired,
             read: format == .handEdited ? .bytes(written.bytes) : nil
@@ -579,7 +579,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Takes the lock on `<path>.lock` if it is free; `nil` if the store holds
     /// it for its whole life (``Options/crossProcessLock``), which excludes
     /// the other writers already.
-    private func lockWithoutWaiting() throws -> FileLock? {
+    func lockWithoutWaiting() throws(UpdateError) -> FileLock? {
         guard lock == nil else { return nil }
         guard let candidate = try tryLock() else {
             recordBusy(waited: .zero)
@@ -590,7 +590,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
 
     /// One try at the lock on `<path>.lock`: the lock if it was free, `nil` if
     /// another holds it.
-    private func tryLock() throws(UpdateError) -> FileLock? {
+    func tryLock() throws(UpdateError) -> FileLock? {
         let candidate = FileLock(path: path + ".lock", fileSystem: file.fileSystem)
         do throws(StoreError) {
             return try candidate.tryAcquire() ? candidate : nil
@@ -620,7 +620,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         }
     }
 
-    private func recordBusy(waited: Duration) {
+    func recordBusy(waited: Duration) {
         let components = waited.components
         let milliseconds = components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000
         Ambient.record(Event("settings.busy", level: .warning, label: path, fields: [.init("waitMs", .int(Int(milliseconds)))]))
@@ -649,7 +649,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Lets go of the lock an update took. A failure to unlock does not change
     /// the update's outcome, and the descriptor is closed either way, which
     /// the system takes as letting go.
-    private func release(_ held: FileLock?) {
+    func release(_ held: FileLock?) {
         do throws(StoreError) {
             try held?.release()
         } catch {
@@ -698,7 +698,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Reads the hand-edited file and, unless it is what the store last saw,
     /// publishes what it holds. Returns the state after. Called under
     /// `writing`, for the reason ``reload()`` gives.
-    private func refresh() -> Current {
+    func refresh() -> Current {
         guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
             preconditionFailure("unreachable: checked when the store opened")
         }
@@ -772,7 +772,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// app has not changed. Returns what was written and the repaired fields
     /// still carried.
     @discardableResult
-    private func write(
+    func write(
         _ value: Value, carrying document: JSONValue?, repaired: [RepairedField], options: AtomicFile.Options? = nil
     ) throws(StoreError) -> Written {
         let written = encoded(value, carrying: document, repaired: repaired)

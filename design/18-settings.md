@@ -51,6 +51,8 @@ try settings.update { $0.scrollSpeed = 900 }    // reads the file again under `<
 try await settings.coordinatedUpdate { … }      // the same, waiting up to lockTimeout; .busy after it
 try settings.blockingUpdate(waitingUpTo: .seconds(2)) { … }   // the same, synchronous: BLOCKS THE THREAD while it waits
 try settings.reload()                           // re-read; publish the change, or keep the last good value and say why
+try settings.materialize()                      // write the file if there is none (first launch); a file that is there is never touched
+let copy = try settings.replaceUnusableFile(with: Prefs())   // "reset": copy the unreadable file aside, then replace it
 let watch = try settings.watch(debounce: .milliseconds(300))   // reload when the file changes
 ```
 
@@ -305,6 +307,35 @@ which entry of the directory changed (kqueue) reports changes to other files
 too, with the same result. The watch does not keep the store alive, and ends
 with its `SettingsWatch` (`stop()`, or dropping it).
 
+**Writing the whole file, on purpose.** Two calls write the file *as a whole*,
+each only when the app says so, and neither is ever an effect of opening, reloading
+or updating:
+
+- `materialize()` writes the file if there is none: the sparse form of the
+  current value (the defaults, on a first launch) with the header, mode `0600`,
+  so a person has something to open and edit. A file that is there, whatever it
+  holds (readable, garbage, empty), is left exactly as it is, and the call says
+  `false`. It takes the lock and looks for the file *again* once it holds it, so
+  two processes that start together write it once; like `update` it does not
+  wait (`.busy`). A deletion made since the store last looked is adopted first,
+  so what is written is the defaults, not what the app last held.
+- `replaceUnusableFile(with:keepingCopyAt:)` is the "reset configuration" command
+  for a file that cannot be read, which an ordinary update refuses (`.fileUnusable`)
+  because writing over it would destroy what the person wrote. Under the lock it
+  reads the file again; **only a file that is still unusable is replaced** (one the
+  person fixed meanwhile is `.fileIsUsable`, and a missing or newer one is the
+  same: nothing is a reset of a good file). It checks the replacement against the
+  schema; **copies the person's bytes first**, to the path given or `<path>.broken-N`
+  (the next number, as a quarantined file is numbered: Stoic's ambient has no wall
+  clock, and a number sorts and cannot collide), atomically, mode `0600`, read back
+  and compared; refuses a path that exists (`.backupExists`: it may be an earlier
+  copy); and only then writes the replacement as a new file (sparse, canonical, header, no
+  unknown keys carried: a reset keeps nothing of the old document), publishes it
+  and clears `fileProblem`. A failure before the replacement is written leaves
+  the broken file as it was; after it, the file is the replacement or the broken
+  one, and the copy is beside it. A crash at any point leaves the broken file or the
+  new one, never the new one without the copy. It returns the copy's path.
+
 **Migrations are read through and written new.** A renamed key (a migration or
 an alias) is read from the old spelling, with a `migrated` or `deprecated_key`
 issue, and nothing is written back on load; the next update writes the new
@@ -350,6 +381,12 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | a hand-edited file was changed since the store read it | The update reads it again under the lock and applies its change to what is there; nothing the other writer did is lost; the store adopts it even when the change is a no-op |
 | another process holds the lock on a hand-edited file | `coordinatedUpdate` waits up to `lockTimeout` on the ambient clock, then `.busy` (`settings.busy`), reading and writing nothing; `update` is `.busy` at once; a cancelled wait is `CancellationError` |
 | a synchronous update has to wait for the other writer's lock | `blockingUpdate(waitingUpTo:)` blocks the thread, polling every 25 ms in real time; it updates when the lock is free (applied to what the other writer left), else `.busy` after exactly the wait (`settings.busy` with how long), reading and writing nothing; a cancelled task is `CancellationError` |
+| there is no file and the app materializes it | The sparse current value with the header is written, mode `0600`; `true`; `settings.materialized` |
+| a file is there and the app materializes it | Nothing is read as a reason to write, nothing is changed: readable, garbage or empty, byte for byte; `false` |
+| two processes materialize the file at once | Serialised by the lock; the first writes, the second finds the file there and writes nothing |
+| the file cannot be written when the app materializes it | `.storage` and no file, or `.durabilityUnknown` with the file there (and published); nothing half-written either way |
+| an app replaces an unusable hand-edited file | The person's bytes are copied (checked) to `<path>.broken-N` or the given path, then the replacement is written and published (`fileProblem` clears); the path of the copy is returned; `settings.replaced`. A failed copy leaves the file as it was; a failed write leaves it and the copy; a crash never leaves the new file without the copy |
+| an app replaces a hand-edited file that can be read | `.fileIsUsable`; no copy, nothing written; the fix the person made is adopted, as an update would |
 | two processes update a hand-edited file at once | Serialised by the lock, each applying its change to the other's result: every update lands |
 | the app holds the lock for life and the file is hand-edited | Its updates use that hold and take no second lock (which would conflict with it) |
 | a hand-edited file is replaced by a rename    | `reload()` (or the watch) publishes the new value; observers are told |
@@ -368,7 +405,8 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 `settings.save_failed`; for a hand-edited file `settings.unparsed` (reason, the
 line and column of the first problem, which value is kept), `settings.reloaded`
 (source, issue count), `settings.update_refused` (reason), `settings.busy` (how
-long it waited), `settings.reload_failed` and `settings.lock_release_failed`.
+long it waited), `settings.reload_failed`, `settings.lock_release_failed`, and, on the
+app's asking, `settings.materialized` and `settings.replaced` (where the copy is).
 None carries a setting's value: issues are counted and positioned, never quoted.
 
 ## Testing

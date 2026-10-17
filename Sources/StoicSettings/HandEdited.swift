@@ -50,7 +50,7 @@ public struct HandEditedOptions: Sendable, Hashable {
         /// and refuses an update (``SettingsStore/UpdateError/fileUnusable(_:)``),
         /// never touching the file. The person removes the comment, or the app
         /// replaces the file on purpose
-        /// (``SettingsStore/replaceUnusableFile(with:keepingCopyAt:waitingUpTo:)``).
+        /// (``SettingsStore/replaceUnusableFile(with:keepingCopyAt:)``).
         /// Trailing commas stay allowed.
         case refused
     }
