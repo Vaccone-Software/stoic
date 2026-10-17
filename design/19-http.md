@@ -523,7 +523,9 @@ decoder for what it holds; the depth limit is not about size and stays.`send(\_:
   it answers would leave a reader waiting on a task nothing wakes. Measured on
   a Mac against a loopback server with a 512 KiB buffer and a reader that had
   stopped: the server had written 1.6 MB of 256 MiB, and 917,504 bytes were the
-  most held. The bound is of the order of the buffer, not exact, because what
+  most held (13.6 MB, once, with the machine loaded and the reader draining
+  slower than the connection refilled: what the connection's windows already
+  held arrives in a rush on resume). The bound is of the order of the buffer, not exact, because what
   the system had already read when it was told to stop still arrives. **On
   Linux there is no backpressure.** The same loopback test, run in the
   `swift:6.4` image, showed swift-corelibs-foundation restarting a suspended data
