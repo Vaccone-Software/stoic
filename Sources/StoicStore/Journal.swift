@@ -219,6 +219,8 @@ public final class Journal: Sendable {
     private let state: Mutex<State>
     /// The cross-process lock, held from `open` until `close` (or deinit).
     private let lock: FileLock?
+    /// Says to ``remove(at:fileSystem:)`` that this journal is open.
+    private let registration: JournalRegistration
 
     private var snapshotPath: String { path + ".snapshot" }
 
@@ -229,6 +231,7 @@ public final class Journal: Sendable {
         self.options = options
         self.openReport = report
         self.state = Mutex(state)
+        self.registration = JournalRegistration(JournalIdentity(path: path, fileSystem: fileSystem))
     }
 
     deinit {
@@ -828,6 +831,9 @@ public final class Journal: Sendable {
     /// Releases the file, and the cross-process lock if it holds one.
     /// Further calls throw.
     public func close() throws(StoreError) {
+        // Closed as far as `remove(at:)` is concerned even if the descriptor
+        // fails to close: nothing here uses the file again.
+        defer { registration.release() }
         try state.withLock { (state) throws(StoreError) in
             guard let file = state.file else { return }
             state.file = nil

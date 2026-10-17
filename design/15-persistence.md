@@ -73,7 +73,7 @@ type, `StoreError`.
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `FileLock`                       | An advisory `flock` on a sidecar file, held across processes: `tryAcquire`, `acquire(timeout:)`, `release`, `withLock`. Opt-in for `Journal` and `SettingsStore` (`Options.crossProcessLock`). |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine; `replaceItem` swaps in a staged file or directory.                                               |
-| `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot; read-only replay for a second process.                               |
+| `Journal`                        | Framed, checksummed, sequence-numbered log; torn-tail repair; group commit; compaction to a snapshot; read-only replay for a second process; `remove(at:)` for the log and everything kept beside it. |
 | `Outbox<Item>` (actor)           | Durable at-least-once delivery over a `Journal`, under `retry`, with an `IdempotencyKey` per entry.                                                                         |
 | `StoreError`                     | `Kind` + operation + path + errno. Conforms to `Retryable`.                                                                                                                  |
 | `FileWatch`                      | A running watch from `FileSystem.watchFile(at:handler:)`; ends on `cancel()` or when dropped.                                                                                |
@@ -339,6 +339,32 @@ has to guess it; the fold may return `nil` to decline, and nothing is written.
 `Replay.lastSequence` is the number a compaction of that replay
 is recorded against, and equals `Journal.lastSequence` in every state (tested).
 
+**Removing a journal.** A journal is several files, and an app that deletes
+"the log" leaves a snapshot that brings it back at the next `open`, a tombstone that makes
+`open` refuse, a lock file, and copies of damaged logs. `Journal.remove(at:fileSystem:)` removes
+the family: the log, `.snapshot`, `.snapshot-lost`, `.lock`, every `.corrupt-N` (the log's and the
+snapshot's), and the `.tmp` of the snapshot, the tombstone or a `.corrupt-N` that a crash left. A
+name is removed only if it is exactly one of those, so `<path>.bak` and `<path>2` stay; a test runs
+the journal through compaction over damage, a lost snapshot and a cross-process lock, and checks
+that every file it ever created, temporaries included, is one the removal knows.
+
+It refuses what it can see is in use, with `.busy` and nothing removed. **A journal open in this
+process** (opened through this file system object at this path, and not closed or dropped) is
+found in a registry the journal keeps for it; a second spelling of the path, or a second
+`PosixFileSystem()` over the same disk, is another key. **A journal another process holds with
+`crossProcessLock`** is found by taking the same lock, which the removal then keeps until the last
+file is gone, so a writer that opens meanwhile waits for it. A writer that does not use the lock
+cannot be seen: the file under it is unlinked and its later appends are lost, so remove a journal
+another process writes only when that process is done with it. A file system with no advisory locks
+skips the check, as `open` does.
+
+It is not atomic: the log goes first, then the snapshot and the rest, the lock last, and the
+directory is synced once at the end. A crash or a failure between leaves part of the family, and
+calling it again finishes. The order is the one whose partial states are least wrong: a snapshot
+with no log opens as an earlier, consistent state, where a log with no snapshot would open as
+records without the state they build on. It does not erase: the blocks stay on APFS and SSDs and in
+any backup (design/24 is where a deletion becomes real, by retiring keys).
+
 **A lost snapshot stays lost until the app says so.** Quarantining a corrupt
 snapshot moves it out of the way, so the next `open` would find no snapshot
 and start from the log alone, as if it had never existed. Before the snapshot
@@ -365,6 +391,10 @@ and the tombstone is removed.
 | a record exceeds `maxRecordSize`                           | `.invalidArgument`; nothing written                                                                |
 | a second process reads the log while another appends       | `Journal.readOnlyReplay` returns one consistent state, a prefix of what was appended, and changes nothing on disk: the writer's next append lands where it should |
 | a reader finds a torn tail                                 | It is ignored and reported (`droppedBytes`), never cut: it may be an append still in flight        |
+| a journal is removed                                       | The log, `.snapshot`, `.snapshot-lost`, `.lock`, every `.corrupt-N` and the `.tmp` of those a crash left are removed, the log first and the lock last, and **nothing else in the directory**; removing what is not there returns 0 and creates nothing (not even the lock file) |
+| a journal that is open is removed                          | `.busy`, and nothing is removed: a journal open in this process (same path, same file system object) is refused, and an unclosed one that is dropped is not open |
+| a journal another process holds is removed                 | With `crossProcessLock`, `.busy`, and nothing is removed; the removal holds the lock until the last file is gone, so a writer that opens meanwhile gets `.busy`. A writer that does not use the lock is not detected |
+| a journal's removal is interrupted                         | Part of the family remains, the log gone first (a snapshot with no log is an earlier consistent state); the lock is released; calling `remove` again finishes, and a journal then opens empty |
 | a reader finds a lost snapshot                             | `.corrupt`, with the snapshot left where it is (only the writer's `open` quarantines it); `lostSnapshot: .acceptLoss` reads what the log holds and says so |
 
 ### Outbox
@@ -648,7 +678,7 @@ verdict. `markStable(after:)` measures its delay on the liveness clock
 
 `store.corrupt_quarantined`, `store.recovered_previous`, `store.replace_leftover`, `store.temp_removed`,
 `store.fullsync_unavailable`, `store.journal_corruption`, `store.journal_truncated`,
-`store.journal_compacted`, `store.journal_snapshot_lost`, `store.outbox_delivered`,
+`store.journal_compacted`, `store.journal_removed`, `store.journal_snapshot_lost`, `store.outbox_delivered`,
 `store.outbox_delivery_failed`, `store.outbox_discarded` (the kind, `refused`,
 `undecodable` or `expired`, and the delivery's own reason: short, and never the
 entry), `store.outbox_kept`, `store.outbox_maintenance_failed`. The lock reports no events: a refusal is a thrown error. All are in
@@ -677,6 +707,9 @@ again. Invariants:
   compactions; and for a batch that spans pages, every record of it or none. Over a log with a damaged record in the middle: appends and a
   compaction keep every intact record and every acknowledged append at every
   crash point, and a compaction leaves a copy of the damaged log.
+- **`Journal.remove`:** at every crash point nothing else in the directory has changed, a rerun leaves none
+  of the family, and a journal opened afterwards is empty; after the call returned, none of it is there.
+  With an ordinary journal and one that has been through damage, a lost snapshot and a lock.
 - **`Outbox`:** pending entries are a subsequence of those enqueued, intact;
   no enqueued entry whose delivery had not finished is missing; no entry whose
   acknowledgement returned is pending; the recovered outbox delivers exactly
