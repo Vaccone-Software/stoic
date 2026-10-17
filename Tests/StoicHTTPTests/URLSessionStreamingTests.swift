@@ -92,25 +92,20 @@ extension URLSessionTransportTests {
 
     // MARK: Backpressure
 
-    @Test func aLaggingConsumerSuspendsTheTaskAndResumingItLosesNothing() async throws {
-        // What the stub can show: the buffer fills, the task is suspended, the
-        // consumer's draining resumes it, and every byte arrives in order. (That
-        // suspending really stops the system reading is `aSlowConsumerMakesTheServerWait`.)
+    @Test func aLaggingConsumerStillGetsEveryByteOnceAndInOrder() async throws {
+        // A consumer that waits while the stub hands over 8 MiB, whatever the transport does about it
+        // (suspend the task, on Apple platforms; nothing, on Linux): every byte arrives, once, in order.
+        // That the task is suspended, and the server made to wait, is `aSlowConsumerMakesTheServerWait`,
+        // on a real connection: a stub's delivery is too much at the mercy of the machine's load to
+        // say how full a buffer got.
         let transport = Self.streamingTransport(bufferBytes: 256 * 1024)
         let response = try await transport.stream(Self.request("/flood"), maxResponseBytes: 100 << 20)
         var iterator = response.body.makeAsyncIterator()
         var checker = BlockChecker()
         checker.check(try #require(try await iterator.next()))
-        #if canImport(Darwin)
-        await eventually("the task was never suspended") { transport.transfers.streams.suspensions >= 1 }
-        #endif
+        try await Task.sleep(for: .milliseconds(100))
         while let chunk = try await iterator.next() { checker.check(chunk) }
-        #expect(checker.offset == 8 * 1024 * 1024, "every byte, once, in order, suspended or not")
-        #if canImport(Darwin)
-        #expect(transport.transfers.streams.resumptions >= 1)
-        #else
-        #expect(transport.transfers.streams.suspensions == 0, "swift-corelibs-foundation restarts a suspended task: never suspended there")
-        #endif
+        #expect(checker.offset == 8 * 1024 * 1024)
     }
 
     #if canImport(Darwin)
