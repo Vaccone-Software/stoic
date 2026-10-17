@@ -25,12 +25,20 @@ struct HTTPOperationTests {
         await rig.failure(of: task) as? OperationError<any Error>
     }
 
-    /// Lets the operation's backoffs run their course. Its delays are a
-    /// fraction of a second, so one advance carries the clock through every
-    /// retry that follows: each timer is due before the advance ends.
-    static func waitOutBackoffs(in rig: Rig) async {
-        await rig.waitForBackoff(1)
-        await rig.clock.advance(by: .seconds(5))
+    /// Lets the operation's `backoffs` run their course, one at a time. An
+    /// advance does not wait for the attempt it wakes to sleep again, so a
+    /// clock moved before a backoff begins leaves it asleep for good (and
+    /// the test waiting on it for ever); but the advance before may have
+    /// woken that backoff already. So each is waited for until it is asleep
+    /// or the attempt after it has sent its request (one to an attempt,
+    /// here), and only then is the clock moved. Its delays are a fraction of
+    /// a second, so a second is past any of them.
+    static func waitOutBackoffs(_ backoffs: Int = 2, in rig: Rig) async {
+        for attempt in 1...backoffs {
+            await eventually("attempt \(attempt) never failed") { rig.events.count("retry.attempt_failed") >= attempt }
+            await eventually("backoff \(attempt) never began") { rig.clock.sleeperCount >= 1 || rig.transport.requestCount > attempt }
+            await rig.clock.advance(by: .seconds(1))
+        }
     }
 
     // MARK: Deferring
@@ -90,6 +98,7 @@ struct HTTPOperationTests {
             let first = Self.perform(fetch, .get("/a"), via: rig)
             let second = Self.perform(fetch, .get("/a"), via: rig)
             await eventually { rig.transport.inFlightCount == 2 }
+            await rig.clock.waitForSleepers(count: 4)   // each attempt's timer and scripted delay
             await rig.clock.advance(by: .seconds(1))
             #expect(try await first.value.status == 200)
             #expect(try await second.value.status == 200)
