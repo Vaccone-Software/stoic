@@ -160,6 +160,73 @@ public final class HTTPClient: Sendable {
         ]))
     }
 
+    // MARK: Streaming
+
+    /// Sends `request` and returns as soon as the response head has arrived
+    /// with a success status, with the body to be read as a stream: for a body
+    /// too large to hold in memory, a model or an installer.
+    ///
+    /// It is one exchange through the same pipeline as ``send(_:idempotencyKey:overrides:)``
+    /// (design/19): the base URL and headers, redirects, the host's breaker,
+    /// rate limit and bulkhead, the retry policy, and the classification of
+    /// failures as ``HTTPError``, with these differences:
+    ///
+    /// - **Retrying ends at the head.** A `503`, a lost connection or a timeout
+    ///   before the head arrives is retried as for `send`. Once the head is
+    ///   returned the body is the caller's: a failure while reading it is
+    ///   thrown by the body (``HTTPBodyStream``), never retried here, because
+    ///   the bytes already delivered cannot be unsent. Resuming is the
+    ///   caller's to do, with a `Range` request of its own.
+    /// - **The attempt timeout bounds the wait for the head** and for the
+    ///   excerpt of an error response, not the body. The caller's deadline
+    ///   bounds everything: a body being read when it passes ends with
+    ///   `.rejected(deadline_exceeded)`. A stalled body is cut by the
+    ///   transport's own limit on silence (`URLSession`'s
+    ///   `timeoutIntervalForRequest`), as `URLError.timedOut`.
+    /// - **The bulkhead, the rate limit and the breaker see the exchange up to
+    ///   the head**, and release their slot and permit there: a transfer that
+    ///   runs for an hour must not hold one of the host's eight slots against
+    ///   its API calls, nor does a cut part-way through a body count against
+    ///   the breaker. How many transfers run at once is the caller's to bound.
+    /// - **`retryOnResponse` and coalescing do not apply:** the body has not
+    ///   arrived, and a stream is not shared.
+    /// - **The size is bounded by `maxBytes`, not ``HTTPPolicy/maxResponseBytes``.**
+    ///   The bound is the caller's to name, because the policy's, ten
+    ///   megabytes by default, is made for API responses.
+    ///
+    /// - Parameters:
+    ///   - request: The request to send.
+    ///   - maxBytes: The most body bytes to read. A declared `Content-Length`
+    ///     over it fails before the first byte, and a body that passes it ends
+    ///     with ``HTTPError/responseTooLarge(limit:attempts:)``, with the
+    ///     connection cancelled.
+    ///   - statuses: Statuses outside 2xx that are returned as responses, with
+    ///     their bodies, instead of thrown: for a caller that interprets them
+    ///     itself (`416`, "the range is not satisfiable", for one that resumes).
+    ///     A redirect is followed whatever this says.
+    ///   - idempotencyKey: As for ``send(_:idempotencyKey:overrides:)``.
+    ///   - overrides: As for ``send(_:idempotencyKey:overrides:)``: a call that
+    ///     retries for itself passes a schedule of one attempt.
+    /// - Throws: ``HTTPError`` before the head arrives, or `CancellationError`
+    ///   if the caller was cancelled. The body throws ``HTTPError``
+    ///   (`transport`, `responseTooLarge`, `timedOut`, `rejected`) or
+    ///   `CancellationError`.
+    public func stream(
+        _ request: HTTPRequest,
+        maxBytes: Int,
+        accepting statuses: Set<Int> = [],
+        idempotencyKey: IdempotencyKey? = nil,
+        overrides: HTTPOverrides = .none
+    ) async throws -> HTTPStreamedResponse {
+        precondition(maxBytes >= 0, "a byte limit cannot be negative")
+        let prepared = try prepare(request, key: idempotencyKey, overrides: overrides)
+        let outcome = await run(prepared, defers: PerformAttempt.isLive, mode: .streamed(limit: maxBytes, accepted: statuses))
+        let delivered = try settle(outcome)
+        return HTTPStreamedResponse(
+            status: delivered.response.status, headers: delivered.response.headers,
+            body: delivered.stream ?? HTTPBodyStream(bytes: delivered.response.body))
+    }
+
     // MARK: Inspection
 
     /// The callers waiting on the shared request for `request`, which a test
@@ -226,7 +293,7 @@ public final class HTTPClient: Sendable {
         if coalesce, prepared.request.method == .get, prepared.request.body == nil {
             return try await coalesced(prepared)
         }
-        return try settle(await run(prepared, defers: defers))
+        return try settle(await run(prepared, defers: defers, mode: .buffered))
     }
 
     private func settle(_ outcome: Outcome) throws -> Delivered {
@@ -257,9 +324,9 @@ public final class HTTPClient: Sendable {
                     led.mark()
                     let outcome: Outcome
                     if let lent {
-                        outcome = await withDeadline(lent) { await self.run(prepared, defers: false) }
+                        outcome = await withDeadline(lent) { await self.run(prepared, defers: false, mode: .buffered) }
                     } else {
-                        outcome = await self.run(prepared, defers: false)
+                        outcome = await self.run(prepared, defers: false, mode: .buffered)
                     }
                     switch outcome {
                     case .delivered(let delivered):
@@ -316,12 +383,12 @@ public final class HTTPClient: Sendable {
     /// (each hop has the schedule's attempts of its own). What bounds the
     /// chain is ``HTTPPolicy/maxRedirects`` and the caller's deadline, which
     /// every hop runs under; every hop counts in ``HTTPError/attempts``.
-    private func run(_ prepared: PreparedRequest, defers: Bool) async -> Outcome {
+    private func run(_ prepared: PreparedRequest, defers: Bool, mode: BodyMode) async -> Outcome {
         let log = AttemptLog()
         var current = prepared
         var followed = 0
         while true {
-            let outcome = await exchange(current, log: log, defers: defers)
+            let outcome = await exchange(current, log: log, defers: defers, mode: mode)
             guard case .delivered(let delivered) = outcome, Redirects.isRedirect(delivered.response) else { return outcome }
             let response = delivered.response
             let label = current.hostLabel(self.label)
@@ -369,8 +436,8 @@ public final class HTTPClient: Sendable {
     /// the hook (`SingleFlight`, keyed by the generation of the credentials
     /// that were refused), and a request that finds the credentials already
     /// renewed since it was prepared replays without running the hook at all.
-    private func exchange(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool) async -> Outcome {
-        let first = await execute(prepared, log: log, defers: defers)
+    private func exchange(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool, mode: BodyMode) async -> Outcome {
+        let first = await execute(prepared, log: log, defers: defers, mode: mode)
         guard reauthenticate != nil, prepared.overrides.reauthenticate, prepared.carriesClientHeaders,
               case .failed(.status(401, _, _, _, _)) = first else {
             return first
@@ -399,7 +466,7 @@ public final class HTTPClient: Sendable {
         } catch {
             return .failed(error)
         }
-        return await execute(replay, log: log, defers: defers)
+        return await execute(replay, log: log, defers: defers, mode: mode)
     }
 
     /// Calls the hook, unless another request got there first.
@@ -428,18 +495,19 @@ public final class HTTPClient: Sendable {
     /// its attempt timeout nor its `retryOnResponse`, which belong to its own
     /// retry. The operation's timer bounds the attempt, and what the operation
     /// retries is what its classification, ``HTTPError``'s, says.
-    private func execute(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool) async -> Outcome {
+    private func execute(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool, mode: BodyMode) async -> Outcome {
         if defers {
             let label = prepared.hostLabel(self.label)
-            let result: Result<HTTPResponse, AttemptError>
+            let result: Result<Received, AttemptError>
             do throws(AttemptError) {
-                result = .success(try await attempt(prepared, label: label, log: log, defers: true))
+                result = .success(try await attempt(prepared, label: label, log: log, defers: true, mode: mode))
             } catch {
                 result = .failure(error)
             }
             switch result {
-            case .success(let response):
-                return .delivered(Delivered(response: response, attempts: log.count, label: label, fields: prepared.fields))
+            case .success(let received):
+                return .delivered(Delivered(
+                    response: received.response, stream: received.stream, attempts: log.count, label: label, fields: prepared.fields))
             case .failure(let error):
                 return failed(finalOutcome(for: .failed(error), prepared, attempts: log.count, watcher: nil, label: label), prepared, label: label)
             }
@@ -468,21 +536,23 @@ public final class HTTPClient: Sendable {
         if let bulkhead = host.bulkhead { stages.append(bulkhead) }
         let pipeline = Pipeline(stages)
 
-        let result: Result<HTTPResponse, PolicyError<AttemptError>> = await withAmbient({ $0.instrumentation = watcher }) {
-            () async -> Result<HTTPResponse, PolicyError<AttemptError>> in
+        let result: Result<Received, PolicyError<AttemptError>> = await withAmbient({ $0.instrumentation = watcher }) {
+            () async -> Result<Received, PolicyError<AttemptError>> in
             do throws(PolicyError<AttemptError>) {
-                let response = try await pipeline.execute { () async throws(AttemptError) -> HTTPResponse in
-                    try await self.attempt(prepared, label: host.label, log: log, defers: false)
+                let received = try await pipeline.execute { () async throws(AttemptError) -> Received in
+                    try await self.attempt(prepared, label: host.label, log: log, defers: false, mode: mode)
                 }
-                return .success(response)
+                return .success(received)
             } catch {
                 return .failure(error)
             }
         }
 
         switch result {
-        case .success(let response):
-            return .delivered(Delivered(response: response, attempts: log.count, label: prepared.hostLabel(label), fields: prepared.fields))
+        case .success(let received):
+            return .delivered(Delivered(
+                response: received.response, stream: received.stream, attempts: log.count, label: prepared.hostLabel(label),
+                fields: prepared.fields))
         case .failure(let error):
             return failed(finalOutcome(for: error, prepared, attempts: log.count, watcher: watcher, label: host.label), prepared, label: host.label)
         }
@@ -556,9 +626,15 @@ public final class HTTPClient: Sendable {
     /// attempt timeout but one it asked for itself (the operation's timer
     /// bounds the attempt), and no `retryOnResponse` (a response is a failure
     /// only for the retry that asks again).
+    ///
+    /// A streamed call is over at the head: the attempt timeout bounds the
+    /// wait for it (and for the excerpt of an error response), never the
+    /// body, which a download that is progressing must be free to take as
+    /// long as it needs. The body that comes back is the client's hold on the
+    /// transport's (``GuardedBody``).
     private func attempt(
-        _ prepared: PreparedRequest, label: String, log: AttemptLog, defers: Bool
-    ) async throws(AttemptError) -> HTTPResponse {
+        _ prepared: PreparedRequest, label: String, log: AttemptLog, defers: Bool, mode: BodyMode
+    ) async throws(AttemptError) -> Received {
         let clock = Ambient.current.clock
         let started = clock.now
         let (number, retry, gap, previous) = log.begin(at: started)
@@ -572,26 +648,28 @@ public final class HTTPClient: Sendable {
 
         let transport = self.transport
         let request = prepared.request
-        let limit = policy.maxResponseBytes
+        let limit: Int
+        let streamed: Bool
+        switch mode {
+        case .buffered:
+            limit = policy.maxResponseBytes
+            streamed = false
+        case .streamed(let bytes, _):
+            limit = bytes
+            streamed = true
+        }
+        let excerptBytes = policy.errorExcerptBytes
         let callerDeadline = Deadline.current
         let timeout = defers ? prepared.overrides.attemptTimeout : prepared.overrides.attemptTimeout ?? policy.attemptTimeout
-        var result: Result<HTTPResponse, AttemptError>
+        var result: Result<Received, AttemptError>
         do throws(AttemptError) {
             if let timeout {
                 result = .success(try await withTimeout(timeout, label: "\(label) attempt \(number)") {
-                    () async throws(AttemptError) -> HTTPResponse in
-                    do {
-                        return try await transport.send(request, maxResponseBytes: limit)
-                    } catch {
-                        throw AttemptError(classifying: error)
-                    }
+                    () async throws(AttemptError) -> Received in
+                    try await Self.exchange(request, over: transport, mode: mode, limit: limit, excerptBytes: excerptBytes)
                 })
             } else {
-                do {
-                    result = .success(try await transport.send(request, maxResponseBytes: limit))
-                } catch {
-                    throw AttemptError(classifying: error)
-                }
+                result = .success(try await Self.exchange(request, over: transport, mode: mode, limit: limit, excerptBytes: excerptBytes))
             }
         } catch {
             result = .failure(error)
@@ -602,18 +680,25 @@ public final class HTTPClient: Sendable {
         if case .failure(.cancelled) = result, !Task.isCancelled, callerDeadline?.hasPassed != true {
             result = .failure(.timedOut)
         }
-        if case .success(let response) = result {
-            if response.body.count > limit {
+        if case .success(var received) = result {
+            let response = received.response
+            if !streamed, response.body.count > limit {
                 result = .failure(.tooLarge(limit: limit))
             } else if Redirects.isRedirect(response) {
                 // Not the answer but the way to it: the host answered, and the
                 // client follows it (or refuses to) once this hop is over.
+            } else if let body = received.stream {
+                // A streamed head that is wanted: the answer. The body is not
+                // here yet, so there is nothing for `retryOnResponse` to see.
+                received.stream = GuardedBody(
+                    body, limit: limit, attempts: log.count, label: label, fields: prepared.fields).stream
+                result = .success(received)
             } else {
                 // The predicate sees every response that arrived whole, but a
                 // redirect. A success is only turned into a failure to ask
                 // again if it could be asked again: an unkeyed `POST` that was
                 // answered is answered.
-                let verdict = defers ? nil : (prepared.overrides.retryOnResponse ?? policy.retryOnResponse)?(response)
+                let verdict = defers || streamed ? nil : (prepared.overrides.retryOnResponse ?? policy.retryOnResponse)?(response)
                 let asksAgain = prepared.safeToRepeat && verdict.map { $0 != .stop } == true
                 if !response.isSuccess || asksAgain {
                     result = .failure(.status(
@@ -633,9 +718,9 @@ public final class HTTPClient: Sendable {
         ]
         if let query = prepared.query, !query.isEmpty { fields.append(.init("query", .string(query), privacy: .private)) }
         switch result {
-        case .success(let response):
-            let outcome = response.isSuccess ? "ok" : "redirect"
-            fields += [.init("status", .int(response.status)), .init("outcome", .string(outcome), privacy: .public)]
+        case .success(let received):
+            let outcome = Redirects.isRedirect(received.response) ? "redirect" : "ok"
+            fields += [.init("status", .int(received.response.status)), .init("outcome", .string(outcome), privacy: .public)]
             log.end(at: finished, reason: outcome)
         case .failure(let failure):
             if case .status(let code, _, _, _) = failure { fields.append(.init("status", .int(code))) }
@@ -649,6 +734,37 @@ public final class HTTPClient: Sendable {
         }
         Ambient.record(Event("http.request", level: .debug, label: label, fields: fields))
         return try result.get()
+    }
+
+    /// One exchange with the transport: the whole response for a buffered
+    /// call, and for a streamed one the head with its body unread. A redirect
+    /// has its body dropped unread (it is the way to the answer), and so
+    /// does the head of a failure but for as much of its body as an excerpt
+    /// holds; a status the caller said it would interpret (`accepted`)
+    /// comes back with its body, like a success.
+    private static func exchange(
+        _ request: HTTPRequest, over transport: any HTTPTransport, mode: BodyMode, limit: Int, excerptBytes: Int
+    ) async throws(AttemptError) -> Received {
+        do {
+            switch mode {
+            case .buffered:
+                return Received(response: try await transport.send(request, maxResponseBytes: limit), stream: nil)
+            case .streamed(_, let accepted):
+                let streamed = try await transport.stream(request, maxResponseBytes: limit)
+                var head = HTTPResponse(status: streamed.status, headers: streamed.headers)
+                if Redirects.isRedirect(head) {
+                    streamed.body.cancel()
+                    return Received(response: head, stream: nil)
+                }
+                if streamed.isSuccess || accepted.contains(streamed.status) {
+                    return Received(response: head, stream: streamed.body)
+                }
+                head.body = try await streamed.body.prefix(excerptBytes)
+                return Received(response: head, stream: nil)
+            }
+        } catch {
+            throw AttemptError(classifying: error)
+        }
     }
 
     // MARK: Preparation

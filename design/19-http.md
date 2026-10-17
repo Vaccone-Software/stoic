@@ -146,6 +146,30 @@ that does not match is `.decoding(ValidationFailure)` with every issue and
 its path, and is never retried — asking again will not change the
 server's mind.
 
+**Streaming.** A body too large to hold (a model, an installer) is read with
+`HTTPClient.stream(_:maxBytes:accepting:)`, which returns when the head has
+arrived with a success status, and hands over the body as a sequence of byte
+chunks (`HTTPBodyStream`, `[UInt8]` chunks, one consumer, one pass). It is one
+exchange through the same pipeline as `send` — base URL and headers, redirects,
+the host's breaker, rate limit and bulkhead, retry, classification as
+`HTTPError` — and it differs in what a body means. **Retrying ends at the
+head**: a 503, a lost connection or a timeout before the head is retried as for
+`send`; a failure while the body is read is thrown by the body, never retried,
+because bytes already taken cannot be sent again, and resuming is the caller's
+(a `Range` request, design/23). **The attempt timeout bounds the wait for the
+head**, not the body: a transfer that is progressing is not cut at a fixed
+length, a stalled one is cut by the transport's own limit on silence, and the
+caller's deadline bounds all of it. **The bulkhead slot, the rate-limit permit
+and the breaker's verdict are the head's:** a transfer that runs for an hour
+must not hold one of the host's eight slots against its API calls, and a cut
+part-way through a body is not counted against the host. **The bound is the
+caller's** (`maxBytes`, not `maxResponseBytes`, which is made for API
+responses): a declared length over it fails before the first byte, and a body
+that passes it ends with `.responseTooLarge`, the connection cancelled.
+`retryOnResponse` and coalescing do not apply to a stream. A status outside 2xx
+that the caller will interpret itself (a `416`) is named in `accepting:` and
+comes back as a response.
+
 **Coalescing** (on by default; `coalesceGETs: false` turns it off).
 Identical `GET`s in flight at once (same URL and the same name and value of
 every request header) share one request (`SingleFlight`): ten views asking
@@ -213,6 +237,20 @@ inside a simulation.
 | a call runs inside a `perform` attempt | One attempt through none of the client's retry, breaker, bulkhead or rate limit; the operation retries, by `HTTPError`'s classification |
 | a call inside a `perform` attempt fails before a connection exists | `neverReachedBackend`: a not-repeatable operation is tried again |
 | a call inside a `perform` attempt fails after its request may have been sent | Not `neverReachedBackend` (a lost connection, a 503, a failure after a redirect): a not-repeatable operation is not repeated |
+| a body too large to hold is streamed | `stream` returns at the head; the body arrives in chunks, in order, under `maxBytes` (not `maxResponseBytes`) and is never held whole |
+| a streamed request gets 503 before its head | Retried as `send` retries; the body read is that of the answer that was good |
+| a streamed request is answered with a failure status | `.status` with an excerpt; the rest of the body is abandoned unread; retried if the status is |
+| a call accepts a status outside 2xx, such as 416 | Returned as a response with its headers and body, not thrown |
+| a streamed body fails after its head | The body throws `HTTPError` (a lost connection is `.transport`) after the chunks that arrived; nothing is retried; the sequence has ended |
+| a streamed body is longer than its limit | `.responseTooLarge` thrown by the body after `maxBytes`, the connection cancelled; a declared length over the limit fails before the first byte |
+| a streamed body outlasts the attempt timeout | Not cut: the timeout bounds the wait for the head; a server that never answers is cut at it |
+| the caller's deadline passes while a body is read | The read throws `.rejected(deadline_exceeded)` and the transfer is cancelled |
+| the caller is cancelled while a body is read | The read throws `CancellationError` and the transfer is cancelled |
+| a streamed response is abandoned unread | Cancelling or dropping the body cancels the transfer; a read after cancelling throws `CancellationError` |
+| a streamed request is redirected | Followed as any request is; the redirect's body is dropped unread; `Range` and `If-Range` go along even to another origin |
+| a streamed call runs inside a `perform` attempt | One attempt through none of the client's retry, breaker, bulkhead or rate limit; no attempt timeout cuts the body |
+| a transport has no streaming of its own | The default `stream` sends, and yields the whole body as one chunk: fine for a test transport, never for a large body |
+| a consumer reads slower than the body arrives | `URLSessionTransport` holds a bounded buffer: past it the data task is suspended, so the server waits; it resumes when the consumer has drained the buffer |
 
 ## Events
 
@@ -225,7 +263,10 @@ private), `http.reauthenticated`,
 `http.reauthenticate_failed` (the type of the hook's error, never its text),
 `http.redirected` (status, hop, the method, host and path it leads to, and
 whether the origin changed; never a header or a query);
-the breaker, rate limiter, bulkhead and budget emit their own.
+the breaker, rate limiter, bulkhead and budget emit their own. A streamed
+exchange records `http.request` at its head (its duration is the time to the
+head, its status the head's) and `http.response_too_large` if its body passes
+the limit; a failure while the body is read is the reader's to report.
 
 ## As built
 
@@ -249,7 +290,8 @@ headers, body bytes, optional `idempotencyKey`; builders `.get`, `.head`,
 `.delete`, `.post(_:json:)`, `.put`, `.patch`, `.keyed(_:)`), `HTTPResponse`,
 `HTTPMethod` (`isSafe`, `isIdempotent`), `HTTPHeaders` (case-insensitive;
 credentials print as `<redacted>`), `HTTPTransport`, `URLSessionTransport`,
-`ScriptedTransport`, `HTTPPolicy`, `HTTPClient`, `HTTPError`.
+`ScriptedTransport`, `HTTPPolicy`, `HTTPClient`, `HTTPError`; for streaming,
+`HTTPStreamedResponse` (status, headers, `body`) and `HTTPBodyStream`.
 
 **The transport.** `send(_:maxResponseBytes:)` receives an absolute URL and
 the final headers. The limit is passed *to* the transport because only the
@@ -453,6 +495,65 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   type prints as `status_503`, not with the body excerpt that
   `HTTPError.status` holds.
 
+**Streaming** (built after, for design/23's downloads):
+
+- **A requirement with a default, not a second protocol.** `HTTPTransport`
+  gained `stream(_:maxResponseBytes:)`, whose default sends and yields the
+  whole body as one chunk, so every existing transport compiles and a test
+  transport that only scripts `send` still works. It is documented as fine for
+  tests and wrong for anything else. The addition is a listed API break (a new
+  protocol requirement), since a protocol's requirements are part of its
+  contract for the types that conform and for the code that calls through it.
+- **An object, not a closure.** `stream` returns the head with an
+  `HTTPBodyStream` (a class, `AsyncSequence` of `[UInt8]`, `Failure = any Error`)
+  rather than taking a body closure, because the pipeline's retry, breaker and
+  bulkhead stages end at the head (above), and a closure would have run the body
+  inside them, holding a slot for an hour. Its lifetime is the cost: abandoning
+  is `cancel()` or dropping the last reference (the deinit cancels), so a
+  stream nobody reads holds no connection. After a failure further reads
+  return `nil`; after `cancel()` they throw `CancellationError`.
+- **`[UInt8]` chunks.** The file system's `write` and the hashers a download
+  feeds take bytes; `Data` would have been converted at every chunk. The one
+  copy is from the `Data` the delegate hands over.
+- **`URLSessionTransport`** streams from the session delegate, never through
+  `URLSession.bytes(for:)`, which pays an async hop per byte. Chunks wait in a
+  buffer (`streamBufferBytes`, 4 MiB by default); when it holds that much the
+  data task is *suspended* (the system stops reading, TCP's window closes), and
+  it is resumed when a quarter is left. The decision and the `suspend()` or
+  `resume()` it causes are made under one lock: a resume run before the suspend
+  it answers would leave a reader waiting on a task nothing wakes. Measured on
+  a Mac against a loopback server with a 512 KiB buffer and a reader that had
+  stopped: the server had written 1.6 MB of 256 MiB, and 917,504 bytes were the
+  most held. The bound is of the order of the buffer, not exact, because what
+  the system had already read when it was told to stop still arrives. The
+  consumer is told of a failure only after every chunk that arrived before it.
+  What `URLSession` itself drops when a connection dies (the bytes it had
+  read but not yet delivered) is lost with it: the downloader resumes from what
+  was delivered. `init(configuration:streamBufferBytes:)` takes the caller's
+  configuration, so `waitsForConnectivity`, `allowsExpensiveNetworkAccess`,
+  `allowsConstrainedNetworkAccess` and `timeoutIntervalForRequest` (the silence
+  a streamed body may be held to) are the caller's, as for `send`.
+- **`ScriptedTransport`** gained streamed bodies: `.streaming(bytes, chunkSize:,
+  chunkDelay:, fault:)` and `.serving(Resource, …)`, a file a server holds,
+  answered with `Range`, `If-Range`, `206` and `Content-Range`, a `416`, an
+  `ETag` and `Last-Modified`, or the whole file from a server that ignores
+  ranges. A `Fault` is `.cut(after:)`, `.fail(after:, code)`,
+  `.stall(after:, for:)` on the ambient clock, or `.hang(after:)`. Requests in
+  flight, and requests aborted, count a body until it ends or is abandoned.
+- **`If-Range` joins `Range` in the headers that cross an origin.** A resumed
+  download is a `Range` request to an API that redirects to a CDN; the `Range`
+  went along and its validator did not, so the CDN would have spliced a changed
+  file onto the bytes already held. A validator is an `ETag` or a date the
+  server itself sent, and names no one.
+- **Errors.** The head's failures are `send`'s. A body throws `HTTPError`
+  (`transport`, `responseTooLarge`, `timedOut`, `rejected(deadline_exceeded)`)
+  or `CancellationError`, mapped as for the head; what the caller did itself
+  (`cancel()`) is never a transport failure. `maxBytes` has no default: the bound
+  is the caller's to name, and `HTTPPolicy.maxResponseBytes` is not it.
+- **Not carried over:** `retryOnResponse` (the body has not arrived), coalescing
+  (a stream is not shared), the breaker's view of a body (a cut part-way is not
+  counted against the host), and the bulkhead slot past the head.
+
 **Overrides, response retry, reauthentication and the rate limit** (built after
 the first version, on the same pipeline):
 
@@ -512,7 +613,7 @@ until then):
   the chain has never left it. The request's own headers and its idempotency
   key go to the origin the request named and along redirects within it. When a
   redirect changes origin, only `Accept`, `Accept-Encoding`,
-  `Accept-Language`, `User-Agent`, `Range` and the body's `Content-Type`,
+  `Accept-Language`, `User-Agent`, `Range`, `If-Range` and the body's `Content-Type`,
   `Content-Encoding` and `Content-Language` go along: an allow-list, because a
   header the client has never heard of may be a credential. What is dropped is
   never restored: a chain from the API to another host and back reaches the API
@@ -581,11 +682,17 @@ let outcome = try await outbox.deliver(key) { entry in
 ```
 
 **Not built.** A hedging stage (it exists as a `Policy` value and would slot
-into the pipeline); streaming uploads and downloads.
+into the pipeline); streaming uploads (downloads are built, below, and
+resumable ones are design/23).
 
 **Tests** (`Tests/StoicHTTPTests`; overrides, response retry, reauthentication,
-rate limit, redirects, decoding limits and the policy shortcuts (`singleAttempt`, a keyed 409) each have a file, and `OperationTests` the calls
-inside a `perform` attempt and the "in progress" answers): one per row above, on a `TestClock` and a
+rate limit, redirects, decoding limits and the policy shortcuts (`singleAttempt`, a keyed 409) each have a file, `OperationTests` the calls
+inside a `perform` attempt and the "in progress" answers, and `StreamingTests`,
+`StreamTransferTests` and `URLSessionStreamingTests` streaming: the client on a
+scripted transport; the delegate-side buffer driven by hand, so that what a
+session does only by timing is settled; and the real transport, on a stub and on
+a loopback server for what a stub cannot say, whether suspending the task makes
+the server wait and what a connection that dies mid-body leaves a reader): one per row above, on a `TestClock` and a
 `ScriptedTransport` with no real sleeps (they wait on events and
 `waitForSleepers`); `URLSessionTransport` against a `URLProtocol` stub on a
 real `URLSession` (a redirect comes back as the response, and the client

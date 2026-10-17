@@ -44,15 +44,119 @@ struct PreparedRequest: Sendable {
     }
 }
 
+/// What a call wants of the response body.
+enum BodyMode: Sendable {
+    /// The whole body, in memory, under the policy's `maxResponseBytes`.
+    case buffered
+    /// The head, and the body as a stream of at most `limit` bytes. The
+    /// statuses in `accepted` are returned as responses rather than failures,
+    /// for a caller that interprets them itself (a `416`).
+    case streamed(limit: Int, accepted: Set<Int>)
+}
+
+/// What one attempt brought back: the response, whose body is empty when it
+/// is streamed, and the body still to be read in that case.
+struct Received: Sendable {
+    var response: HTTPResponse
+    var stream: HTTPBodyStream?
+}
+
 /// A response with the number of requests it took, and what an event about
 /// it says of the request that earned it.
 struct Delivered: Sendable {
     var response: HTTPResponse
+    /// The body of a streamed response, still to be read.
+    var stream: HTTPBodyStream?
     var attempts: Int
     /// The label and fields of the request the response answers: the last
     /// hop's, after any redirect.
     var label: String
     var fields: [Event.Field]
+}
+
+/// The client's hold on a streamed body: what a transport delivers, counted
+/// against the limit and reported as the client reports everything else.
+///
+/// A transport that honours the limit has stopped at it; the count is for one
+/// that does not (the client checks the size of a buffered response again for
+/// the same reason). What the transport throws (`URLError`, its own
+/// ``HTTPTransportError``) reaches the caller as ``HTTPError``, the
+/// cancellation of the caller as `CancellationError`, and the passing of the
+/// caller's deadline as `.rejected(deadline_exceeded)`, which is what `send`
+/// answers in each case. Nothing here retries: bytes the caller has taken
+/// cannot be sent again.
+final class GuardedBody: Sendable {
+    private let source: HTTPBodyStream
+    private let limit: Int
+    private let attempts: Int
+    private let label: String
+    private let fields: [Event.Field]
+    private let received = Mutex(0)
+    /// Whether the caller abandoned the body: what the transport then throws
+    /// (`URLError.cancelled`, say) is the caller's own doing, so it reads
+    /// `CancellationError`, not a transport failure.
+    private let abandoned = Mutex(false)
+
+    init(_ source: HTTPBodyStream, limit: Int, attempts: Int, label: String, fields: [Event.Field]) {
+        self.source = source
+        self.limit = limit
+        self.attempts = attempts
+        self.label = label
+        self.fields = fields
+    }
+
+    /// The stream the caller reads: this body's, with the source's lifetime.
+    var stream: HTTPBodyStream {
+        HTTPBodyStream(next: { try await self.next() }, cancel: {
+            self.abandoned.withLock { $0 = true }
+            self.source.cancel()
+        })
+    }
+
+    private func next() async throws -> [UInt8]? {
+        let chunk: [UInt8]?
+        do {
+            chunk = try await source.read()
+        } catch {
+            throw failure(for: error)
+        }
+        guard let chunk else { return nil }
+        let total = received.withLock { count -> Int in
+            count += chunk.count
+            return count
+        }
+        if total > limit {
+            source.cancel()
+            throw tooLarge()
+        }
+        return chunk
+    }
+
+    private func tooLarge() -> HTTPError {
+        Ambient.record(Event("http.response_too_large", level: .warning, label: label, fields: fields + [.init("limit", .int(limit))]))
+        return .responseTooLarge(limit: limit, attempts: attempts)
+    }
+
+    private func failure(for error: any Error) -> any Error {
+        if let error = error as? HTTPError { return error }
+        if abandoned.withLock({ $0 }) { return CancellationError() }
+        switch AttemptError(classifying: error) {
+        case .cancelled:
+            if CancellationCause.current == .deadline || Deadline.current?.hasPassed == true {
+                return HTTPError.rejected(Rejection(.deadlineExceeded, label: label), attempts: attempts)
+            }
+            return CancellationError()
+        case .tooLarge:
+            return tooLarge()
+        case .timedOut:
+            return HTTPError.timedOut(attempt: attempts)
+        case .transport(let code):
+            return HTTPError.transport(code, attempts: attempts)
+        case .status:
+            // A body carries no status; a transport that says so is saying it failed.
+            return HTTPError.transport(.unknown, attempts: attempts)
+        }
+    }
 }
 
 /// The breaker, rate limiter and bulkhead the client keeps for one host.

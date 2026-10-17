@@ -9,6 +9,16 @@ internal import Synchronization
 ///
 /// What it adds to the session, and why:
 ///
+/// - **Streaming with backpressure** (``stream(_:maxResponseBytes:)``). The
+///   body reaches the caller as the delegate hands it over, chunk by chunk,
+///   never a byte at a time (`URLSession.bytes(for:)` pays an async hop per
+///   byte, which a 20 GB model cannot afford). The chunks wait in a buffer of
+///   bounded size; when a consumer lags and the buffer fills, the data task is
+///   *suspended*, so the system stops reading from the connection and TCP's
+///   window closes, and it is resumed once the consumer has drained the
+///   buffer to a quarter. A slow disk slows the download; it does not
+///   fill memory.
+///
 /// - **A byte limit enforced while reading.** The body is collected from the
 ///   task's delegate callbacks, not from `data(for:)`, which would buffer a
 ///   2 GB response before anyone could object. A declared `Content-Length`
@@ -35,26 +45,81 @@ internal import Synchronization
 public final class URLSessionTransport: HTTPTransport {
     private let session: URLSession
     /// The session's delegate.
-    private let transfers: Transfers
+    let transfers: Transfers
+    private let streamBufferBytes: Int
 
     /// A transport on a new session made from `configuration`: its cache,
-    /// cookies, proxies and timeouts are the configuration's.
-    public init(configuration: URLSessionConfiguration = .default) {
+    /// cookies, proxies and timeouts are the configuration's, and so is
+    /// everything a caller sets on it that is about the network rather than
+    /// the request: `waitsForConnectivity`, `allowsExpensiveNetworkAccess`,
+    /// `allowsConstrainedNetworkAccess`, and `timeoutIntervalForRequest`
+    /// (which, as the time allowed between two packets, is also how long a
+    /// streamed body may stall before it fails with `URLError.timedOut`).
+    ///
+    /// - Parameters:
+    ///   - configuration: The session's configuration.
+    ///   - streamBufferBytes: The most body bytes a streamed response holds
+    ///     for a consumer that lags. Past it the data task is suspended; it
+    ///     resumes when a quarter of this is left. A transfer can overshoot it
+    ///     by what the system had already read, so it is a bound of the order
+    ///     of this size, not an exact one. Default 4 MiB.
+    public init(configuration: URLSessionConfiguration = .default, streamBufferBytes: Int = 4 << 20) {
+        precondition(streamBufferBytes > 0, "a stream needs room for at least one byte")
         let transfers = Transfers()
         session = URLSession(configuration: configuration, delegate: transfers, delegateQueue: nil)
         self.transfers = transfers
+        self.streamBufferBytes = streamBufferBytes
     }
 
     deinit {
         session.finishTasksAndInvalidate()
     }
 
-    public func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse {
+    private static func urlRequest(for request: HTTPRequest) throws -> URLRequest {
         guard let url = request.url else { throw URLError(.badURL) }
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = request.method.rawValue
         for field in request.headers { urlRequest.addValue(field.value, forHTTPHeaderField: field.name) }
         urlRequest.httpBody = request.body.map { Data($0) }
+        return urlRequest
+    }
+
+    /// The head as soon as it arrives, and the body as a stream with
+    /// backpressure; see the class's notes. A declared `Content-Length` over
+    /// the limit is refused before the first byte, a body that passes the
+    /// limit ends the stream with ``HTTPTransportError/responseTooLarge(limit:)``
+    /// having cancelled the task, and the data task is cancelled when the
+    /// stream is cancelled or dropped, or when the task reading it is.
+    public func stream(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPStreamedResponse {
+        let urlRequest = try Self.urlRequest(for: request)
+        let transfer = StreamTransfer(limit: maxResponseBytes, bufferLimit: streamBufferBytes, statistics: transfers.streams)
+        let task = session.dataTask(with: urlRequest)
+        transfer.attach(task)
+        transfers.register(transfer, for: task)
+        let head: HTTPURLResponse
+        do {
+            head = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, any Error>) in
+                    transfer.awaitHead(continuation)
+                    task.resume()
+                }
+            } onCancel: {
+                transfer.abandon()
+            }
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+        var headers = HTTPHeaders()
+        for (name, value) in head.allHeaderFields {
+            if let name = name as? String, let value = value as? String { headers.add(name, value) }
+        }
+        let body = HTTPBodyStream(next: { try await transfer.next() }, cancel: { transfer.abandon() })
+        return HTTPStreamedResponse(status: head.statusCode, headers: headers, body: body)
+    }
+
+    public func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse {
+        let urlRequest = try Self.urlRequest(for: request)
 
         let transfer = Transfer(limit: maxResponseBytes)
         let task = session.dataTask(with: urlRequest)
@@ -75,18 +140,32 @@ public final class URLSessionTransport: HTTPTransport {
     }
 }
 
-/// The session's delegate: hands each callback to the ``Transfer`` registered
-/// for its task, and forgets the transfer when the task completes. Task
-/// identifiers are unique within a session.
+/// What the session's delegate hands one task's callbacks to.
+protocol TransferSink: AnyObject, Sendable {
+    /// The response head has arrived. `false` refuses it, and the task is
+    /// cancelled before a byte moves.
+    func receive(_ response: URLResponse) -> Bool
+    /// Bytes have arrived. `false` means stop: the task is cancelled.
+    func receive(_ data: Data) -> Bool
+    /// The task is over; `error` is `nil` if it finished.
+    func complete(error: (any Error)?)
+}
+
+/// The session's delegate: hands each callback to the ``TransferSink``
+/// registered for its task, and forgets the sink when the task completes.
+/// Task identifiers are unique within a session.
 final class Transfers: NSObject, URLSessionDataDelegate, Sendable {
-    private let byTask = Mutex<[Int: Transfer]>([:])
+    private let byTask = Mutex<[Int: any TransferSink]>([:])
+    /// What streamed transfers did, which the tests read: how much a lagging
+    /// consumer made them hold, and how often they stopped the system reading.
+    let streams = StreamStatistics()
 
     /// Routes `task`'s callbacks to `transfer`; called before the task resumes.
-    func register(_ transfer: Transfer, for task: URLSessionTask) {
+    func register(_ transfer: any TransferSink, for task: URLSessionTask) {
         byTask.withLock { $0[task.taskIdentifier] = transfer }
     }
 
-    private func transfer(for task: URLSessionTask) -> Transfer? {
+    private func transfer(for task: URLSessionTask) -> (any TransferSink)? {
         byTask.withLock { $0[task.taskIdentifier] }
     }
 
@@ -118,7 +197,7 @@ final class Transfers: NSObject, URLSessionDataDelegate, Sendable {
 }
 
 /// Collects one task's response, enforcing the byte limit as bytes arrive.
-final class Transfer: Sendable {
+final class Transfer: TransferSink {
     private struct State {
         var continuation: CheckedContinuation<HTTPResponse, any Error>?
         var response: HTTPURLResponse?

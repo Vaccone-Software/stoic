@@ -52,8 +52,14 @@ enum Redirects {
     /// lower case. Each negotiates the content or describes the body, and
     /// none can carry a credential; every other header, custom ones such as
     /// `X-API-Key` included, stays with the origin it was meant for.
+    ///
+    /// `If-Range` goes with `Range`, which a resumed download sends to an API
+    /// that redirects to a CDN: a `Range` that arrives without the validator
+    /// it was made for lets the new server splice a changed file onto the
+    /// bytes already held. A validator is an `ETag` or a date the server
+    /// itself sent; it names no one.
     static let crossOriginHeaders: Set<String> = [
-        "accept", "accept-encoding", "accept-language", "user-agent", "range",
+        "accept", "accept-encoding", "accept-language", "user-agent", "range", "if-range",
         "content-type", "content-encoding", "content-language",
     ]
 

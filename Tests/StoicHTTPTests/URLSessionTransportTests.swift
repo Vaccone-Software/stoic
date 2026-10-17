@@ -78,6 +78,24 @@ final class StubProtocol: URLProtocol {
             client?.urlProtocol(self, didLoad: Data(repeating: 1, count: 65_536))   // URLSession hands over the response once the first chunk arrives
         case "/hang":
             break
+        case "/chunks":
+            respond(200, ["Content-Length": "100000"])
+            for index in 0..<100 {
+                client?.urlProtocol(self, didLoad: Data((0..<1000).map { UInt8(truncatingIfNeeded: index * 1000 + $0) }))
+            }
+            client?.urlProtocolDidFinishLoading(self)
+        case "/flood":
+            // 8 MiB in 64 KiB chunks, handed over as fast as the loading thread can.
+            respond(200)
+            for index in 0..<128 { client?.urlProtocol(self, didLoad: Data(repeating: UInt8(index), count: 65_536)) }
+            client?.urlProtocolDidFinishLoading(self)
+        case "/head-only":
+            respond(200, ["X-Answer": "42"])
+            client?.urlProtocolDidFinishLoading(self)
+        case "/cut":
+            respond(200)
+            client?.urlProtocol(self, didLoad: Data(repeating: 1, count: 1000))
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
         case "/offline":
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
         // swift-corelibs-foundation's URLProtocolClient.wasRedirectedTo is a fatalError.

@@ -12,7 +12,12 @@ internal import Synchronization
 /// slow response arrives. A hang waits on no clock at all, only for
 /// cancellation, so it ends exactly when the client's attempt timeout fires
 /// (or the caller leaves) and a simulation has no timer of it to fire early. Every request is recorded, headers
-/// included, so a test can assert what was sent and how often. A redirect is
+/// included, so a test can assert what was sent and how often. A body can have
+/// a shape of its own (``Step/streaming(_:status:headers:chunkSize:chunkDelay:fault:)``,
+/// ``Step/serving(_:chunkSize:chunkDelay:fault:)``): chunks, a connection cut part-way, an
+/// error, a stall, a server that honours `Range` or ignores it, a validator
+/// that changes, a `416`; and ``stream(_:maxResponseBytes:)`` delivers it a chunk
+/// at a time, where ``send(_:maxResponseBytes:)`` has it whole. A redirect is
 /// a step like any other (`.status(302, headers: ["Location": "/next"])`):
 /// the transport returns it, and the client follows it.
 ///
@@ -32,6 +37,10 @@ public final class ScriptedTransport: HTTPTransport {
             // A body of `totalBytes` that is never materialised: reading it
             // past the limit aborts, as a real transfer would.
             case streamed(status: Int, headers: HTTPHeaders, totalBytes: Int)
+            // A body with a shape: chunks, delays, a fault.
+            case shaped(status: Int, headers: HTTPHeaders, bytes: [UInt8], pacing: Pacing)
+            // A file a server holds, answered as the request asks.
+            case served(Resource, pacing: Pacing)
             case failure(URLError.Code)
             case hang
         }
@@ -67,6 +76,34 @@ public final class ScriptedTransport: HTTPTransport {
         /// at the client's byte limit.
         public static func oversized(_ totalBytes: Int, status: Int = 200, headers: HTTPHeaders = [:]) -> Step {
             Step(.streamed(status: status, headers: headers, totalBytes: totalBytes))
+        }
+
+        /// A response whose body arrives in chunks of `chunkSize` bytes, with
+        /// the `Content-Length` of the whole of it (unless `headers` has one:
+        /// a server may promise more than it delivers), and whatever goes
+        /// wrong part-way if `fault` says so. `chunkDelay` is waited, on the
+        /// ambient clock, before every chunk.
+        public static func streaming(
+            _ body: [UInt8], status: Int = 200, headers: HTTPHeaders = [:], chunkSize: Int = 16 * 1024,
+            chunkDelay: Duration = .zero, fault: Fault? = nil
+        ) -> Step {
+            precondition(chunkSize > 0, "a chunk has at least one byte")
+            var headers = headers
+            if !headers.contains("Content-Length") { headers["Content-Length"] = String(body.count) }
+            return Step(.shaped(
+                status: status, headers: headers, bytes: body,
+                pacing: Pacing(chunkSize: chunkSize, chunkDelay: chunkDelay, fault: fault)))
+        }
+
+        /// The answer of a server that holds `resource`, to this request:
+        /// the whole file, the part a `Range` asks for, or a `416`, with the
+        /// validators a real server sends. Body chunks and faults are as for
+        /// ``streaming(_:status:headers:chunkSize:chunkDelay:fault:)``.
+        public static func serving(
+            _ resource: Resource, chunkSize: Int = 16 * 1024, chunkDelay: Duration = .zero, fault: Fault? = nil
+        ) -> Step {
+            precondition(chunkSize > 0, "a chunk has at least one byte")
+            return Step(.served(resource, pacing: Pacing(chunkSize: chunkSize, chunkDelay: chunkDelay, fault: fault)))
         }
 
         /// The request fails with this `URLError` code.
@@ -210,6 +247,41 @@ public final class ScriptedTransport: HTTPTransport {
     }
 
     public func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse {
+        switch try await begin(request, maxResponseBytes: maxResponseBytes) {
+        case .shaped(let plan, let body):
+            // The whole body, read as a streaming client would, so that a cut,
+            // a fault or a stall is what the caller of `send` sees too.
+            var bytes: [UInt8] = []
+            while let chunk = try await body.next() { bytes.append(contentsOf: chunk) }
+            return HTTPResponse(status: plan.status, headers: plan.headers, body: bytes)
+        case .whole(let response):
+            return response
+        }
+    }
+
+    public func stream(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPStreamedResponse {
+        switch try await begin(request, maxResponseBytes: maxResponseBytes) {
+        case .shaped(let plan, let body):
+            return HTTPStreamedResponse(
+                status: plan.status, headers: plan.headers,
+                body: HTTPBodyStream(next: { try await body.next() }, cancel: { body.cancel() }))
+        case .whole(let response):
+            return HTTPStreamedResponse(status: response.status, headers: response.headers, body: HTTPBodyStream(bytes: response.body))
+        }
+    }
+
+    /// What `begin` hands back: a body still to be read, or a response that
+    /// is already whole.
+    private enum Exchange {
+        case shaped(Plan, ScriptedBody)
+        case whole(HTTPResponse)
+    }
+
+    /// Records the request, finds its step, waits out the step's delay and
+    /// answers the head. A request with a body to be read stays in flight
+    /// until the body ends; every other one is out of flight when this
+    /// returns or throws, and is aborted if it was cancelled or refused.
+    private func begin(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> Exchange {
         guard let url = request.url else { throw URLError(.badURL) }
         let step = state.withLock { state -> Step in
             state.requests.append(request)
@@ -221,23 +293,42 @@ public final class ScriptedTransport: HTTPTransport {
             }
             return step
         }
-        defer { state.withLock { $0.inFlight -= 1 } }
+        var handedOver = false
+        defer { if !handedOver { state.withLock { $0.inFlight -= 1 } } }
 
         do {
             if step.delay > .zero { try await Ambient.sleep(for: step.delay) }
+            let plan: Plan
             switch step.kind {
             case .response(let status, let headers, let body):
                 if body.count > maxResponseBytes { throw TooLarge() }
-                return HTTPResponse(status: status, headers: headers, body: body)
+                return .whole(HTTPResponse(status: status, headers: headers, body: body))
             case .streamed(let status, let headers, let totalBytes):
-                if totalBytes > maxResponseBytes { throw TooLarge() }
-                return HTTPResponse(status: status, headers: headers, body: [UInt8](repeating: 0, count: totalBytes))
+                plan = Plan(
+                    status: status, headers: headers, source: .zeros(totalBytes), pacing: Pacing(chunkSize: 64 * 1024),
+                    declaredLength: totalBytes)
+            case .shaped(let status, let headers, let bytes, let pacing):
+                plan = Plan(
+                    status: status, headers: headers, source: .bytes(bytes), pacing: pacing,
+                    declaredLength: Int(headers["Content-Length"] ?? "") ?? bytes.count)
+            case .served(let resource, let pacing):
+                plan = Self.answer(request, from: resource, pacing: pacing)
             case .failure(let code):
                 throw URLError(code)
             case .hang:
                 try await Self.suspendUntilCancelled()
                 throw CancellationError()
             }
+            // A declared length over the limit is refused before the first byte.
+            if plan.declaredLength > maxResponseBytes { throw TooLarge() }
+            handedOver = true
+            let body = ScriptedBody(plan, limit: maxResponseBytes) { [self] aborted in
+                state.withLock { state in
+                    state.inFlight -= 1
+                    if aborted { state.aborted += 1 }
+                }
+            }
+            return .shaped(plan, body)
         } catch is TooLarge {
             state.withLock { $0.aborted += 1 }
             throw HTTPTransportError.responseTooLarge(limit: maxResponseBytes)
@@ -254,14 +345,7 @@ public final class ScriptedTransport: HTTPTransport {
     /// next timer early would fire it, and a whole virtual lifetime would
     /// pass in one step.
     private static func suspendUntilCancelled() async throws {
-        let gate = CancellationGate()
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                gate.wait(continuation)
-            }
-        } onCancel: {
-            gate.cancel()
-        }
+        try await CancellationGate().waitUntilCancelled()
     }
 
     private static func path(of request: HTTPRequest) -> String {
@@ -272,8 +356,9 @@ public final class ScriptedTransport: HTTPTransport {
     }
 }
 
-/// Resumes one waiter when cancelled, whichever comes first.
-private final class CancellationGate: Sendable {
+/// Resumes one waiter when cancelled, whichever comes first: the task
+/// waiting being cancelled, or the gate.
+final class CancellationGate: Sendable {
     private struct State {
         var cancelled = false
         var waiter: CheckedContinuation<Void, Never>?
@@ -281,7 +366,18 @@ private final class CancellationGate: Sendable {
 
     private let state = Mutex(State())
 
-    func wait(_ continuation: CheckedContinuation<Void, Never>) {
+    /// Waits, on no clock, until the calling task or the gate is cancelled.
+    func waitUntilCancelled() async throws {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                wait(continuation)
+            }
+        } onCancel: {
+            cancel()
+        }
+    }
+
+    private func wait(_ continuation: CheckedContinuation<Void, Never>) {
         let resumeNow = state.withLock { state -> Bool in
             if state.cancelled { return true }
             state.waiter = continuation
