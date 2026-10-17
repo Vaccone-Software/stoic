@@ -676,6 +676,8 @@ labelled `<backend>.<operation>`. New:
   nothing outlives its deadline; nothing leaks.
 - An allocation benchmark for `perform`'s first-attempt-success path, for a
   `remote` and a `local` backend.
+- The ideal scenario above, on virtual time (`OperationScenarioTests`), and
+  as the Operations section of `Examples/Tour`.
 
 ## Inside StoicHTTP
 
@@ -744,6 +746,9 @@ it chose this.
   scheduler, not `perform`.
 - **The outbox's delivery loop** is `retry` with the entry's key as its
   operation's key, through a `package` overload of `retry`.
+- **The first-attempt-success path allocates about 26 times,** on `remote`
+  and `local` alike: each attempt and its timer are two tasks of a task
+  group, which is most of it. `Benchmarks/allocations.json` gates it.
 
 ## Later
 

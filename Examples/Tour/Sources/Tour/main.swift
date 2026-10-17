@@ -47,6 +47,14 @@ func slowCall() async throws {
     }
 }
 
+// What the app depends on, declared once: facts, and no numbers.
+extension Backend {
+    static let catalogue = Backend.remote("catalogue")
+    static let payments = Backend.remote("payments")
+}
+enum Catalogue { static let episode = Backend.catalogue.readOnly("episode") }
+enum Payments { static let subscribe = Backend.payments.keyed("subscribe") }
+
 try await withAmbient({ $0.instrumentation = PrintEvents() }) {
     section("retry: a bounded, jittered, budgeted policy")
     let server = Server(failures: 2)
@@ -54,6 +62,29 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
         try await server.fetch()
     }
     print("  got \(profile)")
+
+    section("Operations: say what it is and who waits; the numbers are derived")
+    for urgency in [Urgency.interactive, .background] {  // the same call, who is waiting differs
+        print("  \(Catalogue.episode.policy(at: urgency))")
+    }
+    let catalogue = Server(failures: 1)
+    let episode = try await withUrgency(.interactive) {
+        try await Catalogue.episode.perform { _ throws(Flaky) in try await catalogue.fetch() }
+    }
+    print("  a tap got \(episode)")
+    // The payment reaches the server and then the connection is lost: it
+    // is retried under one key, and the error says it may have been charged.
+    let checkout = IdempotencyKey.random()
+    do {
+        _ = try await withUrgency(.interactive) { () throws(OperationError<Flaky>) in
+            try await Payments.subscribe.perform(idempotencyKey: checkout) { attempt throws(Flaky) in
+                print("  charging under \(attempt.idempotencyKey) (attempt \(attempt.number))")
+                throw Flaky()
+            }
+        }
+    } catch let error as OperationError<Flaky> {
+        print("  outcome: \(error.outcome): reconcile under \(checkout), never ask again")
+    }
 
     section("withTimeout: the work is cancelled, with a cause")
     try await slowCall()
