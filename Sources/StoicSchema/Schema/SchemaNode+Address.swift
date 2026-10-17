@@ -3,7 +3,7 @@ public import StoicJSON
 extension SchemaNode {
     /// What a dotted address needs to know of this node: which levels hold
     /// fixed keys and which hold the person's, for
-    /// ``StoicJSON/JSONPath/init(address:shape:)``.
+    /// `JSONPath(address:shape:)` (StoicJSON).
     ///
     /// - An object's fields are fixed keys (aliases are not: an address names
     ///   the key the schema writes), a dictionary's keys are free, an array
@@ -48,7 +48,7 @@ extension SchemaNode {
 extension Schema {
     /// The path a dotted address names in a document of this schema, where a
     /// key of a dictionary may contain dots (`web.routes.github.com` is the
-    /// key `github.com` of `routes`): see ``StoicJSON/JSONPath/init(address:shape:)``.
+    /// key `github.com` of `routes`): see `JSONPath(address:shape:)` in StoicJSON.
     /// `nil` for an address with an empty segment.
     ///
     /// Building the shape walks the schema, so for many addresses keep

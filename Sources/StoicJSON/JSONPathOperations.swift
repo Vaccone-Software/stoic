@@ -38,6 +38,9 @@ extension JSONValue {
     ///   `.arrayElement`.
     /// - The root path gives `value`.
     ///
+    /// - Parameters:
+    ///   - value: What the path then holds.
+    ///   - path: Where to put it.
     /// - Throws: ``JSONPathError``; the value is not changed.
     public func setting(_ value: JSONValue, at path: JSONPath) throws(JSONPathError) -> JSONValue {
         try Self.set(value, in: self, from: path.components[...], at: .root)
@@ -49,7 +52,9 @@ extension JSONValue {
     /// is not an object, an index past the end) changes nothing, so it can be
     /// repeated.
     ///
-    /// - Parameter pruning: Also remove each object that the removal left
+    /// - Parameters:
+    ///   - path: What to remove.
+    ///   - pruning: Also remove each object that the removal left
     ///   empty, from the removed member's parent upward, so unsetting the last
     ///   of `{"web": {"routes": {"a.com": 1}}}` leaves `{}` and not
     ///   `{"web": {"routes": {}}}`. Never the root, and never past an array:

@@ -143,7 +143,7 @@ extension SettingsStore {
     ///
     /// - Parameters:
     ///   - value: What the file holds afterwards; usually the defaults.
-    ///   - keepingCopyAt: Where the person's bytes go, in a directory that exists.
+    ///   - copy: Where the person's bytes go (`keepingCopyAt`), in a directory that exists.
     /// - Returns: Where the copy is.
     /// - Throws: ``ReplaceError``.
     @discardableResult

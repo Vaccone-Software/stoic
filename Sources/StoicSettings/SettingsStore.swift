@@ -491,7 +491,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// ``value`` (Observable) to show the settings, and this to learn what
     /// happened to them.
     ///
-    /// - Parameter buffering: How many changes a reader may be behind by; at
+    /// - Parameter limit: How many changes a reader may be behind by; at
     ///   least 1. 64 by default.
     public func changes(buffering limit: Int = 64) -> AsyncStream<SettingsChange<Value>> {
         precondition(limit >= 1, "SettingsStore.changes: buffering must be at least 1")
@@ -584,9 +584,11 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///   ``update(_:)``; one opened with `crossProcessLock` already holds the
     ///   lock and does not wait.
     ///
-    /// - Parameter waitingUpTo: How long to wait for the lock; the store's
-    ///   ``HandEditedOptions/lockTimeout`` (two seconds) when `nil`. Zero tries
-    ///   once, as ``update(_:)`` does.
+    /// - Parameters:
+    ///   - wait: How long to wait for the lock (`waitingUpTo`); the store's
+    ///     ``HandEditedOptions/lockTimeout`` (two seconds) when `nil`. Zero tries
+    ///     once, as ``update(_:)`` does.
+    ///   - change: The change to make, as for ``update(_:)``.
     @discardableResult
     public func blockingUpdate(waitingUpTo wait: Duration? = nil, _ change: (inout Value) throws -> Void) throws -> Value {
         guard format == .handEdited else { return try update(change) }
