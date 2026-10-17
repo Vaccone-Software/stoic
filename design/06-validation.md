@@ -655,7 +655,12 @@ schema) and changes them by address.
   digits is an index). A free key takes the fewest segments that leave a
   remainder the shape can read, else all of them; what the shape does not
   describe is read as plain keys, because reporting an unknown key is the
-  validator's job. An empty segment is `nil`.
+  validator's job. An empty segment is `nil`. `SchemaNode.pathShape` makes the
+  shape from a schema (`schema.path(forAddress:)` is the two together): an
+  object's fields are fixed keys, a dictionary's are free, an array is read by
+  index, a recursive schema is read as far as the address goes, and a tagged
+  union is the object of its discriminator and every case's fields (the first
+  case's where two share a key).
 - **Comments can be refused.** `JSONParseOptions.allowComments` is on by
   default; with the `.jsonc` dialect and `allowComments` off, a comment is
   `comment_not_allowed` at its `/`, and trailing commas stay allowed. A store
