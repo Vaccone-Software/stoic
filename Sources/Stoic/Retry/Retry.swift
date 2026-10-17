@@ -183,11 +183,39 @@ public struct RetryClassifier<Failure: Error>: Sendable {
     }
 }
 
+/// An error type that Foundation boxes as its `NSError` when it is stored
+/// in an `any Error`, and that can say what it is in Swift. A library that
+/// owns such an `NSError` extension conforms it, so ``retryableView(of:)``
+/// can find the ``Retryable`` conformance the Swift struct carries.
+package protocol BridgedClassification {
+    /// The error as the Swift value it bridges, if that is ``Retryable``;
+    /// `nil` for anything else.
+    var bridgedRetryable: (any Retryable)? { get }
+}
+
+/// `error` as a ``Retryable``, or `nil`.
+///
+/// On Apple platforms Foundation's bridged errors (`URLError`, `POSIXError`,
+/// `CocoaError`) reach an `any Error` as their `NSError`, even when Swift
+/// constructed them, and a protocol cast on the box cannot find the struct's
+/// conformance: `as? any Retryable` is `nil`. So the cast is tried first, and
+/// a class-typed error is then asked for its Swift value
+/// (``BridgedClassification``). Everything that classifies an error asks
+/// this, never the cast, or `StoicFoundation`'s table would apply on Linux
+/// and nowhere on Apple platforms. Only a class-typed error is asked: casting
+/// a Swift value to the protocol bridges it to an `NSError` first, which
+/// allocates.
+func retryableView(of error: any Error) -> (any Retryable)? {
+    if let retryable = error as? any Retryable { return retryable }
+    guard type(of: error) is AnyClass else { return nil }
+    return (error as? any BridgedClassification)?.bridgedRetryable
+}
+
 /// The decision for errors whose nature Stoic knows, or `nil`.
 func standardDecision(for failure: any Error) -> RetryDecision? {
-    switch failure.unwrappedForClassification {
-    case let retryable as any Retryable:
-        return retryable.retryDecision
+    let failure = failure.unwrappedForClassification
+    if let retryable = retryableView(of: failure) { return retryable.retryDecision }
+    switch failure {
     case let rejection as Rejection:
         return decision(for: rejection)
     case is DecodingError, is EncodingError:

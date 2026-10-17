@@ -421,6 +421,14 @@ decides what it can prove. `StoicHTTP`'s `HTTPError` claims it for those
 `URLError` codes on a call's first request, and for a refusal before any
 request was sent; after a redirect it does not (see Inside StoicHTTP).
 
+On Apple platforms Foundation's bridged errors reach an `any Error` as their
+`NSError`, even when Swift built them, and a cast to `Retryable` on that box
+fails. So every classification (`retry`'s, a breaker's, `perform`'s
+`neverReachedBackend`) reads an error through one view, which asks an
+`NSError` in `NSURLErrorDomain`, `NSPOSIXErrorDomain` or `NSCocoaErrorDomain`
+for the `URLError`, `POSIXError` or `CocoaError` it is, and an `NSError` in
+any other domain for nothing, so it classifies as an unknown error does.
+
 ### Outcome
 
 Every failure `perform` throws says what is known about the backend's side:
@@ -609,6 +617,7 @@ to be `static let`s.
 | the caller set a deadline                                                 | it applies, shorter or longer than the default                                                             |
 | a `.notRepeatable` operation fails after reaching the backend             | it is not repeated: `stop == .failed`, `outcome == .executed`                                              |
 | a `.notRepeatable` operation fails before reaching the backend            | it is repeated by the schedule                                                                             |
+| an `NSError` in `NSURLErrorDomain` fails a `.notRepeatable` attempt       | it is classified as the `URLError` it is: nothing was sent, so it is repeated                              |
 | a `.keyed` operation's drawn key is never read and it fails transiently   | it is not repeated, and `operation.key_unread` is reported                                                 |
 | a `.keyed` operation is repeated                                          | every attempt sends the same key                                                                           |
 | a `.keyed` operation is given a key                                       | every attempt sends that key                                                                               |

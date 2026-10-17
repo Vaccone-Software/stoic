@@ -88,3 +88,20 @@ extension CocoaError: Retryable {
         }
     }
 }
+
+// On Apple platforms Foundation stores `URLError`, `POSIXError` and
+// `CocoaError` in an `any Error` as their `NSError`: a protocol cast on it
+// finds none of the conformances above (a real URLSession failure is an
+// `NSURLError` too). The core asks an `NSError` for its Swift value, so the
+// table applies on every platform. An `NSError` in any other domain is not
+// one of these types, and classifies as it always did.
+extension NSError: BridgedClassification {
+    package var bridgedRetryable: (any Retryable)? {
+        switch domain {
+        case NSURLErrorDomain: URLError(_nsError: self)
+        case NSPOSIXErrorDomain: POSIXError(_nsError: self)
+        case NSCocoaErrorDomain: CocoaError(_nsError: self)
+        default: nil
+        }
+    }
+}

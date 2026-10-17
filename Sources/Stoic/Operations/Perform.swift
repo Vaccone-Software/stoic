@@ -572,8 +572,8 @@ private struct PerformCall {
 
     /// Whether `failure` proves nothing reached the backend.
     static func provesNothingReached(_ failure: any Error) -> Bool {
-        if let retryable = failure as? any Retryable, retryable.neverReachedBackend { return true }
-        if let retryable = failure.unwrappedForClassification as? any Retryable { return retryable.neverReachedBackend }
+        if let retryable = retryableView(of: failure), retryable.neverReachedBackend { return true }
+        if let retryable = retryableView(of: failure.unwrappedForClassification) { return retryable.neverReachedBackend }
         return false
     }
 
