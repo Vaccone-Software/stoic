@@ -14,8 +14,14 @@ let testScale: Int = {
 /// clean exit are skipped under one; the plain test step runs them.
 let underSanitizer: Bool = {
     // A symbol lookup across every loaded image (RTLD_DEFAULT); nothing is
-    // read through the pointers.
+    // read through the pointers. The constant is a macro Swift does not
+    // import: Darwin defines it as -2, glibc as null, and a handle of -2 on
+    // glibc is a wild pointer that crashes `dlsym`.
+    #if canImport(Darwin)
     let everywhere = unsafe UnsafeMutableRawPointer(bitPattern: -2)
+    #else
+    let everywhere: UnsafeMutableRawPointer? = nil
+    #endif
     return unsafe dlsym(everywhere, "__tsan_init") != nil || dlsym(everywhere, "__asan_init") != nil
 }()
 
