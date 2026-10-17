@@ -17,7 +17,10 @@ internal import Synchronization
 ///   *suspended*, so the system stops reading from the connection and TCP's
 ///   window closes, and it is resumed once the consumer has drained the
 ///   buffer to a quarter. A slow disk slows the download; it does not
-///   fill memory.
+///   fill memory. **On Apple platforms only:** swift-corelibs-foundation
+///   restarts a suspended data task from its first byte when it is resumed, so
+///   on Linux the task is never suspended and the buffer holds whatever the
+///   consumer has not yet taken.
 ///
 /// - **A byte limit enforced while reading.** The body is collected from the
 ///   task's delegate callbacks, not from `data(for:)`, which would buffer a

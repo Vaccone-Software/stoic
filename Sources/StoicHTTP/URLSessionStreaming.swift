@@ -68,6 +68,22 @@ final class StreamTransfer: TransferSink {
         var abandoned = false
     }
 
+    /// Whether a full buffer suspends the data task. On Apple platforms it does,
+    /// and the system stops reading (measured: the server's sends block, and
+    /// every byte arrives in order after the resume). It does not elsewhere:
+    /// swift-corelibs-foundation restarts a suspended data task from its first byte
+    /// when it is resumed (the behaviour Apple's own documentation describes for
+    /// every task that is not a download), which would hand the consumer the body
+    /// again from zero. On Linux the buffer is therefore not bounded: it holds
+    /// what the consumer has not yet taken (design/19, Streaming).
+    static var suspendsTask: Bool {
+        #if canImport(Darwin)
+        true
+        #else
+        false
+        #endif
+    }
+
     private let limit: Int
     private let bufferLimit: Int
     private let statistics: StreamStatistics
@@ -151,7 +167,7 @@ final class StreamTransfer: TransferSink {
                     state.chunks.append(bytes)
                     state.buffered += bytes.count
                     statistics.noteBuffered(state.buffered)
-                    if state.buffered >= bufferLimit, !state.suspended, !over {
+                    if Self.suspendsTask, state.buffered >= bufferLimit, !state.suspended, !over {
                         state.suspended = true
                         state.task?.suspend()
                         statistics.noteSuspension()

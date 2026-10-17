@@ -250,7 +250,7 @@ inside a simulation.
 | a streamed request is redirected | Followed as any request is; the redirect's body is dropped unread; `Range` and `If-Range` go along even to another origin |
 | a streamed call runs inside a `perform` attempt | One attempt through none of the client's retry, breaker, bulkhead or rate limit; no attempt timeout cuts the body |
 | a transport has no streaming of its own | The default `stream` sends, and yields the whole body as one chunk: fine for a test transport, never for a large body |
-| a consumer reads slower than the body arrives | `URLSessionTransport` holds a bounded buffer: past it the data task is suspended, so the server waits; it resumes when the consumer has drained the buffer |
+| a consumer reads slower than the body arrives | On Apple platforms `URLSessionTransport` holds a bounded buffer: past it the data task is suspended, so the server waits; it resumes when the consumer has drained the buffer (on Linux the task is never suspended: see As built) |
 
 ## Events
 
@@ -524,8 +524,16 @@ decoder for what it holds; the depth limit is not about size and stays.`send(\_:
   a Mac against a loopback server with a 512 KiB buffer and a reader that had
   stopped: the server had written 1.6 MB of 256 MiB, and 917,504 bytes were the
   most held. The bound is of the order of the buffer, not exact, because what
-  the system had already read when it was told to stop still arrives. The
-  consumer is told of a failure only after every chunk that arrived before it.
+  the system had already read when it was told to stop still arrives. **On
+  Linux there is no backpressure.** The same loopback test, run in the
+  `swift:6.4` image, showed swift-corelibs-foundation restarting a suspended data
+  task from its first byte when it is resumed (the body began again at block 0,
+  which is what Apple's documentation says of every task that is not a download),
+  so the transport never suspends there and the buffer holds whatever the
+  consumer has not taken: a consumer slower than the network on Linux grows
+  memory. Apple platforms are the target of the pilot; a Linux transport with real
+  flow control (a libcurl pause the corelibs session does not expose) is not built.
+  The consumer is told of a failure only after every chunk that arrived before it.
   What `URLSession` itself drops when a connection dies (the bytes it had
   read but not yet delivered) is lost with it: the downloader resumes from what
   was delivered. `init(configuration:streamBufferBytes:)` takes the caller's

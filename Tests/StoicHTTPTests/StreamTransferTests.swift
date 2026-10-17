@@ -77,6 +77,7 @@ struct StreamTransferTests {
         #expect(try await reading.value == nil)
     }
 
+    #if canImport(Darwin)
     @Test func theTaskIsSuspendedWhenTheBufferFillsAndResumedWhenAQuarterIsLeft() async throws {
         let (transfer, statistics) = Self.transfer(buffer: 100)
         try await Self.open(transfer)
@@ -94,6 +95,7 @@ struct StreamTransferTests {
         _ = try await transfer.next()   // 0
         #expect(statistics.resumptions == 1)
     }
+    #endif
 
     @Test func aBodyPastTheLimitDeliversUpToItAndThenFailsWithResponseTooLarge() async throws {
         let (transfer, _) = Self.transfer(limit: 50)
