@@ -74,7 +74,7 @@ struct HTTPResponseRetryTests {
         try await withRig(policy) { (rig) async throws in
             rig.transport.on(.get("/down"), respond: [.status(503, headers: ["Retry-After": "3600"]), .status(200)])
             let error = await rig.httpError(of: rig.start(.get("/down")))
-            guard case .status(503, _, let retryAfter, let attempts)? = error else {
+            guard case .status(503, _, let retryAfter, _, let attempts)? = error else {
                 Issue.record("expected the 503 to be final, got \(String(describing: error))")
                 return
             }

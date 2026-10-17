@@ -33,7 +33,10 @@ public struct HTTPPolicy: Sendable {
 
     /// The statuses worth another attempt. Default: 408, 429, 500, 502, 503
     /// and 504. Any other status is final (the other 4xx are the caller's
-    /// fault; the other 5xx will not change).
+    /// fault; the other 5xx will not change), but for a `409` or `425`
+    /// answering a request that carries an idempotency key: that says an
+    /// earlier attempt with the key is still being processed, and is retried
+    /// after at least a second whatever this set holds.
     public var retryStatuses: Set<Int>
 
     /// The longest a `Retry-After` is honoured. A server asking for more is
@@ -62,7 +65,7 @@ public struct HTTPPolicy: Sendable {
     /// deadline, the schedule's attempts and the retry budget, and nothing
     /// unsafe to repeat is asked again (an unkeyed `POST` is not). When the
     /// attempts run out while the closure still asks for another, the call
-    /// fails with ``HTTPError/status(_:excerpt:retryAfter:attempts:)`` for the
+    /// fails with ``HTTPError/status(_:excerpt:retryAfter:keyed:attempts:)`` for the
     /// last response, whatever its status. A call can pass its own through
     /// ``HTTPOverrides``.
     public var retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)?
@@ -124,7 +127,7 @@ public struct HTTPPolicy: Sendable {
     public var decodeOptions: DecodeOptions?
 
     /// How much of an error response's body is kept in
-    /// ``HTTPError/status(_:excerpt:retryAfter:attempts:)``. Default 512.
+    /// ``HTTPError/status(_:excerpt:retryAfter:keyed:attempts:)``. Default 512.
     public var errorExcerptBytes: Int
 
     /// Whether identical `GET`s in flight at once share one request. Identical

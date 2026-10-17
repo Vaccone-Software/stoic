@@ -48,12 +48,28 @@ retry budget; a breaker that opens after half of at least 20 calls fail;
 at most 8 requests in flight to one host; at most 10 redirects followed.
 Every number is a field.
 
+**Inside a declared operation, one attempt.** A call made inside a live
+attempt of a `perform` (design/22) is that operation's attempt, and the
+operation is the host's retry layer: the client skips its own retry, breaker,
+bulkhead and rate limiter, and is the transport and the classification of
+what came back. Redirects, header scoping, byte limits and decoding are the
+same. What `perform` needs to retry correctly is on the error:
+`HTTPError.retryDecision` and `neverReachedBackend` below.
+
 **Only what is safe to repeat is repeated.** `GET`, `HEAD`, `OPTIONS`,
 `PUT` and `DELETE` are retried; `POST` and `PATCH` only with an
 `idempotencyKey`, which is sent as the `Idempotency-Key` header with the
 same value on every attempt. A request that fails after the server may
 have acted on it (a timeout after sending, a dropped connection) is only
 retried when it is idempotent.
+
+**"In progress".** A `409` or `425` answering a request that carries an
+`Idempotency-Key` says an earlier attempt with this key is still being
+processed: a retry after a timeout would otherwise report a charge that
+succeeded as a failure. It is transient whatever the policy lists, and is
+retried after at least a second: the server's `Retry-After` if that is longer,
+else one second, in place of the schedule's delay. Without a key a `409` is the
+server's answer, and final.
 
 **Statuses.** 2xx is success. 408, 429, 500, 502, 503 and 504 are retried,
 after `Retry-After` when the server gives one (both the seconds and the
@@ -179,6 +195,10 @@ inside a simulation.
 | a request is redirected with 307 or 308 | Followed with the same method and body, keyed or not: the server has not acted on it |
 | a redirect chain is longer than the limit | `.redirectRefused(limit)` once `maxRedirects` (10) have been followed |
 | the caller's deadline passes during a redirect chain | `.rejected(deadline_exceeded)`: one deadline spans every hop |
+| a keyed request is answered 409 or 425 | "In progress": retried after at least 1 s, or the `Retry-After`; without a key it is the server's answer, `.status` |
+| a call runs inside a `perform` attempt | One attempt through none of the client's retry, breaker, bulkhead or rate limit; the operation retries, by `HTTPError`'s classification |
+| a call inside a `perform` attempt fails before a connection exists | `neverReachedBackend`: a not-repeatable operation is tried again |
+| a call inside a `perform` attempt fails after its request may have been sent | Not `neverReachedBackend` (a lost connection, a 503, a failure after a redirect): a not-repeatable operation is not repeated |
 
 ## Events
 
@@ -283,7 +303,8 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   (`HTTPPolicy.retryStatuses`). `HTTPRetry`'s public table also retries 425;
   the client does not use its status table, only its `Retry-After` parser.
   Any other 3xx (a 304, a 300, a redirect with no `Location`) and other 4xx
-  and 5xx are `.status` and final.
+  and 5xx are `.status` and final, but a `409` or `425` answering a keyed
+  request ("in progress", above).
 - **An unkeyed `POST` or `PATCH` is never retried,** on any failure: not on a
   503, not on a failed connection. The contract's rule is "only with a key";
   the exceptions that are safe in principle (the connection was never made)
@@ -319,6 +340,22 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
 - **Nested retries.** The client keeps Stoic's default, `nesting:
   .singleAttempt`: inside another retry's attempt (an `Outbox` delivery, say)
   it makes one attempt and the outer retry owns the retrying.
+- **Inside a `perform` attempt** the client does not retry at all (design/22,
+  Inside StoicHTTP). It asks the core whether the task runs inside a live
+  attempt of a `perform` (a `package` function, the frame the operation
+  installs), and then runs one attempt of the pipeline's last stage and no
+  other: no host state is made, so no breaker, bulkhead or rate limiter
+  exists to consult, and `breaker(forHost:)` and its siblings stay `nil`. Its
+  own attempt timeout is not applied (the operation's timer bounds the
+  attempt, and a `.long` operation has none: a download is not cut at the
+  client's 10 s), but one a call asked for in `HTTPOverrides` still is; and
+  `retryOnResponse`, which exists to ask again, is not consulted: a response
+  that arrived is the attempt's result, or `.status`. The call is not coalesced
+  (a flight runs in a task of its own, outside the attempt the operation is
+  waiting on). Reauthentication, redirects, byte limits and decoding are
+  unchanged. An unkeyed `POST` inside a `.notRepeatable` operation is not
+  repeated on a `503`: the operation's rule is the stricter, and the client's
+  "never retried" rule stands for its own retry.
 - **Coalescing** applies to `GET` without a body. The key is the absolute URL
   (query included) plus every request header, names lowercased and the pairs
   sorted, so header case and order do not matter; headers named in
@@ -356,7 +393,23 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
 - **`HTTPError: Retryable`** classifies the *failure* with the default
   policy's statuses and the `URLError` table. It cannot know the request's
   method, so it does not say whether an outer layer may repeat an unkeyed
-  `POST`; AGENTS.md rule 2 stands.
+  `POST`; AGENTS.md rule 2 stands. It does know whether the request was keyed:
+  `.status` carries `keyed` (an addition with a default, so a `.status`
+  written without it still compiles; a pattern over its fields does not,
+  a listed break), and a keyed `409` or `425` classifies as
+  `.retryAfter(max(1 s, retryAfter))`, which is what `perform` and the client's own retry
+  both read. The client's own retry applies the same rule beside the policy's
+  status list, to a verdict of `retryOnResponse` as well; a wait it was
+  asked for is never shortened below a second, even by `maxRetryAfter`, and
+  replaces the schedule's delay as any `Retry-After` does.
+  `neverReachedBackend` is true for a transport failure with the codes
+  `StoicFoundation` claims for `URLError` (`cannotFindHost`, `dnsLookupFailed`,
+  `cannotConnectToHost`, `notConnectedToInternet`) on the call's first request,
+  and for a rejection that came before any request. After a redirect has been
+  followed, or a request retried, an earlier request may have reached the
+  server (a `POST` answered `303`, then a `GET` that cannot find its host), so
+  the claim is not made: a `.notRepeatable` operation is repeated only on
+  proof.
 - **Events.** `http.request` is debug, one per attempt that reached the
   transport (method, host, path public; attempt, duration, status, `outcome`;
   the query string as a *private* field only). `http.retry` (info) is recorded
@@ -368,8 +421,8 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   `http.failed`. `http.failed` (warning), `http.coalesced` (debug, per caller that joined),
   `http.response_too_large` (warning) and `http.decoding_failed` (notice: the
   number of errors and the body's size in bytes, never the body).
-  `http.decoded_with_warnings` (warning) is
-  recorded once per response that decoded with warnings or repairs: `warnings` and `repairs` counts, `codes` (the
+  `http.decoded_with_warnings` (warning) is recorded once per response that
+  decoded with warnings or repairs: `warnings` and `repairs` counts, `codes` (the
   distinct issue codes, public) and `paths` (private: a path can name a key the
   server chose). Never a value or any of the body. Both carry the request's
   method, host and path and are labelled for its host, those of the request that
@@ -494,7 +547,8 @@ into the pipeline); streaming uploads and downloads; delivering through the
 outbox (`StoicStore.Outbox` can call `send` with its entry's `IdempotencyKey`).
 
 **Tests** (`Tests/StoicHTTPTests`; overrides, response retry, reauthentication,
-rate limit, redirects and decoding limits each have a file): one per row above, on a `TestClock` and a
+rate limit, redirects and decoding limits each have a file, and `OperationTests` the calls
+inside a `perform` attempt and the "in progress" answers): one per row above, on a `TestClock` and a
 `ScriptedTransport` with no real sleeps (they wait on events and
 `waitForSleepers`); `URLSessionTransport` against a `URLProtocol` stub on a
 real `URLSession` (a redirect comes back as the response, and the client

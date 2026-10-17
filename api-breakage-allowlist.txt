@@ -70,3 +70,4 @@ API breakage: var StateGraph.truncated has been removed
 API breakage: var Supervisor.events has been removed
 API breakage: func ServiceGraph.run(exitBudget:stopTimeout:_:) has parameter 2 type change from (Stoic.Services) async throws -> R to Swift.Duration
 API breakage: func ServiceGraph.run(exitBudget:stopTimeout:_:) has been renamed to func run(exitBudget:stopTimeout:startGrace:_:)
+API breakage: enumelement HTTPError.status has declared type change from (StoicHTTP.HTTPError.Type) -> (Swift.Int, Swift.String, Swift.Duration?, Swift.Int) -> StoicHTTP.HTTPError to (StoicHTTP.HTTPError.Type) -> (Swift.Int, Swift.String, Swift.Duration?, Swift.Bool, Swift.Int) -> StoicHTTP.HTTPError

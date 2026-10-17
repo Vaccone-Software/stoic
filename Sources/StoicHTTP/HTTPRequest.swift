@@ -55,7 +55,13 @@ public struct HTTPRequest: Sendable, Hashable, CustomStringConvertible {
     /// key (given as the property, or already set as an `Idempotency-Key`
     /// header).
     public var isSafeToRepeat: Bool {
-        method.isIdempotent || idempotencyKey != nil || headers.contains(HTTPRequest.idempotencyKeyHeader)
+        method.isIdempotent || carriesIdempotencyKey
+    }
+
+    /// Whether the request sends an `Idempotency-Key`: given as the
+    /// property, or already set as the header.
+    var carriesIdempotencyKey: Bool {
+        idempotencyKey != nil || headers.contains(HTTPRequest.idempotencyKeyHeader)
     }
 
     /// The header an ``idempotencyKey`` is sent in.

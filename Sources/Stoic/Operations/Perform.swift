@@ -165,6 +165,20 @@ struct PerformFrame: Sendable {
     }
 }
 
+/// Whether the current task runs inside a live attempt of a `perform`.
+///
+/// What a layer of this package that retries for itself asks before it does
+/// (StoicHTTP's client): inside a declared operation's attempt it makes one
+/// attempt and says what it saw, because the operation is that backend's
+/// retry layer (design/22, Inside StoicHTTP). A task an attempt left running
+/// finds its context stale and is not inside it.
+package enum PerformAttempt {
+    package static var isLive: Bool {
+        guard let context = RetryContext.active, context.isLive, let frame = context.frame else { return false }
+        return frame.isLive
+    }
+}
+
 /// One call of `perform`: what it found on entry, and its loop.
 private struct PerformCall {
     let declaration: Backend.Operation

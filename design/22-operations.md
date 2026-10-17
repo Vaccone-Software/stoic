@@ -417,7 +417,9 @@ before a connection exists (`cannotFindHost`, `dnsLookupFailed`,
 `ECONNREFUSED`, `ENETUNREACH`, `EHOSTUNREACH`, each with a test of what it
 means. design/19's stricter rule for an unkeyed HTTP `POST` stands for
 `StoicHTTP`'s own client: an operation is not a request, and its adapter
-decides what it can prove.
+decides what it can prove. `StoicHTTP`'s `HTTPError` claims it for those
+`URLError` codes on a call's first request, and for a refusal before any
+request was sent; after a redirect it does not (see Inside StoicHTTP).
 
 ### Outcome
 
@@ -687,7 +689,10 @@ classification. One host is one `Backend`. When a request carries an
 `Idempotency-Key`, a `409` or `425` answer ("in progress": an earlier
 attempt with this key is still being processed) is transient, retried no
 sooner than 1 s, so a retry after a timeout does not report a charge that
-succeeded as a failure.
+succeeded as a failure. Both are read from the error: `HTTPError` says it is
+transient (`retryDecision`, with the key it knows the request carried), and
+says what it proves (`neverReachedBackend`), so the operation's classification
+and the client's own retry cannot disagree.
 
 | What happens if…                                                   | Then                                                         |
 | ------------------------------------------------------------------ | ------------------------------------------------------------ |
@@ -715,6 +720,11 @@ it chose this.
   `OperationError` is marked as made for the enclosing call, which looks
   through it to the inner failure, as if the inner layer were not there; any
   other `OperationError` stands for itself unless nothing was executed.
+- **The client asks the core, through a `package` function,** whether the
+  task runs inside a live attempt of a `perform` (`PerformAttempt.isLive`:
+  the attempt's context is live and carries a live perform frame). A task an
+  attempt left running finds the context stale and is not inside it. design/19
+  (As built, Inside a `perform` attempt) says what the client then leaves out.
 - **A shielded attempt runs in a task of its own.** Cancelling a task
   cancels every child task, shield or no shield, and a shield inside the
   attempt would stop its timer as well; so a brief keyed or non-repeatable

@@ -1,7 +1,7 @@
 /// What the server answered: a status, headers and the body's bytes.
 ///
 /// The client returns only responses whose status is a success (2xx); any
-/// other status is an ``HTTPError/status(_:excerpt:retryAfter:attempts:)``.
+/// other status is an ``HTTPError/status(_:excerpt:retryAfter:keyed:attempts:)``.
 /// A transport returns every response it receives, whatever its status.
 public struct HTTPResponse: Sendable, Hashable, CustomStringConvertible {
     public var status: Int

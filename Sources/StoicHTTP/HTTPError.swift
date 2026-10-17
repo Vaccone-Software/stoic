@@ -17,8 +17,10 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// The server answered with a status outside 2xx. `excerpt` is the start
     /// of the body (at most ``HTTPPolicy/errorExcerptBytes`` bytes), where
     /// APIs put their explanation; `retryAfter` is the server's `Retry-After`
-    /// as sent, before the policy capped it.
-    case status(Int, excerpt: String, retryAfter: Duration?, attempts: Int)
+    /// as sent, before the policy capped it. `keyed` says the request carried
+    /// an `Idempotency-Key`, which is what makes a `409` or `425` "in
+    /// progress" rather than a refusal (``retryDecision``).
+    case status(Int, excerpt: String, retryAfter: Duration?, keyed: Bool = false, attempts: Int)
 
     /// The request did not complete: the network failed in the way `code`
     /// names.
@@ -50,7 +52,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// failed, so the request was not replayed. `status` is the 401; the
     /// hook's own error is not kept (it may hold a credential), only its type
     /// is recorded, in the `http.reauthenticate_failed` event. A `401` that
-    /// the *replay* got is an ordinary ``status(_:excerpt:retryAfter:attempts:)``:
+    /// the *replay* got is an ordinary ``status(_:excerpt:retryAfter:keyed:attempts:)``:
     /// the hook runs at most once per request.
     case reauthenticationFailed(status: Int, attempts: Int)
 
@@ -76,7 +78,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// How many requests reached the transport before this failure.
     public var attempts: Int {
         switch self {
-        case .status(_, _, _, let attempts), .transport(_, let attempts), .responseTooLarge(_, let attempts),
+        case .status(_, _, _, _, let attempts), .transport(_, let attempts), .responseTooLarge(_, let attempts),
              .decoding(_, let attempts), .rejected(_, let attempts), .reauthenticationFailed(_, let attempts),
              .redirectRefused(_, _, _, let attempts):
             attempts
@@ -88,9 +90,9 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// Whether the client retried before giving up.
     public var wasRetried: Bool { attempts > 1 }
 
-    /// The status code, for ``status(_:excerpt:retryAfter:attempts:)``.
+    /// The status code, for ``status(_:excerpt:retryAfter:keyed:attempts:)``.
     public var statusCode: Int? {
-        if case .status(let code, _, _, _) = self { code } else { nil }
+        if case .status(let code, _, _, _, _) = self { code } else { nil }
     }
 
     /// The rejection, for ``rejected(_:attempts:)``.
@@ -102,7 +104,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     public var description: String {
         let tries = attempts == 1 ? "1 attempt" : "\(attempts) attempts"
         switch self {
-        case .status(let code, _, _, _): return "HTTP \(code) after \(tries)"
+        case .status(let code, _, _, _, _): return "HTTP \(code) after \(tries)"
         case .transport(let code, _): return "transport error \(code.rawValue) after \(tries)"
         case .timedOut: return "timed out on attempt \(attempts)"
         case .responseTooLarge(let limit, _): return "response larger than \(limit) bytes after \(tries)"
@@ -121,11 +123,23 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
 /// This says whether the *failure* is transient. It cannot know whether the
 /// request is safe to repeat: the client already refuses to retry an unkeyed
 /// `POST`, and anything retrying around it must carry its own
-/// ``IdempotencyKey`` (AGENTS.md, rule 2).
+/// ``IdempotencyKey`` (AGENTS.md, rule 2). It does know whether the request
+/// was keyed: a `409` or `425` answering a keyed request says an earlier
+/// attempt with the key is still being processed, which is transient, and
+/// is waited for at least a second.
+///
+/// ``neverReachedBackend`` is claimed only where the error proves it, with
+/// the codes `StoicFoundation` claims for `URLError`: a failure of the first
+/// request to reach the transport, which says nothing was sent, or a request
+/// refused before it was sent. Once a redirect has been followed, or a
+/// request retried, an earlier request may have reached the server.
 extension HTTPError: Retryable {
     public var retryDecision: RetryDecision {
         switch self {
-        case .status(let code, _, let retryAfter, _):
+        case .status(let code, _, let retryAfter, let keyed, _):
+            if keyed, InProgress.statuses.contains(code) {
+                return .retryAfter(max(InProgress.minimumWait, retryAfter ?? .zero))
+            }
             guard HTTPPolicy.defaultRetryStatuses.contains(code) else { return .stop }
             return retryAfter.map(RetryDecision.retryAfter) ?? .retry
         case .transport(let code, _):
@@ -143,6 +157,27 @@ extension HTTPError: Retryable {
             }
         }
     }
+
+    public var neverReachedBackend: Bool {
+        switch self {
+        case .transport(let code, let attempts):
+            attempts <= 1 && URLError(code).neverReachedBackend
+        case .rejected(_, let attempts):
+            attempts == 0
+        case .status, .timedOut, .responseTooLarge, .decoding, .reauthenticationFailed, .redirectRefused:
+            false
+        }
+    }
+}
+
+/// What an "in progress" answer is (design/22, Inside StoicHTTP).
+enum InProgress {
+    /// The statuses a server answers a keyed request with while an earlier
+    /// attempt with the same key is still being processed.
+    static let statuses: Set<Int> = [409, 425]
+    /// The shortest wait before asking again: the earlier attempt needs time,
+    /// and a retry at the schedule's first delay would meet it still running.
+    static let minimumWait: Duration = .seconds(1)
 }
 
 /// One failed attempt, before the client has counted attempts: what the
@@ -188,22 +223,30 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
     /// What to do next. Nothing is repeated unless the request is safe to
     /// repeat; a status is retried only if the policy lists it, after
     /// `Retry-After` when the server sent one (capped by the policy).
-    func decision(policy: HTTPPolicy, safeToRepeat: Bool) -> RetryDecision {
+    ///
+    /// A request that carries an idempotency key and is answered `409` or
+    /// `425` is "in progress" (an earlier attempt with the key is still being
+    /// processed): transient whatever the policy lists, and waited for at
+    /// least `InProgress.minimumWait`, which the server's `Retry-After` and
+    /// the caller's own verdict may lengthen, never shorten.
+    func decision(policy: HTTPPolicy, safeToRepeat: Bool, keyed: Bool) -> RetryDecision {
         guard safeToRepeat else { return .stop }
         switch self {
         case .status(let code, _, let retryAfter, let verdict):
+            let inProgress = keyed && InProgress.statuses.contains(code)
+            var decision: RetryDecision
             switch verdict {
             case .stop?:
                 return .stop
             case .retryAfter(let wait)?:
-                return .retryAfter(min(wait, policy.maxRetryAfter))
-            case .retry?:
-                break
-            case nil:
-                guard policy.retryStatuses.contains(code) else { return .stop }
+                decision = .retryAfter(min(wait, policy.maxRetryAfter))
+            case .retry?, nil:
+                if verdict == nil, !inProgress, !policy.retryStatuses.contains(code) { return .stop }
+                decision = retryAfter.map { .retryAfter(min($0, policy.maxRetryAfter)) } ?? .retry
             }
-            if let retryAfter { return .retryAfter(min(retryAfter, policy.maxRetryAfter)) }
-            return .retry
+            guard inProgress else { return decision }
+            if case .retryAfter(let wait) = decision { return .retryAfter(max(wait, InProgress.minimumWait)) }
+            return .retryAfter(InProgress.minimumWait)
         case .transport(let code):
             return URLError(code).retryDecision
         case .timedOut:

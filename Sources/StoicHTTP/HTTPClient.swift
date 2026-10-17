@@ -22,6 +22,10 @@ internal import Synchronization
 ///   sent as `Idempotency-Key`, the same on every attempt.
 /// - A retry inside another retry's attempt makes one attempt (the default
 ///   of Stoic's `retry`): whoever retries around the client owns the retrying.
+/// - Inside a live attempt of a declared operation's `perform` (design/22),
+///   the client makes one attempt and skips its own retry, breaker, bulkhead
+///   and rate limit: the operation is that backend's retry layer, and the
+///   client is the transport and the classification of what it saw.
 /// - Cancelling the caller cancels the request and throws
 ///   `CancellationError`; the caller's deadline is honoured at every stage,
 ///   and a wait that would outlast it is not started.
@@ -211,13 +215,18 @@ public final class HTTPClient: Sendable {
 
     private func deliver(_ request: HTTPRequest, key: IdempotencyKey?, overrides: HTTPOverrides) async throws -> Delivered {
         let prepared = try prepare(request, key: key, overrides: overrides)
+        // Inside a live attempt of a `perform` the operation is the retry
+        // layer: this call is one attempt of it, and says what it saw.
+        let defers = PerformAttempt.isLive
         // A predicate is a closure, which cannot be compared: a call with
         // its own never joins a flight, nor starts one for others to join.
-        let coalesce = (overrides.coalesce ?? policy.coalesceGETs) && overrides.retryOnResponse == nil
+        // Nor does a call that defers: a flight runs the starter's pipeline in
+        // a task of its own, outside the attempt the operation is waiting on.
+        let coalesce = (overrides.coalesce ?? policy.coalesceGETs) && overrides.retryOnResponse == nil && !defers
         if coalesce, prepared.request.method == .get, prepared.request.body == nil {
             return try await coalesced(prepared)
         }
-        return try settle(await run(prepared))
+        return try settle(await run(prepared, defers: defers))
     }
 
     private func settle(_ outcome: Outcome) throws -> Delivered {
@@ -248,9 +257,9 @@ public final class HTTPClient: Sendable {
                     led.mark()
                     let outcome: Outcome
                     if let lent {
-                        outcome = await withDeadline(lent) { await self.run(prepared) }
+                        outcome = await withDeadline(lent) { await self.run(prepared, defers: false) }
                     } else {
-                        outcome = await self.run(prepared)
+                        outcome = await self.run(prepared, defers: false)
                     }
                     switch outcome {
                     case .delivered(let delivered):
@@ -307,12 +316,12 @@ public final class HTTPClient: Sendable {
     /// (each hop has the schedule's attempts of its own). What bounds the
     /// chain is ``HTTPPolicy/maxRedirects`` and the caller's deadline, which
     /// every hop runs under; every hop counts in ``HTTPError/attempts``.
-    private func run(_ prepared: PreparedRequest) async -> Outcome {
+    private func run(_ prepared: PreparedRequest, defers: Bool) async -> Outcome {
         let log = AttemptLog()
         var current = prepared
         var followed = 0
         while true {
-            let outcome = await exchange(current, log: log)
+            let outcome = await exchange(current, log: log, defers: defers)
             guard case .delivered(let delivered) = outcome, Redirects.isRedirect(delivered.response) else { return outcome }
             let response = delivered.response
             let label = current.hostLabel(self.label)
@@ -360,10 +369,10 @@ public final class HTTPClient: Sendable {
     /// the hook (`SingleFlight`, keyed by the generation of the credentials
     /// that were refused), and a request that finds the credentials already
     /// renewed since it was prepared replays without running the hook at all.
-    private func exchange(_ prepared: PreparedRequest, log: AttemptLog) async -> Outcome {
-        let first = await execute(prepared, log: log)
+    private func exchange(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool) async -> Outcome {
+        let first = await execute(prepared, log: log, defers: defers)
         guard reauthenticate != nil, prepared.overrides.reauthenticate, prepared.carriesClientHeaders,
-              case .failed(.status(401, _, _, _)) = first else {
+              case .failed(.status(401, _, _, _, _)) = first else {
             return first
         }
         let label = prepared.hostLabel(self.label)
@@ -390,7 +399,7 @@ public final class HTTPClient: Sendable {
         } catch {
             return .failed(error)
         }
-        return await execute(replay, log: log)
+        return await execute(replay, log: log, defers: defers)
     }
 
     /// Calls the hook, unless another request got there first.
@@ -412,13 +421,35 @@ public final class HTTPClient: Sendable {
         Ambient.record(Event("http.reauthenticated", level: .info, label: label, fields: []))
     }
 
-    /// Runs one request through the policies of its host.
-    private func execute(_ prepared: PreparedRequest, log: AttemptLog) async -> Outcome {
+    /// Runs one request through the policies of its host, or, when it runs
+    /// inside a live attempt of a `perform` (`defers`), as one attempt of
+    /// that operation: the transport and the classification, with nothing of
+    /// the client's own retry, breaker, bulkhead or rate limit, and neither
+    /// its attempt timeout nor its `retryOnResponse`, which belong to its own
+    /// retry. The operation's timer bounds the attempt, and what the operation
+    /// retries is what its classification, ``HTTPError``'s, says.
+    private func execute(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool) async -> Outcome {
+        if defers {
+            let label = prepared.hostLabel(self.label)
+            let result: Result<HTTPResponse, AttemptError>
+            do throws(AttemptError) {
+                result = .success(try await attempt(prepared, label: label, log: log, defers: true))
+            } catch {
+                result = .failure(error)
+            }
+            switch result {
+            case .success(let response):
+                return .delivered(Delivered(response: response, attempts: log.count, label: label, fields: prepared.fields))
+            case .failure(let error):
+                return failed(finalOutcome(for: .failed(error), prepared, attempts: log.count, watcher: nil, label: label), prepared, label: label)
+            }
+        }
         let host = leaseHost(for: prepared)
         defer { hosts.withLock { $0.release(prepared.hostKey) } }
         let watcher = RetryWatcher(forwardingTo: Ambient.current.instrumentation, label: host.label)
         let policy = self.policy
         let safeToRepeat = prepared.safeToRepeat
+        let keyed = prepared.request.carriesIdempotencyKey
         // Retry is the outermost stage; the classifier sees what the inner
         // stages throw. Anything a policy refused (an open breaker, a full
         // bulkhead, the deadline) ends the retrying: waiting for a breaker
@@ -427,7 +458,7 @@ public final class HTTPClient: Sendable {
         // a policy's refusal arrives as a `Rejection`.
         let classifier = RetryClassifier<any Error> { failure in
             guard let attempt = failure as? AttemptError else { return .stop }
-            return attempt.decision(policy: policy, safeToRepeat: safeToRepeat)
+            return attempt.decision(policy: policy, safeToRepeat: safeToRepeat, keyed: keyed)
         }
         var stages: [any Policy] = [
             Retrying(prepared.overrides.schedule ?? policy.schedule, budget: policy.retryBudget, classify: classifier, nesting: .singleAttempt, label: host.label)
@@ -441,7 +472,7 @@ public final class HTTPClient: Sendable {
             () async -> Result<HTTPResponse, PolicyError<AttemptError>> in
             do throws(PolicyError<AttemptError>) {
                 let response = try await pipeline.execute { () async throws(AttemptError) -> HTTPResponse in
-                    try await self.attempt(prepared, host: host, log: log)
+                    try await self.attempt(prepared, label: host.label, log: log, defers: false)
                 }
                 return .success(response)
             } catch {
@@ -453,20 +484,25 @@ public final class HTTPClient: Sendable {
         case .success(let response):
             return .delivered(Delivered(response: response, attempts: log.count, label: prepared.hostLabel(label), fields: prepared.fields))
         case .failure(let error):
-            let outcome = finalOutcome(for: error, attempts: log.count, watcher: watcher, host: host)
-            if case .failed(let failure) = outcome {
-                Ambient.record(Event("http.failed", level: .warning, label: host.label, fields: prepared.fields + [
-                    .init("error", .string(String(describing: failure)), privacy: .public),
-                    .init("attempts", .int(failure.attempts)),
-                ]))
-            }
-            return outcome
+            return failed(finalOutcome(for: error, prepared, attempts: log.count, watcher: watcher, label: host.label), prepared, label: host.label)
         }
     }
 
-    /// What a failed pipeline means for the caller.
+    /// Reports a failure the caller will see, and passes it on.
+    private func failed(_ outcome: Outcome, _ prepared: PreparedRequest, label: String) -> Outcome {
+        if case .failed(let failure) = outcome {
+            Ambient.record(Event("http.failed", level: .warning, label: label, fields: prepared.fields + [
+                .init("error", .string(String(describing: failure)), privacy: .public),
+                .init("attempts", .int(failure.attempts)),
+            ]))
+        }
+        return outcome
+    }
+
+    /// What a failed pipeline means for the caller. There is no `watcher` for
+    /// a call that defers: it has no retry to say why it stopped.
     private func finalOutcome(
-        for error: PolicyError<AttemptError>, attempts: Int, watcher: RetryWatcher, host: HostState
+        for error: PolicyError<AttemptError>, _ prepared: PreparedRequest, attempts: Int, watcher: RetryWatcher?, label: String
     ) -> Outcome {
         // A cancelled caller is cancelled, and its deadline passing is a
         // rejection, whatever the last attempt happened to fail with. (An
@@ -476,17 +512,17 @@ public final class HTTPClient: Sendable {
         if case .failed(.cancelled) = error { cancelled = true }
         if cancelled {
             if CancellationCause.current == .deadline || Deadline.current?.hasPassed == true {
-                return .failed(.rejected(Rejection(.deadlineExceeded, label: host.label), attempts: attempts))
+                return .failed(.rejected(Rejection(.deadlineExceeded, label: label), attempts: attempts))
             }
             return .cancelled
         }
         // `retry` rethrows the last error whatever stopped it; its events
         // say what did.
-        if watcher.budgetExhausted {
-            return .failed(.rejected(Rejection(.budgetExhausted, label: host.label), attempts: attempts))
+        if watcher?.budgetExhausted == true {
+            return .failed(.rejected(Rejection(.budgetExhausted, label: label), attempts: attempts))
         }
-        if let wait = watcher.deadlineSkip {
-            return .failed(.rejected(Rejection(.deadlineExceeded, label: host.label, retryAfter: wait), attempts: attempts))
+        if let wait = watcher?.deadlineSkip {
+            return .failed(.rejected(Rejection(.deadlineExceeded, label: label, retryAfter: wait), attempts: attempts))
         }
         switch error {
         case .rejected(let rejection):
@@ -495,7 +531,8 @@ public final class HTTPClient: Sendable {
         case .failed(let attempt):
             switch attempt {
             case .status(let code, let excerpt, let retryAfter, _):
-                return .failed(.status(code, excerpt: excerpt, retryAfter: retryAfter, attempts: attempts))
+                return .failed(.status(
+                    code, excerpt: excerpt, retryAfter: retryAfter, keyed: prepared.request.carriesIdempotencyKey, attempts: attempts))
             case .transport(let code):
                 return .failed(.transport(code, attempts: attempts))
             case .timedOut:
@@ -511,13 +548,18 @@ public final class HTTPClient: Sendable {
     // MARK: One attempt
 
     /// One request to the transport, bounded by the attempt timeout, with
-    /// its outcome classified.
-    private func attempt(_ prepared: PreparedRequest, host: HostState, log: AttemptLog) async throws(AttemptError) -> HTTPResponse {
+    /// its outcome classified. A call that `defers` to a `perform` has no
+    /// attempt timeout but one it asked for itself (the operation's timer
+    /// bounds the attempt), and no `retryOnResponse` (a response is a failure
+    /// only for the retry that asks again).
+    private func attempt(
+        _ prepared: PreparedRequest, label: String, log: AttemptLog, defers: Bool
+    ) async throws(AttemptError) -> HTTPResponse {
         let clock = Ambient.current.clock
         let started = clock.now
         let (number, retry, gap, previous) = log.begin(at: started)
         if retry {
-            Ambient.record(Event("http.retry", level: .info, label: host.label, fields: prepared.fields + [
+            Ambient.record(Event("http.retry", level: .info, label: label, fields: prepared.fields + [
                 .init("attempt", .int(number)),
                 .init("delay", .duration(gap ?? .zero)),
                 .init("reason", .string(previous), privacy: .public),
@@ -528,16 +570,25 @@ public final class HTTPClient: Sendable {
         let request = prepared.request
         let limit = policy.maxResponseBytes
         let callerDeadline = Deadline.current
+        let timeout = defers ? prepared.overrides.attemptTimeout : prepared.overrides.attemptTimeout ?? policy.attemptTimeout
         var result: Result<HTTPResponse, AttemptError>
         do throws(AttemptError) {
-            result = .success(try await withTimeout(prepared.overrides.attemptTimeout ?? policy.attemptTimeout, label: "\(host.label) attempt \(number)") {
-                () async throws(AttemptError) -> HTTPResponse in
+            if let timeout {
+                result = .success(try await withTimeout(timeout, label: "\(label) attempt \(number)") {
+                    () async throws(AttemptError) -> HTTPResponse in
+                    do {
+                        return try await transport.send(request, maxResponseBytes: limit)
+                    } catch {
+                        throw AttemptError(classifying: error)
+                    }
+                })
+            } else {
                 do {
-                    return try await transport.send(request, maxResponseBytes: limit)
+                    result = .success(try await transport.send(request, maxResponseBytes: limit))
                 } catch {
                     throw AttemptError(classifying: error)
                 }
-            })
+            }
         } catch {
             result = .failure(error)
         }
@@ -558,7 +609,7 @@ public final class HTTPClient: Sendable {
                 // redirect. A success is only turned into a failure to ask
                 // again if it could be asked again: an unkeyed `POST` that was
                 // answered is answered.
-                let verdict = (prepared.overrides.retryOnResponse ?? policy.retryOnResponse)?(response)
+                let verdict = defers ? nil : (prepared.overrides.retryOnResponse ?? policy.retryOnResponse)?(response)
                 let asksAgain = prepared.safeToRepeat && verdict.map { $0 != .stop } == true
                 if !response.isSuccess || asksAgain {
                     result = .failure(.status(
@@ -587,12 +638,12 @@ public final class HTTPClient: Sendable {
             fields.append(.init("outcome", .string(failure.reason), privacy: .public))
             log.end(at: finished, reason: failure.reason)
             if case .tooLarge = failure {
-                Ambient.record(Event("http.response_too_large", level: .warning, label: host.label, fields: prepared.fields + [
+                Ambient.record(Event("http.response_too_large", level: .warning, label: label, fields: prepared.fields + [
                     .init("limit", .int(limit)),
                 ]))
             }
         }
-        Ambient.record(Event("http.request", level: .debug, label: host.label, fields: fields))
+        Ambient.record(Event("http.request", level: .debug, label: label, fields: fields))
         return try result.get()
     }
 
