@@ -164,7 +164,9 @@ public struct SealedFile: Sendable {
     /// Adoption stops new exposure; crypto-shredding ends the old one.
     ///
     /// The mode of the file is kept (a replacement keeps the mode it
-    /// replaces): an adopted `0o644` file stays `0o644`, sealed.
+    /// replaces): an adopted `0o644` file stays `0o644`, sealed. A path with no
+    /// file is ``Adoption/absent`` and nothing is touched, a stray
+    /// `<path>.previous` included.
     @discardableResult
     public func adopt(path: String, context: SealContext) throws(SealedStoreError) -> Adoption {
         let plain = atomicFile(keepPrevious: false)
