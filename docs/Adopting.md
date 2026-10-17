@@ -98,9 +98,12 @@ swiftSettings: [
     `SealedFile` and `SealedJournal` (`StoicSealed`, behind the `Crypto` trait:
     `traits: ["Lint", "Crypto"]` above, and `StoicSealed` as a product). The
     keys live in a `Keyring` the app keeps in a `KeyCustody`; for the Keychain,
-    the app writes the twenty-line adapter over `SecretStore` that
-    [design/24](../design/24-sealed-storage.md#the-keychain-on-apple-platforms)
-    shows (`StoicApple` and `StoicSealed` do not depend on each other). Decide
+    add the `StoicSealedKeychain` product and write
+    `SecretStoreCustody(KeychainSecretStore(service: "…"))`
+    ([design/24](../design/24-sealed-storage.md#the-keychain-on-apple-platforms)
+    has the error mapping: a locked keychain is never "no keyring").
+    (`StoicApple` and `StoicSealed` do not depend on each other; this library
+    is the one place they meet.) Decide
     first what a lost key means for each store: a cache starts fresh
     (`ifMissing: .create`), durable data refuses and says why (`.fail`), and
     neither ever creates a key, or deletes a file, because the Keychain was

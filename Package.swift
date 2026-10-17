@@ -114,6 +114,10 @@ let package = Package(
         // journals, keys kept in the app's custody. Needs the `Crypto` trait:
         // `.package(url: …, traits: ["Crypto"])`.
         .library(name: "StoicSealed", targets: ["StoicSealed"]),
+        // The Keychain (or any `SecretStore`) as the custody of a sealed
+        // keyring: the one place StoicSealed and StoicApple meet. Needs the
+        // `Crypto` trait, as StoicSealed does.
+        .library(name: "StoicSealedKeychain", targets: ["StoicSealedKeychain"]),
         // The resilient HTTP client (design/19), with a scripted transport
         // for tests.
         .library(name: "StoicHTTP", targets: ["StoicHTTP"]),
@@ -261,6 +265,21 @@ let package = Package(
         .testTarget(
             name: "StoicSealedTests",
             dependencies: ["StoicSealed", "Stoic", "StoicStore", "StoicTesting"] + crypto,
+            swiftSettings: strict + [cryptoDefine]
+        ),
+        // The adapter that keeps a sealed keyring in a `SecretStore` (design/24),
+        // so an app that uses the Keychain for its keys writes none. It is a
+        // library of its own because it is the only code that needs both
+        // StoicSealed (the trait, swift-crypto) and StoicApple: neither may
+        // depend on the other.
+        .target(
+            name: "StoicSealedKeychain",
+            dependencies: ["StoicSealed", "StoicApple"],
+            swiftSettings: strict + [cryptoDefine]
+        ),
+        .testTarget(
+            name: "StoicSealedKeychainTests",
+            dependencies: ["StoicSealedKeychain", "StoicSealed", "StoicApple", "StoicTesting"],
             swiftSettings: strict + [cryptoDefine]
         ),
         // HTTP (design/19): per-host retry, breaker and bulkhead, idempotency

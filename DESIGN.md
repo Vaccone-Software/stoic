@@ -154,6 +154,7 @@ fetches no other package at all.
      StoicHTTP ······ the resilient HTTP client       ← Stoic, StoicFoundation, StoicSchema
  Apple ────────────────────────────────────────────────────────────────────────
    StoicApple ······· reachability, BGTask, Keychain  ← Stoic, StoicFoundation
+     StoicSealedKeychain · the Keychain as a sealed keyring's custody (Crypto) ← StoicSealed, StoicApple
    StoicAppKit, StoicUIKit · lifecycle bridges        ← Stoic
  tools ────────────────────────────────────────────────────────────────────────
    StoicMacros (Macros trait) · StoicLint + stoic-lint (Lint trait): swift-syntax
@@ -173,6 +174,7 @@ fetches no other package at all.
 | `StoicHTTP`          | Resilient HTTP client; scripted transport for tests                            | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation(Networking) |
 | `StoicObservability` | Events to swift-log and swift-metrics                                          | `Stoic`; the packages, behind traits |
 | `StoicApple`         | Reachability, background tasks, Keychain, device conditions                    | `Stoic`, `StoicFoundation`, Apple frameworks |
+| `StoicSealedKeychain` | A `SecretStore` (the Keychain) as the custody of a sealed keyring: the one place `StoicSealed` and `StoicApple` meet | `StoicSealed`, `StoicApple`; swift-crypto, behind `Crypto` |
 | `StoicAppKit`, `StoicUIKit` | Lifecycle bridges                                                       | `Stoic`, AppKit / UIKit            |
 | `StoicMacros`        | `@Schema`, `@Refined`; `@StateMachine`, `@Services` planned                    | `StoicSchema`; swift-syntax, behind `Macros` |
 | `StoicLint`          | Build-tool plugin that fails the build on unsafe patterns                      | swift-syntax, behind `Lint` (host only) |

@@ -13,14 +13,15 @@
 # scripts/linux.sh run it.
 #
 # A second adoption enables the Crypto trait and uses StoicSealed for real
-# (on Apple platforms with the Keychain adapter design/24 shows, taken from
-# that document so it cannot drift): swift-crypto must resolve, and nothing
-# else may be fetched with it.
+# (on Apple platforms with StoicSealedKeychain's adapter, built on a secret
+# store, and the line design/24 shows for it, taken from that document so it
+# cannot drift): swift-crypto must resolve, and nothing else may be fetched
+# with it.
 set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
 portable="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicSealed StoicObservability StoicHTTP"
-apple="StoicApple StoicAppKit StoicUIKit"
+apple="StoicApple StoicAppKit StoicUIKit StoicSealedKeychain"
 case "$(uname -s)" in
     Darwin) products="$portable $apple" ;;
     *) products="$portable" ;;
@@ -81,7 +82,7 @@ trap 'rm -rf "$work" "$crypto"' EXIT
 mkdir -p "$crypto/Sources/App"
 products='.product(name: "StoicSealed", package: "'"$identity"'"),'
 case "$(uname -s)" in
-    Darwin) products="$products .product(name: \"StoicApple\", package: \"$identity\")," ;;
+    Darwin) products="$products .product(name: \"StoicSealedKeychain\", package: \"$identity\"), .product(name: \"StoicApple\", package: \"$identity\")," ;;
 esac
 cat > "$crypto/Package.swift" <<EOF
 // swift-tools-version: 6.4
@@ -116,18 +117,27 @@ print("adopted StoicSealed with the Crypto trait: sealed, opened and rotated")
 EOF
 case "$(uname -s)" in
     Darwin)
-        # The adapter of design/24, verbatim from the document, so it stays true.
-        awk '/^import Foundation$/ { found = 1 } found && /^```$/ { exit } found { print }' "$root/design/24-sealed-storage.md" > "$crypto/Sources/App/KeychainCustody.swift"
-        if ! grep -q 'struct KeychainCustody' "$crypto/Sources/App/KeychainCustody.swift"; then
-            echo "error: the Keychain adapter was not found in design/24-sealed-storage.md" >&2
+        # The line design/24 and docs/Adopting.md show for the Keychain, verbatim
+        # from the document, so what they tell an app to write stays true. It
+        # builds a custody over `KeychainSecretStore(service:)`, which touches no
+        # keychain until it is asked for an item, so it is only compiled here.
+        line="$(grep -m1 '^let custody = SecretStoreCustody(' "$root/design/24-sealed-storage.md" || true)"
+        if [ -z "$line" ]; then
+            echo "error: the SecretStoreCustody line was not found in design/24-sealed-storage.md" >&2
             exit 1
         fi
+        {
+            printf 'import StoicApple\nimport StoicSealed\nimport StoicSealedKeychain\n\n'
+            printf '%s\n' "$line"
+            printf '\n/// The documented custody, as the library type it is.\nfunc documentedCustody() -> any KeyCustody { custody }\n'
+        } > "$crypto/Sources/App/Documented.swift"
         cat > "$crypto/Sources/App/Custody.swift" <<'EOF'
 import StoicApple
 import StoicSealed
+import StoicSealedKeychain
 
 /// The adapter over an in-memory secret store: no Keychain is touched.
-func makeCustody() -> any KeyCustody { KeychainCustody(secrets: InMemorySecretStore()) }
+func makeCustody() -> any KeyCustody { SecretStoreCustody(InMemorySecretStore()) }
 EOF
         ;;
     *)

@@ -25,8 +25,11 @@ import Foundation
 /// sit on the core; settings, HTTP and sealed storage compose those (sealed
 /// storage is persistence plus swift-crypto, behind its trait); the Apple
 /// libraries sit on the core and the Foundation table, and nothing portable
-/// ever depends on one of them. Sealed storage does not know `StoicApple`:
-/// an app joins its Keychain to it with an adapter of its own (design/24).
+/// ever depends on one of them. Sealed storage does not know `StoicApple`, and
+/// `StoicApple` does not know sealing: `StoicSealedKeychain` is the one place
+/// they meet (design/24), a library of its own because it is the only code that
+/// needs both, so an app that adopts either alone builds neither the other nor
+/// what the other brings (swift-crypto, with its trait).
 let layering: [String: Set<String>] = [
     "Stoic": [],
     "StoicJSON": [],
@@ -37,6 +40,7 @@ let layering: [String: Set<String>] = [
     "StoicObservability": ["Stoic"],
     "StoicSettings": ["Stoic", "StoicSchema", "StoicStore", "StoicJSON"],
     "StoicSealed": ["Stoic", "StoicStore"],
+    "StoicSealedKeychain": ["StoicSealed", "StoicApple"],
     "StoicFoundation": ["Stoic"],
     "StoicHTTP": ["Stoic", "StoicFoundation", "StoicSchema", "StoicJSON"],
     "StoicApple": ["Stoic", "StoicFoundation"],

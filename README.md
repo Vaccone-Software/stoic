@@ -191,6 +191,7 @@ that replays exactly.
 | `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read — checked at every crash point | `Stoic` |
 | `StoicSettings` | Settings that a crash, a bad value, an old format or a newer app version cannot ruin; observable | `StoicSchema`, `StoicStore` |
 | `StoicSealed`  | Files and journals AES-256-GCM sealed, each bound to what it is for; keys in a keyring the app keeps in its own custody; tampered, torn, unknown-key and not-sealed told apart; deleting a record is destroying its key; crash-tested | `Stoic`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
+| `StoicSealedKeychain` | The Keychain (any `SecretStore`) as the custody of a sealed keyring, a locked keychain never read as "no keyring" | `StoicSealed`, `StoicApple`, behind the `Crypto` trait |
 | `StoicHTTP`    | An HTTP client with the resilience written once: per-host retry honouring `Retry-After`, circuit breaker and bulkhead, idempotency keys on `POST`, bounded responses decoded through schemas, coalesced `GET`s, redirects followed by the client (no credential leaves its origin, never `https` to `http`), no credentials in events; a scripted transport so every failure is a test on virtual time | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation |
 | `StoicFoundation` | Foundation's errors (`URLError`, `POSIXError`, `CocoaError`) classify themselves for retry; portable | `Stoic`, Foundation |
 | `StoicApple`   | Device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, `StoicFoundation`, Apple frameworks |
@@ -271,7 +272,8 @@ dependencies: [.product(name: "StoicSealed", package: "stoic")]
 import StoicSealed
 
 // The keys live in a keyring the app keeps in its own custody (the Keychain,
-// through an adapter design/24 shows), never beside the data.
+// through StoicSealedKeychain's `SecretStoreCustody(KeychainSecretStore(service:))`),
+// never beside the data.
 let ring = try Keyring.open(name: "app.keyring", custody: custody, ifMissing: .create).keyring
 let notes = SealedFile(keyring: ring)                          // 0o600, atomic, crash-tested
 try notes.write(data, to: path, context: SealContext("app.notes", note.id))

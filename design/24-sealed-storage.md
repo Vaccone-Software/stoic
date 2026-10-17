@@ -114,13 +114,14 @@ where `Crypto` is a build of BoringSSL; on Apple platforms it is CryptoKit).
 .package(url: "https://github.com/Vaccone-Software/stoic", from: "0.4.0", traits: ["Crypto"]),
 // …
 .product(name: "StoicSealed", package: "stoic"),
+.product(name: "StoicSealedKeychain", package: "stoic"),   // to keep the keyring in the Keychain
 ```
 
 The same arrangement as `Lint` and `Macros` (design/13, design/06), and for the
 same reason: the package graph's promise that adopting a library fetches
 nothing else (`scripts/adoption.sh`). Without the trait the module is empty.
-It does not depend on `StoicApple`; an app joins its Keychain to it (Key
-custody).
+It does not depend on `StoicApple`; `StoicSealedKeychain` joins it to the Keychain
+(Key custody).
 
 ## API
 
@@ -163,7 +164,7 @@ try SealedJournal.remove(at: path)                           // the log and ever
 
 Test doubles: `InMemoryKeyCustody` (with `failNext`, `inject`, `calls`). Types:
 `SealError`, `CustodyError`, `KeyringError`, `SealedStoreError`, `SealContext`,
-`KeyID`, `SealingKey`.
+`KeyID`, `SealingKey`; and, in `StoicSealedKeychain`, `SecretStoreCustody`.
 
 ## The sealed value
 
@@ -329,50 +330,45 @@ access denied, user cancelled, interaction not allowed, service unavailable) mea
 
 ### The Keychain, on Apple platforms
 
-`StoicApple` must not depend on `StoicSealed` and the reverse, so the adapter is
-the app's, about twenty lines over `SecretStore`:
+`StoicApple` must not depend on `StoicSealed` and the reverse, so the one place they meet is a
+library of its own, **`StoicSealedKeychain`** (it depends on both, behind the `Crypto` trait like
+`StoicSealed`), which holds a single type, `SecretStoreCustody`, over any `SecretStore`:
 
 ```swift
-import Foundation
 import StoicApple
 import StoicSealed
+import StoicSealedKeychain
 
-struct KeychainCustody: KeyCustody {
-    let secrets: any SecretStore
-
-    func load(name: String) throws(CustodyError) -> [UInt8]? {
-        do throws(SecretStoreError) { return try secrets.get(name).map { [UInt8]($0) } } catch { throw CustodyError(error) }
-    }
-    func store(_ bytes: [UInt8], name: String) throws(CustodyError) {
-        do throws(SecretStoreError) { try secrets.set(Data(bytes), for: name) } catch { throw CustodyError(error) }
-    }
-    func delete(name: String) throws(CustodyError) {
-        do throws(SecretStoreError) { try secrets.delete(name) } catch { throw CustodyError(error) }
-    }
-}
-
-extension CustodyError {
-    /// Nothing a Keychain refuses is "absent": every case but an invalid key means the item may exist.
-    init(_ error: SecretStoreError) {
-        switch error {
-        case .locked: self = .unavailable(.locked)
-        case .authenticationFailed, .missingEntitlement: self = .unavailable(.accessDenied)
-        case .unavailable: self = .unavailable(.serviceUnavailable)
-        case .invalidKey, .invalidValue: self = .invalidName
-        case .corrupted: self = .other(code: -1)
-        case .other(let status): self = .other(code: Int(status))
-        }
-    }
-}
-
-let custody = KeychainCustody(secrets: KeychainSecretStore(service: "com.example.app"))
+let custody = SecretStoreCustody(KeychainSecretStore(service: "com.example.app"))
+let ring = try Keyring.open(name: "app.keyring", custody: custody, ifMissing: .create).keyring
 ```
 
-`scripts/adoption.sh` builds this snippet against both libraries, so it stays true.
-`SecretStore.get` returns `nil` only for `errSecItemNotFound`; every other status
-throws (design/21), which is what makes the mapping safe. A tiny library that owns
-the adapter (`StoicSealed` plus `StoicApple`) would need a new edge in
-`scripts/package-graph.swift`; it is not built.
+`SecretStore.get` returns `nil` only for `errSecItemNotFound`; every other status throws
+(design/21), which is what makes the mapping safe: the adapter returns `nil` for exactly that, and
+turns every refusal into a `CustodyError` that says **the item may exist**:
+
+| `SecretStoreError`             | `CustodyError`                      | `itemMayExist` |
+| ------------------------------ | ----------------------------------- | -------------- |
+| `.locked`                      | `.unavailable(.locked)`             | yes            |
+| `.authenticationFailed`        | `.unavailable(.accessDenied)`       | yes            |
+| `.missingEntitlement`          | `.unavailable(.accessDenied)`       | yes            |
+| `.unavailable`                 | `.unavailable(.serviceUnavailable)` | yes            |
+| `.corrupted`                   | `.other(code: -1)`                  | yes            |
+| `.other(status:)`              | `.other(code: status)`              | yes            |
+| `.invalidKey`, `.invalidValue` | `.invalidName`                      | no             |
+
+So a locked keychain, a refused prompt and a missing entitlement are never read as "the keyring is
+not there", and `Keyring.open(… ifMissing: .create)` over any of them creates nothing. The adapter
+adds nothing else: no retry, no cache. It is portable code (its tests run everywhere, over
+`InMemorySecretStore`); `KeychainSecretStore` is Apple's. Why a library rather than twenty lines in
+the app: the mapping is the one place a mistake destroys a keyring, so it is written once and tested
+for every case, and adding it is one product and one line.
+
+`scripts/adoption.sh` builds this snippet's line, taken from this document, against the library
+(and runs the library over an in-memory secret store), so what the document tells an app to write
+stays true. `StoicSealedKeychain` is the one edge between the two libraries in
+`scripts/package-graph.swift`; an app that adopts either alone builds neither the other nor
+swift-crypto.
 
 ### Which keychain, and what each gives
 
@@ -624,6 +620,9 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | the custody holds no keyring and the caller asked to create one           | One key is made and stored (and read back); `created` is `true`                                                                                                                                                                      |
 | the custody holds no keyring and the caller asked to fail                 | `.missing`; nothing is written                                                                                                                                                                                                       |
 | the custody is unavailable when a keyring is opened                       | `.custody(.unavailable)`, whatever `ifMissing` says; **no key is made and nothing is written**                                                                                                                                       |
+| a secret store holds nothing under the keyring's name                     | `SecretStoreCustody.load` returns `nil` (and `delete` succeeds): `.create` makes a keyring, `.fail` is `.missing`; a keyring in a secret store reopens in a new process with the same keys                                           |
+| a secret store is locked, refuses or cannot be reached                    | Each `SecretStoreError` is the `CustodyError` the table says (`.unavailable`, `.other`: the item may exist); a keyring is never created over it, whatever `ifMissing` says, and a rotation it refuses changes nothing                |
+| a secret store fails in a way it has no name for                          | `.other(code:)` with its status, never `nil`: its state is unknown, which is not absent                                                                                                                                              |
 | the custody item is not a keyring this release reads                      | `.corrupt` or `.unsupportedVersion`; the item is left exactly as it is, never replaced                                                                                                                                               |
 | a keyring is rotated                                                      | The ring is stored, and read back, before the new key is returned; old keys stay                                                                                                                                                     |
 | the custody fails or loses the write of a rotation                        | An error (`.custody`, or `.notPersisted` for a write that was lost); the new key is not used; the keyring is as it was                                                                                                               |
@@ -641,7 +640,7 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | an adoption's sealed copy does not open to the plaintext                  | `.verificationFailed` (with what the open said, or `nil` if it opened to other bytes); the plaintext and every copy beside it are exactly as they were, and the staged copy is removed                                               |
 | the process dies at any instruction of an adoption                        | The file is the plaintext or a sealed value that opens to it; a second call finishes, leaving no plaintext copy                                                                                                                      |
 | records are appended and replayed                                         | Plaintext in order with their sequences; the log holds no plaintext                                                                                                                                                                  |
-| a sealed journal is removed                                               | The log and everything the journal keeps beside it go, nothing else in the directory, and **the keyring is untouched**: no key is retired; an open journal is `.store(.busy)`                                                         |
+| a sealed journal is removed                                               | The log and everything the journal keeps beside it go, nothing else in the directory, and **the keyring is untouched**: no key is retired; an open journal is `.store(.busy)`                                                        |
 | a sealed journal has a torn tail                                          | Cut at open and reported by the journal (`droppedBytes`); the records before it open; it is not a failure                                                                                                                            |
 | a record in the middle of a sealed journal is altered                     | That record is in `failures` with its sequence (`.tampered`); the others are returned                                                                                                                                                |
 | a sealed record is moved, repeated or swapped                             | Each fails at its new position (`.tampered`): its sequence is authenticated                                                                                                                                                          |
@@ -658,8 +657,9 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 
 - **A `SealedLog`** (above): measure first.
 - **A custody on files, or in the Keychain, inside `StoicSealed`.** The first defeats the purpose
-  (a key beside its data) except for tools; the second is the adapter above, which `StoicApple`
-  and `StoicSealed` must not be linked by.
+  (a key beside its data) except for tools; the second is `StoicSealedKeychain`'s
+  `SecretStoreCustody`, in a library of its own because `StoicApple` and `StoicSealed` must not be
+  linked by either.
 - **Passphrase-derived keys**, key wrapping to several recipients, streaming or chunked sealing
   (a value is sealed whole, in memory), post-quantum anything.
 - **A counter or chain** that makes rollback or tail deletion detectable.
@@ -705,6 +705,11 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
   unreadable (`.unknownKey` for every record). And in `StoicStoreTests`, `JournalRemoveTests` (design/15).
 - `ReplayValueTests`: a `SealedJournal.Replay` built from its public initializers, in a file that
   imports without `@testable`.
+- `StoicSealedKeychainTests`, `SecretStoreCustodyTests`: every `SecretStoreError` through `load`, `store` and
+  `delete` to the `CustodyError` the table gives (with a `switch` that stops compiling when a case is
+  added); `itemMayExist` for each; absent is `nil`; bytes round-trip and `store` replaces; an empty name;
+  a keyring created, reopened in a new custody value and rotated over an `InMemorySecretStore`; no keyring
+  made over any refusal, with `.create` or `.fail`; a rotation the store refuses leaves the ring as it was.
 - `ThroughputTests`: seal and open of 1 KB and 1 MB values, printed in MB/s; nothing gates on time.
 
 And in `StoicStoreTests`, for the journal this builds on: `JournalReadOnlyTests` (design/15).

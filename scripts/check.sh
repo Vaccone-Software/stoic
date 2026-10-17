@@ -123,15 +123,15 @@ step "macros (Macros trait): expansion tests, usage tests, schemas against their
 swift build --traits Macros
 swift test --traits Macros --filter StoicMacros
 
-step "sealed storage (Crypto trait): StoicSealed builds and its tests pass, with swift-crypto"
+step "sealed storage (Crypto trait): StoicSealed and StoicSealedKeychain build and their tests pass, with swift-crypto"
 # swift-crypto is fetched only with the trait (the adoption step below proves
 # an app without it fetches nothing), so the library and its tests are built
 # and run here with it: all of them, then the concurrency tests under Thread
 # Sanitizer and every one under Address Sanitizer.
 swift build --traits Crypto
-swift test --traits Crypto --filter 'StoicSealedTests'
-swift test --traits Crypto --sanitize=thread --filter 'StoicSealedTests'
-swift test --traits Crypto --sanitize=address --filter 'StoicSealedTests'
+swift test --traits Crypto --filter 'StoicSealedTests|StoicSealedKeychainTests'
+swift test --traits Crypto --sanitize=thread --filter 'StoicSealedTests|StoicSealedKeychainTests'
+swift test --traits Crypto --sanitize=address --filter 'StoicSealedTests|StoicSealedKeychainTests'
 
 step "adoption: an app adopting every library, with no traits, fetches nothing and builds; with Crypto, only swift-crypto"
 # Also what proves a consumer that never enables Macros, Lint or Crypto never
@@ -139,17 +139,18 @@ step "adoption: an app adopting every library, with no traits, fetches nothing a
 scripts/adoption.sh
 
 step "iOS: every library builds for iOS (UIKit paths compile only there)"
-# StoicSealed is empty without its trait, which xcodebuild cannot enable, so it
-# is built for iOS with SwiftPM and the trait.
+# StoicSealed and StoicSealedKeychain are empty without their trait, which
+# xcodebuild cannot enable, so they are built for iOS with SwiftPM and the trait.
 ios_sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 swift build --traits Crypto --target StoicSealed --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
+swift build --traits Crypto --target StoicSealedKeychain --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done
 
 step "documentation: DocC builds with no warnings, in every library (broken links, undocumented parameters)"
-# Not here: StoicMacros and StoicSealed, whose symbols exist only with the Macros
+# Not here: StoicMacros, StoicSealed and StoicSealedKeychain, whose symbols exist only with the Macros
 # and Crypto traits, which xcodebuild cannot enable. A symbol of another Stoic library is written as
 # code, not as a ``link``: DocC resolves a link only inside the module it is
 # building. StoicUIKit builds for iOS, where its code compiles.
