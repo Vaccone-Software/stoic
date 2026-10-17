@@ -135,7 +135,13 @@ struct ScopeMatrixTests {
         for k in stride(from: 1, through: hangers, by: 1) {
             let timing = await eventually { hangersEntered.value == k && clock.pendingDeadlines.count == 1 }
             #expect(timing, "\(cell): hung finalizer \(k) was never timed")
-            if !timing { break }
+            if !timing {
+                // The failure is recorded; release what is hung so the cell
+                // ends, instead of waiting on a clock nobody will advance until
+                // the time limit, which leaves the whole run hanging.
+                hangGate.open()
+                break
+            }
             await clock.advanceToNextDeadline()
         }
         let result = await task.value
