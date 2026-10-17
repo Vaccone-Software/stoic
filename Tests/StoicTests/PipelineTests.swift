@@ -253,11 +253,18 @@ struct PipelineTests {
                     return 1
                 }
             }
+            // Each wait is for sleeps begun since the last advance: the cut-off
+            // attempt's own sleep is cancelled, not gone, the moment the
+            // timeout fires, so counting what is asleep would take it for the
+            // backoff.
+            var mark = clock.totalSleeps
             for attempt in 1...3 {
-                await clock.waitForSleepers(count: 2)       // the attempt, and its timeout
+                await clock.waitForSleepers(newerThan: mark, count: 2)       // the attempt, and its timeout
+                mark = clock.totalSleeps
                 await clock.advance(by: .seconds(2))
                 if attempt < 3 {
-                    await clock.waitForSleepers(count: 1)   // the backoff
+                    await clock.waitForSleepers(newerThan: mark)             // the backoff
+                    mark = clock.totalSleeps
                     await clock.advance(by: .seconds(1))
                 }
             }
