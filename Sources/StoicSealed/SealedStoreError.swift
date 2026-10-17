@@ -28,6 +28,12 @@ public enum SealedStoreError: Error, Sendable, CustomStringConvertible, Retryabl
     /// the shredding is not done. Compact with rotation again, or retire the
     /// keys, once the custody answers.
     case compactedButNotShredded(KeyringError)
+    /// An adoption sealed a plaintext file to a staged copy and the copy did not
+    /// open to the plaintext it was made from: it failed to open (the
+    /// ``SealError``) or opened to other bytes (`nil`). Nothing was replaced: the
+    /// plaintext file is as it was, and the staged copy is removed. A cipher or a
+    /// disk that does this is not one to seal data with; report it.
+    case verificationFailed(SealError?)
 
     public var description: String {
         switch self {
@@ -36,6 +42,8 @@ public enum SealedStoreError: Error, Sendable, CustomStringConvertible, Retryabl
         case .keyring(let error): "\(error)"
         case .unreadable(let count): "refused to compact: \(count) sealed values cannot be opened and would be lost"
         case .compactedButNotShredded(let error): "compacted, but the old keys were not retired (\(error))"
+        case .verificationFailed(let error):
+            "the sealed copy did not open to the plaintext it was made from (\(error.map { "\($0)" } ?? "it opened to other bytes")); the plaintext was left as it is"
         }
     }
 
@@ -44,7 +52,7 @@ public enum SealedStoreError: Error, Sendable, CustomStringConvertible, Retryabl
         case .store(let error): error.retryDecision
         case .seal(let error): error.retryDecision
         case .keyring(let error), .compactedButNotShredded(let error): error.retryDecision
-        case .unreadable: .stop
+        case .unreadable, .verificationFailed: .stop
         }
     }
 }

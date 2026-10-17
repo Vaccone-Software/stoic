@@ -38,7 +38,8 @@ public import StoicStore
 ///   ``SealError/unknownKey(_:)`` for a key that is gone. None is quarantined,
 ///   renamed or removed: the file is left as it is for the app to decide.
 /// - **Plaintext is adopted, not assumed.** ``adopt(path:context:)`` seals an
-///   existing plaintext file in place and removes every plaintext copy the
+///   existing plaintext file in place, **proving the sealed copy opens to the
+///   plaintext before it replaces it**, and removes every plaintext copy the
 ///   store itself keeps. It cannot erase the blocks the old file occupied
 ///   (below).
 ///
@@ -144,17 +145,26 @@ public struct SealedFile: Sendable {
     /// version wrote in the clear is protected from now on.
     ///
     /// 1. Reads the file as it is (the bytes, with no envelope assumed).
-    /// 2. If it already begins with a sealed header, does nothing but step 4.
-    /// 3. Otherwise seals it and replaces it, atomically, **without** keeping
-    ///    the plaintext as a previous generation (whatever ``Options/keepPrevious``
-    ///    says).
-    /// 4. Removes every plaintext copy the store itself keeps beside it: a
-    ///    `<path>.previous` and a stale `<path>.tmp` that are not sealed values.
-    ///    A sealed `.previous` is left. (A symbolic link is followed: the
-    ///    neighbours are those of the file it names.)
+    /// 2. If it already begins with a sealed header, does nothing but step 5.
+    /// 3. Otherwise seals it to a staged file beside it (`<path>.sealing`), made
+    ///    durable, then **reads that file back, opens it with the keyring and
+    ///    compares what it opens to with the plaintext**. A copy that does not
+    ///    open, or opens to anything else, is removed and
+    ///    ``SealedStoreError/verificationFailed(_:)`` is thrown: the plaintext
+    ///    has not been touched.
+    /// 4. Renames the staged file over the plaintext (atomic, and without keeping
+    ///    the plaintext as a previous generation, whatever ``Options/keepPrevious``
+    ///    says) and syncs the directory. Nothing but this rename ever removes
+    ///    the plaintext file, so it is never gone before a verified replacement is
+    ///    in place.
+    /// 5. Removes every plaintext copy the store itself keeps beside it: a
+    ///    `<path>.previous` and a stale `<path>.tmp` that are not sealed values,
+    ///    and a staged file an interrupted call left. A sealed `.previous` is
+    ///    left. (A symbolic link is followed: the neighbours are those of the
+    ///    file it names.)
     ///
     /// A crash anywhere leaves the plaintext file or the sealed one, never a
-    /// torn file, and a second call finishes step 4. It is safe to call at every
+    /// torn file, and a second call finishes step 5. It is safe to call at every
     /// launch.
     ///
     /// **What it cannot do:** erase. The blocks the plaintext occupied stay on
@@ -184,14 +194,10 @@ public struct SealedFile: Sendable {
             return .alreadySealed
         }
         let sealed = try seal(stored.bytes, context: context)
-        do throws(StoreError) {
-            // `.durabilityUnknown` is thrown as it is: the sealed file is in
-            // place, but until it is durable the leftovers may be all that a
-            // power loss leaves, so they stay for the next call to remove.
-            try plain.write(sealed, to: path)
-        } catch {
-            throw .store(error)
-        }
+        // `.durabilityUnknown` is thrown as it is: the sealed file is in
+        // place, but until it is durable the leftovers may be all that a
+        // power loss leaves, so they stay for the next call to remove.
+        try replaceVerified(resolved, with: sealed, plaintext: stored.bytes, context: context)
         let removed = try removePlaintextNeighbours(of: resolved)
         SealedEvents.record(Event("sealed.file_adopted", level: .notice, fields: [
             .init("purpose", .string(context.purpose)), .init("bytes", .int(stored.bytes.count)),
@@ -200,8 +206,123 @@ public struct SealedFile: Sendable {
         return .adopted
     }
 
+    /// The name an adoption stages its sealed copy under, beside the file.
+    static let stagedSuffix = ".sealing"
+
+    /// Writes `sealed` to the staged name, proves it opens to `plaintext`, and
+    /// only then renames it over `resolved`.
+    ///
+    /// The staged file is created with the mode of the file it replaces (before
+    /// a byte goes in), written whole and `fullSync`ed, and only then read back,
+    /// so what is compared is what the rename publishes. A leftover under the
+    /// staged name is a crashed call's, and is replaced. The plaintext is not
+    /// touched until the rename, and every failure before it removes the staged
+    /// file and leaves the plaintext as it was.
+    private func replaceVerified(
+        _ resolved: String, with sealed: [UInt8], plaintext: [UInt8], context: SealContext
+    ) throws(SealedStoreError) {
+        let staged = resolved + Self.stagedSuffix
+        let directory = Self.directory(of: resolved)
+        try stage(sealed, at: staged, mode: resolved)
+        try verify(staged, opensTo: plaintext, context: context)
+        do throws(StoreError) {
+            try fileSystem.rename(from: staged, to: resolved)
+        } catch {
+            discard(staged)
+            throw .store(error)
+        }
+        // From here the sealed file is what every reader sees; a failure now
+        // is not "nothing changed", as `AtomicFile` says of its own.
+        do throws(StoreError) {
+            try fileSystem.syncDirectory(directory)
+        } catch {
+            throw .store(StoreError(
+                kind: .durabilityUnknown, operation: error.operation, path: resolved, errnoValue: error.errnoValue,
+                detail: "the file is sealed and readers see it, but that could not be made durable (\(error.kind)); a power loss may undo it"
+            ))
+        }
+    }
+
+    /// Creates `staged` with the permission bits `like` has (or the options'
+    /// for a new file), and writes `bytes` to it durably.
+    private func stage(_ bytes: [UInt8], at staged: String, mode like: String) throws(SealedStoreError) {
+        do throws(StoreError) {
+            if options.checksFreeSpace {
+                // A volume that cannot say how much room it has is not a reason to refuse.
+                let free: UInt64? = try? fileSystem.freeSpace(at: Self.directory(of: staged))
+                if let free, free < UInt64(bytes.count) {
+                    throw StoreError(kind: .diskFull, operation: "preflight", path: staged, detail: "\(bytes.count) bytes needed, \(free) free")
+                }
+            }
+            if try fileSystem.exists(staged) {
+                // A leftover of a crashed call is ours to replace; a file that is
+                // not one is somebody's, and is not removed to make room.
+                guard Self.isSealedOrItsStart(try fileSystem.readAll(staged)) else {
+                    throw StoreError(
+                        kind: .alreadyExists, operation: "stage", path: staged,
+                        detail: "a file that is not a sealed copy is where adoption stages its copy; move it away"
+                    )
+                }
+                try fileSystem.remove(staged)
+            }
+            let mode = try fileSystem.permissions(of: like) ?? options.newFileMode
+            let file = try fileSystem.open(staged, mode: .createExclusive)
+            do throws(StoreError) {
+                try fileSystem.setPermissions(file, to: mode)
+                try fileSystem.write(file, bytes, at: 0)
+                try fileSystem.fullSync(file)
+                try fileSystem.close(file)
+            } catch {
+                _ = Result { () throws(StoreError) in try fileSystem.close(file) }
+                discard(staged)
+                throw error
+            }
+        } catch {
+            throw .store(error)
+        }
+    }
+
+    /// Reads `staged` back and opens it as a reader would; removes it and
+    /// throws unless it opens to exactly `plaintext`.
+    private func verify(_ staged: String, opensTo plaintext: [UInt8], context: SealContext) throws(SealedStoreError) {
+        let onDisk: [UInt8]
+        do throws(StoreError) {
+            onDisk = try fileSystem.readAll(staged)
+        } catch {
+            discard(staged)
+            throw .store(error)
+        }
+        let opened: [UInt8]
+        do throws(SealError) {
+            opened = try Sealing.open(onDisk, context: context, keyring: keyring)
+        } catch {
+            discard(staged)
+            throw .verificationFailed(error)
+        }
+        guard opened == plaintext else {
+            discard(staged)
+            throw .verificationFailed(nil)
+        }
+    }
+
+    /// Removes a staged copy that must not stay. Best effort, because the
+    /// failure being reported is the one worth reporting: a copy that stays is a
+    /// sealed value, and the next call replaces it.
+    private func discard(_ staged: String) {
+        _ = Result { () throws(StoreError) in
+            if try fileSystem.exists(staged) { try fileSystem.remove(staged) }
+        }
+    }
+
+    /// Whether `bytes` could be all or the start of a sealed value: what an
+    /// adoption's own staged file holds, whole or cut short by a crash.
+    private static func isSealedOrItsStart(_ bytes: [UInt8]) -> Bool {
+        Sealing.isSealed(bytes) || Sealing.magic.starts(with: bytes)
+    }
+
     /// Removes `<resolved>.previous` and `<resolved>.tmp` unless they are sealed
-    /// values, and syncs the directory if anything went. Returns how many went.
+    /// values, and a staged file an interrupted adoption left, and syncs the
+    /// directory if anything went. Returns how many went.
     @discardableResult
     private func removePlaintextNeighbours(of resolved: String) throws(SealedStoreError) -> Int {
         var removed = 0
@@ -212,6 +333,13 @@ public struct SealedFile: Sendable {
                 let bytes = try fileSystem.readAll(neighbour)
                 guard !Sealing.isSealed(bytes) else { continue }
                 try fileSystem.remove(neighbour)
+                removed += 1
+            }
+            // The staged copy is ours: sealed, or the start of it if the crash
+            // came while it was written. Something else under that name is not.
+            let staged = resolved + Self.stagedSuffix
+            if try fileSystem.exists(staged), Self.isSealedOrItsStart(try fileSystem.readAll(staged)) {
+                try fileSystem.remove(staged)
                 removed += 1
             }
             if removed > 0 { try fileSystem.syncDirectory(Self.directory(of: resolved)) }

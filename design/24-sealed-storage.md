@@ -452,17 +452,32 @@ authenticates every byte, and an envelope's CRC would turn a tampered file into 
 app decides. `adopt(path:context:)` is the decision to seal it in place:
 
 1. read the file as it is (no envelope assumed);
-2. if it already begins with a sealed header, only clean up (step 4);
-3. otherwise seal it and replace it atomically, **without** keeping the plaintext as
-   a previous generation, whatever `keepPrevious` says;
-4. remove every plaintext copy the store keeps beside it: `<path>.previous` and
-   `<path>.tmp` unless they are sealed values (a sealed previous generation stays),
-   then sync the directory.
+2. if it already begins with a sealed header, only clean up (step 5);
+3. otherwise seal it to a **staged** file beside it (`<path>.sealing`, created with the
+   plaintext's mode, written whole and `fullSync`ed), then **read that file back, open it
+   with the keyring and compare what it opens to with the plaintext**. A copy that does not
+   open, or opens to other bytes, is removed and the call throws `.verificationFailed`:
+   the plaintext has not been touched;
+4. rename the staged file over the plaintext and sync the directory, **without** keeping
+   the plaintext as a previous generation, whatever `keepPrevious` says. This rename is the
+   only thing that ever removes the plaintext file, so it is never gone before a verified
+   replacement is in place;
+5. remove every plaintext copy the store keeps beside it: `<path>.previous` and
+   `<path>.tmp` unless they are sealed values (a sealed previous generation stays), and a
+   staged file an interrupted call left (sealed, or the start of one); then sync the directory.
 
 A crash anywhere leaves the plaintext file or the sealed one, never a torn file, and a
-second call finishes step 4: call it at every launch. A file that was adopted through a
-symbolic link is cleaned beside its target. A `<path>.corrupt-N` an earlier
+second call finishes step 5: call it at every launch. The staged name is the store's, as
+`.tmp` is: a leftover that is a sealed value (or its start) is replaced, and a file there that
+is not one is neither replaced nor removed (`.store(.alreadyExists)`). A file that was adopted
+through a symbolic link is cleaned beside its target. A `<path>.corrupt-N` an earlier
 `AtomicFile` quarantined is the app's to inspect; adoption does not touch it.
+
+Why verify, when the cipher is the system's and tested: the plaintext is, for an adoption,
+the only copy there is, and a bad write (a volume that returns what it was not given, a bug
+in the layers above the cipher) is one a reader would otherwise meet months later as
+`.tampered`, when the plaintext is long gone. The check costs one read and one
+open of a file that was just written.
 
 ### What deleting a file does not do
 
@@ -537,7 +552,7 @@ custody's writes interleaved between the file operations, against a mutation tha
   the ring is exactly as it was.
 - **A compaction rotates only once it has a snapshot to seal.** A refusal, a decline, and a
   failure of the fold leave the ring as they found it; only a failure of the seal or of the
-  snapshot's write *after* the rotation leaves one more key, which sealed nothing and which the
+  snapshot's write _after_ the rotation leaves one more key, which sealed nothing and which the
   next compaction with rotation retires. The rotation happens under the journal's lock (the fold's
   state and the key it is sealed under must belong to one moment), so an append waits for a custody
   that blocks.
@@ -601,7 +616,7 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | the custody fails or loses the write of a rotation                        | An error (`.custody`, or `.notPersisted` for a write that was lost); the new key is not used; the keyring is as it was                                                                                                               |
 | a key is retired                                                          | What it sealed can no longer be opened (`.unknownKey`), here and in any process that reloads; retiring twice is not an error; the current key cannot be retired                                                                      |
 | a keyring is destroyed                                                    | The custody item is deleted; `current` throws `.destroyed`; nothing is found or sealed; a delete that fails leaves it usable                                                                                                         |
-| a keyring is reloaded and the custody no longer holds it                  | `reload()` throws `.missing` and changes nothing: the keys in memory are still held and still open what they sealed; only `destroy()` makes a keyring destroyed                                                                     |
+| a keyring is reloaded and the custody no longer holds it                  | `reload()` throws `.missing` and changes nothing: the keys in memory are still held and still open what they sealed; only `destroy()` makes a keyring destroyed                                                                      |
 | a second process rotates the keyring the first has open                   | The first cannot open what was sealed under the new key (`.unknownKey`) until `reload()`                                                                                                                                             |
 | keys are used from many threads while the keyring rotates                 | Every value sealed under the current key opens; memory and custody agree                                                                                                                                                             |
 | a file is written and read back                                           | The file is a sealed value with nothing else beside it; no plaintext on disk                                                                                                                                                         |
@@ -610,6 +625,7 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | a file is plaintext, altered, cut, or sealed under a key that is gone     | `.notSealed`, `.tampered`, `.torn`, `.unknownKey` respectively; the file is left as it is                                                                                                                                            |
 | the process dies at any instruction of a write                            | `read` finds the old value or the new, never a torn file, and no file holds plaintext                                                                                                                                                |
 | a plaintext file is adopted                                               | Sealed in place; the plaintext is not kept as a previous generation, and no plaintext `.previous` or `.tmp` is left                                                                                                                  |
+| an adoption's sealed copy does not open to the plaintext                  | `.verificationFailed` (with what the open said, or `nil` if it opened to other bytes); the plaintext and every copy beside it are exactly as they were, and the staged copy is removed                                               |
 | the process dies at any instruction of an adoption                        | The file is the plaintext or a sealed value that opens to it; a second call finishes, leaving no plaintext copy                                                                                                                      |
 | records are appended and replayed                                         | Plaintext in order with their sequences; the log holds no plaintext                                                                                                                                                                  |
 | a sealed journal has a torn tail                                          | Cut at open and reported by the journal (`droppedBytes`); the records before it open; it is not a failure                                                                                                                            |
@@ -665,6 +681,11 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
   key and no custody item; the rotation comes after the fold; a refusal rotates nothing; a rotation
   the custody refuses writes nothing; a snapshot that cannot be written leaves the log and only an
   unused key, which the next rotating compaction retires.
+- `SealedFileAdoptionTests`: a staged copy that is damaged four ways (a flipped bit, cut short, cut
+  inside the magic, another sealed value) replaces nothing and leaves no trace; the staged file's mode
+  is the plaintext's before its first byte; leftovers (sealed, torn, empty, not ours) are replaced,
+  cleaned or left as each deserves; a failure at each step of staging, the rename and the directory
+  sync; the real file system.
 - `ReplayValueTests`: a `SealedJournal.Replay` built from its public initializers, in a file that
   imports without `@testable`.
 - `ThroughputTests`: seal and open of 1 KB and 1 MB values, printed in MB/s; nothing gates on time.
