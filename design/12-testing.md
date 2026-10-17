@@ -289,7 +289,10 @@ reported with the stuck state work by name; a livelock hits the time limit.
   never by a sleep.
 - **Process-wide state is isolated per test** (budgets in the ambient
   context; unique labels for process-wide ledgers), so tests can repeat and
-  run in parallel.
+  run in parallel. `scripts/check.sh` holds Swift Testing's parallelization
+  width to the core count: left unbounded, every test of a bundle starts at
+  once, and on a small runner the real-time waits of tests over their own
+  work are starved by the crowd.
 - **No real sleeps as synchronisation.** Tests wait on clocks, gates and
   results.
 

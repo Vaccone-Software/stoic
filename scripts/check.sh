@@ -15,6 +15,14 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n== %s\n' "$1"; }
 
+# Swift Testing starts every test of a bundle at once. On a runner with a few
+# cores that is hundreds of tests, and the processes some of them spawn,
+# competing for the same cores, and a test that waits in real time for work of
+# its own (a restart, a waiter, a cancelled child) can be starved for longer
+# than its window. One test per core keeps a test's wait about its own work.
+SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=${SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH:-$(sysctl -n hw.ncpu)}
+export SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH
+
 step "package graph: every dependency allowed by the layering, declared and used"
 graph=$(mktemp)
 swift package dump-package > "$graph"

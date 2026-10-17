@@ -27,6 +27,11 @@ done
 printf '\nAll Linux targets built.\n'
 
 printf '\n== tests\n'
+# One test per core, as in check.sh: left unbounded, every test of a bundle
+# starts at once and the real-time waits of tests over their own work are
+# starved by the crowd.
+SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=${SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH:-$(nproc)}
+export SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH
 swift test --build-path /tmp/stoic-linux-build
 printf '\nAll Linux tests passed.\n'
 
