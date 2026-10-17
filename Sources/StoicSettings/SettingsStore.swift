@@ -76,7 +76,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// The write failed; the value and the file are as they were.
         case storage(StoreError)
         /// The new value is in the file and has been published, but the disk
-        /// could not confirm it is durable (``StoreError/Kind/durabilityUnknown``):
+        /// could not confirm it is durable (`StoreError.Kind.durabilityUnknown`):
         /// a power loss may bring back the old one. Unlike every other case,
         /// the update *happened*.
         case durabilityUnknown(StoreError)
@@ -112,7 +112,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// `.busy` (or waits, with `open(…lockTimeout:)`). The OS releases the
         /// lock when the process dies. Off by default. It keeps out only
         /// writers that take the lock too, and may not work over a network
-        /// volume (see ``FileLock``).
+        /// volume (see `FileLock`).
         public var crossProcessLock: Bool
 
         public init(crossProcessLock: Bool = false) {
@@ -195,7 +195,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// to `lockTimeout` for another process to let go of the store.
     ///
     /// The wait polls the ambient clock and honours cancellation and
-    /// ``Deadline/current``; it never blocks a thread. Without
+    /// `Deadline.current`; it never blocks a thread. Without
     /// ``Options/crossProcessLock`` there is nothing to wait for.
     public static func open(
         at path: String,

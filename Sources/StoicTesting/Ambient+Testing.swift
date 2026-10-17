@@ -41,7 +41,7 @@ public nonisolated(nonsending) func withTestAmbient<C: Clock<Duration>, R, Failu
 ///     #expect(await stoicTasksStillRunning().isEmpty)
 ///
 /// Uses real time, briefly: superseded and cancelled work needs a moment to
-/// wind down. Only tasks started under ``withTestAmbient`` or the
+/// wind down. Only tasks started under ``withTestAmbient(clock:seed:events:operation:)`` or the
 /// ``StoicTrait`` are considered, so tests running in parallel do not see
 /// each other's work.
 public func stoicTasksStillRunning(within limit: Duration = .seconds(1)) async -> [TaskLedger.Entry] {

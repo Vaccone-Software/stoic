@@ -8,7 +8,7 @@ public import StoicJSON
 /// schema, which either produces a typed value or says exactly what is wrong
 /// with the input and where. The same declaration drives
 ///
-/// - ``decode(_:options:)``, which accumulates every issue with its path and
+/// - ``decode(_:options:)-(JSONDocument,_)``, which accumulates every issue with its path and
 ///   (for text) its line and column instead of stopping at the first;
 /// - ``encode(_:style:)``, including the sparse form of a configuration;
 /// - ``jsonSchema()``, so what the decoder accepts and what the documentation
@@ -16,7 +16,7 @@ public import StoicJSON
 ///
 /// Compose schemas from the primitives (``bool``, ``int(_:)``,
 /// ``double(_:)``, ``string(_:)``, ``array(of:_:)``, ``dictionary(of:_:)``,
-/// ``optional(_:nullable:)``, ``enumeration(_:)``, ``json(_:)``,
+/// ``optional(_:nullable:)``, `enumeration(_:)`, ``json(_:)``,
 /// ``lazy(_:_:)``) and from objects
 /// (``object(_:name:default:unknownKeys:spellings:doc:version:versionKey:missingVersion:migrations:preservingUnknownKeysIn:fields:)``
 /// for configuration with defaults,
@@ -77,7 +77,7 @@ public struct Schema<Value: Sendable>: Sendable {
     /// default: a dropped element, an unknown case read as its fallback or a
     /// repaired field is something the app decided, and the shortest way to
     /// a value must not be the way that hides it (see
-    /// ``Decoded/get(warnings:)``). ``decodeReporting(_:options:)`` returns
+    /// ``Decoded/get(warnings:)``). ``decodeReporting(_:options:)-(String,_)`` returns
     /// them with the value instead.
     public func decode(
         _ bytes: some Collection<UInt8>,

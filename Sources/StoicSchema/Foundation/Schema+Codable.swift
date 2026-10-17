@@ -31,12 +31,13 @@ extension Schema where Value: Codable {
     /// The export is `{}`: any JSON value.
     ///
     /// - Parameters:
+    ///   - type: The `Codable` type the leaf holds.
     ///   - examples: Values a generator may use. Without them a generator
     ///     can only draw arbitrary JSON, which a typed value will almost
     ///     always refuse, so ``SchemaSuite`` wants examples for a schema that
     ///     holds this leaf.
-    ///   - decoding: Configures the decoder (date strategy, key strategy).
-    ///   - encoding: Configures the encoder the same way, so that a value
+    ///   - configureDecoder: Configures the decoder (date strategy, key strategy).
+    ///   - configureEncoder: Configures the encoder the same way, so that a value
     ///     reads back as it was written.
     public static func codable(
         _ type: Value.Type,

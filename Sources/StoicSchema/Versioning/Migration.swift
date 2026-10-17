@@ -15,7 +15,7 @@ public import StoicJSON
 /// are a closed set of declarative edits (and one labelled escape hatch,
 /// ``Operation/custom(id:description:apply:inverse:)``), which is what lets
 /// a checker reason about them: the export lists them, and
-/// ``Schema/migrationChainCheck()`` runs them backwards to build old
+/// ``Schema/migrationChainCheck(cases:seed:)`` runs them backwards to build old
 /// documents and forwards to prove they arrive.
 ///
 /// Steps are applied one at a time, in order, until the document reaches
@@ -108,9 +108,11 @@ public struct Migration: Sendable, Hashable {
 
         /// Removes a field the new version no longer has.
         ///
-        /// - Parameter example: A value the removed field could hold, so
-        ///   that ``Schema/migrationChainCheck()`` can build an old document
-        ///   that has it and prove the operation removes it.
+        /// - Parameters:
+        ///   - path: The field to remove.
+        ///   - example: A value the removed field could hold, so that
+        ///     ``Schema/migrationChainCheck(cases:seed:)`` can build an old
+        ///     document that has it and prove the operation removes it.
         public static func delete(_ path: String, example: JSONValue? = nil) -> Operation {
             Operation(.delete(path: path, example: example))
         }
@@ -149,10 +151,12 @@ public struct Migration: Sendable, Hashable {
         /// issue quotes it); two customs with the same `id` compare equal.
         ///
         /// - Parameters:
+        ///   - id: Names the edit for machines.
+        ///   - description: What the edit does, in words.
         ///   - apply: Edits the document. Throws ``MigrationFailure`` if it
         ///     cannot, which draws a `migration_failed` issue.
         ///   - inverse: Turns a document of the new shape back into one of
-        ///     the old, for ``Schema/migrationChainCheck()``. Without it the
+        ///     the old, for ``Schema/migrationChainCheck(cases:seed:)``. Without it the
         ///     check cannot test this step and says so.
         public static func custom(
             id: String,
@@ -242,7 +246,7 @@ public enum MissingVersion: Sendable, Hashable {
 /// states which version it is.
 ///
 /// Declared on an object by `version:` and `migrations:`; this is the value
-/// the node records, for exporters and for ``Schema/migrationChainCheck()``.
+/// the node records, for exporters and for ``Schema/migrationChainCheck(cases:seed:)``.
 public struct Versioning: Sendable, Hashable {
     /// The version this schema describes and encodes.
     public var current: Int

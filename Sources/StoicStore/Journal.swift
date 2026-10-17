@@ -252,7 +252,7 @@ public final class Journal: Sendable {
     /// another process to let go of the journal's lock.
     ///
     /// The wait polls the ambient clock and honours cancellation and
-    /// ``Deadline/current``; it never blocks a thread. Without
+    /// `Deadline.current`; it never blocks a thread. Without
     /// ``Options/crossProcessLock`` there is nothing to wait for.
     public static func open(
         at path: String,

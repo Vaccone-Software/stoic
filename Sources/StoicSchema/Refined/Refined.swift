@@ -4,7 +4,7 @@ internal import StoicJSON
 /// carries the proof in its type.
 ///
 /// There is no way to make one from an unchecked value except
-/// ``init(_:)``, which throws, and ``init(clamping:)``, which says in its
+/// ``init(_:)``, which throws, and ``init(clamping:)-(R.Base)``, which says in its
 /// name that it changes the value. The schema decoder builds them through a
 /// private initialiser, after running the same constraints and recording
 /// issues, so a decoded `Refined` is as trustworthy as one made by hand.

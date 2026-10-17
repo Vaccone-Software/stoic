@@ -61,7 +61,7 @@ extension Schema {
     ///     default) keeps the union closed. A plain unknown case is written
     ///     under its name, so the name should not be a declared tag; see
     ///     ``UnknownTag``.
-    ///   - cases: The alternatives, in the order they are documented.
+    ///   - makeCases: Builds the alternatives, in the order they are documented.
     public static func union(
         _ type: Value.Type? = nil,
         discriminator: String = "type",

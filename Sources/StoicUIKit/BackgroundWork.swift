@@ -15,9 +15,9 @@ internal import UIKit
 /// - begins a background task and always ends it, on every exit path — and
 ///   in the expiration handler itself, as the system requires, without
 ///   waiting for the work to unwind;
-/// - runs `work` under a ``Deadline`` set from `backgroundTimeRemaining`, so
+/// - runs `work` under a `Deadline` set from `backgroundTimeRemaining`, so
 ///   every retry, wait and timeout inside it already knows how long it has;
-/// - cancels `work` with ``CancellationCause/systemExpiring`` when the
+/// - cancels `work` with `CancellationCause.systemExpiring` when the
 ///   expiration handler fires, so cleanup can tell "the system took our time
 ///   away" from "the user cancelled";
 /// - cancels `work` when the calling task is cancelled.

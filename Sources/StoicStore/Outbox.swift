@@ -27,7 +27,7 @@ public import Stoic
 ///   server accepted an entry but before the acknowledgement reached the
 ///   disk, the next launch delivers it again. This cannot be closed from the
 ///   client side. The defence is the **idempotency key**: each entry gets one
-///   ``IdempotencyKey`` at enqueue, the same key goes with every attempt of
+///   `IdempotencyKey` at enqueue, the same key goes with every attempt of
 ///   every launch, and a server that honours it makes the repeat harmless.
 ///   An entry delivered to a server that does not deduplicate must be an
 ///   operation that is safe to repeat.
@@ -146,6 +146,10 @@ public actor Outbox<Item: Sendable> {
     /// recovering whatever was pending when the app last stopped.
     ///
     /// - Parameters:
+    ///   - path: Where the journal is kept; its snapshot sits beside it.
+    ///   - codec: How an entry becomes bytes and back.
+    ///   - fileSystem: The file system the outbox's files are on.
+    ///   - policy: How delivery is attempted, and when an entry is given up on.
     ///   - compactionThreshold: Once the log passes this many bytes after a
     ///     delivery run, the pending entries are folded into a snapshot and
     ///     the log truncated, so acknowledgements do not accumulate.

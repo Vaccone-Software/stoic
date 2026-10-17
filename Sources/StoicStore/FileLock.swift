@@ -28,7 +28,7 @@ internal import Synchronization
 ///   of one name).
 /// - **Never blocks a thread.** `acquire` tries without waiting and, if the
 ///   lock is held, sleeps on the *ambient clock* between tries. It honours
-///   cancellation and ``Deadline/current`` as every Stoic wait does, and a
+///   cancellation and `Deadline.current` as every Stoic wait does, and a
 ///   test clock drives it.
 /// - **Not reentrant.** Acquiring a lock this instance already holds is an
 ///   error, not a second hold.
@@ -104,7 +104,7 @@ public final class FileLock: Sendable {
     /// Waits for the lock.
     ///
     /// Polls every `pollInterval` of the ambient clock until the lock is
-    /// free, `timeout` has passed, ``Deadline/current`` has passed, or the
+    /// free, `timeout` has passed, `Deadline.current` has passed, or the
     /// task is cancelled. A cancelled caller leaves without the lock and
     /// without an error to report: the rejection is `.cancelled`.
     ///

@@ -160,7 +160,7 @@ public final class TestClock: Clock, Sendable {
 
     public init() {}
 
-    /// This clock, erased, for ``Ambient`` or any `clock:` parameter.
+    /// This clock, erased, for `Ambient` or any `clock:` parameter.
     ///
     /// Always the same erasure, so instants and deadlines taken through it
     /// anywhere in a test compare exactly.

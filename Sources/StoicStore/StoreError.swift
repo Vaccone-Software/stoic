@@ -10,7 +10,7 @@ internal import Glibc
 ///
 /// Every `StoicStore` call throws this one type, so a caller can write one
 /// `catch` and one `retry` classification for all of persistence. It
-/// conforms to ``Retryable``, so Stoic's `retry` already knows what to do.
+/// conforms to `Retryable`, so Stoic's `retry` already knows what to do.
 ///
 ///     do {
 ///         try atomicFile.write(bytes, to: path)

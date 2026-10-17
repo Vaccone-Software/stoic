@@ -31,12 +31,12 @@ extension Schema {
 /// ``minimize(_:whileFailing:)`` follows them while a property keeps failing,
 /// toward the minima and defaults the schema states.
 ///
-/// **Invalid documents.** ``mutations(of:)`` lists every minimal violation a
+/// **Invalid documents.** ``mutations(of:seed:)`` lists every minimal violation a
 /// valid document admits, each with the issue it must cause.
 ///
 /// What it cannot do: a closure is opaque, so a `custom` constraint is met
 /// by trying candidates and a transform is met by its declared examples (see
-/// ``Schema/transform(base:decode:encode:describe:name:examples:)``).
+/// ``Schema/transform(base:decode:encode:describe:name:examples:format:)``).
 public struct SchemaGenerator<Value: Sendable>: Sendable {
     public let schema: Schema<Value>
     public var configuration: GenerationConfiguration
@@ -177,7 +177,9 @@ public struct SchemaGenerator<Value: Sendable>: Sendable {
     /// on the schema and the document: a schema with no upper bound has no
     /// "above" mutation.
     ///
-    /// - Parameter seed: Chooses the fresh elements a collection grows by.
+    /// - Parameters:
+    ///   - document: A document the schema accepts.
+    ///   - seed: Chooses the fresh elements a collection grows by.
     public func mutations(of document: JSONValue, seed: UInt64 = 0) -> [Mutation] {
         var mutator = Mutator(maker: ValueMaker(random: SplitMix64(seed: seed), configuration: configuration))
         return mutator.mutations(of: document, node: schema.node)

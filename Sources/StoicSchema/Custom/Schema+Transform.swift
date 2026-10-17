@@ -2,7 +2,7 @@ public import StoicJSON
 
 /// Why a conversion refused a value that already had the right shape.
 ///
-/// Thrown from the `decode` closure of ``Schema/transform(base:decode:encode:describe:name:examples:)``,
+/// Thrown from the `decode` closure of ``Schema/transform(base:decode:encode:describe:name:examples:format:)``,
 /// which turns it into an ``Issue`` at the value's path. It carries the
 /// parts of an issue a conversion can know: what is wrong, what would have
 /// been accepted, and what was probably meant.
@@ -140,13 +140,13 @@ extension Schema {
     /// having reported gets a generic ``IssueCode/invalidValue`` issue; one
     /// that returns a value after reporting an error is treated as failed.
     ///
-    /// Everything said under ``transform(base:decode:encode:describe:name:examples:)``
+    /// Everything said under ``transform(base:decode:encode:describe:name:examples:format:)``
     /// about the tree holds here: `describing` is the node an exporter
     /// should write, and a custom schema is opaque to the generators except
     /// through `examples`.
     ///
     /// - Parameters:
-    ///   - describing: What an exporter should say the wire format is.
+    ///   - base: What an exporter should say the wire format is.
     ///   - description: The accepted values in words.
     ///   - name: The type's name in the export; defaults to `Value`'s.
     ///   - examples: JSON that the decoder is known to accept.

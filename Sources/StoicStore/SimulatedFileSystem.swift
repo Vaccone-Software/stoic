@@ -205,6 +205,8 @@ public final class SimulatedFileSystem: FileSystem {
     /// answer is caught.
     ///
     /// - Parameters:
+    ///   - errno: The error number the failing calls report.
+    ///   - target: The kind of call to fail.
     ///   - skipping: How many matching calls succeed first.
     ///   - count: How many matching calls fail after that.
     public func inject(_ errno: Int32, on target: FaultTarget, skipping: Int = 0, count: Int = 1) {

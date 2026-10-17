@@ -78,9 +78,11 @@ public final class FakeBackgroundTask: BackgroundTaskHandle {
     private let expiresImmediately: Bool
     private let state = Mutex(State())
 
-    /// - Parameter expiringImmediately: Whether the system takes the time
-    ///   back the moment an expiration handler is set: a task that was
-    ///   already out of time when the app got to it.
+    /// - Parameters:
+    ///   - identifier: The task's identifier, as the system gave it.
+    ///   - expiringImmediately: Whether the system takes the time
+    ///     back the moment an expiration handler is set: a task that was
+    ///     already out of time when the app got to it.
     public init(identifier: String, expiringImmediately: Bool = false) {
         self.identifier = identifier
         self.expiresImmediately = expiringImmediately

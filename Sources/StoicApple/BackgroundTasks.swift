@@ -74,7 +74,7 @@ public protocol BackgroundTaskHandle: Sendable {
 }
 
 /// The system's scheduler: the `BGTaskScheduler` seam.
-/// ``SystemBackgroundTaskScheduler`` is the real one, ``FakeBackgroundScheduler`` the test's.
+/// `SystemBackgroundTaskScheduler` is the real one, ``FakeBackgroundScheduler`` the test's.
 public protocol BackgroundTaskScheduling: Sendable {
     /// Registers `launch` as the handler for `identifier`. Returns `false` if
     /// the system refuses. `launch` may run on any thread.
@@ -116,9 +116,9 @@ public struct BackgroundRunReport: Sendable {
 ///    never allowed to stop the work;
 /// 2. sets the expiration handler before the work starts, so no expiry is
 ///    missed;
-/// 3. runs the work as ``ExpiringWork``: under a ``Deadline`` of `budget` if
-///    one is given (cause ``CancellationCause/deadline``), cancelled with
-///    cause ``CancellationCause/systemExpiring`` the moment the system
+/// 3. runs the work as `ExpiringWork`: under a `Deadline` of `budget` if
+///    one is given (cause `CancellationCause.deadline`), cancelled with
+///    cause `CancellationCause.systemExpiring` the moment the system
 ///    expires the task;
 /// 4. on expiry, completes the task at once with `success: false` without
 ///    waiting for the work to unwind (the system gives a moment, not a
@@ -175,7 +175,7 @@ public final class BackgroundJob: Sendable {
     ///
     /// Needs the network by default, since an outbox is waiting to send.
     /// The drain should be bounded by the deadline the job gives it
-    /// (``Deadline/current``), as any Stoic retry or wait inside it is.
+    /// (`Deadline.current`), as any Stoic retry or wait inside it is.
     public static func drainingOutbox(
         identifier: String,
         every interval: Duration,

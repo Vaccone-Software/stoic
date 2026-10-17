@@ -28,7 +28,7 @@ public import Testing
 /// seed replays the exact same ordering, every time.
 ///
 /// **What runs simulated.** The body and its structured children; every task
-/// Stoic starts (through ``Ambient/taskExecutor``); and actors without their
+/// Stoic starts (through `Ambient.taskExecutor`); and actors without their
 /// own executor, which run wherever the task calling them prefers. The
 /// ambient clock is a ``TestClock`` that the simulation advances to the next
 /// deadline whenever no job is runnable — an hour of retries takes
@@ -125,8 +125,18 @@ private func run<R: Sendable>(
 /// is reported as one issue for the whole exploration: the first seed that
 /// did it, and how many others did.
 ///
-/// - Parameter allowEscapes: Pass `true` when escaping the simulation is
-///   deliberate, to record no issue for it.
+/// - Parameters:
+///   - seeds: The seeds to run, in order.
+///   - limits: When to give up on a run: virtual time, steps, and real time
+///     stalled.
+///   - faults: How often fault points perturb each run.
+///   - schedule: How the next job is chosen in each run; each seed's choice
+///     by default.
+///   - allowEscapes: Pass `true` when escaping the simulation is
+///     deliberate, to record no issue for it.
+///   - sourceLocation: Where an escape is reported.
+///   - body: The scenario, run once per seed. Runs on the simulation's
+///     executor.
 /// - Throws: The first ``SimulationFailure``; its ``SimulationFailure/reproduced``
 ///   says whether the second run failed the same way, at the same step,
 ///   along the same path. A body that keeps state between runs (captured
@@ -448,7 +458,7 @@ public struct SimulationFailure: Error, CustomStringConvertible {
     /// The schedule the run followed (see ``Simulated/schedule``).
     public let schedule: String
     /// Whether running the seed again failed the same way at the same step,
-    /// when ``simulate(seeds:limits:_:)`` checked; `nil` when not checked.
+    /// when ``simulate(seeds:limits:faults:schedule:allowEscapes:sourceLocation:_:)`` checked; `nil` when not checked.
     public internal(set) var reproduced: Bool?
 
     public var description: String {

@@ -25,7 +25,7 @@ public final class ImmediateClock: Clock, Sendable {
 
     public init() {}
 
-    /// This clock, erased, for ``Ambient`` or any `clock:` parameter. Always
+    /// This clock, erased, for `Ambient` or any `clock:` parameter. Always
     /// the same erasure.
     public var erased: AnyClock {
         erasure.withLock { erasure in

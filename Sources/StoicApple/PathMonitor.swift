@@ -119,7 +119,7 @@ extension PathMonitor {
     /// drops again does not release the caller to fail on its first request.
     ///
     /// The wait ends with the earlier of `deadline` and the deadline already
-    /// in force (``Deadline/current``), if there is one; with neither it ends
+    /// in force (`Deadline.current`), if there is one; with neither it ends
     /// only when the task is cancelled, so give callers a deadline.
     ///
     /// - Parameters:

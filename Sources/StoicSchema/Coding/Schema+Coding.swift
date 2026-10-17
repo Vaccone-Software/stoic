@@ -22,7 +22,7 @@ extension Schema {
     /// Decodes the value at a decoder's position through the schema.
     ///
     /// This lets a schema-backed type sit inside `Codable` code. The decoder
-    /// is walked into a JSON tree (see ``JSONValue/init(reading:limits:)``,
+    /// is walked into a JSON tree (see `JSONValue.init(reading:limits:)`,
     /// under the limits of the options' `parse`), the schema runs on it, and
     /// the outcome is either the value or **one**
     /// `DecodingError.dataCorrupted` whose description lists every issue the
@@ -45,8 +45,9 @@ extension Schema {
     ///     }
     ///
     /// - Parameters:
+    ///   - decoder: The decoder whose position is read.
     ///   - options: How to decode. Defaults to the
-    ///     ``CodingUserInfoKey/schemaDecodeOptions`` in the decoder's user
+    ///     `CodingUserInfoKey.schemaDecodeOptions` in the decoder's user
     ///     info, and then to `.strict`.
     ///   - warnings: Receives the warnings and repairs of a decode that
     ///     succeeded, with their full paths. Required, as for
@@ -86,10 +87,13 @@ extension Schema {
     /// Writes the value through an encoder, as the JSON the schema encodes
     /// it to.
     ///
-    /// - Parameter style: How to encode. Defaults to the
-    ///   ``CodingUserInfoKey/schemaEncodeStyle`` in the encoder's user
-    ///   info, and then to `.full`, the faithful copy a `Codable` store
-    ///   expects.
+    /// - Parameters:
+    ///   - value: The value to write.
+    ///   - encoder: The encoder to write through.
+    ///   - style: How to encode. Defaults to the
+    ///     `CodingUserInfoKey.schemaEncodeStyle` in the encoder's user
+    ///     info, and then to `.full`, the faithful copy a `Codable` store
+    ///     expects.
     public func encode(_ value: Value, to encoder: any Encoder, style: EncodeStyle? = nil) throws {
         let chosen = style ?? (encoder.userInfo[.schemaEncodeStyle] as? EncodeStyle) ?? .full
         var state = EncodeState(style: chosen)

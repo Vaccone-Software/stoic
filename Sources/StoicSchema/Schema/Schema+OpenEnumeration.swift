@@ -31,6 +31,7 @@ extension Schema {
     /// as it went in.
     ///
     /// - Parameters:
+    ///   - type: The type the schema describes.
     ///   - cases: The strings that are known, in documentation order.
     ///   - fallback: The unknown case's name, for the warning.
     ///   - read: Makes the value for any string, known or not.

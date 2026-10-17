@@ -82,6 +82,8 @@ public final class LaunchGuard: Sendable {
     ///     the new-build reset.
     ///   - bootSession: The device's boot identity: the system's boot
     ///     session on Apple platforms by default; `nil` disables the check.
+    ///   - file: The file the state is kept in; by default one that keeps
+    ///     the previous generation.
     public init(
         path: String,
         uncleanLimit: Int = 3,

@@ -18,7 +18,7 @@ public struct InvariantViolation<State: Hashable & Sendable, Event: Sendable>: S
 /// invariant after every step, and shrinks the first failure to the
 /// shortest sequence that still fails.
 ///
-/// Exhaustive exploration (``StateGraph``) answers "which states are
+/// Exhaustive exploration (`StateGraph`) answers "which states are
 /// reachable"; random walks answer "can any sequence of events break this
 /// property" — including properties of the path, not just the state, and
 /// for machines too large to enumerate.
@@ -29,6 +29,12 @@ public struct InvariantViolation<State: Hashable & Sendable, Event: Sendable>: S
 ///     #expect(violation == nil, "\(violation!)")
 ///
 /// - Parameters:
+///   - initial: The state every walk starts from.
+///   - events: The events a walk draws from.
+///   - walks: How many random walks to run.
+///   - length: The most events in one walk.
+///   - seed: Decides every choice, so a failing seed replays the same walks.
+///   - transition: The machine's transition function.
 ///   - invariant: Returns a description of what is wrong, or `nil` if the
 ///     state (reached by the events so far) is fine. Invalid transitions are
 ///     reported as violations too.

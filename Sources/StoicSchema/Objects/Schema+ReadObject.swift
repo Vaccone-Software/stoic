@@ -92,7 +92,7 @@ public final class ObjectReader<Root: Sendable> {
     ///   - keyPath: How to read the property back, for encoding. Read-only:
     ///     the object is built by `build`, not by assignment.
     ///   - schema: How the value is read and written.
-    ///   - default: Used when the key is absent and, under `.lenient`, when
+    ///   - defaultValue: Used when the key is absent and, under `.lenient`, when
     ///     the value is invalid. A field with no default is required, unless
     ///     its type is optional.
     ///   - doc: Documentation for the JSON Schema `description`.

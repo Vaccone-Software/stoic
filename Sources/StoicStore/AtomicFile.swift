@@ -119,7 +119,11 @@ public struct AtomicFile: Sendable {
 
     /// Replaces the file at `path` with `bytes`, durably and atomically.
     ///
-    /// - Parameter options: Overrides the options given at `init` for this call.
+    /// - Parameters:
+    ///   - bytes: The new contents.
+    ///   - requested: The path to write; a symbolic link is followed, so the
+    ///     file it names is the one replaced.
+    ///   - override: Overrides the options given at `init` for this call.
     public func write(_ bytes: [UInt8], to requested: String, options override: Options? = nil) throws(StoreError) {
         let options = override ?? options
         let fileSystem = fileSystem
@@ -280,9 +284,12 @@ public struct AtomicFile: Sendable {
     /// `store.corrupt_quarantined`), never deleted. Falling back to the
     /// previous generation is reported as `store.recovered_previous`.
     ///
-    /// - Parameter validate: Called with the payload of a file whose envelope
-    ///   is intact; return `false` if the app cannot use it (it will not
-    ///   decode, say). The file is then treated as corrupt.
+    /// - Parameters:
+    ///   - requested: The path to read; a symbolic link is followed.
+    ///   - override: Overrides the options given at `init` for this call.
+    ///   - validate: Called with the payload of a file whose envelope
+    ///     is intact; return `false` if the app cannot use it (it will not
+    ///     decode, say). The file is then treated as corrupt.
     /// - Throws: ``StoreError`` of kind `.corrupt` if files existed but none
     ///   was usable; they are quarantined, so the next read returns `nil`.
     public func read(

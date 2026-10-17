@@ -18,7 +18,7 @@ public import Stoic
 /// timer and the reply, hostage: the deadline still fires. What is left
 /// running at that point is named in `lifecycle.terminate_overran`
 /// (`abandoned_work`, `tasks_running` and the labels of both), the same
-/// accounting ``abandoningAfter(_:label:limit:clock:qos:fileID:line:operation:)``
+/// accounting `abandoningAfter(_:label:limit:clock:qos:fileID:line:operation:)`
 /// keeps. Work that must run on the main actor hops there itself, with
 /// `await MainActor.run { … }`.
 ///
