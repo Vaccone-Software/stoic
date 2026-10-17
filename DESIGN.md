@@ -425,7 +425,7 @@ A primitive ships when, and only when, all of these hold.
 - **Warnings are errors.** In Stoic's own build, always (Package.swift).
 - **Performance.** Hot paths (breaker admission, semaphore acquire,
   `Ambient.current`, schedule step) have benchmarks with allocation counts,
-  and an allocation regression fails CI. Time is reported, not gated: shared
+  and a rise in the median call's allocations fails CI. Time is reported, not gated: shared
   CI machines drift more than the regressions worth catching.
 - **API discipline.** Every public symbol is documented with an example
   that compiles; `swift package diagnose-api-breaking-changes` against the

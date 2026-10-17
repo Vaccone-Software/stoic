@@ -96,9 +96,9 @@ Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`. With the
 Package.swift`) only for an escape a reviewer should see.
 - **API and allocations:** a breaking public API change fails `check.sh`
   unless listed in `api-breakage-allowlist.txt` in the same change. A hot
-  path that allocates more than `Benchmarks/allocations.json` records fails
-  too; one that allocates less, re-record it (`--record`) so the gate
-  tightens.
+  path whose median call allocates more than `Benchmarks/allocations.json`
+  records fails too; one whose median is lower, re-record it (`--record`,
+  on an idle machine) so the gate tightens.
 - **Macros:** `swift test --traits Macros --filter StoicMacros` runs the
   expansion tests and the usage tests (macro schema against the same schema
   written by hand). The `Macros` trait is the only other way swift-syntax is

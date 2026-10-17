@@ -8,13 +8,19 @@ cd Benchmarks && swift run -c release StoicBenchmarks --check allocations.json  
 cd Benchmarks && swift run -c release StoicBenchmarks --record allocations.json  # ratchet down
 ```
 
-Each path reports its best time of three rounds and its allocations per
-call, counted by a malloc logging hook. **Allocations are the gate**
-(`scripts/check.sh`): a path that allocates more than `allocations.json`
-records, by more than half an allocation, fails the build, and one that
-allocates less is reported so the record can be ratcheted down. Time is
-reported, not gated: shared CI machines drift by more than any regression
-worth catching, while allocation counts barely move.
+Each path reports its best time of three rounds and the allocations of each
+call, counted by a malloc logging hook around every call: the median call
+(the least over the rounds), and the mean beside it for information.
+**Allocations are the gate** (`scripts/check.sh`): a path whose median call
+allocates more than `allocations.json` records fails the build, with no
+tolerance (medians are whole numbers), and one whose median is lower is
+reported so the record can be ratcheted down (record on an idle machine).
+The median, not the mean, because a path that starts tasks allocates a few
+extra task slabs on the calls where the scheduler lands a cancel mid-setup:
+its mean moves with machine load, its median does not, and one more
+allocation on every call moves the median by exactly one. Time is reported,
+not gated: shared CI machines drift by more than any regression worth
+catching.
 
 Measured on an Apple silicon Mac, Swift 6.4, with events going nowhere
 (`NoInstrumentation`). Numbers are for spotting regressions and orders of

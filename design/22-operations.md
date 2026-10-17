@@ -765,8 +765,8 @@ it chose this.
   scheduler, not `perform`.
 - **The outbox's delivery loop** is `retry` with the entry's key as its
   operation's key, through a `package` overload of `retry`.
-- **The first-attempt-success path allocates about 26 times,** on `remote`
-  and `local` alike: each attempt and its timer are two tasks of a task
+- **The first-attempt-success path allocates 25 times (the median call),** on
+  `remote` and `local` alike: each attempt and its timer are two tasks of a task
   group, which is most of it. `Benchmarks/allocations.json` gates it.
 
 ## Later

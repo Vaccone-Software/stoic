@@ -10,10 +10,15 @@ import Synchronization
 //   swift run -c release StoicBenchmarks --record allocations.json
 //
 // Time is reported, never gated: CI machines are shared and their timings
-// drift by more than any regression worth catching. Allocations per
-// iteration are close to deterministic, so they are the gate (DESIGN.md's
-// quality bar): `--check` fails when a path allocates more than recorded,
-// and says when it allocates less, so the record can be ratcheted down.
+// drift by more than any regression worth catching. Allocations are the gate
+// (DESIGN.md's quality bar), and the gate is the MEDIAN allocations of one
+// call, not the mean. A path that starts child tasks allocates a few extra
+// task-allocator slabs on the calls where the scheduler lands a cancel
+// mid-setup, so its mean moves with machine load; its median does not, while
+// a structural regression (one more box on every call) moves the median by
+// exactly one. `--check` fails when a median exceeds the record, and says
+// when it is below, so the record can be ratcheted down. A loaded machine
+// can show those paths below their record; record on an idle one.
 
 /// Every allocation in the process, counted by the malloc logging hook.
 /// The hook runs inside malloc, so it does nothing but an atomic add.
@@ -37,28 +42,63 @@ func installAllocationCounter() {
 struct Measurement {
     let name: String
     let nanoseconds: Double
-    let allocations: Double
+    /// The median allocations of one call, in the round where it was least.
+    let median: Int
+    /// The mean, for information: scheduler bursts move it, the median not.
+    let mean: Double
 }
+
+/// Calls allocating this many times or more share the last bucket.
+let histogramBuckets = 256
 
 let collected = Mutex<[Measurement]>([])
 
-/// Runs `body` `iterations` times, three rounds, and records the best
-/// nanoseconds and the fewest allocations per iteration (the least
-/// disturbed round: other threads allocate too, now and then).
+/// Runs `body` `iterations` times, three rounds. Records the best
+/// nanoseconds per iteration (the least disturbed round), and the allocations
+/// of every single call: the counter is read before and after each call (an
+/// atomic load, no allocation) and the difference lands in a histogram
+/// allocated before anything is measured, so counting perturbs nothing it
+/// counts. A round's median is its middle call; the gate is the least median
+/// of the rounds, as the best time is the least time: other threads and the
+/// scheduler allocate too, and the least disturbed round is the honest one.
+/// The mean (fewest over rounds) is reported beside it.
 func measure(_ name: String, iterations: Int = 200_000, _ body: () async throws -> Void) async rethrows {
     let clock = ContinuousClock()
+    let histogram = UnsafeMutablePointer<Int>.allocate(capacity: histogramBuckets)
+    histogram.initialize(repeating: 0, count: histogramBuckets)
+    defer { histogram.deallocate() }
     var best = Duration.seconds(3600)
     var fewest = Double.infinity
+    var least = Int.max
     for _ in 0..<3 {
-        let allocationsBefore = allocationCount.load(ordering: .relaxed)
+        histogram.update(repeating: 0, count: histogramBuckets)
+        var total = 0
         let start = clock.now
-        for _ in 0..<iterations { try await body() }
+        for _ in 0..<iterations {
+            let before = allocationCount.load(ordering: .relaxed)
+            try await body()
+            let allocated = allocationCount.load(ordering: .relaxed) - before
+            histogram[min(allocated, histogramBuckets - 1)] += 1
+            total += allocated
+        }
         best = min(best, start.duration(to: clock.now))
-        let allocated = allocationCount.load(ordering: .relaxed) - allocationsBefore
-        fewest = min(fewest, Double(allocated) / Double(iterations))
+        fewest = min(fewest, Double(total) / Double(iterations))
+        // The least count that at least half of the calls did not exceed
+        // (the lower median when the calls are even).
+        var cumulative = 0
+        var median = histogramBuckets - 1
+        for count in 0..<histogramBuckets {
+            cumulative += histogram[count]
+            if cumulative * 2 >= iterations {
+                median = count
+                break
+            }
+        }
+        least = min(least, median)
     }
     let nanoseconds = Double(best.components.seconds) * 1e9 + Double(best.components.attoseconds) / 1e9
-    let measurement = Measurement(name: name, nanoseconds: nanoseconds / Double(iterations), allocations: fewest)
+    let measurement = Measurement(
+        name: name, nanoseconds: nanoseconds / Double(iterations), median: least, mean: fewest)
     collected.withLock { $0.append(measurement) }
 }
 
@@ -135,44 +175,46 @@ func rounded(_ value: Double, places: Double = 1) -> Double {
 print("Stoic hot paths (release build, best of 3)\n")
 for result in results {
     let padding = String(repeating: " ", count: max(1, 44 - result.name.count))
-    print(result.name + padding + "\(rounded(result.nanoseconds)) ns    \(rounded(result.allocations, places: 2)) allocations")
+    print(
+        result.name + padding
+            + "\(rounded(result.nanoseconds)) ns    \(result.median) allocations (mean \(rounded(result.mean, places: 2)))")
 }
 
 let arguments = CommandLine.arguments.dropFirst()
-/// A path allocating more than recorded by this much has regressed; the
-/// slack absorbs the odd allocation another thread makes during a round.
-let tolerance = 0.5
+// There is no tolerance: medians are whole numbers, and the median ignores
+// the odd extra allocation another thread or the scheduler makes, so a path
+// whose median exceeds the record has regressed by at least one allocation
+// on every call.
 
 if let flag = arguments.first, let path = arguments.dropFirst().first {
     let url = URL(fileURLWithPath: path)
     switch flag {
     case "--record":
-        let record = Dictionary(uniqueKeysWithValues: results.map { ($0.name, rounded($0.allocations, places: 2)) })
+        let record = Dictionary(uniqueKeysWithValues: results.map { ($0.name, $0.median) })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try (encoder.encode(record) + Data("\n".utf8)).write(to: url)
-        print("\nrecorded allocations for \(results.count) paths in \(path)")
+        print("\nrecorded median allocations for \(results.count) paths in \(path)")
     case "--check":
-        let record = try JSONDecoder().decode([String: Double].self, from: Data(contentsOf: url))
+        let record = try JSONDecoder().decode([String: Int].self, from: Data(contentsOf: url))
         var regressions: [String] = []
         var improvements: [String] = []
         for result in results {
             guard let recorded = record[result.name] else {
-                regressions.append("\(result.name): no recorded allocation count; record one with --record")
+                regressions.append("\(result.name): no recorded median allocation count; record one with --record")
                 continue
             }
-            let measured = rounded(result.allocations, places: 2)
-            if measured > recorded + tolerance {
-                regressions.append("\(result.name): \(measured) allocations per call, recorded \(recorded)")
-            } else if measured < recorded - tolerance {
-                improvements.append("\(result.name): \(measured) allocations per call, recorded \(recorded)")
+            if result.median > recorded {
+                regressions.append("\(result.name): median \(result.median) allocations per call, recorded \(recorded)")
+            } else if result.median < recorded {
+                improvements.append("\(result.name): median \(result.median) allocations per call, recorded \(recorded)")
             }
         }
         for name in record.keys where !results.contains(where: { $0.name == name }) {
             regressions.append("\(name): recorded, but no longer measured; record again with --record")
         }
         if !improvements.isEmpty {
-            print("\nFewer allocations than recorded; ratchet the record down with --record:")
+            print("\nFewer allocations than recorded; ratchet the record down with --record (on an idle machine):")
             improvements.forEach { print("  \($0)") }
         }
         if !regressions.isEmpty {
@@ -180,7 +222,7 @@ if let flag = arguments.first, let path = arguments.dropFirst().first {
             regressions.forEach { print("  \($0)") }
             exit(1)
         }
-        print("\nallocations within the record for all \(results.count) paths")
+        print("\nmedian allocations within the record for all \(results.count) paths")
     default:
         print("usage: StoicBenchmarks [--check <file> | --record <file>]")
         exit(2)
