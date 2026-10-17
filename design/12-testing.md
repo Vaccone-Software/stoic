@@ -42,6 +42,16 @@ cannot end a test awaiting an unstructured task), where this fails one test. `cl
 own messages. Sleeps carry no labels, so a sleeper is known by its
 deadline.
 
+**From XCTest.** A call without a `sourceLocation:` resolves to an overload
+that takes `#fileID`, `#filePath`, `#line` and `#column` as plain values, so
+an XCTest file calls `await clock.waitForSleepers(count: 1)` with
+`import StoicTesting` alone. (The overload that takes a `SourceLocation` has a
+`#_sourceLocation` default, which is written into the caller and so needs
+`import Testing` there; it stays, disfavoured, for a call that passes one.) A
+timeout is still recorded as a Swift Testing issue, which an XCTest run reports
+as a failure at the caller's line; the test that proves the overload compiles
+without the import is an XCTest file (`TestClockXCTestTests`).
+
 ## Failure-mode coverage
 
 Every contract's "What happens if…" table is a list of promises, and a

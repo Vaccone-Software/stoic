@@ -334,6 +334,7 @@ public final class TestClock: Clock, Sendable {
     ///   - timeout: How long to wait, in real time; `nil` waits until the
     ///     task is cancelled.
     ///   - sourceLocation: Where an issue is reported.
+    @_disfavoredOverload
     public func waitForSleepers(
         count: Int = 1,
         timeout: Swift.Duration? = .seconds(5),
@@ -343,6 +344,29 @@ public final class TestClock: Clock, Sendable {
             for: .asleep(count), timeout: timeout, sourceLocation: sourceLocation,
             asked: "waitForSleepers(count: \(count))", needs: "at least \(count) asleep at once"
         )
+    }
+
+    /// ``waitForSleepers(count:timeout:sourceLocation:)`` for a test that
+    /// does not import `Testing`: an XCTest case, say.
+    ///
+    /// The other overload's default argument is `#_sourceLocation`, a
+    /// `Testing.SourceLocation`, and a default argument is written into the
+    /// *caller*, so a file that calls it without importing `Testing` does not
+    /// compile. This one takes the location as plain `#fileID`, `#filePath`,
+    /// `#line` and `#column`, which every file can name, and is what a call
+    /// without a `sourceLocation:` resolves to, in Swift Testing and XCTest
+    /// alike. A timeout is reported as a Swift Testing issue either way.
+    public func waitForSleepers(
+        count: Int = 1,
+        timeout: Swift.Duration? = .seconds(5),
+        fileID: String = #fileID,
+        filePath: String = #filePath,
+        line: Int = #line,
+        column: Int = #column
+    ) async {
+        await waitForSleepers(
+            count: count, timeout: timeout,
+            sourceLocation: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 
     /// Suspends until at least `count` sleeps have *started* since
@@ -359,6 +383,7 @@ public final class TestClock: Clock, Sendable {
     ///
     /// Reports a timeout or cancellation as ``waitForSleepers(count:timeout:sourceLocation:)``
     /// does.
+    @_disfavoredOverload
     public func waitForSleepers(
         newerThan sleeps: Int,
         count: Int = 1,
@@ -369,6 +394,22 @@ public final class TestClock: Clock, Sendable {
             for: .totalSleeps(sleeps + count), timeout: timeout, sourceLocation: sourceLocation,
             asked: "waitForSleepers(newerThan: \(sleeps), count: \(count))", needs: "at least \(count) sleep(s) to have started since the mark of \(sleeps)"
         )
+    }
+
+    /// ``waitForSleepers(newerThan:count:timeout:sourceLocation:)`` for a test
+    /// that does not import `Testing`; see ``waitForSleepers(count:timeout:fileID:filePath:line:column:)``.
+    public func waitForSleepers(
+        newerThan sleeps: Int,
+        count: Int = 1,
+        timeout: Swift.Duration? = .seconds(5),
+        fileID: String = #fileID,
+        filePath: String = #filePath,
+        line: Int = #line,
+        column: Int = #column
+    ) async {
+        await waitForSleepers(
+            newerThan: sleeps, count: count, timeout: timeout,
+            sourceLocation: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 
     /// The clock's state in words, for a failure message: the time, every
