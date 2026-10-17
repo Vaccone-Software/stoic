@@ -48,12 +48,19 @@ internal import Synchronization
 /// - **Issues point into the text.** Each `Issue` carries the
 ///   `Issue.source` range of the key or value in the file.
 /// - **Writes are sparse and byte-stable**, with an optional header
-///   (``HandEditedOptions``).
+///   (``HandEditedOptions``), in the schema's order or one the app gives
+///   (``KeyOrder``). Comments are dropped by a write; ``HandEditedOptions/Comments/refused``
+///   makes them a problem instead.
 /// - **An update reads the file again under a lock** on `<path>.lock`, so an
 ///   edit made a moment ago is not lost: ``coordinatedUpdate(lockTimeout:_:)``
-///   waits for another process, ``update(_:)`` does not.
+///   waits for another process without blocking, ``blockingUpdate(waitingUpTo:_:)``
+///   waits by blocking the thread (for a synchronous caller), ``update(_:)`` does not wait.
 /// - **Outside changes arrive** through ``reload()``, and ``watch(debounce:)``
-///   calls it when the file changes.
+///   calls it when the file changes. ``changes(buffering:)`` says what changed,
+///   from what, and why.
+/// - **The file is written whole only on purpose:** ``materialize()`` creates a
+///   missing file, ``replaceUnusableFile(with:keepingCopyAt:)`` replaces one that
+///   cannot be read, after keeping the person's bytes.
 ///
 /// Reads are cheap (a lock); updates do file I/O on the calling thread, so
 /// make them off the main actor when latency matters.
@@ -190,6 +197,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         var read: FileRead?
         /// What changed in commits whose observers have not been told yet.
         var unnotified: Set<Observed> = []
+        /// The changes of the value in those commits, for the streams that were
+        /// listening when each was committed.
+        var unannounced: [Announcement] = []
     }
 
     /// What reading a hand-edited file found, as far as comparing it with the
@@ -199,6 +209,18 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         case bytes([UInt8])
         /// Never equal to the last reading: a read that failed is tried again.
         case unreadable
+    }
+
+    /// A change of the value, and the streams to tell of it.
+    struct Announcement {
+        let change: SettingsChange<Value>
+        let listeners: [AsyncStream<SettingsChange<Value>>.Continuation]
+    }
+
+    /// The streams of ``changes(buffering:)`` that have not ended.
+    struct Listeners {
+        var next: UInt64 = 0
+        var continuations: [UInt64: AsyncStream<SettingsChange<Value>>.Continuation] = [:]
     }
 
     /// The observable properties, for notifying only what changed.
@@ -221,6 +243,11 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     // Observers are told after it is released (`notifyObservers`), so one
     // that reacts by updating or reloading does not re-enter it.
     let writing = Mutex(())
+    let listeners = Mutex(Listeners())
+    // Keeps what the streams are told in the order it was committed: taken
+    // before the changes are, held while they are yielded. A stream's yield
+    // never calls back into the store, so no observer can re-enter it.
+    private let announcing = Mutex(())
     private let registrar = ObservationRegistrar()
     /// A test seam: run between a reload's read of the file and its
     /// publication, to put another writer exactly there.
@@ -385,6 +412,15 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         }
     }
 
+    deinit {
+        // A stream of changes ends with the store, after what it still holds.
+        let ending = listeners.withLock { listeners in
+            defer { listeners.continuations = [:] }
+            return Array(listeners.continuations.values)
+        }
+        for continuation in ending { continuation.finish() }
+    }
+
     // MARK: Reading
 
     /// The settings. Observable.
@@ -417,6 +453,58 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     public var fileProblem: SettingsFileProblem? {
         registrar.access(self, keyPath: \.fileProblem)
         return current.withLock { $0.problem }
+    }
+
+    /// The changes of the value from now on, each with what it was, what it is
+    /// and why (``SettingsChange``): for an app that keeps a history, or applies
+    /// a setting to something that is not Observable.
+    ///
+    ///     for await change in settings.changes() {
+    ///         history.record(change.old, change.new, because: change.cause)
+    ///     }
+    ///
+    /// - **Once per change of the value, in the order they were committed**,
+    ///   told after the commit's lock is released (as observers are), by whichever
+    ///   call committed it, so an update has been announced by the time it returns.
+    ///   Updates, reloads (the watch's too) and a reset each count; **the store's
+    ///   own write that the watcher re-reads is not a second change**, nor is a
+    ///   write or a reload that leaves the value as it was. An update that finds
+    ///   the file changed is two: the reload's, then its own, so the app can tell
+    ///   what a person (or another process) did from what it did. Each change's
+    ///   ``SettingsChange/old`` is the previous change's ``SettingsChange/new``.
+    /// - **A stream hears of what is committed after it was made**, not before:
+    ///   read ``value`` for where things stand, then listen.
+    /// - **The buffer is bounded** (a stream is not allowed to grow without limit
+    ///   behind an app that stopped reading): when a reader falls `buffering`
+    ///   changes behind, the *oldest* it has not read are dropped, and each drop is
+    ///   reported (`settings.change_dropped`). A reader that cares sees it: a
+    ///   change's `old` is not the one before's `new`. Reading promptly is the
+    ///   remedy; a large `buffering` is the other.
+    /// - **It ends** when the store goes (after the changes it still holds), and
+    ///   when the reading task is cancelled or leaves the loop; a stream that has
+    ///   ended costs the store nothing.
+    ///
+    /// It is a stream, and not a callback, because an app records history from an
+    /// `async` context in order and with a bound, and because a callback told
+    /// from inside an update's thread would have to say what it may call
+    /// (Observation's, told after the lock, already says so for ``value``). Use
+    /// ``value`` (Observable) to show the settings, and this to learn what
+    /// happened to them.
+    ///
+    /// - Parameter buffering: How many changes a reader may be behind by; at
+    ///   least 1. 64 by default.
+    public func changes(buffering limit: Int = 64) -> AsyncStream<SettingsChange<Value>> {
+        precondition(limit >= 1, "SettingsStore.changes: buffering must be at least 1")
+        let (stream, continuation) = AsyncStream<SettingsChange<Value>>.makeStream(bufferingPolicy: .bufferingNewest(limit))
+        let id = listeners.withLock { listeners -> UInt64 in
+            listeners.next += 1
+            listeners.continuations[listeners.next] = continuation
+            return listeners.next
+        }
+        continuation.onTermination = { [weak self] _ in
+            self?.listeners.withLock { _ = $0.continuations.removeValue(forKey: id) }
+        }
+        return stream
     }
 
     // MARK: Updating
@@ -550,7 +638,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             // The file holds the new value, so memory must too: the next
             // launch reads it unless the power fails first.
             let json = encoded(new, carrying: document, repaired: repaired)
-            publish(committed(new, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))))
+            publish(committed(new, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .update)
             Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                 .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
             ]))
@@ -561,7 +649,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             ]))
             throw UpdateError.storage(error)
         }
-        publish(committed(new, written))
+        publish(committed(new, written), cause: .update)
         Ambient.record(Event("settings.saved", level: .debug, label: path))
         return new
     }
@@ -691,7 +779,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             publish(Current(
                 value: loaded.value, issues: loaded.issues, source: loaded.source, document: Self.carried(loaded, unknownKeys),
                 repaired: Self.repairs(loaded)
-            ))
+            ), cause: .reload)
         }
     }
 
@@ -714,7 +802,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             ]))
         }
         betweenReloadAndPublish.withLock { $0 }?()
-        publish(next)
+        publish(next, cause: .reload)
         return next
     }
 
@@ -794,15 +882,26 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Commits `next` as the current value. Called under `writing`, so
     /// commits happen in the order updates and reloads were serialised; what
     /// changed is remembered for ``notifyObservers()``.
-    func publish(_ next: Current) {
+    func publish(_ next: Current, cause: SettingsChange<Value>.Cause) {
+        // Who is listening when the value changes, not when it is announced:
+        // a stream hears of what was committed after it began, no earlier.
+        let listening = listeners.withLock { Array($0.continuations.values) }
         current.withLock { current in
             var changed = current.unnotified
-            if current.value != next.value { changed.insert(.value) }
+            var unannounced = current.unannounced
+            if current.value != next.value {
+                changed.insert(.value)
+                if !listening.isEmpty {
+                    unannounced.append(Announcement(
+                        change: SettingsChange(old: current.value, new: next.value, cause: cause), listeners: listening))
+                }
+            }
             if current.issues != next.issues { changed.insert(.issues) }
             if current.source != next.source { changed.insert(.source) }
             if current.problem != next.problem { changed.insert(.problem) }
             current = next
             current.unnotified = changed
+            current.unannounced = unannounced
         }
     }
 
@@ -811,9 +910,24 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// told once, by whichever call gets here first after committing it; by
     /// then the value it reads is the latest committed, never an older one.
     func notifyObservers() {
-        let changed = current.withLock { current -> Set<Observed> in
-            defer { current.unnotified = [] }
-            return current.unnotified
+        let (changed, dropped) = announcing.withLock { _ -> (Set<Observed>, Int) in
+            let (changed, announcements) = current.withLock { current in
+                defer {
+                    current.unnotified = []
+                    current.unannounced = []
+                }
+                return (current.unnotified, current.unannounced)
+            }
+            var dropped = 0
+            for announcement in announcements {
+                for listener in announcement.listeners {
+                    if case .dropped = listener.yield(announcement.change) { dropped += 1 }
+                }
+            }
+            return (changed, dropped)
+        }
+        if dropped > 0 {
+            Ambient.record(Event("settings.change_dropped", level: .warning, label: path, fields: [.init("dropped", .int(dropped))]))
         }
         if changed.contains(.value) { registrar.withMutation(of: self, keyPath: \.value) {} }
         if changed.contains(.issues) { registrar.withMutation(of: self, keyPath: \.issues) {} }

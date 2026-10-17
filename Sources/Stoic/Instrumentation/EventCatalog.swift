@@ -106,6 +106,7 @@ public enum EventCatalog {
         Entry(name: "service.started", level: .debug, meaning: "A service in a service graph finished starting."),
         Entry(name: "service.stopped", level: .info, meaning: "A service stopped; reports how long the stop took and whether it failed (warning, with the error)."),
         Entry(name: "settings.busy", level: .warning, meaning: "A hand-edited settings update could not take the lock on the file because another process held it (for the whole wait, or from update, at the moment it asked); nothing was read or written. Reports how long it waited, in milliseconds."),
+        Entry(name: "settings.change_dropped", level: .warning, meaning: "A reader of a settings store's changes had fallen further behind than its buffer, and the oldest changes it had not read were dropped; reports how many. A history built from the stream has a gap."),
         Entry(name: "settings.loaded", level: .debug, meaning: "Settings were loaded; reports where from and how many issues the load found."),
         Entry(name: "settings.lock_release_failed", level: .warning, meaning: "Letting go of the lock after a hand-edited settings update failed; the update's outcome is unchanged, and the lock is dropped with its descriptor."),
         Entry(name: "settings.materialized", level: .info, meaning: "The settings file did not exist and was written (sparse, with the file header), on the app's asking."),

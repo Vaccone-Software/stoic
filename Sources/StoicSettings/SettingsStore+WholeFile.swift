@@ -91,7 +91,7 @@ extension SettingsStore {
                 written = try write(state.value, carrying: state.document, repaired: state.repaired)
             } catch where error.kind == .durabilityUnknown {
                 let json = encoded(state.value, carrying: state.document, repaired: state.repaired)
-                publish(committed(state.value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))))
+                publish(committed(state.value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .update)
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("materialize"), privacy: .public),
                 ]))
@@ -102,7 +102,7 @@ extension SettingsStore {
                 ]))
                 throw .storage(error)
             }
-            publish(committed(state.value, written))
+            publish(committed(state.value, written), cause: .update)
             Ambient.record(Event("settings.materialized", level: .info, label: path))
             return true
         }
@@ -172,7 +172,7 @@ extension SettingsStore {
                 written = try write(value, carrying: nil, repaired: [])
             } catch where error.kind == .durabilityUnknown {
                 let json = encoded(value, carrying: nil, repaired: [])
-                publish(committed(value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))))
+                publish(committed(value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .reset)
                 Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                     .init("error", .error(error)), .init("during", .string("replace"), privacy: .public),
                 ]))
@@ -183,7 +183,7 @@ extension SettingsStore {
                 ]))
                 throw .storage(error, copy: copyPath)
             }
-            publish(committed(value, written))
+            publish(committed(value, written), cause: .reset)
             Ambient.record(Event("settings.replaced", level: .warning, label: path, fields: [
                 .init("copy", .string(copyPath)),
             ]))

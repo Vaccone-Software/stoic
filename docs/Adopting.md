@@ -80,8 +80,18 @@ swiftSettings: [
    tool may edit too), open it with `format: .handEdited`: a file with a typo is
    never renamed or overwritten, the issue says `line:column`, an update reads
    the file again under a lock (`coordinatedUpdate` waits for the other writer),
-   writes are sparse and byte-stable, and `watch()` picks up edits made outside
-   the app. Say `missingVersion: .current` in the schema of such a file.
+   writes are sparse and byte-stable (`.canonical(order: KeyOrder(root: [...]))`
+   puts your sections in the order people read them, also over `Schema.json()`),
+   and `watch()` picks up edits made outside the app. Say `missingVersion: .current`
+   in the schema of such a file. Also: `comments: .refused` makes a comment a
+   problem with a line and column instead of losing it at the next save;
+   `blockingUpdate(waitingUpTo:)` is the update for code that cannot `await`
+   (it blocks the thread: never on the main actor); `materialize()` writes the
+   file on first launch; `replaceUnusableFile(with:keepingCopyAt:)` is the
+   "reset" for a file that does not parse (it copies the person's bytes aside
+   first); and `for await change in settings.changes()` gives each change of the
+   value with `old`, `new` and a `cause` (`.update`, `.reload`, `.reset`), for a
+   history that tells the app's edits from the person's.
 10. **Handles closed under a wedged call** → when a scope's work may be
     abandoned, declare the handle's release `ifWorkAbandoned: .quarantine`.
 11. **Private data in plain files, or a key beside the data it protects** →

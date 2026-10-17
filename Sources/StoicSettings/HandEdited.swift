@@ -18,7 +18,8 @@ public struct HandEditedOptions: Sendable, Hashable {
     /// Whether the file may hold comments. ``Comments/allowed`` by default.
     public var comments: Comments
 
-    /// How long an update that waits (``SettingsStore/coordinatedUpdate(lockTimeout:_:)``)
+    /// How long an update that waits (``SettingsStore/coordinatedUpdate(lockTimeout:_:)``,
+    /// or ``SettingsStore/blockingUpdate(waitingUpTo:_:)`` without an argument)
     /// gives another process that is writing the file (a command-line tool
     /// beside the app, a second instance) to let go, before it throws
     /// ``SettingsStore/UpdateError/busy``. Two seconds by default: the other

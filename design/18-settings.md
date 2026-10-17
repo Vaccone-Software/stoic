@@ -34,6 +34,7 @@ settings.value.scrollSpeed                      // Observable
 try settings.update { $0.scrollSpeed = 900 }    // validated, durable, then published
 settings.issues                                 // what the last load repaired or warned about
 settings.source                                 // .file, .previousGeneration, .defaults(reason), …
+for await change in settings.changes() { … }    // SettingsChange(old:, new:, cause: .update / .reload / .reset), once per change of the value
 ```
 
 A file a person edits (`.handEdited`) adds:
@@ -137,6 +138,30 @@ reload the store (one told of several commits at once reads the latest, never
 an older one). `reload()` takes the same
 lock for its read *and* its publication, so an update can never commit in the
 gap and then be overwritten in memory by the older value the reload read.
+
+**Changes, with their cause.** `value` is Observable, which says *that* it changed; an
+app that keeps a history (with who did it) or must not apply its own write twice needs
+to know *what it was* and *why*. `changes(buffering:)` is an `AsyncStream` of
+`SettingsChange(old:new:cause:)`, one for each time the **value** changed (an
+issues-only change, a write of the value it already had, and a reload that finds the
+file as the store last saw it are none: so the store's own write, which the
+watcher reports and the reload finds unchanged, is not announced twice). The cause is
+`.update` (the app: `update`, `coordinatedUpdate`, `blockingUpdate`), `.reload` (the
+file changed under the app: `reload()`, the watch, or an update that read the file again
+under its lock and found it moved, which is *two* changes: the edit, then the app's
+own) or `.reset` (`replaceUnusableFile`). Changes are announced in the order they were
+committed, after the commit's locks are released and before the call that made
+them returns, by whichever call got there first (the way observers are told), and each
+change's `old` is the previous one's `new`. A stream hears only of what is committed
+after it was made. It is a stream and not a callback because an app keeps history from
+an `async` context, in order, with a bound; the choice between the two is Observation's
+for showing a value (`value`) and a stream's for recording what happened to it. The
+buffer is bounded (`buffering`, 64 by default; a stream with no limit grows without
+one behind an app that stopped reading): a reader that falls further behind loses the
+*oldest* changes it has not read, and each drop is a `settings.change_dropped` event with
+how many, so a gap is never silent (the reader sees it too, as an `old` that is not the
+previous `new`). A stream ends when the store goes (after what it holds), or when its
+reader is cancelled or leaves the loop, and an ended one costs the store nothing.
 
 **Permissions and secrets.** The file is created `0600` (owner read and
 write), whatever the schema holds, and every later write gives its
@@ -387,6 +412,9 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | the file cannot be written when the app materializes it | `.storage` and no file, or `.durabilityUnknown` with the file there (and published); nothing half-written either way |
 | an app replaces an unusable hand-edited file | The person's bytes are copied (checked) to `<path>.broken-N` or the given path, then the replacement is written and published (`fileProblem` clears); the path of the copy is returned; `settings.replaced`. A failed copy leaves the file as it was; a failed write leaves it and the copy; a crash never leaves the new file without the copy |
 | an app replaces a hand-edited file that can be read | `.fileIsUsable`; no copy, nothing written; the fix the person made is adopted, as an update would |
+| the value of a store changes | One `SettingsChange` (`old`, `new`, `cause`) on each stream made before the commit, in commit order, announced before the committing call returns; none for a write or reload that leaves the value as it was or changes only the issues |
+| an update finds the hand-edited file changed | Two changes: the file's edit (`.reload`, from the value the store held to what the file holds), then the app's own (`.update`, from there) |
+| a reader of the changes falls behind | Its buffer keeps the newest `buffering`; the oldest are dropped, `settings.change_dropped` says how many, and the chain of `old` and `new` shows the gap |
 | two processes update a hand-edited file at once | Serialised by the lock, each applying its change to the other's result: every update lands |
 | the app holds the lock for life and the file is hand-edited | Its updates use that hold and take no second lock (which would conflict with it) |
 | a hand-edited file is replaced by a rename    | `reload()` (or the watch) publishes the new value; observers are told |
@@ -405,8 +433,9 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 `settings.save_failed`; for a hand-edited file `settings.unparsed` (reason, the
 line and column of the first problem, which value is kept), `settings.reloaded`
 (source, issue count), `settings.update_refused` (reason), `settings.busy` (how
-long it waited), `settings.reload_failed`, `settings.lock_release_failed`, and, on the
-app's asking, `settings.materialized` and `settings.replaced` (where the copy is).
+long it waited), `settings.reload_failed`, `settings.lock_release_failed`, `settings.change_dropped` (a reader of the changes fell
+behind), and, on the app's asking, `settings.materialized` and `settings.replaced`
+(where the copy is).
 None carries a setting's value: issues are counted and positioned, never quoted.
 
 ## Testing
@@ -418,4 +447,12 @@ hand-edited rows run on a test clock (the lock's wait and the watch's debounce
 are the ambient clock's), with the simulated file system calling the watcher as
 a real one would; one test runs the watch on the real file system, where the
 platform's own mechanism (kqueue or inotify) delivers a create, a write in place
-and a save by rename, and waits on the store's own value, never on a sleep.
+and a save by rename, and waits on the store's own value, never on a sleep. The synchronous wait
+(`blockingUpdate`) cannot be driven by a test clock, so its test seam is a value
+(`BlockingWait`: a made-up time and a pause that hands the lock over), and one test
+runs the real wait for 120 ms to see that it ends at its timeout. A replacement of
+an unusable file is crashed at every operation: the broken file or the new one,
+whole, and never the new one without the person's bytes beside it. A stream of
+changes is checked for what it must not say as much as for what it must: each test
+that says "and nothing else" ends with one more update, whose change must be the
+next the stream holds.
