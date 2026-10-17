@@ -257,6 +257,10 @@ schema and throws one `DecodingError` listing every issue.
 | a value is clamped into a refinement with a step | Moved into every range, then to the nearest multiple (the lower on a tie); never a trap on the input. A refinement with no nearest value has no `init(clamping:)` |
 | a value read through the Codable bridge nests deeper than `maxDepth` | One `DecodingError.dataCorrupted` naming the limit, before the schema runs; the walk keeps its own stack, so no depth exhausts the thread's (`maxStringBytes` and `maxContainerCount` are enforced the same way) |
 | a value read through the Codable bridge repeats a key | Not seen: the `Decoder` resolved it before the schema was asked (`JSONDecoder` keeps the first value). Wire data and files go through the schema's text entry points, which refuse it with both locations |
+| two documents differ inside an array | One `JSONChange` at the array, holding both whole arrays: arrays are leaves, never matched element by element |
+| a change is applied to a value that has moved on | `ApplyError.conflict` with what is there; nothing changes, unless the caller says `overwriting` |
+| a change's path leads through the wrong kind of value | `ApplyError.blocked` at the step that cannot be taken; with `overwriting`, missing objects on the way are made, anything else still blocks |
+| a change adds or removes an element of an array | `ApplyError.arrayElement`: an array changes as one whole value (an element can be replaced) |
 
 ## Testing
 
@@ -587,6 +591,33 @@ A decode records each issue's byte offsets (a path walk) and resolves them
 all at the end with `JSONDocument.ranges(ofOffsets:)`, one pass over the
 text. `offsets(of:)` and `keyOffsets(of:)` are the same split for any code
 that reports many positions.
+
+### Changes between documents
+
+`JSONChange.between(old, new)` is the list of differences between two JSON
+values, each at the deepest path that holds it (`path`, `old?`, `new?`), and
+`JSONValue.applying(_:overwriting:)` makes one. They are what an app needs to
+keep a history of edits and to undo one: the history is a list of changes
+(an edit's `inverted` is its undo), and undo is an application. They live in
+StoicJSON because they are pure functions of two values, and a schema layer or
+a store can build on them without either knowing the other.
+
+- **Objects recurse, everything else is a leaf.** Members are compared by key
+  while both sides are objects. A member on one side only is one change at that
+  member holding the whole value; removing `{"b": 1, "c": 2}` is one change,
+  not two. A value that changes kind is one change.
+- **Arrays are leaves.** Two arrays that differ are one change with both whole
+  arrays. Matching their elements is a guess (inserted at the front, or every
+  element changed?), and a history that guessed wrong would undo what nobody
+  did. Applying a change cannot add or remove an element either; it can replace
+  one.
+- **Order does not depend on how the objects were written.** Changes come in
+  the order of their keys (compared as the canonical encoding compares them),
+  so equal pairs give equal lists.
+- **Undo is checked.** Applying a change requires the value at its path to be
+  the one it replaces, so undoing an edit that was changed again since is a
+  `conflict` for the app to decide, not a silent overwrite. `overwriting` is
+  the explicit "make it so", and creates the objects on the way.
 
 ### Generators
 
