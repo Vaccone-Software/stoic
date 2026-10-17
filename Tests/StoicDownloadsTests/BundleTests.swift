@@ -64,6 +64,12 @@ func read(_ path: String) -> [UInt8]? {
     FileManager.default.contents(atPath: path).map { [UInt8]($0) }
 }
 
+/// Writes a file for a test to find. (`createFile` is not `@discardableResult` on Linux, and says
+/// `false` for a failure that the test would then misread.)
+func put(_ path: String, _ data: Data) throws {
+    guard FileManager.default.createFile(atPath: path, contents: data) else { throw CocoaError(.fileWriteUnknown) }
+}
+
 func exists(_ path: String) -> Bool { FileManager.default.fileExists(atPath: path) }
 
 func names(in path: String) -> [String] {
@@ -169,7 +175,7 @@ struct BundleTests {
             let staging = temp.file(".model.partial")
             try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true)
             // The right size and the wrong bytes: a file of an earlier version of the model.
-            FileManager.default.createFile(atPath: staging + "/config.json", contents: Data(fileBytes(1_200, seed: 99)))
+            try put(staging + "/config.json", Data(fileBytes(1_200, seed: 99)))
             model.serve(h.transport)
             let result = try await h.downloader.download(try model.bundle(to: destination))
             #expect(result.files.map(\.requests) == [1, 1, 1])
@@ -185,7 +191,7 @@ struct BundleTests {
             let destination = temp.file("model")
             let staging = temp.file(".model.partial")
             try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: staging + "/config.json", contents: Data(model.config))
+            try put(staging + "/config.json", Data(model.config))
             model.serve(h.transport)
             let bundle = DownloadBundle(
                 [try model.file("config.json", model.config, digest: false), try model.file("weights.bin", model.weights)], to: destination)
@@ -202,9 +208,9 @@ struct BundleTests {
             let destination = temp.file("model")
             let staging = temp.file(".model.partial")
             try FileManager.default.createDirectory(atPath: staging + "/old-dir", withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: staging + "/removed-in-the-new-version.bin", contents: Data([1]))
-            FileManager.default.createFile(atPath: staging + "/old-dir/x", contents: Data([2]))
-            FileManager.default.createFile(atPath: staging + "/config.json.partial.resume.corrupt-1", contents: Data([3]))
+            try put(staging + "/removed-in-the-new-version.bin", Data([1]))
+            try put(staging + "/old-dir/x", Data([2]))
+            try put(staging + "/config.json.partial.resume.corrupt-1", Data([3]))
             model.serve(h.transport)
             _ = try await h.downloader.download(try model.bundle(to: destination))
             #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"])
@@ -220,8 +226,8 @@ struct BundleTests {
             let model = Model()
             let destination = temp.file("model")
             try FileManager.default.createDirectory(atPath: destination + "/sub", withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: destination + "/old.bin", contents: Data([9]))
-            FileManager.default.createFile(atPath: destination + "/sub/old.txt", contents: Data([9]))
+            try put(destination + "/old.bin", Data([9]))
+            try put(destination + "/sub/old.txt", Data([9]))
             model.serve(h.transport)
             let result = try await h.downloader.download(try model.bundle(to: destination))
             #expect(result.isDurable)
@@ -237,7 +243,7 @@ struct BundleTests {
             let model = Model()
             let destination = temp.file("model")
             try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: destination + "/old.bin", contents: Data([9]))
+            try put(destination + "/old.bin", Data([9]))
             model.serve(h.transport, weights: [.status(404)])
             await #expect(throws: DownloadError.self) { try await h.downloader.download(try model.bundle(to: destination)) }
             #expect(names(in: destination) == ["old.bin"], "the old model is still the model")
