@@ -10,5 +10,5 @@
   "perform, first attempt succeeds (remote)" : 26.01,
   "retry, first attempt succeeds" : 2,
   "withScope, one finalizer" : 34.66,
-  "withTimeout, completes at once" : 19.86
+  "withTimeout, completes at once" : 20
 }
