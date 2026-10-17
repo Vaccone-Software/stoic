@@ -144,20 +144,19 @@ extension Journal {
             if holding { releaseQuietly(lock) }
             throw error
         }
-        if holding { try lock.release() }
+        // The files are gone: a lock that will not unlock is not a failed removal.
+        if holding { releaseQuietly(lock) }
         StoreEvents.record(Event("store.journal_removed", level: .notice, fields: [
             .init("path", .string(path)), .init("files", .int(removed)),
         ]))
         return removed
     }
 
+    /// Lets go of the lock, and says nothing if that fails: either the removal's
+    /// own outcome is what is being reported, or the files are already gone, and
+    /// the descriptor the lock's deinit closes drops the lock all the same.
     private static func releaseQuietly(_ lock: FileLock) {
-        do throws(StoreError) {
-            try lock.release()
-        } catch {
-            // The failure being reported is the one worth reporting; closing the
-            // descriptor, which the lock's deinit does anyway, drops the lock.
-        }
+        _ = Result { () throws(StoreError) in try lock.release() }
     }
 }
 
