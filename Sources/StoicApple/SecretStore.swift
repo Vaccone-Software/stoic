@@ -14,6 +14,11 @@ internal import Synchronization
 /// device's first unlock): call them off the main actor.
 public protocol SecretStore: Sendable {
     /// The value kept under `key`, or `nil` if there is none.
+    ///
+    /// `nil` is the only answer that means "definitely absent". A store that
+    /// is locked, refuses, was cancelled or cannot be reached throws, and then
+    /// the secret may well exist: never create a replacement, or wipe what the
+    /// old one protected, on an error.
     func get(_ key: String) throws(SecretStoreError) -> Data?
     /// Keeps `value` under `key`, replacing any earlier value.
     func set(_ value: Data, for key: String) throws(SecretStoreError)
@@ -32,14 +37,19 @@ public enum SecretStoreError: Error, Sendable, Hashable, CustomStringConvertible
     /// The value is empty. Use `delete` to remove a secret.
     case invalidValue
     /// The store cannot be read now: the device is locked, or has not been
-    /// unlocked since boot and the item needs it.
+    /// unlocked since boot and the item needs it; on macOS, the keychain is
+    /// locked or there is no UI session to ask the user in
+    /// (`errSecInteractionNotAllowed`). The secret may exist.
     case locked
-    /// The user declined, or authentication failed.
+    /// The user declined, or authentication failed: a denied or cancelled
+    /// access prompt, a wrong password (`errSecAuthFailed`,
+    /// `errSecUserCanceled`). The secret may exist.
     case authenticationFailed
     /// The app is not entitled to the Keychain: unsigned, or missing the
     /// keychain-sharing capability for its access group.
     case missingEntitlement
-    /// The Keychain service is unavailable or failed to respond.
+    /// The Keychain service is unavailable or failed to respond, or there is
+    /// no keychain to open. The secret may exist.
     case unavailable
     /// The store returned something that is not the data that was kept.
     case corrupted

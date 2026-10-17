@@ -79,9 +79,34 @@ not an error; deleting an absent key succeeds. Empty keys and empty values
 are refused. Errors carry a case or an `OSStatus`, never a key, a value or
 the system's message. `.locked` and `.unavailable` are `Retryable`.
 `KeychainSecretStore` defaults to `afterFirstUnlockThisDeviceOnly`, uses the
-data-protection keychain on every platform (an unsigned tool gets
+data-protection keychain unless asked otherwise (an unsigned tool, or a
+Developer ID app without an `application-identifier` entitlement, gets
 `.missingEntitlement`), and applies its accessibility to an item written
 earlier. It is not wired into `SettingsStore`.
+
+**The login keychain (macOS).** `KeychainSecretStore(loginKeychainService:)`
+leaves out `kSecUseDataProtectionKeychain`, so items go to the user's default
+file-based keychain, which needs no application-identifier entitlement. It is a
+different place with different properties, and the choice is the app's:
+
+| | Data-protection keychain (default) | Login keychain |
+| --- | --- | --- |
+| Needs | a signed app with an application identifier | nothing; any signed or unsigned process |
+| After the app is deleted or reinstalled | items are removed with it | items stay until deleted |
+| Backups and a new Mac | `ThisDeviceOnly` classes stay out of backups; iCloud Keychain needs its own entitlement and `kSecAttrSynchronizable`, which this store never sets | in Time Machine backups (encrypted under the login password) and carried by Migration Assistant; no "this device only" |
+| Who may read an item without a prompt | the app's access group | the app that created it, by code signature |
+| A differently signed build (a development build, a re-signed app) | the same group reads it, if it has the entitlement | the system prompts; denying or cancelling throws `.authenticationFailed` and the item is not gone |
+| Accessibility classes, `accessGroup` | applied | not applicable, not applied |
+| Locked | `.locked` before the first unlock | `.locked` (`errSecInteractionNotAllowed`) while the keychain is locked or there is no UI session |
+
+**Absent is not unavailable.** `get` returns `nil` only for
+`errSecItemNotFound`. A locked keychain (`.locked`), a refused or cancelled
+prompt (`.authenticationFailed`), a missing or unopenable keychain, and every
+status Stoic does not know throw, and in each the secret may well exist. The
+decision is one function, `KeychainSecretStore.interpret(copyStatus:result:)`,
+tested over the statuses a locked or refusing keychain answers with. A caller
+must never create a replacement secret, or wipe what the old one protected, on
+an error.
 
 ## Failure modes
 
@@ -114,6 +139,11 @@ earlier. It is not wired into `SettingsStore`.
 | an error is printed or logged                                   | Names the case or status; never the key, the value or a system message                    |
 | the app is not entitled to the Keychain                         | `.missingEntitlement`                                                                     |
 | the Keychain returns a status Stoic does not know               | `.other(status:)`                                                                         |
+| the item is not in the Keychain                                 | `get` returns `nil`: `errSecItemNotFound` is the only status that does                    |
+| the keychain is locked, or there is no UI session to unlock it  | `.locked`, never `nil`; a retry may outlast it; the secret may exist                      |
+| the user denies or cancels the system's access prompt           | `.authenticationFailed`, never `nil`; not retried (it would raise the prompt again); the item is not gone |
+| there is no keychain to open                                    | `.unavailable`, never `nil`                                                               |
+| the store is the login keychain (macOS)                         | The query has no `kSecUseDataProtectionKeychain`, no access group and no accessibility class |
 
 ## Not built
 
