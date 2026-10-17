@@ -308,8 +308,10 @@ struct PerformTests {
                 }
             }
         }
-        // The first attempt's timer, then the backoff after it failed.
-        await clock.waitForSleepers(newerThan: 0, count: 2)
+        // The backoff after the first attempt failed: the only sleep under a
+        // second. The attempt's own timer may never have begun, or still be
+        // asleep, so counting sleeps cannot say whether the backoff has.
+        await waitUntil("the backoff never began") { clock.pendingDeadlines.contains { $0.offset < .seconds(1) } }
         task.cancel()
         let (result, before, after) = await task.value
         let error = try #require(result.error)
