@@ -212,6 +212,8 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     /// on every appearance cannot start its work twice per visit.
     ///
     /// - Parameters:
+    ///   - predicate: Which states the work runs in. It runs under the
+    ///     machine's lock, so it must not call back into the machine.
     ///   - label: Names the work in events and diagnostics.
     ///   - shutdownTimeout: How long the work may take to stop once its visit
     ///     ends. The next visit's work waits for it that long at most; then

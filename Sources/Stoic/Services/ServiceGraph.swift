@@ -183,6 +183,7 @@ public struct ServiceGraph: Sendable {
     ///     — by its `startTimeout`, or because the graph is failing or being
     ///     cancelled — before it is abandoned, so a start that ignores
     ///     cancellation cannot hold `run` for ever.
+    ///   - body: Runs once every service has started, with them all.
     public func run<R>(
         exitBudget: Duration = .seconds(30),
         stopTimeout: Duration = .seconds(10),
