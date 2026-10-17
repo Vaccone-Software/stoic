@@ -110,11 +110,20 @@ swiftSettings: [
     earlier version wrote is sealed in place with `SealedFile.adopt`, which
     cannot erase the old blocks: only retiring a key (`compact(…, rotatingKey:
 true)`) makes a deletion real.
+12. **A hand-rolled retry queue for sends that must survive a relaunch** →
+    `Outbox` over an `HTTPClient` made with `HTTPPolicy.singleAttempt`, so the
+    outbox is the one layer that retries. Say what became of each entry by
+    what the delivery returns (`.delivered`; `.discard(reason:)` for a `400`
+    that will never succeed; `.keep`), and open it on
+    `PosixFileSystem(newFileMode: 0o600, newDirectoryMode: 0o700)` when what
+    it holds is private. `outbox.deliver(key) { … }` sends one entry now and
+    says what happened to it, while a schedule drains the rest.
 
 ## 6. Make tests deterministic
 
 Wrap time-sensitive tests in `withTestAmbient(clock: TestClock())`, drive
-time with `waitForSleepers(count:)` and `advance(by:)`, inject failures with
+time with `waitForSleepers(count:)` and `advance(by:)` (an XCTest file needs
+only `import StoicTesting`), inject failures with
 `FaultInjector`, and end with `#expect(await stoicTasksStillRunning().isEmpty)`
 so leaked work fails the test by name.
 

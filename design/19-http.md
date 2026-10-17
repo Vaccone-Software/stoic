@@ -563,12 +563,28 @@ until then):
 - **The redirect's body** is read under `maxResponseBytes` and dropped;
   `retryOnResponse` never sees a redirect the client follows.
 
+**Delivering through an outbox.** `StoicStore.Outbox` calls `send` with its
+entry's `IdempotencyKey`; give it a client made with `HTTPPolicy.singleAttempt`
+so that the outbox is the one layer that retries, and map the answers that will
+never succeed to `.discard`, which a thrown error cannot say (design/15):
+
+```swift
+let api = HTTPClient(base: url, policy: .singleAttempt)
+let outcome = try await outbox.deliver(key) { entry in
+    do {
+        _ = try await api.send(entry.item.request, idempotencyKey: entry.key)
+        return .delivered
+    } catch HTTPError.status(let code, _, _, _, _) where code == 400 || code == 422 {
+        return .discard(reason: "http \(code)")
+    }
+}
+```
+
 **Not built.** A hedging stage (it exists as a `Policy` value and would slot
-into the pipeline); streaming uploads and downloads; delivering through the
-outbox (`StoicStore.Outbox` can call `send` with its entry's `IdempotencyKey`).
+into the pipeline); streaming uploads and downloads.
 
 **Tests** (`Tests/StoicHTTPTests`; overrides, response retry, reauthentication,
-rate limit, redirects and decoding limits each have a file, and `OperationTests` the calls
+rate limit, redirects, decoding limits and the policy shortcuts (`singleAttempt`, a keyed 409) each have a file, and `OperationTests` the calls
 inside a `perform` attempt and the "in progress" answers): one per row above, on a `TestClock` and a
 `ScriptedTransport` with no real sleeps (they wait on events and
 `waitForSleepers`); `URLSessionTransport` against a `URLProtocol` stub on a
