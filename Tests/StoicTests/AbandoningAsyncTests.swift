@@ -154,14 +154,25 @@ struct AbandoningAsyncTests {
 
     @Test(.failureMode("design/04", "work started in the scope was abandoned"))
     func asyncWorkAbandonedInAScopeIsCounted() async {
+        let clock = TestClock()
         let callback = AsyncGate()
         let closed = SendableBox(false)
         let label = Self.uniqueLabel("scope.async")
         await withScope { scope in
             scope.onExit(ifWorkAbandoned: .quarantine) { _ in closed.mutate { $0 = true } }
-            _ = try? await abandoningAsyncAfter(.milliseconds(5), label: label) { () async throws(Failure) -> Int in
+            async let attempt: Int = abandoningAsyncAfter(.seconds(2), label: label, clock: clock.erased) { () async throws(Failure) -> Int in
                 await callback.wait()
                 return 1
+            }
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(2))
+            do {
+                _ = try await attempt
+                Issue.record("expected the work to be abandoned")
+            } catch let error as PolicyError<Failure> {
+                #expect(error.rejection?.reason == .deadlineExceeded)
+            } catch {
+                Issue.record(error)
             }
             #expect(scope.abandonedWork == 1)
         }
