@@ -122,13 +122,31 @@ for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicF
         -derivedDataPath .build/ios build
 done
 
-step "documentation: DocC builds with no warnings (broken links, undocumented parameters)"
-warnings=$(xcodebuild docbuild -scheme Stoic -destination 'platform=macOS' -derivedDataPath .build/docs 2>&1 \
-    | grep -E "warning:" | grep -v "(in target" | sort -u || true)
-if [ -n "$warnings" ]; then
-    printf '%s\n' "$warnings"
-    exit 1
-fi
+step "documentation: DocC builds with no warnings, in every library (broken links, undocumented parameters)"
+# Not here: StoicMacros, whose symbols exist only with the Macros trait, which
+# xcodebuild cannot enable; StoicHTTP, whose warnings are being fixed (add it
+# to the list when they are). A symbol of another Stoic library is written as
+# code, not as a ``link``: DocC resolves a link only inside the module it is
+# building. StoicUIKit builds for iOS, where its code compiles.
+docs=$(mktemp)
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings \
+    StoicObservability StoicApple StoicAppKit StoicUIKit; do
+    destination='platform=macOS'
+    if [ "$scheme" = StoicUIKit ]; then destination='generic/platform=iOS'; fi
+    xcodebuild docbuild -scheme "$scheme" -destination "$destination" -derivedDataPath .build/docs > "$docs" 2>&1 || {
+        tail -30 "$docs"
+        printf 'FAIL %s: docbuild failed\n' "$scheme"
+        exit 1
+    }
+    warnings=$(grep -E "warning:" "$docs" | grep -v "(in target" | sort -u || true)
+    if [ -n "$warnings" ]; then
+        printf '%s\n' "$warnings"
+        printf 'FAIL %s: DocC warnings\n' "$scheme"
+        exit 1
+    fi
+    printf '  ok %s\n' "$scheme"
+done
+rm -f "$docs"
 
 if [ "${1:-}" = "--stress" ]; then
     step "stress: every suite, up to 100 repetitions"
