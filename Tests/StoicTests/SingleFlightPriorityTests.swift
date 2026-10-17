@@ -6,6 +6,21 @@ import Testing
 /// for it, not at the priority of whoever happened to arrive first.
 @Suite("SingleFlight: priority")
 struct SingleFlightPriorityTests {
+    /// The priority the running task has once an escalation to `target` has
+    /// reached it. The flight's task is registered after it starts, and an
+    /// escalation that arrives in between is applied when the launch
+    /// registers it: a moment later, but not before a starved thread has
+    /// run, so the task reads its priority until it is raised. A bound turns
+    /// an escalation that never comes into a failure.
+    static func priority(awaiting target: TaskPriority) async -> TaskPriority {
+        var spins = 0
+        while Task.currentPriority < target, spins < 2_000_000 {
+            spins += 1
+            await Task.yield()
+        }
+        return Task.currentPriority
+    }
+
     /// A background caller starts the flight; a high-priority caller
     /// joins it. The joiner waits on a continuation, which escalates nothing
     /// by itself: the flight must be escalated for it.
@@ -18,7 +33,7 @@ struct SingleFlightPriorityTests {
         let operation: @concurrent @Sendable () async -> TaskPriority = {
             started.open()
             await gate.wait()
-            return Task.currentPriority
+            return await Self.priority(awaiting: .high)
         }
         let low = Task(priority: .background) {
             try await withTestAmbient(clock: TestClock(), events: events) { try await flight.run("k", operation: operation) }
@@ -44,7 +59,7 @@ struct SingleFlightPriorityTests {
             try await flight.run("k") { () async -> TaskPriority in
                 started.open()
                 await gate.wait()
-                return Task.currentPriority
+                return await Self.priority(awaiting: .high)
             }
         }
         await started.wait()
