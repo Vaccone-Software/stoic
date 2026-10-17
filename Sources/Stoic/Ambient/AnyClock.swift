@@ -47,9 +47,11 @@ public struct AnyClock: Clock, CustomStringConvertible {
         let minimumResolution: Swift.Duration
         let sleep: @Sendable (Swift.Duration, Swift.Duration?) async throws -> Void
         let underlying: any Clock<Swift.Duration>
+        let continuousOrigin: ContinuousClock.Instant?
 
         init<C: Clock<Swift.Duration>>(_ clock: C, name: String) {
             let origin = clock.now
+            self.continuousOrigin = origin as? ContinuousClock.Instant
             self.name = name
             self.underlying = clock
             self.now = { origin.duration(to: clock.now) }
@@ -108,6 +110,18 @@ public struct AnyClock: Clock, CustomStringConvertible {
 
     public func sleep(until deadline: Instant, tolerance: Swift.Duration? = nil) async throws {
         try await box.sleep(deadline.offset, tolerance)
+    }
+
+    /// `instant` on the continuous clock itself, when this erases one, clamped
+    /// as `sleep(until:tolerance:)` clamps it.
+    ///
+    /// For a caller that sleeps on the result directly, with no erasure's
+    /// frames between its task and the sleep: see the deadline's timer.
+    func continuousInstant(for instant: Instant) -> ContinuousClock.Instant? {
+        guard let origin = box.continuousOrigin else { return nil }
+        let now = box.now()
+        let target = min(max(instant.offset, now), now.saturatingAdding(.horizon))
+        return origin.advanced(by: target)
     }
 
     /// The clock this value erases.

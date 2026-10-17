@@ -50,6 +50,22 @@ struct FoundationTests {
         try await AnyClock.suspending.sleep(until: AnyClock.Instant(offset: .minimum))
     }
 
+    /// The deadline's timer sleeps on the continuous clock directly, past the
+    /// erasure, so it gets the erasure's clamps too: an instant far in the past
+    /// or the future must name an instant the clock can represent, and only a
+    /// continuous clock has one.
+    @Test func theContinuousInstantIsClampedAndOnlyContinuousClocksHaveOne() throws {
+        let clock = AnyClock.continuous
+        let now = ContinuousClock.now
+        let past = try #require(clock.continuousInstant(for: AnyClock.Instant(offset: .minimum)))
+        let future = try #require(clock.continuousInstant(for: AnyClock.Instant(offset: .maximum)))
+        #expect(past >= now - .seconds(60))
+        #expect(past <= ContinuousClock.now)
+        #expect(future > now + .seconds(3600))
+        #expect(AnyClock.suspending.continuousInstant(for: AnyClock.Instant(offset: .zero)) == nil)
+        #expect(TestClock().erased.continuousInstant(for: AnyClock.Instant(offset: .zero)) == nil)
+    }
+
     // MARK: Saturating arithmetic
 
     @Test func durationArithmeticSaturates() {

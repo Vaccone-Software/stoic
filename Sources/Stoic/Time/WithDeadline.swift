@@ -98,7 +98,18 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
                 }
                 group.addTask {
                     do {
-                        try await effective.clock.sleep(until: effective.instant, tolerance: tolerance)
+                        // On a continuous clock the timer sleeps on it
+                        // directly: a task's stack is allocated in slabs, and
+                        // the erasure's two async frames between the timer's
+                        // closure and `Task`'s sleep push that sleep over a
+                        // slab boundary, which costs a slab allocation or
+                        // more, every call, and more when the cancel lands
+                        // while the sleep is being set up.
+                        if let native = effective.clock.continuousInstant(for: effective.instant) {
+                            try await ContinuousClock().sleep(until: native, tolerance: tolerance)
+                        } else {
+                            try await effective.clock.sleep(until: effective.instant, tolerance: tolerance)
+                        }
                         return .timerFired
                     } catch {
                         return .timerCancelled
