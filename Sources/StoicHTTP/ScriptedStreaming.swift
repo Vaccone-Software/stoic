@@ -8,7 +8,7 @@ internal import Synchronization
 // ambient clock (or, for a hang, on nothing), so a test decides when.
 
 extension ScriptedTransport {
-    /// A file a scripted server holds: what ``Step/serving(_:chunkDelay:fault:)``
+    /// A file a scripted server holds: what ``Step/serving(_:chunkSize:chunkDelay:fault:)``
     /// answers a request for, as a real server would.
     ///
     /// A request for the whole file is answered `200` with its length and
