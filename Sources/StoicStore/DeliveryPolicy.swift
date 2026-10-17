@@ -14,8 +14,8 @@ public import Stoic
 ///         do {
 ///             _ = try await api.send(entry.item.request, idempotencyKey: entry.key)
 ///             return .delivered
-///         } catch let error as HTTPError where error.isRefusal {
-///             return .discard(reason: "refused")
+///         } catch HTTPError.status(let code, _, _, _, _) where code == 400 || code == 422 {
+///             return .discard(reason: "http \(code)")
 ///         }
 ///     }
 public enum DeliveryResult: Sendable, Hashable {
