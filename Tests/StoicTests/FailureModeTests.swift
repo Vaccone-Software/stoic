@@ -300,8 +300,11 @@ struct ScopeExitFailureModeTests {
             }
         }
         await clock.waitForSleepers(count: 2)   // the timeout and the body
+        // The fork wait is the sleep that begins after the advance: the
+        // body's own, cancelled by the timeout, is still counted until then.
+        let mark = clock.totalSleeps
         await clock.advance(by: .seconds(1))
-        await clock.waitForSleepers(count: 1)
+        await clock.waitForSleepers(newerThan: mark)
         #expect(clock.pendingDeadlines.map(\.offset) == [.seconds(6)])
         await clock.advance(by: .seconds(5))
         _ = try? await task.value

@@ -158,10 +158,12 @@ struct SingleFlightTests {
         let clock = TestClock()
         let flight = SingleFlight<Int, String, any Error>(label: "cause.deadline")
         let observed = SendableBox<CancellationCause?>(nil)
+        let started = SendableBox(false)
         let task = Task {
             try await withTestAmbient(clock: clock) {
                 try await withTimeout(.seconds(1)) {
                     try await flight.run(1) {
+                        started.mutate { $0 = true }
                         do { try await Task.sleep(for: .seconds(60)) } catch {
                             observed.mutate { $0 = CancellationCause.current }
                             throw error
@@ -171,6 +173,9 @@ struct SingleFlightTests {
                 }
             }
         }
+        // A caller that leaves before its flight launched starts no operation,
+        // so the deadline must not pass before the operation is running.
+        #expect(await eventually { started.value })
         await clock.waitForSleepers(count: 2)   // the caller's deadline and the flight's wait
         await clock.advance(by: .seconds(1))
         _ = try? await task.value
