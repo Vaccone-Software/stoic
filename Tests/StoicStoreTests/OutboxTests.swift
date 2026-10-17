@@ -69,7 +69,7 @@ struct OutboxTests {
         let keys = [try await outbox.enqueue("a"), try await outbox.enqueue("b"), try await outbox.enqueue("c")]
         let seen = SendableBox<[String]>([])
         let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) } }
+            try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) }; return .delivered }
         }
         #expect(seen.value == ["a", "b", "c"])
         #expect(report.delivered == keys)
@@ -89,6 +89,7 @@ struct OutboxTests {
             try await outbox.deliverPending { entry in
                 sent.mutate { $0.append(entry.key.rawValue) }
                 if sent.value.count < 3 { throw Unavailable() }
+                return .delivered
             }
         }
         #expect(sent.value == [key.rawValue, key.rawValue, key.rawValue])
@@ -122,6 +123,7 @@ struct OutboxTests {
             try await outbox.deliverPending { entry in
                 attempts.mutate { $0.append(entry.item) }
                 if entry.item == "bad" { throw Rejected() }
+                return .delivered
             }
         }
         #expect(attempts.value == ["bad"])   // one attempt, and "good" did not overtake it
@@ -137,6 +139,7 @@ struct OutboxTests {
         let report = try await withTestAmbient(clock: ImmediateClock()) {
             try await outbox.deliverPending { entry in
                 if entry.item == "bad" { throw Unavailable() }
+                return .delivered
             }
         }
         #expect(report.failed.count == 1)
@@ -156,7 +159,7 @@ struct OutboxTests {
         outbox = try open(disk)
         let seen = SendableBox<[String]>([])
         let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) } }
+            try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) }; return .delivered }
         }
         #expect(seen.value == ["a", "b"])
         #expect(report.remaining == 0)
@@ -172,13 +175,13 @@ struct OutboxTests {
         disk.inject(5, on: .write)   // the acknowledgement's write fails
         await #expect(throws: StoreError.self) {
             try await withTestAmbient(clock: ImmediateClock()) {
-                try await outbox.deliverPending { entry in sent.mutate { $0.append(entry.key.rawValue) } }
+                try await outbox.deliverPending { entry in sent.mutate { $0.append(entry.key.rawValue) }; return .delivered }
             }
         }
         try await outbox.close()
         outbox = try open(disk)
         _ = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { entry in sent.mutate { $0.append(entry.key.rawValue) } }
+            try await outbox.deliverPending { entry in sent.mutate { $0.append(entry.key.rawValue) }; return .delivered }
         }
         #expect(sent.value == [key.rawValue, key.rawValue])
     }
@@ -193,11 +196,12 @@ struct OutboxTests {
                 try await outbox.deliverPending { _ in
                     started.open()
                     await release.wait()
+                    return .delivered
                 }
             }
         }
         await started.wait()
-        let second = try await outbox.deliverPending { _ in Issue.record("delivered twice at once") }
+        let second = try await outbox.deliverPending { _ in Issue.record("delivered twice at once"); return .delivered }
         #expect(second.wasAlreadyRunning)
         #expect(second.remaining == 1)
         release.open()
@@ -212,6 +216,7 @@ struct OutboxTests {
             try await outbox.deliverPending { _ in
                 started.open()
                 try await Task.sleep(for: .seconds(60))
+                return .delivered
             }
         }
         await started.wait()
@@ -264,6 +269,7 @@ struct OutboxTests {
             try await outbox.deliverPending { entry in
                 seen.mutate { $0 += 1 }
                 if seen.value > 15 { throw Rejected() }   // 15 delivered, then a permanent failure
+                return .delivered
             }
         }
         #expect(await outbox.pendingCount == 5)
@@ -287,7 +293,7 @@ struct OutboxTests {
             policy: DeliveryPolicy(schedule: .immediate.attempts(2), onFailure: .continueWithNext)
         )
         let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await reader.deliverPending { _ in Issue.record("should not decode") }
+            try await reader.deliverPending { _ in Issue.record("should not decode"); return .delivered }
         }
         #expect(report.failed.map(\.key) == [key])
         #expect((report.failed.first?.error as? StoreError)?.kind == .corrupt)
@@ -305,7 +311,7 @@ struct OutboxTests {
         outbox = try Outbox<Message>.open(at: dir.file("outbox"), codec: .json())
         let seen = SendableBox<[Message]>([])
         _ = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) } }
+            try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) }; return .delivered }
         }
         #expect(seen.value == [Message(id: 1, text: "héllo"), Message(id: 2, text: "wörld")])
     }
@@ -326,7 +332,7 @@ struct OutboxTests {
         try await outbox.enqueue("ok")
         try await outbox.enqueue("nope")
         try await withTestAmbient(clock: ImmediateClock(), events: events) {
-            _ = try await outbox.deliverPending { entry in if entry.item == "nope" { throw Rejected() } }
+            _ = try await outbox.deliverPending { entry in if entry.item == "nope" { throw Rejected() }; return .delivered }
         }
         #expect(events.names.filter { $0.rawValue.hasPrefix("store.") } == ["store.outbox_delivered", "store.outbox_delivery_failed"])
     }
@@ -403,6 +409,7 @@ struct OutboxTests {
         // the holes squeezed out several times along the way.
         let report = try await outbox.deliverPending { entry in
             if Int(entry.item.dropFirst(5))! % 7 == 0 { throw Rejected() }
+            return .delivered
         }
         let kept = keys.enumerated().filter { $0.offset % 7 == 0 }.map(\.element)
         #expect(report.delivered.count == 200 - kept.count)
@@ -434,7 +441,7 @@ struct OutboxTests {
         // The lost enqueue is not silent: the app can see how many and from where.
         #expect(outbox.openReport.corruptRecords == 1)
         #expect(outbox.openReport.corruption.first?.firstLostSequence == 2)
-        let report = try await outbox.deliverPending { _ in }
+        let report = try await outbox.deliverPending { _ in .delivered }
         #expect(report.delivered.count == 99)
     }
 
@@ -473,12 +480,13 @@ struct OutboxTests {
         let sent = SendableBox<[IdempotencyKey]>([])
         // The charge succeeds; what follows it fails, so the outbox repeats
         // the delivery, and in the first launch never finishes it.
-        @Sendable func deliver(failing: Bool) -> @Sendable (Outbox<String>.Entry) async throws -> Void {
+        @Sendable func deliver(failing: Bool) -> @Sendable (Outbox<String>.Entry) async throws -> DeliveryResult {
             { _ in
                 _ = try await charge.perform { attempt throws(Unavailable) in
                     sent.mutate { $0.append(attempt.idempotencyKey) }
                 }
                 if failing { throw Unavailable() }
+                return .delivered
             }
         }
         let first = try await simulate(seed: 1, faults: .none) { [outbox] _ in
@@ -511,6 +519,7 @@ struct OutboxTests {
                     calls.mutate { $0 += 1 }
                     throw Unavailable()
                 }
+                return .delivered
             }
         }
         // The charge may have happened: the attempt is settled, the entry

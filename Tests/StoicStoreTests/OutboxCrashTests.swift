@@ -32,6 +32,7 @@ struct OutboxCrashTests {
                 if entry.item == failing { throw Rejected() }
                 delivered.mutate { $0 += 1 }
                 disk.checkpoint("delivered:\(count + 1)")
+                return .delivered
             }
         }
         disk.checkpoint("acked:\(delivered.value)")
@@ -73,7 +74,7 @@ struct OutboxCrashTests {
             // 4. The recovered outbox works: it delivers exactly what is pending, in order, then takes more.
             let seen = SendableBox<[String]>([])
             let report = try await withTestAmbient(clock: ImmediateClock()) {
-                try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) } }
+                try await outbox.deliverPending { entry in seen.mutate { $0.append(entry.item) }; return .delivered }
             }
             guard seen.value == recovered.map(\.item), report.remaining == 0 else {
                 return "after recovery, delivery sent \(seen.value) for pending \(recovered.map(\.item)), \(report.remaining) remaining"

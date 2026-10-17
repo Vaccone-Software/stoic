@@ -147,7 +147,7 @@ struct FileModeTests {
         try await outbox.enqueue("one")
         try await outbox.enqueue("two")
         let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { _ in }
+            try await outbox.deliverPending { _ in .delivered }
         }
         #expect(report.delivered.count == 2)
         try await outbox.close()

@@ -142,6 +142,8 @@ public enum EventCatalog {
         Entry(name: "store.journal_truncated", level: .warning, meaning: "A journal's torn or corrupt tail was cut at open; reports how many bytes were dropped."),
         Entry(name: "store.outbox_delivered", level: .debug, meaning: "An outbox entry was delivered and its acknowledgement made durable."),
         Entry(name: "store.outbox_delivery_failed", level: .warning, meaning: "An outbox entry used up its attempts or failed permanently; it stays pending."),
+        Entry(name: "store.outbox_discarded", level: .warning, meaning: "An outbox entry was dropped without being delivered, and its removal made durable: the delivery refused it for good, it no longer decodes, or it expired. Reports the kind and the reason; never the entry."),
+        Entry(name: "store.outbox_kept", level: .debug, meaning: "An outbox delivery returned keep: the entry stays pending and is not tried again in this run."),
         Entry(name: "store.outbox_maintenance_failed", level: .warning, meaning: "An outbox could not compact its log; nothing was lost."),
         Entry(name: "store.recovered_previous", level: .warning, meaning: "A stored file's current generation was missing or corrupt; the previous generation was returned."),
         Entry(name: "store.replace_leftover", level: .warning, meaning: "An item was replaced atomically, but the old one could not be removed from the staging path; the replacement is in place and the leftover is for the caller to clear."),

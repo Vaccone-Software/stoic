@@ -370,7 +370,9 @@ and the tombstone is removed.
 ### Outbox
 
 Journal records: `0x01 | keyLength | key | item` (enqueue) and
-`0x02 | keyLength | key` (acknowledge). The pending list is the snapshot's
+`0x02 | keyLength | key` (acknowledge), and, only under `policy.expiry`,
+`0x03 | keyLength | key | enqueuedAt:i64 | item` (an enqueue stamped with the
+wall-clock milliseconds). The pending list is the snapshot's
 entries plus the log, enqueues in order minus acknowledged keys. `enqueue` is
 idempotent in its key while that key is pending; once its entry is acknowledged
 or discarded the key is forgotten, and enqueueing it again is a new entry,
@@ -382,24 +384,98 @@ pending entries open in tens of milliseconds, where a list searched per record
 took 17 seconds. `deliverPending` takes the pending list as of its start;
 each entry runs `retry(policy.schedule, budget:, classify:)` around the user's
 closure, with the entry's key as the key of every attempt, and is
-acknowledged durably the moment the closure returns. Failures stay pending.
-Because the entry's key is the enclosing key, a keyed declared operation
+acknowledged durably the moment the closure returns `.delivered`. Failures
+stay pending. Because the entry's key is the enclosing key, a keyed declared operation
 performed inside the closure without a key of its own derives one from it,
 the same on every attempt and every relaunch; and one that gives up settles
 the attempt, which the run then does not repeat (design/22). Semantics are at least once: an entry delivered but not yet
 acknowledged when the app dies is delivered again, with the same key — which is
 what the key is for.
 
+**A delivery says what became of its entry.** The closure returns a
+`DeliveryResult`: `.delivered`; `.discard(reason:)`, which acknowledges the
+entry durably (it leaves the queue and is not sent again) and reports it in
+`DeliveryReport.discarded`, never in `delivered`, with `store.outbox_discarded`;
+or `.keep`, which leaves it pending without an error and is not tried again in
+this run (`DeliveryReport.kept`; it stops a `.stopAtFirst` run, so nothing
+overtakes it). *Throwing* leaves the entry pending, whatever the error's
+`retryDecision`, and is the only way to ask for a retry. The alternative
+considered was to discard on a thrown `.stop`: rejected, because `.stop` is a
+statement about the run (a 401 is `.stop`, and signing in fixes it; so is a full
+disk), dropping a user's data on that guess cannot be undone, and only the app
+knows which refusals are final. So permanence is a returned value, typed, never
+inferred from an error. `HTTPError` still classifies itself for the retry inside
+the run; the app maps the refusals it knows to be final (a `400`) to `.discard`.
+The closure's type is `(Entry) async throws -> DeliveryResult`, replacing
+`-> Void` (a listed source break: overloading both makes a closure that returns a
+result silently read as `Void` and its answer dropped, or a closure with no
+`return` fail to compile; one type cannot do either).
+
+**An entry that cannot be sent does not hold the queue forever, unless the app
+wants it to.** `DeliveryPolicy.onUndecodable` is `.keep` (the default: as it
+was, reported as a failed entry with `.corrupt` and no attempts, so it stops a
+`.stopAtFirst` run) or `.discard` (dropped durably, reported as `.undecodable`,
+and the run goes on). The default is the one that cannot lose data: an entry
+written by a *newer* version of the app does not decode in an older one, and
+discarding it would destroy what the newer version can send when it returns. An
+app that would rather lose an entry it cannot read sets `.discard`.
+`DeliveryPolicy.expiry` (default `nil`) is `Expiry(maxAge:wallClock:)`: an entry
+whose age on the wall clock is at least `maxAge` when a run reaches it is
+discarded as `.expired` without being sent, and the clock is a parameter so a
+test pins it. Age needs a time that survives launches, so entries enqueued
+under an expiry carry their enqueue time (record `0x03`; a snapshot with the top
+bit of its count set carries it per entry), and entries enqueued without one
+never expire: setting an expiry later does not age what is already queued. An
+outbox that never sets one writes the formats every earlier release reads; one
+that does is not readable by an earlier release (it reads `0x03` as damage and
+refuses to open), the same one-way door as a batch in the journal. A wall clock
+is the user's to set: a clock set forward expires entries early and one set back
+late (never, for an entry stamped in the future), so `maxAge` is for days. The
+alternative, a count of failed runs, would need a durable write after every
+failed run and measures nothing a person means.
+
+**One entry, awaited.** `deliver(_:using:)` attempts the one entry its key
+names and returns its `DeliveryOutcome`: `.delivered`, `.discarded(reason)`,
+`.failed(error, attempts:)`, `.kept`, or `.notPending` (never enqueued, or
+already settled; an outcome from before the call is not kept). It is for "save
+this, send it now, and tell me what happened to *this* entry", beside a
+schedule that also drains. Single flight is one turn, held by a run or by a
+`deliver`, in first-come order: a `deliver` that arrives during a delivery waits
+for it to end (cancellably), a `deliverPending` that arrives during one returns
+`wasAlreadyRunning`, so there are never two attempts at once, of one entry or of
+two. A waiting `deliver` is registered against its entry first, so if the run it
+waits for attempts that entry, the run's outcome is its answer and no second
+attempt is made; an entry the run did not reach (enqueued mid-run, or beyond a
+failure that stopped it) is attempted when its turn comes, under the policy's
+schedule, with expiry and `onUndecodable` as in a run. It attempts that entry
+only: entries ahead of it are neither attempted nor waited for, so under
+`.stopAtFirst` it can overtake a failing one; `deliverPending` is the call when
+order matters more than one entry. It must not be called from inside a delivery
+closure (it would wait for the turn its caller holds).
+
 | What happens if…                                      | Behaviour                                                                                         |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | the app dies after `enqueue` returned                 | The entry is pending at the next launch                                                           |
 | it dies after the server accepted, before the ack     | The entry is delivered again with the same `IdempotencyKey`                                       |
 | it dies after the ack returned                        | The entry is never delivered again                                                                |
-| the closure throws a `Retryable` error saying `.stop` | One attempt; the entry stays pending; the run stops (`.stopAtFirst`) or moves on (`.continueWithNext`) |
+| the closure throws a `Retryable` error saying `.stop` | One attempt; the entry stays pending (only a returned `.discard` drops one); the run stops (`.stopAtFirst`) or moves on (`.continueWithNext`) |
+| the closure returns `.discard`                        | Acknowledged durably, so it leaves the queue and is never sent again; retried as a failure first if it threw before; reported in `DeliveryReport.discarded` (`store.outbox_discarded`), not `delivered`; the run goes on |
+| the closure returns `.keep`                           | Pending, no error; not tried again in this run; reported in `DeliveryReport.kept`; stops a `.stopAtFirst` run, not a `.continueWithNext` one  |
 | the schedule is spent                                 | Same: pending, reported in `DeliveryReport.failed` (`store.outbox_delivery_failed`)               |
 | `deliverPending` is cancelled                         | `CancellationError`, also while a retry waits out its backoff (when `retry` rethrows the attempt's error); the entry in flight stays pending, no failure is reported, and no compaction starts |
-| a second `deliverPending` starts during a run         | Returns at once with `wasAlreadyRunning`                                                          |
-| an item no longer decodes                             | Reported as a failed entry with `.corrupt` and zero attempts; `discard(key)` drops it durably      |
+| a second `deliverPending` starts during a run         | Returns at once with `wasAlreadyRunning`; so does one that starts while a `deliver(_:using:)` is going |
+| an item no longer decodes                             | By default (`onUndecodable: .keep`) reported as a failed entry with `.corrupt` and zero attempts, which stops a `.stopAtFirst` run; `discard(key)` drops it durably |
+| an item no longer decodes and `onUndecodable` is `.discard` | Dropped durably and reported in `discarded` as `.undecodable`, with no attempts; the run goes on, under `.stopAtFirst` too                                          |
+| an entry is older than the policy's `expiry` when a run reaches it | Discarded as `.expired` without being sent (`discarded`, no attempts); a younger entry is attempted as usual                                                        |
+| the wall clock is behind an entry's enqueue time      | The entry is not expired: a clock that went backwards makes it younger, never older                                                                                 |
+| an entry was enqueued with no `expiry` set            | It never expires, even under a later `expiry`: it carries no enqueue time                                                                                           |
+| an expiring outbox is relaunched or compacted         | Each entry's enqueue time is read back from the log or from the snapshot (version with the count's top bit set), so age runs across launches                        |
+| an outbox that sets no `expiry`                       | Writes `0x01` enqueue records and the original snapshot format, which every earlier release reads                                                                   |
+| `deliver(_:using:)` names a pending entry             | That entry alone is attempted, under the policy's schedule, and its outcome returned; the entries around it are not touched                                         |
+| `deliver(_:using:)` names an entry that is not pending | `.notPending`; nothing is attempted                                                                                                                                 |
+| `deliver(_:using:)` is called while a run is going    | It waits for the run to end: an entry the run attempted gets the run's outcome with no second attempt; one it did not reach is attempted then; never two attempts at once |
+| two `deliver(_:using:)` calls name one entry          | One attempt: both get its outcome, and a second does not attempt an entry that stayed pending                                                                       |
+| `deliver(_:using:)` is cancelled while it waits       | `CancellationError`; the run in progress and the entry are untouched, and the turn is free for the next delivery                                                    |
 | the ack cannot be written                             | `deliverPending` throws the `StoreError`; the entry stays pending and will be redelivered        |
 | the log passes `compactionThreshold` after a run      | Pending entries are folded into a snapshot; a failure to do so is reported, never thrown          |
 | the journal lost records to damage in the middle      | The intact entries are pending as before; `openReport.corruption` says how many records were lost and from which sequence: a lost enqueue is an entry that is never delivered, a lost acknowledgement one that is delivered again |
@@ -573,7 +649,9 @@ verdict. `markStable(after:)` measures its delay on the liveness clock
 `store.corrupt_quarantined`, `store.recovered_previous`, `store.replace_leftover`, `store.temp_removed`,
 `store.fullsync_unavailable`, `store.journal_corruption`, `store.journal_truncated`,
 `store.journal_compacted`, `store.journal_snapshot_lost`, `store.outbox_delivered`,
-`store.outbox_delivery_failed`, `store.outbox_maintenance_failed`. The lock reports no events: a refusal is a thrown error. All are in
+`store.outbox_delivery_failed`, `store.outbox_discarded` (the kind, `refused`,
+`undecodable` or `expired`, and the delivery's own reason: short, and never the
+entry), `store.outbox_kept`, `store.outbox_maintenance_failed`. The lock reports no events: a refusal is a thrown error. All are in
 `EventCatalog`; the catalog test now scans for the `store.` prefix too.
 
 ### Crash-consistency tests
