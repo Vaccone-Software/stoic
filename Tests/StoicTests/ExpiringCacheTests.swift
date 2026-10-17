@@ -135,7 +135,7 @@ struct ExpiringCacheTests {
             loader.fail(true)
             #expect(await get(cache, "a") == "a1")
             #expect(await eventually { StoicTest.events.events(named: "cache.refresh_failed").count == 1 })
-            let event = StoicTest.events.events(named: "cache.refresh_failed")[0]
+            let event = try #require(StoicTest.events.events(named: "cache.refresh_failed").first)
             #expect(event.label == "profiles")
             // The value is still served, and the next read tries again.
             #expect(await idle(cache))
