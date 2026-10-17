@@ -15,7 +15,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-targets="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicSettings StoicStore StoicSealed StoicObservability StoicHTTP"
+targets="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicSettings StoicStore StoicSealed StoicObservability StoicHTTP StoicDownloads"
 
 if [ "${1:-}" = "--docker" ]; then
     exec docker run --rm -v "$PWD":/src -w /src swift:6.4 scripts/linux.sh

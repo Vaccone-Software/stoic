@@ -152,13 +152,14 @@ fetches no other package at all.
    StoicObservability swift-log / swift-metrics       ← Stoic (+ traits)
      StoicSettings ·· settings that cannot corrupt    ← Stoic, StoicStore, StoicSchema
      StoicHTTP ······ the resilient HTTP client       ← Stoic, StoicFoundation, StoicSchema
+       StoicDownloads  resumable, verified downloads (Crypto) ← Stoic, StoicHTTP, StoicStore
  Apple ────────────────────────────────────────────────────────────────────────
    StoicApple ······· reachability, BGTask, Keychain  ← Stoic, StoicFoundation
      StoicSealedKeychain · the Keychain as a sealed keyring's custody (Crypto) ← StoicSealed, StoicApple
    StoicAppKit, StoicUIKit · lifecycle bridges        ← Stoic
  tools ────────────────────────────────────────────────────────────────────────
    StoicMacros (Macros trait) · StoicLint + stoic-lint (Lint trait): swift-syntax
-   StoicSealed (Crypto trait): swift-crypto, which is BoringSSL off Apple platforms
+   StoicSealed, StoicDownloads (Crypto trait): swift-crypto, which is BoringSSL off Apple platforms
 ```
 
 | Product              | Contents                                                                       | Depends on                         |
@@ -172,6 +173,7 @@ fetches no other package at all.
 | `StoicSettings`      | Schema-declared settings in an atomic file                                     | `Stoic`, `StoicStore`, `StoicSchema` |
 | `StoicSealed`        | Sealed files and journals: AES-256-GCM, keys in a keyring the app keeps in custody | `Stoic`, `StoicStore`; swift-crypto, behind `Crypto` |
 | `StoicHTTP`          | Resilient HTTP client; scripted transport for tests                            | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation(Networking) |
+| `StoicDownloads`     | Resumable, verified, durable file and directory downloads: `Range` + `If-Range`, digests while streaming, atomic placement | `Stoic`, `StoicHTTP`, `StoicStore`; swift-crypto, behind `Crypto` |
 | `StoicObservability` | Events to swift-log and swift-metrics                                          | `Stoic`; the packages, behind traits |
 | `StoicApple`         | Reachability, background tasks, Keychain, device conditions                    | `Stoic`, `StoicFoundation`, Apple frameworks |
 | `StoicSealedKeychain` | A `SecretStore` (the Keychain) as the custody of a sealed keyring: the one place `StoicSealed` and `StoicApple` meet | `StoicSealed`, `StoicApple`; swift-crypto, behind `Crypto` |
@@ -372,6 +374,7 @@ incident review is the wrong default.
 | 20  | [Time shaping](design/20-time-shaping.md) | search-as-you-type firing per keystroke, a cache that serves nothing while it refetches | Built: `Debouncer`, `Throttler`, `ExpiringCache`, `Broadcast` |
 | 21  | [Platform integration](design/21-platform-integration.md) | requests sent into a dead network, background work killed mid-write, tokens in `UserDefaults` | Built: `StoicApple` |
 | 22  | [Operations and backends](design/22-operations.md) | resilience numbers picked per call site, retried `POST`s, interactive taps waiting out background backoffs | Built: `Backend`, `perform`, `withUrgency`; `StoicHTTP` on operations planned |
+| 23  | [Downloads](design/23-downloads.md) | a download that restarts at zero, a partial file spliced onto a changed file, a digest in a second pass, half a model on disk | Built: `StoicDownloads` behind the `Crypto` trait |
 | 24  | [Sealed storage](design/24-sealed-storage.md) | private files in backups and synced folders, keys written beside their data, "decryption failed" for a tampered file, a lost key and a plaintext file alike | Built: `StoicSealed` behind the `Crypto` trait |
 
 **The plan from here.** Every domain above is built; what follows is

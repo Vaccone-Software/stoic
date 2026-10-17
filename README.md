@@ -193,6 +193,7 @@ that replays exactly.
 | `StoicSealed`  | Files and journals AES-256-GCM sealed, each bound to what it is for; keys in a keyring the app keeps in its own custody; tampered, torn, unknown-key and not-sealed told apart; deleting a record is destroying its key; crash-tested | `Stoic`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
 | `StoicSealedKeychain` | The Keychain (any `SecretStore`) as the custody of a sealed keyring, a locked keychain never read as "no keyring" | `StoicSealed`, `StoicApple`, behind the `Crypto` trait |
 | `StoicHTTP`    | An HTTP client with the resilience written once: per-host retry honouring `Retry-After`, circuit breaker and bulkhead, idempotency keys on `POST`, bounded responses decoded through schemas, coalesced `GET`s, redirects followed by the client (no credential leaves its origin, never `https` to `http`), no credentials in events; a scripted transport so every failure is a test on virtual time | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation |
+| `StoicDownloads` | Downloads that survive the network: resumed by `Range` with the server's validator in `If-Range` (a changed file starts over, never a splice), hashed with SHA-256 or git's blob id while they stream, `fullSync`ed and renamed over the destination only when verified, a model's files placed as one directory swap; retried on a schedule that starts over whenever bytes arrive, a `.long` operation, progress throttled on the ambient clock; crash-tested at every file operation | `Stoic`, `StoicHTTP`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
 | `StoicFoundation` | Foundation's errors (`URLError`, `POSIXError`, `CocoaError`) classify themselves for retry; portable | `Stoic`, Foundation |
 | `StoicApple`   | Device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, `StoicFoundation`, Apple frameworks |
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
@@ -259,7 +260,7 @@ wrong: a `@Length` on an `Int`, a default that
 breaks its own `@Range`, a key used twice. See
 [design/06](design/06-validation.md#as-built-layer-4-stoicmacros).
 
-`StoicSealed` is opt in as well, so that adopting the other libraries fetches
+`StoicSealed` and `StoicDownloads` are opt in as well, so that adopting the other libraries fetches
 no cryptography package (and builds no BoringSSL on Linux):
 
 ```swift
