@@ -1,0 +1,2 @@
+API breakage: enumelement SettingsStore.UpdateError.busy has been added as a new enum case
+API breakage: enumelement SettingsStore.UpdateError.fileUnusable has been added as a new enum case

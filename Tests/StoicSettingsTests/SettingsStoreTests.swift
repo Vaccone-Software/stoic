@@ -471,7 +471,8 @@ struct SettingsStoreTests {
         #expect(try Self.open(disk, format: format).value.speed == 900)
         let stored = try #require(try AtomicFile(fileSystem: disk, options: .init(envelope: format == .appOwned)).read(target))
         #expect(String(decoding: stored.bytes, as: UTF8.self).contains("900"), "the target holds the new value")
-        #expect(try disk.list(directory: "/d") == ["prefs.json"])
+        // The lock an update of a hand-edited file takes lives beside the link.
+        #expect(try disk.list(directory: "/d") == (format == .handEdited ? ["prefs.json", "prefs.json.lock"] : ["prefs.json"]))
     }
 
     // MARK: Reload and update

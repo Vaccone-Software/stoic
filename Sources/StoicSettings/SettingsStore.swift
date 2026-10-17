@@ -35,6 +35,25 @@ internal import Synchronization
 ///   the defaults), and published only once it is on disk. Updates are
 ///   serialised.
 ///
+/// ## A file a person edits
+///
+/// With ``Format/handEdited`` the file is the person's, and the app is one of
+/// several writers (a command-line tool beside it, an editor):
+///
+/// - **It is never destroyed.** A file that is not JSON, not UTF-8 or cannot
+///   be read is never quarantined, renamed or overwritten, on load or on
+///   update. Loading keeps the last good value (the defaults, the first time)
+///   and reports a ``SettingsFileProblem`` with the line and column; ``update(_:)``
+///   throws ``UpdateError/fileUnusable(_:)`` and writes nothing.
+/// - **Issues point into the text.** Each `Issue` carries the
+///   `Issue.source` range of the key or value in the file.
+/// - **Writes are sparse and byte-stable**, with an optional header
+///   (``HandEditedOptions``).
+/// - **An update reads the file again under a lock** on `<path>.lock`, so an
+///   edit made a moment ago is not lost: ``coordinatedUpdate(lockTimeout:_:)``
+///   waits for another process, ``update(_:)`` does not.
+/// - **Outside changes arrive** through ``reload()``.
+///
 /// Reads are cheap (a lock); updates do file I/O on the calling thread, so
 /// make them off the main actor when latency matters.
 public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observable {
@@ -43,8 +62,10 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// The app: checksummed, migrations written back. (A repaired value
         /// is not: it may be a newer build's, and stays until the app sets it.)
         case appOwned
-        /// A person: plain JSON with comments, nothing written back on load.
-        /// An update rewrites the file without its comments.
+        /// A person: plain JSON with comments, nothing written back on load,
+        /// and a file that cannot be read is left exactly as it is. An update
+        /// rewrites the file without its comments, and only after reading it
+        /// again (see the type's documentation, and ``HandEditedOptions``).
         case handEdited
     }
 
@@ -63,7 +84,8 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     public enum DefaultsReason: Sendable, Hashable {
         /// There was no file: a first launch.
         case missing
-        /// Every file was unusable, and was quarantined.
+        /// Every file was unusable. An app-owned file was quarantined; a
+        /// hand-edited one is left exactly as it was (``fileProblem`` says why).
         case unusable
     }
 
@@ -80,6 +102,16 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// a power loss may bring back the old one. Unlike every other case,
         /// the update *happened*.
         case durabilityUnknown(StoreError)
+        /// Another process held the lock on a hand-edited file for the whole
+        /// wait (``HandEditedOptions/lockTimeout``), or, from ``update(_:)``,
+        /// at the moment it asked. Nothing was read or written; trying again is
+        /// safe.
+        case busy
+        /// The hand-edited file, as it stands, cannot be read: it is not JSON,
+        /// not UTF-8, the wrong shape, or unreadable. Writing over it would
+        /// destroy what the person wrote, so nothing is written, and the file
+        /// is untouched; the person fixes it, and the next update finds it so.
+        case fileUnusable(SettingsFileProblem)
 
         public var description: String {
             switch self {
@@ -87,6 +119,8 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             case .newerFormat: "settings were written by a newer version of the app and are read-only"
             case .storage(let error): "settings could not be saved: \(error)"
             case .durabilityUnknown(let error): "settings were saved, but may not survive a power loss: \(error)"
+            case .busy: "settings update refused: another process is writing the file"
+            case .fileUnusable(let problem): "settings update refused, and the file left as it is: \(problem)"
             }
         }
     }
@@ -113,14 +147,29 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// lock when the process dies. Off by default. It keeps out only
         /// writers that take the lock too, and may not work over a network
         /// volume (see `FileLock`).
+        ///
+        /// Meant for an app-owned file. A hand-edited store takes a lock on
+        /// the same file for each update instead (so that a command-line tool
+        /// can edit beside the app), and one that also holds it for life makes
+        /// every such tool wait for it for ever: with it set, the store's own
+        /// hold is the lock its updates use.
         public var crossProcessLock: Bool
+
+        /// How a ``Format/handEdited`` store reads and writes.
+        public var handEdited: HandEditedOptions
 
         public init(crossProcessLock: Bool = false) {
             self.crossProcessLock = crossProcessLock
+            handEdited = HandEditedOptions()
+        }
+
+        public init(crossProcessLock: Bool = false, handEdited: HandEditedOptions) {
+            self.crossProcessLock = crossProcessLock
+            self.handEdited = handEdited
         }
     }
 
-    private struct Current {
+    struct Current {
         var value: Value
         var issues: [Issue]
         var source: Source
@@ -131,36 +180,56 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// Fields the load repaired whose file values every write puts back
         /// until the app changes them.
         var repaired: [RepairedField] = []
+        /// Why the hand-edited file as it stands cannot be used, while the
+        /// value is the last good one (or the defaults).
+        var problem: SettingsFileProblem?
+        /// What the store last saw of a hand-edited file, read or written: a
+        /// reload that finds the same has nothing to do (it is how the store's
+        /// own writes, which the watcher reports too, cost nothing).
+        var read: FileRead?
         /// What changed in commits whose observers have not been told yet.
         var unnotified: Set<Observed> = []
     }
 
+    /// What reading a hand-edited file found, as far as comparing it with the
+    /// last reading goes.
+    enum FileRead: Equatable {
+        case missing
+        case bytes([UInt8])
+        /// Never equal to the last reading: a read that failed is tried again.
+        case unreadable
+    }
+
     /// The observable properties, for notifying only what changed.
-    private enum Observed: Hashable {
-        case value, issues, source
+    enum Observed: Hashable {
+        case value, issues, source, problem
     }
 
     public let path: String
     public let schema: Schema<Value>
     public let format: Format
     public let unknownKeys: UnknownKeysOnSave
-    private let file: AtomicFile
+    let file: AtomicFile
     /// The cross-process lock, held for the store's lifetime.
     private let lock: FileLock?
     private let decodeOptions: DecodeOptions
-    private let current: Mutex<Current>
+    let editing: HandEditedOptions
+    let current: Mutex<Current>
     // Serialises updates end to end — validate, write, commit — without
     // holding `current`'s lock across the write, so reads never wait on I/O.
     // Observers are told after it is released (`notifyObservers`), so one
     // that reacts by updating or reloading does not re-enter it.
-    private let writing = Mutex(())
+    let writing = Mutex(())
     private let registrar = ObservationRegistrar()
     /// A test seam: run between a reload's read of the file and its
     /// publication, to put another writer exactly there.
     let betweenReloadAndPublish = Mutex<(@Sendable () -> Void)?>(nil)
 
     /// Opens the settings at `path`. Never fails because of what is in the
-    /// file; only when the file system itself fails.
+    /// file (a hand-edited file that cannot be read is a ``fileProblem``, not a
+    /// throw); only when the file system itself fails, or the options
+    /// contradict the schema (`.invalidArgument`: a ``HandEditedOptions/fileHeader``
+    /// naming a setting, or over a schema that rejects unknown keys).
     ///
     /// - Parameters:
     ///   - path: The settings file.
@@ -171,7 +240,8 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///     declare. Kept by default.
     ///   - fileSystem: Where the file lives; a simulated one in tests.
     ///   - options: With ``Options/crossProcessLock``, throws `.busy` if
-    ///     another process has the store open.
+    ///     another process has the store open. ``Options/handEdited`` says how
+    ///     a hand-edited file is written.
     public static func open(
         at path: String,
         schema: Schema<Value>,
@@ -188,7 +258,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             }
             lock = candidate
         }
-        return try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem, lock: lock)
+        return try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem, lock: lock, handEdited: options.handEdited)
     }
 
     /// ``open(at:schema:format:unknownKeys:fileSystem:options:)``, waiting up
@@ -213,7 +283,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             lock = candidate
         }
         do throws(StoreError) {
-            return try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem, lock: lock)
+            return try SettingsStore(path: path, schema: schema, format: format, unknownKeys: unknownKeys, fileSystem: fileSystem, lock: lock, handEdited: options.handEdited)
         } catch {
             throw .failed(error)
         }
@@ -221,21 +291,37 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
 
     private init(
         path: String, schema: Schema<Value>, format: Format, unknownKeys: UnknownKeysOnSave, fileSystem: any FileSystem,
-        lock: FileLock?
+        lock: FileLock?, handEdited: HandEditedOptions
     ) throws(StoreError) {
         self.lock = lock
         guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
             preconditionFailure("SettingsStore \(path): the schema must decode an empty object, so every setting needs a default")
         }
+        if format == .handEdited { try Self.check(handEdited.fileHeader, against: schema, path: path) }
         self.path = path
         self.schema = schema
         self.format = format
         self.unknownKeys = unknownKeys
+        self.editing = handEdited
         self.decodeOptions = format == .handEdited ? .lenient : DecodeOptions(mode: .lenient)
+        // A hand-edited file has one generation and no envelope: the person's
+        // own text, replaced by a single rename. A previous generation would
+        // move their file aside first, and for the instant between the two
+        // renames a reader (the command-line tool) would find no file.
         self.file = AtomicFile(
             fileSystem: fileSystem,
-            options: .init(envelope: format == .appOwned, keepPrevious: true, newFileMode: 0o600)
+            options: .init(envelope: format == .appOwned, keepPrevious: format == .appOwned, newFileMode: 0o600)
         )
+
+        if format == .handEdited {
+            // Whatever the file holds, the store opens: a file that cannot be
+            // used is reported, never moved or rewritten.
+            let loaded = Self.loadHandEdited(
+                path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults, header: handEdited.fileHeader)
+            current = Mutex(Self.state(from: loaded, over: nil, unknownKeys: unknownKeys))
+            Self.reportHandEdited(loaded, kept: false, path: path)
+            return
+        }
 
         let loaded = try Self.load(path: path, schema: schema, format: format, file: file, options: decodeOptions, defaults: defaults)
         current = Mutex(Current(
@@ -248,8 +334,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         // does not linger, and survives as `.previous`. A repair alone is not
         // written back: the value it replaced may be a newer build's, and the
         // file keeps it until the app changes that field.
-        if format == .appOwned, loaded.source == .file || loaded.source == .previousGeneration,
-           Self.isMigrated(loaded) {
+        if loaded.source == .file || loaded.source == .previousGeneration, Self.isMigrated(loaded) {
             do throws(StoreError) {
                 if let legacy = loaded.legacyBytes {
                     // Kept beside it first, durably: the plain file is the way
@@ -270,6 +355,30 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         }
     }
 
+    /// Refuses a file header the store could not honour: a key that is a
+    /// setting (the header would overwrite what the schema writes, and the
+    /// read would ignore a setting), or a schema that rejects unknown keys
+    /// (the file's header would fail every read).
+    private static func check(_ header: SettingsFileHeader, against schema: Schema<Value>, path: String) throws(StoreError) {
+        guard !header.members.isEmpty, case .object(let node) = schema.node else { return }
+        var claimed: Set<String> = []
+        for field in node.fields {
+            claimed.insert(field.key)
+            claimed.formUnion(field.aliases)
+        }
+        if let versioning = node.versioning { claimed.insert(versioning.key) }
+        for key in header.keys where claimed.contains(key) {
+            throw StoreError(
+                kind: .invalidArgument, operation: "open", path: path,
+                detail: "the file header's `\(key)` is a setting of the schema, which is written from the value, not from a header")
+        }
+        guard node.unknownKeys != .reject else {
+            throw StoreError(
+                kind: .invalidArgument, operation: "open", path: path,
+                detail: "a file header is ignored on read, which a schema that rejects unknown keys cannot do")
+        }
+    }
+
     // MARK: Reading
 
     /// The settings. Observable.
@@ -280,6 +389,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
 
     /// What the last load repaired, migrated or warned about — for telling
     /// the user what was ignored. Empty after an update. Observable.
+    ///
+    /// For a hand-edited file that could not be read, the problem's issues,
+    /// each with the line and column of what is wrong (see ``fileProblem``).
     public var issues: [Issue] {
         registrar.access(self, keyPath: \.issues)
         return current.withLock { $0.issues }
@@ -291,9 +403,25 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         return current.withLock { $0.source }
     }
 
+    /// Why the hand-edited file, as it stands, cannot be used; `nil` when it
+    /// can (or is missing). While it is set, ``value`` is the last good value
+    /// (the defaults, if there has been none) and ``update(_:)`` refuses; the
+    /// file itself is as the person left it. It clears when a reload or an
+    /// update reads the file and finds it fixed. Observable.
+    public var fileProblem: SettingsFileProblem? {
+        registrar.access(self, keyPath: \.fileProblem)
+        return current.withLock { $0.problem }
+    }
+
     // MARK: Updating
 
     /// Changes the settings: validated, written, then published.
+    ///
+    /// A hand-edited store first reads the file again, under a lock on
+    /// `<path>.lock` (so an edit made a moment ago, by a person or another
+    /// process, is the value the change is applied to, not lost). It does not
+    /// wait for the lock: if another process holds it now, this throws
+    /// ``UpdateError/busy``. ``coordinatedUpdate(lockTimeout:_:)`` waits.
     ///
     /// - Returns: The new value.
     /// - Throws: ``UpdateError``. On any error but
@@ -303,42 +431,166 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     @discardableResult
     public func update(_ change: (inout Value) throws -> Void) throws -> Value {
         defer { notifyObservers() }
-        return try writing.withLock { _ throws -> Value in
-            let (old, source, document, repaired) = current.withLock { ($0.value, $0.source, $0.document, $0.repaired) }
-            if case .newerFormat = source { throw UpdateError.newerFormat }
-            var new = old
-            try change(&new)
-            if new == old { return old }
-            let problems = schema.validate(new)
-            guard problems.isEmpty else {
-                Ambient.record(Event("settings.rejected", level: .notice, label: path, fields: [
-                    .init("issues", .int(problems.count)),
+        guard format == .handEdited else {
+            return try writing.withLock { _ throws -> Value in try updateAppOwned(change) }
+        }
+        let held = try lockWithoutWaiting()
+        defer { release(held) }
+        return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
+    }
+
+    /// ``update(_:)``, waiting for another process that is writing a
+    /// hand-edited file to let go of its lock.
+    ///
+    /// The wait polls the ambient clock (a test clock drives it) and never
+    /// blocks a thread; it ends when the lock is free, after `lockTimeout`
+    /// (``HandEditedOptions/lockTimeout``, two seconds, unless given here) with
+    /// ``UpdateError/busy``, or when the task is cancelled, with
+    /// `CancellationError`. Nothing is read or written until the lock is held.
+    /// For an app-owned store there is no other writer to wait for, and this is
+    /// ``update(_:)``.
+    ///
+    /// It is a separate method because ``update(_:)`` is synchronous and is
+    /// called from places that cannot wait (a UI handler), and an `async`
+    /// overload of the same name would be the one an `async` caller got
+    /// without asking, and would break every such caller that does not
+    /// write `await`.
+    @discardableResult
+    public func coordinatedUpdate(
+        lockTimeout: Duration? = nil, _ change: (inout Value) throws -> Void
+    ) async throws -> Value {
+        guard format == .handEdited else { return try update(change) }
+        defer { notifyObservers() }
+        let held = try await lockWaiting(up: lockTimeout ?? editing.lockTimeout)
+        defer { release(held) }
+        return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
+    }
+
+    private func updateAppOwned(_ change: (inout Value) throws -> Void) throws -> Value {
+        let (old, source, document, repaired) = current.withLock { ($0.value, $0.source, $0.document, $0.repaired) }
+        if case .newerFormat = source { throw UpdateError.newerFormat }
+        var new = old
+        try change(&new)
+        if new == old { return old }
+        return try commit(new, carrying: document, repaired: repaired)
+    }
+
+    /// The update of a hand-edited file, with the cross-process lock held:
+    /// read the file as it stands, make the change to what it holds, write.
+    private func updateHandEdited(_ change: (inout Value) throws -> Void) throws -> Value {
+        let state = refresh()
+        if let problem = state.problem {
+            Ambient.record(Event("settings.update_refused", level: .warning, label: path, fields: [
+                .init("reason", .string(problem.reason), privacy: .public),
+            ]))
+            throw UpdateError.fileUnusable(problem)
+        }
+        if case .newerFormat = state.source { throw UpdateError.newerFormat }
+        var new = state.value
+        try change(&new)
+        if new == state.value { return state.value }
+        return try commit(new, carrying: state.document, repaired: state.repaired)
+    }
+
+    /// Validates `new`, writes it, and publishes it: the end of every update.
+    private func commit(_ new: Value, carrying document: JSONValue?, repaired: [RepairedField]) throws -> Value {
+        let problems = schema.validate(new)
+        guard problems.isEmpty else {
+            Ambient.record(Event("settings.rejected", level: .notice, label: path, fields: [
+                .init("issues", .int(problems.count)),
+            ]))
+            throw UpdateError.invalid(problems)
+        }
+        let written: Written
+        do throws(StoreError) {
+            written = try write(new, carrying: document, repaired: repaired)
+        } catch where error.kind == .durabilityUnknown {
+            // The file holds the new value, so memory must too: the next
+            // launch reads it unless the power fails first.
+            let json = encoded(new, carrying: document, repaired: repaired)
+            publish(committed(new, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))))
+            Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
+            ]))
+            throw UpdateError.durabilityUnknown(error)
+        } catch {
+            Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
+            ]))
+            throw UpdateError.storage(error)
+        }
+        publish(committed(new, written))
+        Ambient.record(Event("settings.saved", level: .debug, label: path))
+        return new
+    }
+
+    /// The state after `new` was written as `written`.
+    private func committed(_ new: Value, _ written: Written) -> Current {
+        Current(
+            value: new, issues: [], source: .file, document: unknownKeys == .keep ? written.json : nil, repaired: written.repaired,
+            read: format == .handEdited ? .bytes(written.bytes) : nil
+        )
+    }
+
+    // MARK: Locking a hand-edited file
+
+    /// Takes the lock on `<path>.lock` if it is free; `nil` if the store holds
+    /// it for its whole life (``Options/crossProcessLock``), which excludes
+    /// the other writers already.
+    private func lockWithoutWaiting() throws -> FileLock? {
+        guard lock == nil else { return nil }
+        let candidate = FileLock(path: path + ".lock", fileSystem: file.fileSystem)
+        let acquired: Bool
+        do throws(StoreError) {
+            acquired = try candidate.tryAcquire()
+        } catch {
+            throw UpdateError.storage(error)
+        }
+        guard acquired else {
+            Ambient.record(Event("settings.busy", level: .warning, label: path, fields: [.init("waitMs", .int(0))]))
+            throw UpdateError.busy
+        }
+        return candidate
+    }
+
+    private func lockWaiting(up timeout: Duration) async throws -> FileLock? {
+        guard lock == nil else { return nil }
+        let candidate = FileLock(path: path + ".lock", fileSystem: file.fileSystem)
+        do throws(PolicyError<StoreError>) {
+            try await candidate.acquire(timeout: timeout)
+        } catch {
+            switch error {
+            case .failed(let failure):
+                throw UpdateError.storage(failure)
+            case .rejected(let rejection) where rejection.isCancellation:
+                // Cancellation is cancellation, not a reason the lock was busy.
+                throw CancellationError()
+            case .rejected:
+                let components = timeout.components
+                let milliseconds = components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000
+                Ambient.record(Event("settings.busy", level: .warning, label: path, fields: [
+                    .init("waitMs", .int(Int(milliseconds))),
                 ]))
-                throw UpdateError.invalid(problems)
+                throw UpdateError.busy
             }
-            let written: (json: JSONValue, repaired: [RepairedField])
-            do throws(StoreError) {
-                written = try write(new, carrying: document, repaired: repaired)
-            } catch where error.kind == .durabilityUnknown {
-                // The file holds the new value, so memory must too: the next
-                // launch reads it unless the power fails first.
-                let json = encoded(new, carrying: document, repaired: repaired)
-                publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? json.json : nil, repaired: json.repaired))
-                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
-                    .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
-                ]))
-                throw UpdateError.durabilityUnknown(error)
-            } catch {
-                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
-                    .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
-                ]))
-                throw UpdateError.storage(error)
-            }
-            publish(Current(value: new, issues: [], source: .file, document: unknownKeys == .keep ? written.json : nil, repaired: written.repaired))
-            Ambient.record(Event("settings.saved", level: .debug, label: path))
-            return new
+        }
+        return candidate
+    }
+
+    /// Lets go of the lock an update took. A failure to unlock does not change
+    /// the update's outcome, and the descriptor is closed either way, which
+    /// the system takes as letting go.
+    private func release(_ held: FileLock?) {
+        do throws(StoreError) {
+            try held?.release()
+        } catch {
+            Ambient.record(Event("settings.lock_release_failed", level: .warning, label: path, fields: [
+                .init("error", .error(error)),
+            ]))
         }
     }
+
+    // MARK: Reloading
 
     /// Reads the file again, for one edited outside the app. Changes are
     /// published like an update's.
@@ -347,8 +599,19 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// write and publication. Were the lock released between them, an update
     /// could commit in the gap and the older value read before it would then
     /// be published over it: an acknowledged update, lost from memory.
+    ///
+    /// For a hand-edited file this never throws and never touches the file. A
+    /// file that has not changed since the store last read or wrote it is
+    /// left alone (nothing is published, nothing reported), so calling this
+    /// on every change a watcher reports, the store's own writes included, is
+    /// free. A file that cannot be used leaves the last good value in place
+    /// and sets ``fileProblem``; one that is gone gives the defaults.
     public func reload() throws(StoreError) {
         defer { notifyObservers() }
+        guard format == .appOwned else {
+            writing.withLock { _ in _ = refresh() }
+            return
+        }
         try writing.withLock { _ throws(StoreError) in
             guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
                 preconditionFailure("unreachable: checked when the store opened")
@@ -363,9 +626,32 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         }
     }
 
+    /// Reads the hand-edited file and, unless it is what the store last saw,
+    /// publishes what it holds. Returns the state after. Called under
+    /// `writing`, for the reason ``reload()`` gives.
+    private func refresh() -> Current {
+        guard let defaults = schema.decode(JSONValue.object([:]), options: .lenient).value else {
+            preconditionFailure("unreachable: checked when the store opened")
+        }
+        let loaded = Self.loadHandEdited(
+            path: path, schema: schema, file: file, options: decodeOptions, defaults: defaults, header: editing.fileHeader)
+        let held = current.withLock { $0 }
+        guard Self.differs(loaded.read, from: held.read) else { return held }
+        let next = Self.state(from: loaded, over: held, unknownKeys: unknownKeys)
+        Self.reportHandEdited(loaded, kept: next.problem != nil && next.source == .file, path: path)
+        if loaded.problem == nil {
+            Ambient.record(Event("settings.reloaded", level: .info, label: path, fields: [
+                .init("source", .string(next.source.name), privacy: .public), .init("issues", .int(next.issues.count)),
+            ]))
+        }
+        betweenReloadAndPublish.withLock { $0 }?()
+        publish(next)
+        return next
+    }
+
     // MARK: Internals
 
-    private struct Loaded {
+    struct Loaded {
         let value: Value
         let issues: [Issue]
         let source: Source
@@ -377,17 +663,29 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// The file's bytes, when it was plain JSON from before the store
         /// (an app-owned file with no envelope that the schema reads).
         var legacyBytes: [UInt8]?
+        /// Why a hand-edited file could not be used. Then `value` is the
+        /// defaults, and a store that holds a good value keeps it instead.
+        var problem: SettingsFileProblem?
+        /// What reading a hand-edited file found.
+        var read: FileRead?
+    }
+
+    /// What a write put in the file, and the fields it still carries.
+    struct Written {
+        let json: JSONValue
+        let repaired: [RepairedField]
+        let bytes: [UInt8]
     }
 
     /// Whether `loaded` came from an older form than the one this store
     /// writes: migrated by the schema, or a plain file from before the store.
-    private static func isMigrated(_ loaded: Loaded) -> Bool {
+    static func isMigrated(_ loaded: Loaded) -> Bool {
         loaded.legacyBytes != nil || loaded.issues.contains { $0.code == .migrated }
     }
 
     /// The fields the load repaired, whose file values writes carry. None for
     /// a migrated document, for the reason `carried` gives.
-    private static func repairs(_ loaded: Loaded) -> [RepairedField] {
+    static func repairs(_ loaded: Loaded) -> [RepairedField] {
         guard !isMigrated(loaded) else { return [] }
         return loaded.repaired
     }
@@ -395,7 +693,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// The document whose undeclared keys a write should carry. A migrated
     /// document carries none: what the schema does not declare there is
     /// what the migration left behind, not something a newer build added.
-    private static func carried(_ loaded: Loaded, _ unknownKeys: UnknownKeysOnSave) -> JSONValue? {
+    static func carried(_ loaded: Loaded, _ unknownKeys: UnknownKeysOnSave) -> JSONValue? {
         guard unknownKeys == .keep, !isMigrated(loaded) else { return nil }
         return loaded.document
     }
@@ -407,15 +705,15 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     @discardableResult
     private func write(
         _ value: Value, carrying document: JSONValue?, repaired: [RepairedField], options: AtomicFile.Options? = nil
-    ) throws(StoreError) -> (json: JSONValue, repaired: [RepairedField]) {
+    ) throws(StoreError) -> Written {
         let written = encoded(value, carrying: document, repaired: repaired)
-        let bytes = written.json.encoded(style: format == .handEdited ? .pretty() : .canonical)
+        let bytes = bytes(for: written.json)
         try file.write(bytes, to: path, options: options)
-        return written
+        return Written(json: written.json, repaired: written.repaired, bytes: bytes)
     }
 
     /// The document a write of `value` puts in the file.
-    private func encoded(
+    func encoded(
         _ value: Value, carrying document: JSONValue?, repaired: [RepairedField]
     ) -> (json: JSONValue, repaired: [RepairedField]) {
         var json = schema.encode(value, style: .sparse(includeSecrets: true))
@@ -427,12 +725,13 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Commits `next` as the current value. Called under `writing`, so
     /// commits happen in the order updates and reloads were serialised; what
     /// changed is remembered for ``notifyObservers()``.
-    private func publish(_ next: Current) {
+    func publish(_ next: Current) {
         current.withLock { current in
             var changed = current.unnotified
             if current.value != next.value { changed.insert(.value) }
             if current.issues != next.issues { changed.insert(.issues) }
             if current.source != next.source { changed.insert(.source) }
+            if current.problem != next.problem { changed.insert(.problem) }
             current = next
             current.unnotified = changed
         }
@@ -442,7 +741,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// lock: an observer may read, update or reload the store. Each change is
     /// told once, by whichever call gets here first after committing it; by
     /// then the value it reads is the latest committed, never an older one.
-    private func notifyObservers() {
+    func notifyObservers() {
         let changed = current.withLock { current -> Set<Observed> in
             defer { current.unnotified = [] }
             return current.unnotified
@@ -450,6 +749,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         if changed.contains(.value) { registrar.withMutation(of: self, keyPath: \.value) {} }
         if changed.contains(.issues) { registrar.withMutation(of: self, keyPath: \.issues) {} }
         if changed.contains(.source) { registrar.withMutation(of: self, keyPath: \.source) {} }
+        if changed.contains(.problem) { registrar.withMutation(of: self, keyPath: \.fileProblem) {} }
     }
 
     private static func load(
@@ -514,7 +814,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         return Loaded(value: value, issues: decoded.issues, source: .file, document: document, legacyBytes: raw)
     }
 
-    private static func report(_ loaded: Loaded, path: String) {
+    static func report(_ loaded: Loaded, path: String) {
         let repaired = loaded.issues.filter { $0.severity == .repaired }.count
         let migrated = loaded.issues.contains { $0.code == .migrated }
         Ambient.record(Event("settings.loaded", level: .debug, label: path, fields: [
