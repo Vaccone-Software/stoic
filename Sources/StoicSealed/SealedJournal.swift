@@ -45,16 +45,18 @@ internal import Synchronization
 /// ``compact(rotatingKey:unreadable:_:)`` with `rotatingKey: true` is how a
 /// deleted record stops existing. It
 ///
-/// 1. rotates the keyring (the new key is persisted before it is used),
-/// 2. folds the state into a snapshot sealed **under the new key** and makes it
-///    durable (the journal's atomic snapshot, then truncating the log), and only
-///    then
-/// 3. retires every key that existed before step 1.
+/// 1. folds the state (the caller's `fold` may decline, and then nothing
+///    below happens: no key is made),
+/// 2. rotates the keyring (the new key is persisted before it is used),
+/// 3. seals the snapshot **under the new key** and makes it durable (the
+///    journal's atomic snapshot, then truncating the log), and only then
+/// 4. retires every key that existed before step 2.
 ///
 /// Every record written before the compaction, and the old snapshot, are then
 /// ciphertext under keys that exist nowhere. The order is the safety: a crash
-/// before step 3 leaves a ring that still opens everything; a crash before the
-/// snapshot is durable leaves the old log and the old keys. The old bytes stay
+/// before step 4 leaves a ring that still opens everything; a crash before the
+/// snapshot is durable leaves the old log and the old keys (and, after step 2,
+/// one more key that sealed nothing). The old bytes stay
 /// on the disk (APFS and SSDs do not erase them) and in any backup, and are
 /// noise without the key. **The keyring must be this journal's alone** (or
 /// shared only with things that are folded in the same way): retiring a key
@@ -371,46 +373,55 @@ public final class SealedJournal: Sendable {
     /// Replaces the log with a snapshot sealed under the current key, folding
     /// the state with `fold`, which is given the opened replay.
     ///
-    /// With `rotatingKey`, the keys that existed when this began are retired
-    /// once the snapshot is durable, so that **everything written before is
-    /// unreadable for ever** (see the type's note on rotation, and that the
-    /// keyring must be this journal's own).
+    /// `fold` may **decline** by returning `nil`, as `Journal/compact(withSequence:)`'s
+    /// may: a layer that finds it cannot build a snapshot (a record it cannot
+    /// decode, a state it will not summarise) says so, and nothing happens. The
+    /// log and the snapshot are as they were, **no key is rotated** and none is
+    /// retired, and this returns `false`.
+    ///
+    /// With `rotatingKey`, the ring is rotated once `fold` has returned a
+    /// snapshot to seal, and the keys that existed before are retired once that
+    /// snapshot is durable, so that **everything written before is unreadable
+    /// for ever** (see the type's note on rotation, and that the keyring must be
+    /// this journal's own). A compaction that is refused, declined, or fails
+    /// before it has a snapshot therefore leaves the keyring as it found it. The
+    /// new key is stored (and read back) before it seals anything.
     ///
     /// `fold` runs under the journal's lock, as `Journal/compact(_:)`'s does:
     /// no append can slip between the state it sees and the sequence the
-    /// snapshot covers. It must not call back into this journal.
+    /// snapshot covers. It must not call back into this journal. With
+    /// `rotatingKey`, the custody is called under that lock too (the rotation,
+    /// between `fold` and the seal), so appends wait for a custody that blocks.
     ///
     /// - Parameter unreadable: What to do if any record, or the snapshot,
     ///   cannot be opened: refuse, by default (`fold` is not called and
     ///   nothing is written), because the snapshot cannot contain what could
     ///   not be read.
+    /// - Returns: `true` if the log was replaced by the snapshot; `false` if
+    ///   `fold` declined.
     /// - Throws: ``SealedStoreError``. ``SealedStoreError/compactedButNotShredded(_:)``
     ///   means the compaction itself *succeeded* and only the retirement of the
     ///   old keys failed. Any other error, from before the snapshot is
-    ///   durable, leaves the journal as it was (a rotation, if one happened,
-    ///   stays: a new key that sealed nothing is harmless).
+    ///   durable, leaves the journal as it was. A rotation that had already
+    ///   been stored stays (a new key that sealed nothing is harmless): only a
+    ///   failure to seal, or to write the snapshot, after the rotation can
+    ///   leave one.
+    @discardableResult
     public func compact(
         rotatingKey: Bool = false,
         unreadable: Unreadable = .refuse,
-        _ fold: (Replay) -> [UInt8]
-    ) throws(SealedStoreError) {
-        try maintenance.withLock { (_) throws(SealedStoreError) in
-            let before = keyring.keyIDs
-            if rotatingKey {
-                do throws(KeyringError) {
-                    try keyring.rotate()
-                } catch {
-                    throw .keyring(error)
-                }
-            }
-
+        _ fold: (Replay) -> [UInt8]?
+    ) throws(SealedStoreError) -> Bool {
+        try maintenance.withLock { (_) throws(SealedStoreError) -> Bool in
             enum Outcome {
                 case undecided
                 case refused(Int)
+                case declined
                 case failed(SealedStoreError)
                 case folded(records: Int, discarded: Int)
             }
             var outcome = Outcome.undecided
+            var before: [KeyID] = []
             do throws(StoreError) {
                 try journal.compact(withSequence: { raw, through in
                     let replay = Self.opened(raw, report: journal.openReport, context: context, keyring: keyring)
@@ -418,7 +429,21 @@ public final class SealedJournal: Sendable {
                         outcome = .refused(replay.failures.count)
                         return nil
                     }
-                    let plaintext = fold(replay)
+                    guard let plaintext = fold(replay) else {
+                        outcome = .declined
+                        return nil
+                    }
+                    // There is a snapshot to seal: only now is a new key worth
+                    // making. It is stored before it is used.
+                    before = keyring.keyIDs
+                    if rotatingKey {
+                        do throws(KeyringError) {
+                            try keyring.rotate()
+                        } catch {
+                            outcome = .failed(.keyring(error))
+                            return nil
+                        }
+                    }
                     let key: SealingKey
                     do throws(KeyringError) {
                         key = try keyring.current
@@ -442,7 +467,7 @@ public final class SealedJournal: Sendable {
             switch outcome {
             case .refused(let count): throw .unreadable(count: count)
             case .failed(let error): throw error
-            case .undecided: return
+            case .declined, .undecided: return false
             case .folded(let records, let discarded): folded = (records, discarded)
             }
 
@@ -464,14 +489,18 @@ public final class SealedJournal: Sendable {
                 .init("rotated", .bool(rotatingKey)), .init("retiredKeys", .int(retired)),
                 .init("discarded", .int(folded.discarded)),
             ]))
+            return true
         }
     }
 
     /// ``compact(rotatingKey:unreadable:_:)`` with a snapshot the caller has
     /// already built, which must fold in every record appended so far and the
     /// previous snapshot (`replay()` gives them).
+    ///
+    /// There is nothing to decline here, so it returns nothing: it replaces the
+    /// log or throws.
     public func compact(snapshot: [UInt8], rotatingKey: Bool = false, unreadable: Unreadable = .refuse) throws(SealedStoreError) {
-        try compact(rotatingKey: rotatingKey, unreadable: unreadable) { _ in snapshot }
+        _ = try compact(rotatingKey: rotatingKey, unreadable: unreadable) { _ in snapshot }
     }
 
     /// Releases the file, and the cross-process lock if the journal holds one.

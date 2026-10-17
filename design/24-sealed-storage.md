@@ -153,6 +153,10 @@ let log = try SealedJournal.open(at: path, context: SealContext("app.log", "main
 try log.append(batch: [a, b])
 let replay = try log.replay()      // snapshot, records (plaintext), failures, report
 try log.compact(rotatingKey: true, snapshot: encode(state))  // and the old records are gone
+let done = try log.compact(rotatingKey: true) { replay in      // a fold that may decline: nil
+    guard let state = decode(replay) else { return nil }       // nothing changes, no key is made, `done` is false
+    return encode(state)
+}
 SealedJournal.readOnlyReplay(at: path, context: ctx, keyring: ring)   // a second process
 ```
 
@@ -496,16 +500,20 @@ others. A torn tail is the journal's business and is not a failure. When anythin
 
 `compact(rotatingKey: true, …)`:
 
-1. rotates the keyring (the new key is stored before it is used);
-2. folds the state into a snapshot sealed **under the new key** and makes it durable (the
+1. folds the state (`fold` may return `nil` to **decline**, as `Journal.compact(withSequence:)`'s
+   may: the compaction then ends here, `compact` returns `false`, and neither a file nor a key has
+   changed);
+2. rotates the keyring (the new key is stored, and read back, before it is used);
+3. seals the folded state as a snapshot **under the new key** and makes it durable (the
    journal's atomic snapshot, then truncating the log);
-3. only then retires every key that existed before step 1.
+4. only then retires every key that existed before step 2.
 
 Every record written before the compaction, and the old snapshot, are then ciphertext under
 keys that exist nowhere. **The order is the safety.** A crash before the snapshot is durable
-leaves the old log, the old snapshot and a ring that holds the old key; a crash after it and
-before step 3 leaves a ring that still opens everything (and the next compaction with
-rotation retires what remains); the failure of step 3 is `.compactedButNotShredded`, which
+leaves the old log, the old snapshot and a ring that holds the old key (and, after step 2, one
+more that sealed nothing); a crash after it and before step 4 leaves a ring that still opens
+everything (and the next compaction with rotation retires what remains); the failure of step 4
+is `.compactedButNotShredded`, which
 says the compaction _succeeded_ and the shredding did not. Tested at every crash point with the
 custody's writes interleaved between the file operations, against a mutation that retires first.
 
@@ -517,8 +525,14 @@ custody's writes interleaved between the file operations, against a mutation tha
   key to have never been in a backup (`ThisDeviceOnly`) or the backup to be gone.
 - **Unreadable values block a compaction by default** (`unreadable: .refuse`): a snapshot built
   from what could be read would destroy what could not. `.discard` compacts anyway, once the
-  loss is accepted, and the event counts what was dropped. A refused compaction after a rotation
-  keeps the old key.
+  loss is accepted, and the event counts what was dropped. A refused compaction rotates nothing:
+  the ring is exactly as it was.
+- **A compaction rotates only once it has a snapshot to seal.** A refusal, a decline, and a
+  failure of the fold leave the ring as they found it; only a failure of the seal or of the
+  snapshot's write *after* the rotation leaves one more key, which sealed nothing and which the
+  next compaction with rotation retires. The rotation happens under the journal's lock (the fold's
+  state and the key it is sealed under must belong to one moment), so an append waits for a custody
+  that blocks.
 
 ### A second process
 
@@ -594,7 +608,8 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | a sealed record is moved, repeated or swapped                             | Each fails at its new position (`.tampered`): its sequence is authenticated                                                                                                                                                          |
 | the key of a sealed journal is lost                                       | Every record and the snapshot are `.unknownKey` failures with their sequences; nothing is deleted or read as empty                                                                                                                   |
 | a compaction rotates the key                                              | Records written before it cannot be opened with what remains of the keyring: not in the old log, not in the old snapshot                                                                                                             |
-| a compaction finds records it cannot open                                 | `.unreadable(count:)` and nothing is written, nothing retired, unless the caller passes `.discard`                                                                                                                                   |
+| a compaction finds records it cannot open                                 | `.unreadable(count:)`; nothing is written, **no key is rotated**, nothing retired, unless the caller passes `.discard`                                                                                                               |
+| a compaction's fold declines                                              | `compact` returns `false`; the log, the snapshot and the ring are exactly as they were: no key is made, none retired, no event                                                                                                       |
 | the old keys cannot be retired after a compaction                         | `.compactedButNotShredded`: the snapshot is durable, the old keys are still held; `sealed.shred_incomplete`; the next compaction with rotation finishes it                                                                           |
 | the process dies at any step of a compaction that rotates the key         | Everything is readable (no failure, no record lost or duplicated) at every crash point, with the custody's writes between the file operations; the old key is never retired before the snapshot is durable                           |
 | records are appended while a compaction rotates the key                   | None is sealed under a key that is then retired: every record opens, each exactly once, in order                                                                                                                                     |
@@ -637,6 +652,12 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
   bytes with what remains; refusal and discard; a failed retirement; a crash at every step of a
   rotating compaction with the custody's writes between the file operations; appends racing
   rotating compactions; a second process reading, before and after a rotation.
+- `SealedJournalDeclineTests`: a fold that declines (with and without rotation) changes no file, no
+  key and no custody item; the rotation comes after the fold; a refusal rotates nothing; a rotation
+  the custody refuses writes nothing; a snapshot that cannot be written leaves the log and only an
+  unused key, which the next rotating compaction retires.
+- `ReplayValueTests`: a `SealedJournal.Replay` built from its public initializers, in a file that
+  imports without `@testable`.
 - `ThroughputTests`: seal and open of 1 KB and 1 MB values, printed in MB/s; nothing gates on time.
 
 And in `StoicStoreTests`, for the journal this builds on: `JournalReadOnlyTests` (design/15).
