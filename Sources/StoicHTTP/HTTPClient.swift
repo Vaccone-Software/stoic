@@ -130,7 +130,7 @@ public final class HTTPClient: Sendable {
         let decoded = schema.decodeReporting(delivered.response.body, options: options ?? policy.responseDecodeOptions)
         guard let value = decoded.value else {
             let failure = ValidationFailure(issues: decoded.issues)
-            Ambient.record(Event("http.decoding_failed", level: .notice, label: label, fields: [
+            Ambient.record(Event("http.decoding_failed", level: .notice, label: delivered.label, fields: delivered.fields + [
                 .init("errors", .int(failure.errors.count)),
                 .init("bytes", .int(delivered.response.body.count)),
             ]))

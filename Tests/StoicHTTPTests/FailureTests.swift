@@ -205,7 +205,11 @@ struct HTTPFailureTests {
             #expect(failure.errors.count == 2, "both fields, not the first: \(failure)")
             #expect(rig.transport.requestCount == 1)
             #expect(rig.events.count("http.decoding_failed") == 1)
-            #expect(rig.events.events(named: "http.decoding_failed").first?.number("errors") == 2)
+            let reported = try #require(rig.events.events(named: "http.decoding_failed").first)
+            #expect(reported.number("errors") == 2)
+            #expect(reported.level == .notice)
+            #expect(reported.label == "http api.example.com")
+            #expect(reported.text("method") == "GET" && reported.text("host") == "api.example.com" && reported.text("path") == "/users/1")
             #expect(rig.events.count("retry.attempt_failed") == 0)
         }
     }
@@ -247,6 +251,24 @@ struct HTTPFailureTests {
             #expect(event.fields.first { $0.key == "paths" }?.privacy == .private, "a path can name a key the server chose")
             #expect(!event.fields.contains { $0.description.contains("s3cret-value") || $0.description.contains("Ada") }, "no value, no body: \(event)")
             #expect(rig.events.count("http.decoding_failed") == 0)
+        }
+    }
+
+    @Test func theDecodingEventsNameTheRequestThatAnsweredAfterARedirect() async throws {
+        try await withRig { (rig) async throws in
+            let cdn = "https://cdn.example.com/profiles"
+            rig.transport.on(.get("/users/1"), respond: [.status(302, headers: ["Location": "\(cdn)/1"])])
+            rig.transport.on(.get("/users/2"), respond: [.status(302, headers: ["Location": "\(cdn)/2"])])
+            rig.transport.on(.get(URL(string: "\(cdn)/1")!), respond: [.json(#"{"id": 0, "name": 5}"#)])
+            rig.transport.on(.get(URL(string: "\(cdn)/2")!), respond: [.json(#"{"id": 2, "name": "Grace", "plan": "pro"}"#)])
+            _ = await #expect(throws: HTTPError.self) { try await rig.api.send(.get("/users/1"), decoding: User.schema) }
+            _ = try await rig.api.send(.get("/users/2"), decoding: User.schema)
+            let failed = try #require(rig.events.events(named: "http.decoding_failed").first)
+            let warned = try #require(rig.events.events(named: "http.decoded_with_warnings").first)
+            for (event, path) in [(failed, "/profiles/1"), (warned, "/profiles/2")] {
+                #expect(event.label == "http cdn.example.com", "\(event.name): the hop that answered")
+                #expect(event.text("method") == "GET" && event.text("host") == "cdn.example.com" && event.text("path") == path, "\(event.name)")
+            }
         }
     }
 

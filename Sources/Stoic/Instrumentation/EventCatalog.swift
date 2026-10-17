@@ -39,7 +39,7 @@ public enum EventCatalog {
         Entry(name: "hedge.won", level: .debug, meaning: "An attempt of a hedged call succeeded first."),
         Entry(name: "http.coalesced", level: .debug, meaning: "An identical GET was already in flight; this caller shares its response instead of making another request."),
         Entry(name: "http.decoded_with_warnings", level: .warning, meaning: "A response body decoded, but the schema decided something on the way: a key it did not declare, a field repaired to its default, an element dropped. Reports the request's method, host and path, the counts of warnings and repairs and their issue codes; the paths are private. Never a value or the body."),
-        Entry(name: "http.decoding_failed", level: .notice, meaning: "A response body did not match its schema; reports the number of errors, never the body."),
+        Entry(name: "http.decoding_failed", level: .notice, meaning: "A response body did not match its schema. Reports the request's method, host and path, the number of errors and the body's size in bytes, never the body."),
         Entry(name: "http.failed", level: .warning, meaning: "A request ended in failure after its attempts; reports the error kind and the attempts made."),
         Entry(name: "http.reauthenticate_failed", level: .warning, meaning: "The reauthenticate hook failed after a 401; the request is not replayed. Reports the failure kind, never the credentials."),
         Entry(name: "http.reauthenticated", level: .info, meaning: "The reauthenticate hook succeeded after a 401 and the request is being replayed once."),

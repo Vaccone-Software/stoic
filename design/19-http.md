@@ -366,12 +366,14 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   method, host and path, its status, the hop number, the method, host and path
   it leads to (never its query), and `origin_changed`; a refused redirect is an
   `http.failed`. `http.failed` (warning), `http.coalesced` (debug, per caller that joined),
-  `http.response_too_large` (warning) and `http.decoding_failed` (notice; the
-  number of errors, never the body). `http.decoded_with_warnings` (warning) is
-  recorded once per response that decoded with warnings or repairs: the
-  request's method, host and path, `warnings` and `repairs` counts, `codes` (the
+  `http.response_too_large` (warning) and `http.decoding_failed` (notice: the
+  number of errors and the body's size in bytes, never the body).
+  `http.decoded_with_warnings` (warning) is
+  recorded once per response that decoded with warnings or repairs: `warnings` and `repairs` counts, `codes` (the
   distinct issue codes, public) and `paths` (private: a path can name a key the
-  server chose). Never a value or any of the body. With coalescing, each caller
+  server chose). Never a value or any of the body. Both carry the request's
+  method, host and path and are labelled for its host, those of the request that
+  answered: after a redirect, the last hop's. With coalescing, each caller
   that decodes records its own. Event labels are `"<client label> <host>"`.
   No event carries a header, a body, or a response excerpt: the pipeline's error
   type prints as `status_503`, not with the body excerpt that
