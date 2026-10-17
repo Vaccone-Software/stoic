@@ -57,11 +57,11 @@ struct SemaphoreTests {
         let gate = AsyncGate()
         let order = OrderLog()
         let holder = Task { try await semaphore.withPermit { await gate.wait() } }
-        while semaphore.availablePermits > 0 { await Task.yield() }
+        await waitUntil { semaphore.availablePermits <= 0 }
         var waiters: [Task<Void, any Error>] = []
         for index in 0..<5 {
             waiters.append(Task { try await semaphore.withPermit { order.append("\(index)") } })
-            while semaphore.waiterCount < index + 1 { await Task.yield() }
+            await waitUntil { semaphore.waiterCount >= index + 1 }
         }
         gate.open()
         try await holder.value
@@ -136,9 +136,9 @@ struct SemaphoreTests {
         let semaphore = AsyncSemaphore(permits: 1, label: "cancel")
         let gate = AsyncGate()
         let holder = Task { try await semaphore.withPermit { await gate.wait() } }
-        while semaphore.availablePermits > 0 { await Task.yield() }
+        await waitUntil { semaphore.availablePermits <= 0 }
         let waiter = Task { try await semaphore.withPermit { _ = Issue.record("a cancelled waiter must not run") } }
-        while semaphore.waiterCount < 1 { await Task.yield() }
+        await waitUntil { semaphore.waiterCount >= 1 }
         waiter.cancel()
         do {
             try await waiter.value
@@ -157,7 +157,7 @@ struct SemaphoreTests {
         let semaphore = AsyncSemaphore(permits: 1, label: "deadline")
         let gate = AsyncGate()
         let holder = Task { try await semaphore.withPermit { await gate.wait() } }
-        while semaphore.availablePermits > 0 { await Task.yield() }
+        await waitUntil { semaphore.availablePermits <= 0 }
         let waiter = Task {
             try await withTestAmbient(clock: clock) {
                 try await withTimeout(.seconds(5)) {

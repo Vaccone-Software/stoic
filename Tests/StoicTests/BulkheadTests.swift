@@ -40,7 +40,7 @@ struct BulkheadTests {
         let bulkhead = Bulkhead(maxConcurrent: 1, label: "shed")
         let gate = AsyncGate()
         let holder = Task { try await bulkhead.execute { await gate.wait() } }
-        while bulkhead.activeCount < 1 { await Task.yield() }
+        await waitUntil { bulkhead.activeCount >= 1 }
         await withTestAmbient(clock: ImmediateClock(), events: events) {
             let refusal = await rejection(from: bulkhead) { () throws(Failure) in unexpected() }
             #expect(refusal?.reason == .bulkheadFull)
@@ -88,11 +88,11 @@ struct BulkheadTests {
         let gate = AsyncGate()
         let order = OrderLog()
         let holder = Task { try await bulkhead.execute { await gate.wait() } }
-        while bulkhead.activeCount < 1 { await Task.yield() }
+        await waitUntil { bulkhead.activeCount >= 1 }
         var waiters: [Task<Void, any Error>] = []
         for index in 0..<5 {
             waiters.append(Task { try await bulkhead.execute { order.append("\(index)") } })
-            while bulkhead.queuedCount < index + 1 { await Task.yield() }
+            await waitUntil { bulkhead.queuedCount >= index + 1 }
         }
         gate.open()
         try await holder.value
@@ -104,9 +104,9 @@ struct BulkheadTests {
         let bulkhead = Bulkhead(maxConcurrent: 1, queueLimit: 1, label: "cancel")
         let gate = AsyncGate()
         let holder = Task { try await bulkhead.execute { await gate.wait() } }
-        while bulkhead.activeCount < 1 { await Task.yield() }
+        await waitUntil { bulkhead.activeCount >= 1 }
         let waiter = Task { try await bulkhead.execute { unexpected() } }
-        while bulkhead.queuedCount < 1 { await Task.yield() }
+        await waitUntil { bulkhead.queuedCount >= 1 }
         waiter.cancel()
         do {
             try await waiter.value
@@ -117,7 +117,7 @@ struct BulkheadTests {
         #expect(bulkhead.queuedCount == 0)
         // The place is free again.
         let next = Task { try await bulkhead.execute { "ran" } }
-        while bulkhead.queuedCount < 1 { await Task.yield() }
+        await waitUntil { bulkhead.queuedCount >= 1 }
         gate.open()
         try await holder.value
         #expect(try await next.value == "ran")
@@ -129,7 +129,7 @@ struct BulkheadTests {
         let bulkhead = Bulkhead(maxConcurrent: 1, queueLimit: 1, label: "deadline")
         let gate = AsyncGate()
         let holder = Task { try await bulkhead.execute { await gate.wait() } }
-        while bulkhead.activeCount < 1 { await Task.yield() }
+        await waitUntil { bulkhead.activeCount >= 1 }
         let waiter = Task {
             try await withTestAmbient(clock: clock) {
                 try await withTimeout(.seconds(5)) {

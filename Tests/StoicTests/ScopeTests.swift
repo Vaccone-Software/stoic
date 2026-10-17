@@ -97,7 +97,7 @@ struct ScopeTests {
                 rejected.mutate { $0 = error.rejection?.reason }
             }
         }
-        while semaphore.waiterCount == 0 { await Task.yield() }
+        await waitUntil { semaphore.waiterCount != 0 }
         waiter.cancel()
         await waiter.value
         release.open()
@@ -117,7 +117,7 @@ struct ScopeTests {
         // stopping it, not the fork failing.
         try await withTaskScope { scope in
             scope.fork(label: "waiter") { try await semaphore.withPermit {} }
-            while semaphore.waiterCount == 0 { await Task.yield() }
+            await waitUntil { semaphore.waiterCount != 0 }
         }
         release.open()
         try await holder.value
