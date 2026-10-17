@@ -66,22 +66,35 @@ struct ServiceGraphTests {
     }
 
     @Test func independentServicesStartConcurrently() async throws {
+        // The starts sleep on a clock of their own: the graph's timers sleep
+        // on the ambient one, so only the starts' sleepers are counted here.
+        let clock = TestClock()
         let gauge = SendableBox((current: 0, peak: 0))
         let a = ServiceKey<Int>("a"), b = ServiceKey<Int>("b"), c = ServiceKey<Int>("c")
         func slow(_ value: Int) -> @Sendable (Services) async throws -> Int {
             { _ in
                 gauge.mutate { $0.current += 1; $0.peak = max($0.peak, $0.current) }
-                try await Task.sleep(for: .milliseconds(20))
+                try await clock.sleep(for: .milliseconds(20))
                 gauge.mutate { $0.current -= 1 }
                 return value
             }
         }
-        let graph = try ServiceGraph(label: "app") {
-            Provide(a, start: slow(1))
-            Provide(b, start: slow(2))
-            Provide(c, start: slow(3))
+        let task = Task {
+            try await withTestAmbient(clock: TestClock()) {
+                let graph = try ServiceGraph(label: "app") {
+                    Provide(a, start: slow(1))
+                    Provide(b, start: slow(2))
+                    Provide(c, start: slow(3))
+                }
+                try await graph.run { _ in }
+            }
         }
-        try await graph.run { _ in }
+        // Every start asleep at once; started one after another, there is
+        // never more than one.
+        await clock.waitForSleepers(count: 3)
+        #expect(gauge.value.current == 3)
+        await clock.advance(by: .milliseconds(20))
+        try await task.value
         #expect(gauge.value.peak == 3)
     }
 
