@@ -69,7 +69,7 @@ type, `StoreError`.
 | Piece                            | What it is                                                                                                                                                                   |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FileSystem`                     | The 22 operations the store needs: positional `read`/`write`, `size`, `truncate`, `fullSync`, `close`, `syncDirectory`, `rename`, `exchange`, `remove`, `removeTree`, `list`, `exists`, `freeSpace`, `createDirectory`, `permissions(of:)`, `setPermissions`, `readLink`, `tryLock`/`unlock`, `watchFile`, and `open` in four modes. |
-| `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued. |
+| `PosixFileSystem`                | The real one. `F_FULLFSYNC` with an `fsync` fallback on `ENOTSUP`/`EINVAL`/`ENOTTY` (reported once as `store.fullsync_unavailable`); `EINTR` restarted; short writes continued; `newFileMode` and `newDirectoryMode` (File modes). |
 | `SimulatedFileSystem`            | In-memory, honest about durability (below), with an operation log, checkpoints, scripted faults (`inject`), a capacity, and `crashImages`.                                  |
 | `FileLock`                       | An advisory `flock` on a sidecar file, held across processes: `tryAcquire`, `acquire(timeout:)`, `release`, `withLock`. Opt-in for `Journal` and `SettingsStore` (`Options.crossProcessLock`). |
 | `AtomicFile`                     | `write` / `read` with checksum envelope, previous generation, quarantine; `replaceItem` swaps in a staged file or directory.                                               |
@@ -131,6 +131,52 @@ type, `StoreError`.
   an earlier one, with or without the file grown over the missing ones), and
   any subset of the pending directory operations.
 
+### File modes
+
+Who can read what the store writes is one decision, made once, at the file
+system: `PosixFileSystem(newFileMode: 0o600, newDirectoryMode: 0o700)`. Every
+file the store creates through it (the journal's log and its `.lock`, the
+snapshot and the temporary it is written through, an outbox's, an
+`AtomicFile`'s) gets `newFileMode`, and every directory `createDirectory`
+makes, parents included, gets `newDirectoryMode`. The defaults are `0o644` and
+`0o755`, as they were.
+
+- **At the create, not after it.** The mode is the argument of `open(2)` and
+  `mkdir(2)`, so a private file is private from the instant its name exists.
+  No `fchmod` follows (a chmod after the create is a window, however short).
+- **The umask applies, and is not touched.** It is process-wide, and another
+  thread may be creating files while a store opens; clearing it, even for
+  a moment, would widen theirs. It can only remove bits, so a private request
+  is as private under any umask, and a request for `0o664` under `022` is
+  `0o644`. `AtomicFile` alone sets its bits exactly (Atomic file, below): it
+  always did, so that a replacement never loses the bits of what it replaces.
+- **Only what is created.** A file or directory that exists keeps its bits:
+  adopting a stricter mode does not tighten what an earlier launch made, and
+  a parent `createDirectory` finds already there is left as it is. A store
+  that must tighten them does it itself, once.
+- **Why the file system, not `Journal.Options`.** The journal makes more files
+  than its log (a lock, a snapshot, compaction's temporary, a `.corrupt-N`
+  copy), `Outbox` is a journal, and `AtomicFile` and `FileLock` are used
+  alone: a mode on each type is a mode somebody forgot to pass to the one
+  they did not think of. The file system is already the one argument all of
+  them take. The cost is that a store with two policies (a private journal, a
+  shared cache) uses two file systems, which is two lines.
+- **Preconditions.** Permission bits only, and enough for the store to use
+  what it creates: owner read and write on a file, read, write and search on
+  a directory.
+- `FileSystem.newFileMode` (default `0o644`) is how `AtomicFile` learns the
+  mode; `SimulatedFileSystem(newFileMode:)` has one too, so a store's tests
+  read the bits back without a disk. The simulation has no umask and no
+  directory modes.
+
+| What happens if…                                                           | Behaviour                                                                                                                          |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| a file is created through a file system asked for private files            | It has `newFileMode` when `open` returns, before anything is written; an existing file keeps its bits                              |
+| a directory is created through a file system asked for private directories | Each directory made, parents included, has `newDirectoryMode`; one that exists, and the directory above, are left as they are      |
+| a journal or an outbox is opened on a private file system                  | The log, its lock, the snapshot and the compaction's temporary are all created with the file system's mode; the store changes none |
+| an `AtomicFile` write names no mode                                        | A new file takes the file system's `newFileMode`, set exactly; the temporary was created with it                                   |
+| an `AtomicFile` write names a mode of its own                              | A new file gets it, exactly; a file that exists keeps the bits it has                                                              |
+
 ### Atomic file
 
 Symbolic links: `write` and `read` first resolve `path` through any links (up
@@ -165,14 +211,17 @@ for the swap: elsewhere it is `.unsupported` when the destination exists.
 
 Permissions: the temporary is created, then given the permission bits of the
 file it will replace (`fchmod`, before a byte is written), so a write never
-widens a private file; a path with no file yet gets `Options.newFileMode`
-(default `0o644`; the settings store asks for `0o600`). The bits are set
-exactly, so the process's umask does not apply: under a umask of `077`, where
-`open` alone would give `0o600`, the default still makes the file readable by
-every user; ask for `0o600` for anything private. The previous
-generation is the old inode renamed, so it keeps its bits. A `FileSystem` that
-does not implement `permissions(of:)` reports "unknown" and every file gets
-the new-file mode. The journal's own files are still opened `0o644`.
+widens a private file; a path with no file yet gets `Options.newFileMode`, or,
+when that is `nil` (the default), the file system's `newFileMode` (`0o644`
+unless the file system was configured otherwise; the settings store asks for
+`0o600`). The bits are set exactly, so the process's umask does not apply:
+under a umask of `077`, where `open` alone would give `0o600`, `0o644` still
+makes the file readable by every user. Ask for `0o600` for anything private at
+the file system (File modes, above), where the temporary is *created* private,
+rather than in the options, where it is created at the file system's mode and
+made private an instant later. The previous generation is the old inode
+renamed, so it keeps its bits. A `FileSystem` that does not implement
+`permissions(of:)` reports "unknown" and every file gets the new-file mode.
 
 Write: preflight free space (`.diskFull` before touching anything) → remove a
 stale `.tmp` → create `.tmp` exclusively, write `envelope(bytes)`, `fullSync`

@@ -38,7 +38,8 @@ internal import Stoic
 /// - **Permissions.** A replacement has the permission bits of the file it
 ///   replaces, so a file made private stays private (a write that made a new
 ///   file every time would hand it the default mode, usually `0o644`). A file
-///   that does not exist yet is created with ``Options/newFileMode``. The
+///   that does not exist yet is created with ``Options/newFileMode``, or,
+///   when that is `nil`, the file system's ``FileSystem/newFileMode``. The
 ///   bits are set before any data is written.
 /// - **Symbolic links are followed.** Writing to a path that is a link
 ///   replaces the file the link names, atomically and beside that file (its
@@ -78,13 +79,21 @@ public struct AtomicFile: Sendable {
         /// anything private. A file that already exists keeps the bits it
         /// has, whatever this says (see ``AtomicFile``). They are set
         /// exactly, with `fchmod`, so the process's umask does not narrow
-        /// them: the default `0o644` is readable by every user even under a
-        /// umask of `077`.
-        public var newFileMode: UInt16
+        /// them: `0o644` is readable by every user even under a umask of
+        /// `077`.
+        ///
+        /// `nil` (the default) is ``FileSystem/newFileMode``: the mode the
+        /// file system was configured to give every file it creates
+        /// (`0o644` unless it is told otherwise). Prefer setting it there,
+        /// once, for a private store: the temporary is then *created* private,
+        /// where a mode asked for here is applied with `fchmod` after a
+        /// create at the file system's mode, and for that instant (before a
+        /// byte is written) the file is as open as that mode is.
+        public var newFileMode: UInt16?
 
         public init(
             envelope: Bool = true, keepPrevious: Bool = false, checksFreeSpace: Bool = true, quarantineLimit: Int = 8,
-            newFileMode: UInt16 = 0o644
+            newFileMode: UInt16? = nil
         ) {
             self.envelope = envelope
             self.keepPrevious = keepPrevious
@@ -155,7 +164,7 @@ public struct AtomicFile: Sendable {
             // gets the mode the caller asked for. Set before a byte is
             // written, so a secret is never in a file more open than it
             // should be, even for an instant.
-            let mode = try fileSystem.permissions(of: path) ?? options.newFileMode
+            let mode = try fileSystem.permissions(of: path) ?? options.newFileMode ?? fileSystem.newFileMode
             let file = try fileSystem.open(temporary, mode: .createExclusive)
             do throws(StoreError) {
                 try fileSystem.setPermissions(file, to: mode)

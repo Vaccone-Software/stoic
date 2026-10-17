@@ -90,8 +90,18 @@ public protocol FileSystem: Sendable {
 
     /// Creates `path` and any missing parents, durably: the parent of each
     /// directory created is synced, since a new directory is a name in it.
-    /// Succeeds if `path` exists.
+    /// Succeeds if `path` exists. A real file system gives each directory it
+    /// creates its own configured mode (``PosixFileSystem/newDirectoryMode``).
     func createDirectory(_ path: String) throws(StoreError)
+
+    /// The permission bits a file created through ``open(_:mode:)`` has when
+    /// it is created, before any umask: `0o644` unless the file system was
+    /// configured otherwise (``PosixFileSystem/init(newFileMode:newDirectoryMode:)``).
+    ///
+    /// ``AtomicFile`` reads it to give a file it creates the mode the file
+    /// system's owner chose, when the write names none. The default is
+    /// `0o644`, for a file system that has no modes to configure.
+    var newFileMode: UInt16 { get }
 
     /// The permission bits (`0o600`, `0o644`, …) of the file at `path`,
     /// following a symbolic link; `nil` if there is no such file.
@@ -162,6 +172,8 @@ public protocol FileSystem: Sendable {
 }
 
 extension FileSystem {
+    public var newFileMode: UInt16 { 0o644 }
+
     public func readLink(_ path: String) throws(StoreError) -> String? { nil }
 
     public func tryLock(_ file: OpenFile) throws(StoreError) -> Bool {

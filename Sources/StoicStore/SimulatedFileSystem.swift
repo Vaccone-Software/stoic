@@ -42,9 +42,22 @@ public final class SimulatedFileSystem: FileSystem {
     ///   - recordsHistory: Keep the state after every operation so crash
     ///     points can be explored. Turn off for long simulations that never
     ///     look back.
-    public init(capacity: Int? = nil, recordsHistory: Bool = true) {
-        state = Mutex(State(capacity: capacity, recordsHistory: recordsHistory))
+    public convenience init(capacity: Int? = nil, recordsHistory: Bool = true) {
+        self.init(capacity: capacity, recordsHistory: recordsHistory, newFileMode: 0o644)
     }
+
+    /// - Parameters:
+    ///   - capacity: As above.
+    ///   - recordsHistory: As above.
+    ///   - newFileMode: The permission bits every file created here has
+    ///     (``FileSystem/newFileMode``), so a test of a store that asks for a
+    ///     private file system can read the bits back with
+    ///     ``permissions(of:)``. The simulation has no umask.
+    public init(capacity: Int? = nil, recordsHistory: Bool = true, newFileMode: UInt16) {
+        state = Mutex(State(capacity: capacity, recordsHistory: recordsHistory, newFileMode: newFileMode))
+    }
+
+    public var newFileMode: UInt16 { state.withLock { $0.newFileMode } }
 
     // MARK: Inspecting
 
@@ -392,7 +405,7 @@ extension SimulatedFileSystem {
         /// The permission bits. Modelled as durable the moment they are set:
         /// the store only sets them on a file it is about to rename into
         /// place, so what a crash could do to a pending `chmod` never matters.
-        var mode: UInt16 = 0o644
+        var mode: UInt16
     }
 
     enum Pending: Sendable {
@@ -489,10 +502,12 @@ extension SimulatedFileSystem {
         var touched: [String] = []
         let capacity: Int?
         let recordsHistory: Bool
+        let newFileMode: UInt16
 
-        init(capacity: Int?, recordsHistory: Bool) {
+        init(capacity: Int?, recordsHistory: Bool, newFileMode: UInt16) {
             self.capacity = capacity
             self.recordsHistory = recordsHistory
+            self.newFileMode = newFileMode
             if recordsHistory { history = [withoutHistory()] }
         }
 
@@ -501,12 +516,13 @@ extension SimulatedFileSystem {
             self.links = links
             capacity = other.capacity
             recordsHistory = other.recordsHistory
+            newFileMode = other.newFileMode
             self.directories = directories
             durableDirectories = directories
             for path in files.keys.sorted() {
                 let inode = nextInode
                 nextInode += 1
-                inodes[inode] = Inode(durable: files[path]!, current: files[path]!, name: path, mode: modes[path] ?? 0o644)
+                inodes[inode] = Inode(durable: files[path]!, current: files[path]!, name: path, mode: modes[path] ?? other.newFileMode)
                 live[path] = inode
                 durableNames[path] = inode
             }
@@ -624,7 +640,7 @@ extension SimulatedFileSystem {
                 }
                 inode = nextInode
                 nextInode += 1
-                inodes[inode] = Inode(name: path)
+                inodes[inode] = Inode(name: path, mode: newFileMode)
                 live[path] = inode
                 pendingDirOps.append(.create(path: path, inode: inode))
                 record(.create(path: path))

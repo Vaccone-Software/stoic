@@ -1,2 +1,6 @@
 API breakage: enumelement SettingsStore.UpdateError.busy has been added as a new enum case
 API breakage: enumelement SettingsStore.UpdateError.fileUnusable has been added as a new enum case
+API breakage: var AtomicFile.Options.newFileMode has declared type change from Swift.UInt16 to Swift.UInt16?
+API breakage: accessor AtomicFile.Options.newFileMode.Get() has return type change from Swift.UInt16 to Swift.UInt16?
+API breakage: accessor AtomicFile.Options.newFileMode.Set() has parameter 0 type change from Swift.UInt16 to Swift.UInt16?
+API breakage: constructor AtomicFile.Options.init(envelope:keepPrevious:checksFreeSpace:quarantineLimit:newFileMode:) has parameter 4 type change from Swift.UInt16 to Swift.UInt16?

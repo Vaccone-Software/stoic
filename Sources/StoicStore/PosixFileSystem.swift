@@ -23,10 +23,73 @@ internal import Glibc
 ///
 /// `tryLock` is `flock(LOCK_EX | LOCK_NB)`: advisory, per open file, and
 /// dropped by the kernel when the descriptor closes or the process dies.
+///
+/// ## Who can read what the store writes
+///
+/// Every file this file system creates, whoever asks (a ``Journal``, its
+/// snapshot, its lock file, an ``AtomicFile``'s temporary, an ``Outbox``), is
+/// created with ``newFileMode``, and every directory
+/// ``createDirectory(_:)`` makes with ``newDirectoryMode``. One value at the
+/// file system is one answer for the whole store, where a mode on each
+/// type would have left the files nobody thought to ask about (a `.lock`, a
+/// compaction's temporary) at the default:
+///
+///     let disk = PosixFileSystem(newFileMode: 0o600, newDirectoryMode: 0o700)
+///     try disk.createDirectory(dir)
+///     let outbox = try Outbox<Note>.open(at: dir + "/outbox", codec: .json(), fileSystem: disk)
+///
+/// The mode is the argument of `open(2)` and `mkdir(2)`, so it is in force
+/// from the instant the name exists: there is no moment when a private file
+/// is readable by others, which a `chmod` after the create could not promise.
+/// The process's umask still applies, as it does to every file the process
+/// creates, and it can only *remove* bits: a request for `0o600` is `0o600`
+/// under any umask that leaves the owner read and write, and the defaults
+/// (`0o644`, `0o755`) are what they always were, narrowed by a stricter umask.
+/// The umask is never changed or cleared (it is process-wide, and another
+/// thread may be creating files at that moment), and no `fchmod` follows the
+/// create to widen the result: a store that asks for `0o664` under a umask of
+/// `022` gets `0o644`. ``AtomicFile`` is the one exception, and says so: it
+/// sets its file's bits exactly.
+///
+/// Only what is *created* is given the mode. A file or directory that
+/// already exists keeps the bits it has, so adopting a stricter mode does not
+/// tighten what an earlier launch made (``setPermissions(_:to:)`` does that,
+/// for a file the app has open); a parent that a ``createDirectory(_:)``
+/// finds already there is left as it is.
 public final class PosixFileSystem: FileSystem {
     private let reportedFallback = Atomic<Bool>(false)
 
-    public init() {}
+    /// The permission bits of a file this file system creates, before the
+    /// process's umask: `open(2)`'s `mode`.
+    public let newFileMode: UInt16
+
+    /// The permission bits of a directory ``createDirectory(_:)`` creates,
+    /// before the process's umask: `mkdir(2)`'s `mode`.
+    public let newDirectoryMode: UInt16
+
+    /// A file system whose new files are `0o644` and new directories `0o755`
+    /// (before the umask), as it has always been.
+    public convenience init() {
+        self.init(newFileMode: 0o644, newDirectoryMode: 0o755)
+    }
+
+    /// - Parameters:
+    ///   - newFileMode: The bits of a new file. Default `0o644`. Use `0o600`
+    ///     for anything private.
+    ///   - newDirectoryMode: The bits of a new directory. Default `0o755`.
+    ///     Use `0o700` for anything private.
+    ///
+    /// Preconditions: only permission bits (`0o777` at most), and enough for
+    /// the store to use what it creates: the owner needs read and write on a
+    /// file and read, write and search on a directory, since the store opens
+    /// its files again and writes into its directories.
+    public init(newFileMode: UInt16 = 0o644, newDirectoryMode: UInt16 = 0o755) {
+        precondition(newFileMode & ~0o777 == 0 && newDirectoryMode & ~0o777 == 0, "a mode is permission bits, 0o777 at most")
+        precondition(newFileMode & 0o600 == 0o600, "the store reopens its files: the owner needs read and write")
+        precondition(newDirectoryMode & 0o700 == 0o700, "the store writes into its directories: the owner needs read, write and search")
+        self.newFileMode = newFileMode
+        self.newDirectoryMode = newDirectoryMode
+    }
 
     public func open(_ path: String, mode: OpenMode) throws(StoreError) -> OpenFile {
         var flags: Int32 = O_CLOEXEC
@@ -37,7 +100,7 @@ public final class PosixFileSystem: FileSystem {
         case .readWriteCreate: flags |= O_RDWR | O_CREAT
         }
         while true {
-            let descriptor = CSys.openFile(path, flags: flags, permissions: 0o644)
+            let descriptor = CSys.openFile(path, flags: flags, permissions: mode_t(newFileMode))
             if descriptor >= 0 { return OpenFile(rawValue: descriptor) }
             if errno != EINTR { throw StoreError(errno: errno, operation: "open", path: path) }
         }
@@ -234,11 +297,15 @@ public final class PosixFileSystem: FileSystem {
     /// one it created: a new directory is a name in its parent, and without
     /// the sync a power loss can take it, and every file written into it
     /// since, however carefully those were synced.
+    ///
+    /// Each directory is made with ``newDirectoryMode`` (`mkdir(2)`'s mode, so
+    /// it is private from the instant it exists, under the umask); one that is
+    /// already there is left as it is.
     public func createDirectory(_ path: String) throws(StoreError) {
         var prefix = path.hasPrefix("/") ? "/" : ""
         for component in path.split(separator: "/", omittingEmptySubsequences: true) {
             prefix = prefix.isEmpty || prefix == "/" ? prefix + component : prefix + "/" + component
-            if CSys.makeDirectory(prefix, permissions: 0o755) == 0 {
+            if CSys.makeDirectory(prefix, permissions: mode_t(newDirectoryMode)) == 0 {
                 try syncDirectory(StorePath.directory(of: prefix))
             } else if errno != EEXIST {
                 throw StoreError(errno: errno, operation: "mkdir", path: prefix)
