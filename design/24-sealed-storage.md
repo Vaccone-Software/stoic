@@ -158,6 +158,7 @@ let done = try log.compact(rotatingKey: true) { replay in      // a fold that ma
     return encode(state)
 }
 SealedJournal.readOnlyReplay(at: path, context: ctx, keyring: ring)   // a second process
+try SealedJournal.remove(at: path)                           // the log and every file beside it; .busy if open
 ```
 
 Test doubles: `InMemoryKeyCustody` (with `failNext`, `inject`, `calls`). Types:
@@ -557,6 +558,18 @@ custody's writes interleaved between the file operations, against a mutation tha
   state and the key it is sealed under must belong to one moment), so an append waits for a custody
   that blocks.
 
+### Removing a journal
+
+`SealedJournal.remove(at:fileSystem:)` is `Journal.remove` (design/15): the log, `.snapshot`,
+`.snapshot-lost`, `.lock`, every `.corrupt-N` and the temporaries a crash left, and nothing else in
+the directory, refused with `.store(.busy)` for a journal that is open in this process or held by
+another with `crossProcessLock` (a writer that does not use the lock cannot be seen). It **deletes
+files; it does not shred**: the records stay on the disk and in any backup as ciphertext, and are
+unreadable only once their keys are gone. It never touches the keyring, which may be shared and
+whose retirement destroys what every other file sealed under it. When the keyring is this journal's
+alone, a deletion that is real is `rotate()`, then `retire(ids:)` of the keys it held, then the
+removal (a test runs it: a copy of the files made before opens nothing afterwards).
+
 ### A second process
 
 An app's command-line tool may read the logs a running app appends. `Journal` itself opened by a
@@ -628,6 +641,7 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | an adoption's sealed copy does not open to the plaintext                  | `.verificationFailed` (with what the open said, or `nil` if it opened to other bytes); the plaintext and every copy beside it are exactly as they were, and the staged copy is removed                                               |
 | the process dies at any instruction of an adoption                        | The file is the plaintext or a sealed value that opens to it; a second call finishes, leaving no plaintext copy                                                                                                                      |
 | records are appended and replayed                                         | Plaintext in order with their sequences; the log holds no plaintext                                                                                                                                                                  |
+| a sealed journal is removed                                               | The log and everything the journal keeps beside it go, nothing else in the directory, and **the keyring is untouched**: no key is retired; an open journal is `.store(.busy)`                                                         |
 | a sealed journal has a torn tail                                          | Cut at open and reported by the journal (`droppedBytes`); the records before it open; it is not a failure                                                                                                                            |
 | a record in the middle of a sealed journal is altered                     | That record is in `failures` with its sequence (`.tampered`); the others are returned                                                                                                                                                |
 | a sealed record is moved, repeated or swapped                             | Each fails at its new position (`.tampered`): its sequence is authenticated                                                                                                                                                          |
@@ -686,6 +700,9 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
   is the plaintext's before its first byte; leftovers (sealed, torn, empty, not ours) are replaced,
   cleaned or left as each deserves; a failure at each step of staging, the rename and the directory
   sync; the real file system.
+- `SealedJournalRemoveTests`: the family goes and a bystander stays, the keyring and its custody item
+  untouched; an open journal is `.busy`; the rotate-retire-remove sequence leaves a backup of the files
+  unreadable (`.unknownKey` for every record). And in `StoicStoreTests`, `JournalRemoveTests` (design/15).
 - `ReplayValueTests`: a `SealedJournal.Replay` built from its public initializers, in a file that
   imports without `@testable`.
 - `ThroughputTests`: seal and open of 1 KB and 1 MB values, printed in MB/s; nothing gates on time.

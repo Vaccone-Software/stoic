@@ -503,6 +503,39 @@ public final class SealedJournal: Sendable {
         _ = try compact(rotatingKey: rotatingKey, unreadable: unreadable) { _ in snapshot }
     }
 
+    // MARK: Removing
+
+    /// Removes the sealed journal at `path` with everything kept beside it: the
+    /// log, `.snapshot`, `.snapshot-lost`, `.lock`, every `.corrupt-N` and the
+    /// temporaries a crash left (`Journal/remove(at:fileSystem:)`, which says
+    /// what it refuses and what it does not do).
+    ///
+    ///     try log.close()
+    ///     try SealedJournal.remove(at: path)
+    ///
+    /// It refuses, with `.store(.busy)`, a journal that is open in this process
+    /// (close it first) and one another process holds with
+    /// `Journal/Options/crossProcessLock`. A process that writes without the
+    /// lock cannot be seen: remove a journal only when its writers are done.
+    ///
+    /// **This deletes files; it does not shred.** The records are ciphertext that
+    /// stays on an APFS or SSD volume, and in any backup, until the blocks are
+    /// reused, and they are unreadable only once their keys are gone. The
+    /// keyring is not touched (it may be shared, and retiring a key destroys
+    /// everything any other file sealed under it): for a deletion that is real,
+    /// when the keyring is this journal's alone, `Keyring/rotate()` and then
+    /// `Keyring/retire(ids:)` the keys it held, as well as removing the files.
+    ///
+    /// - Returns: How many files were removed; 0 if there was nothing.
+    @discardableResult
+    public static func remove(at path: String, fileSystem: any FileSystem = PosixFileSystem()) throws(SealedStoreError) -> Int {
+        do throws(StoreError) {
+            return try Journal.remove(at: path, fileSystem: fileSystem)
+        } catch {
+            throw .store(error)
+        }
+    }
+
     /// Releases the file, and the cross-process lock if the journal holds one.
     /// Further calls throw.
     public func close() throws(SealedStoreError) {
