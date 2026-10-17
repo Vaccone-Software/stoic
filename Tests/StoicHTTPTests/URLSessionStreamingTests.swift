@@ -266,9 +266,12 @@ extension URLSessionTransportTests {
     @Test func aCallersConfigurationReachesTheSessionForStreamingToo() async throws {
         // Lodestar's: wait for connectivity, and stay off expensive and constrained networks.
         let transport = Self.streamingTransport { configuration in
+            // swift-corelibs-foundation has these as get-only (or lacks them): Apple's session only.
+            #if canImport(Darwin)
             configuration.waitsForConnectivity = true
             configuration.allowsExpensiveNetworkAccess = false
             configuration.allowsConstrainedNetworkAccess = false
+            #endif
             configuration.timeoutIntervalForRequest = 45
             configuration.httpAdditionalHeaders = ["X-From-Configuration": "yes"]
         }
