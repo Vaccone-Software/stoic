@@ -294,7 +294,7 @@ credentials print as `<redacted>`), `HTTPTransport`, `URLSessionTransport`,
 `HTTPStreamedResponse` (status, headers, `body`) and `HTTPBodyStream`.
 
 **The transport.** `send(_:maxResponseBytes:)` receives an absolute URL and
-the final headers. The limit is passed *to* the transport because only the
+the final headers. The limit is passed _to_ the transport because only the
 transport can stop reading: `URLSessionTransport` collects the body from the
 task's delegate callbacks, refuses a declared `Content-Length` over the limit
 before the first byte, and cancels the task at the first byte over (counted
@@ -333,7 +333,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
 - **`send` throws `any Error`:** an `HTTPError`, or `CancellationError` when
   the caller was cancelled. The contract's table says `CancellationError`, and
   AGENTS.md says cancellation is never wrapped; a typed `throws(HTTPError)`
-  would have needed a `.cancelled` case. A caller whose *deadline* passes gets
+  would have needed a `.cancelled` case. A caller whose _deadline_ passes gets
   `.rejected(deadline_exceeded)`, not cancellation.
 - **Attempts.** An attempt is a request that reached the transport; a request
   the breaker, bulkhead or deadline refused first has made none. Every
@@ -428,7 +428,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   list had not heard of. `Authorization` and `Cookie` are in the key so that
   one user can never be handed another's response. One flight runs the whole
   pipeline once. `SingleFlight` gives a flight no deadline, so the caller who
-  starts it lends it theirs; a caller who joined with *more* time and finds
+  starts it lends it theirs; a caller who joined with _more_ time and finds
   the flight ended by the starter's deadline starts a new flight rather than
   inherit someone else's timeout. A caller whose own deadline passes while
   waiting on a flight gets `.rejected(deadline_exceeded)` with `attempts: 0`
@@ -447,13 +447,11 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   explicitly are used exactly as given. The per-string (1 MiB) and
   per-container (100,000) limits are raised the same way: to `maxResponseBytes`
   for a string (it cannot be longer than the body) and to `maxResponseBytes / 2
-  + 1` for an array or object (two bytes an element is the least JSON takes),
-  never lowered, so a legitimate response up to the cap is not refused by the
-  decoder for what it holds; the depth limit is not about size and stays.
-  `send(_:decoding:)` adds `Accept: application/json`
-  unless the request names an `Accept`. An empty body fails a schema that
-  wants an object.
-- **`HTTPError: Retryable`** classifies the *failure* with the default
+  - 1`for an array or object (two bytes an element is the least JSON takes),
+never lowered, so a legitimate response up to the cap is not refused by the
+decoder for what it holds; the depth limit is not about size and stays.`send(\_:decoding:)`adds`Accept: application/json`unless the request names an`Accept`. An empty body fails a schema that
+    wants an object.
+- **`HTTPError: Retryable`** classifies the _failure_ with the default
   policy's statuses and the `URLError` table. It cannot know the request's
   method, so it does not say whether an outer layer may repeat an unkeyed
   `POST`; AGENTS.md rule 2 stands. It does know whether the request was keyed:
@@ -475,7 +473,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   proof.
 - **Events.** `http.request` is debug, one per attempt that reached the
   transport (method, host, path public; attempt, duration, status, `outcome`;
-  the query string as a *private* field only). `http.retry` (info) is recorded
+  the query string as a _private_ field only). `http.retry` (info) is recorded
   when a retry begins: attempt number, the wait since the last attempt ended,
   and why it failed (`status_503`, `timed_out`, `transport_-1005`).
   `http.redirected` (info) for each redirect followed: the redirected request's
@@ -501,9 +499,10 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   gained `stream(_:maxResponseBytes:)`, whose default sends and yields the
   whole body as one chunk, so every existing transport compiles and a test
   transport that only scripts `send` still works. It is documented as fine for
-  tests and wrong for anything else. The addition is a listed API break (a new
-  protocol requirement), since a protocol's requirements are part of its
-  contract for the types that conform and for the code that calls through it.
+  tests and wrong for anything else. A requirement with a default breaks no
+  type that conforms (the API check agrees). `URLSessionTransport.init(configuration:)`
+  keeps its signature; `init(configuration:streamBufferBytes:)` is the new one
+  (a defaulted parameter added to the old would have removed it).
 - **An object, not a closure.** `stream` returns the head with an
   `HTTPBodyStream` (a class, `AsyncSequence` of `[UInt8]`, `Failure = any Error`)
   rather than taking a body closure, because the pipeline's retry, breaker and
@@ -518,7 +517,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
 - **`URLSessionTransport`** streams from the session delegate, never through
   `URLSession.bytes(for:)`, which pays an async hop per byte. Chunks wait in a
   buffer (`streamBufferBytes`, 4 MiB by default); when it holds that much the
-  data task is *suspended* (the system stops reading, TCP's window closes), and
+  data task is _suspended_ (the system stops reading, TCP's window closes), and
   it is resumed when a quarter is left. The decision and the `suspend()` or
   `resume()` it causes are made under one lock: a resume run before the suspend
   it answers would leave a reader waiting on a task nothing wakes. Measured on
@@ -534,7 +533,7 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   `allowsConstrainedNetworkAccess` and `timeoutIntervalForRequest` (the silence
   a streamed body may be held to) are the caller's, as for `send`.
 - **`ScriptedTransport`** gained streamed bodies: `.streaming(bytes, chunkSize:,
-  chunkDelay:, fault:)` and `.serving(Resource, …)`, a file a server holds,
+chunkDelay:, fault:)` and `.serving(Resource, …)`, a file a server holds,
   answered with `Range`, `If-Range`, `206` and `Content-Range`, a `416`, an
   `ETag` and `Last-Modified`, or the whole file from a server that ignores
   ranges. A `Fault` is `.cut(after:)`, `.fail(after:, code)`,

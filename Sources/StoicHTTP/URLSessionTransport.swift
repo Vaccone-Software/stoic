@@ -62,13 +62,19 @@ public final class URLSessionTransport: HTTPTransport {
     ///     for a consumer that lags. Past it the data task is suspended; it
     ///     resumes when a quarter of this is left. A transfer can overshoot it
     ///     by what the system had already read, so it is a bound of the order
-    ///     of this size, not an exact one. Default 4 MiB.
-    public init(configuration: URLSessionConfiguration = .default, streamBufferBytes: Int = 4 << 20) {
+    ///     of this size, not an exact one. ``init(configuration:)`` uses 4 MiB.
+    public init(configuration: URLSessionConfiguration, streamBufferBytes: Int) {
         precondition(streamBufferBytes > 0, "a stream needs room for at least one byte")
         let transfers = Transfers()
         session = URLSession(configuration: configuration, delegate: transfers, delegateQueue: nil)
         self.transfers = transfers
         self.streamBufferBytes = streamBufferBytes
+    }
+
+    /// A transport on a new session made from `configuration`, with a stream
+    /// buffer of 4 MiB (see ``init(configuration:streamBufferBytes:)``).
+    public convenience init(configuration: URLSessionConfiguration = .default) {
+        self.init(configuration: configuration, streamBufferBytes: 4 << 20)
     }
 
     deinit {
