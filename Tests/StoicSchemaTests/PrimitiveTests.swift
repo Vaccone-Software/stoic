@@ -188,7 +188,8 @@ struct DoubleSchemaTests {
         #expect(decode(.double(.lessThan(10)), "9.999999999999998").value == 9.999999999999998)
         // Rounding onto an inclusive bound stays inside it.
         #expect(decode(.double(.range(0...1)), "0.99999999999999999999").value == 1)
-        #expect(decode(.double(.greaterThan(0)), "1e-320").value == 1e-320)
+        // A subnormal: written as a literal, Linux's compiler refuses it for losing precision.
+        #expect(decode(.double(.greaterThan(0)), "1e-320").value == Double("1e-320"))
     }
 
     @Test func whateverADoubleFieldReturnsItsSchemaValidates() {
