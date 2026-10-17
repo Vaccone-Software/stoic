@@ -81,9 +81,9 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
     let passedOnEntry = effective.hasPassed
     let cause = CancellationCauseBox()
     let slot = OperationSlot(operation)
-    // The operation's one child task does an attempt's work, if it runs in
-    // one: a `perform` inside it is in the attempt's task, not a child of it.
-    let attempt = RetryContext.active
+    // Whether the operation's one child task does an attempt's work: a
+    // `perform` inside it is in the attempt's task, not a child of it.
+    let carrying = RetryContext.active != nil
 
     let outcome: DeadlineOutcome<R, Failure> = await Deadline.$stored.withValue(effective) {
             await withTaskGroup(of: DeadlineChild<R, Failure>.self) { group in
@@ -93,8 +93,7 @@ nonisolated(nonsending) func runWithDeadline<R: Sendable, Failure: Error>(
                 }
                 group.addTask {
                     await CancellationCauseBox.$current.withValue(cause) {
-                        guard let attempt else { return await slot.run() }
-                        return await RetryContext.$active.withValue(attempt.carried()) { await slot.run() }
+                        await slot.run(carrying: carrying)
                     }
                 }
                 group.addTask {
@@ -196,8 +195,20 @@ final class OperationSlot<R: Sendable, Failure: Error>: Sendable {
     }
 
     /// Runs the operation, which must not have run before.
-    fileprivate func run() async -> DeadlineChild<R, Failure> {
-        .finished(await runResult())
+    ///
+    /// `carrying` says the child does an attempt's work (see
+    /// `runWithDeadline`); the carried path stays in a function of its own,
+    /// because a larger frame here costs the child task a second slab, an
+    /// allocation on every call.
+    fileprivate func run(carrying: Bool) async -> DeadlineChild<R, Failure> {
+        if !carrying { return .finished(await runResult()) }
+        return .finished(await runCarried())
+    }
+
+    @inline(never)
+    private func runCarried() async -> Result<R, Failure> {
+        guard let attempt = RetryContext.active else { return await runResult() }
+        return await RetryContext.$active.withValue(attempt.carried()) { await runResult() }
     }
 
     /// Runs the operation and captures its outcome as a value.

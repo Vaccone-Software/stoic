@@ -96,6 +96,17 @@ try await withAmbient({ $0.instrumentation = NoInstrumentation() }) {
         _ = try await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { _ throws(Failure) in 1 }
     }
 
+    // The first-attempt-success path of a declared operation, on a remote
+    // backend (breaker, bulkhead, budget) and a local one (writer lane).
+    let remoteRead = Backend.remote("bench.remote").readOnly("read")
+    try await measure("perform, first attempt succeeds (remote)", iterations: 100_000) {
+        _ = try await remoteRead.perform { _ throws(Failure) in 1 }
+    }
+    let localWrite = Backend.local("bench.local").idempotent("write")
+    try await measure("perform, first attempt succeeds (local)", iterations: 100_000) {
+        _ = try await localWrite.perform { _ throws(Failure) in 1 }
+    }
+
     await measure("withScope, one finalizer", iterations: 50_000) {
         await withScope { scope in scope.onExit { _ in } }
     }
