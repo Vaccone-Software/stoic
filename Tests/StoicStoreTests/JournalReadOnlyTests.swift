@@ -306,6 +306,13 @@ struct JournalReadOnlyTests {
         })
         #expect(told.value == [3])
         #expect(try journal.replay().snapshot?.through == 3)
+
+        // A fold that declines changes nothing.
+        try journal.append(bytes("d"))
+        let before = disk.files
+        #expect(try journal.compact(withSequence: { _, _ in nil }) == false)
+        #expect(disk.files == before)
+        #expect(try journal.replay().records.map { text($0.bytes) } == ["d"])
     }
 }
 

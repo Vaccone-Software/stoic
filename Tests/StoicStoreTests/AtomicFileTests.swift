@@ -241,6 +241,22 @@ struct AtomicFileTests {
         #expect(try fs.readLink(dir.file("a/hop")) == "../real/s")
     }
 
+    @Test func resolvedPathIsTheFileTheWriteWorksBeside() throws {
+        let dir = try TempDirectory()
+        try FileManager.default.createDirectory(atPath: dir.file("real"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: dir.file("a"), withIntermediateDirectories: true)
+        try link(dir.file("a/hop"), to: "../real/s")
+        try link(dir.file("start"), to: dir.file("a/hop"))
+        let file = AtomicFile()
+        #expect(try file.resolvedPath(dir.file("real/s")) == dir.file("real/s"), "a plain path is itself")
+        #expect(try file.resolvedPath(dir.file("start")) == dir.file("a/../real/s"), "a chain is followed to the file")
+        let error = #expect(throws: StoreError.self) {
+            try link(dir.file("x"), to: dir.file("y")); try link(dir.file("y"), to: dir.file("x"))
+            return try file.resolvedPath(dir.file("x"))
+        }
+        #expect(error?.kind == .invalidArgument)
+    }
+
     @Test func aLinkToNothingIsWrittenThrough() throws {
         let dir = try TempDirectory()
         try link(dir.file("s"), to: dir.file("elsewhere"))

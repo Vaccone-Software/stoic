@@ -744,22 +744,28 @@ public final class Journal: Sendable {
     /// runs under the journal's lock, so no append can slip in between the
     /// state it sees and the sequence it is recorded against.
     public func compact(_ fold: (Replay) -> [UInt8]) throws(StoreError) {
-        try compact(withSequence: { replay, _ in fold(replay) })
+        _ = try compact(withSequence: { replay, _ in fold(replay) })
     }
 
     /// ``compact(_:)``, telling `fold` the sequence the snapshot will be
-    /// recorded against (`through`: the journal's last sequence).
+    /// recorded against (`through`: the journal's last sequence), and letting
+    /// it decline.
     ///
     /// For a layer that binds a snapshot to the sequence it covers, and so
     /// needs the number when it builds the snapshot: this is the journal's own,
-    /// read under the lock the fold runs in. `fold` must not call back into
-    /// this journal.
-    public func compact(withSequence fold: (_ replay: Replay, _ through: UInt64) -> [UInt8]) throws(StoreError) {
-        try state.withLock { (state) throws(StoreError) in
+    /// read under the lock the fold runs in. If `fold` returns `nil` nothing is
+    /// written, the log is as it was, and this returns `false`: a layer that
+    /// finds it cannot build a snapshot declines rather than write a wrong
+    /// one. `fold` must not call back into this journal.
+    ///
+    /// - Returns: `true` if the log was replaced by the snapshot.
+    @discardableResult
+    public func compact(withSequence fold: (_ replay: Replay, _ through: UInt64) -> [UInt8]?) throws(StoreError) -> Bool {
+        try state.withLock { (state) throws(StoreError) -> Bool in
             let file = try ready(&state)
             let current = try replay(file, state: state)
             let through = state.lastSequence
-            let bytes = fold(current, through)
+            guard let bytes = fold(current, through) else { return false }
             // The truncation below destroys the damaged bytes; keep a copy of
             // the log first, so what could not be read is at least not gone.
             let saved = state.corruption.isEmpty ? nil : try saveDamagedLog(file, end: state.end)
@@ -783,6 +789,7 @@ public final class Journal: Sendable {
             ]
             if let saved { fields.append(.init("damagedLogSavedAs", .string(saved))) }
             StoreEvents.record(Event("store.journal_compacted", level: .info, fields: fields))
+            return true
         }
     }
 

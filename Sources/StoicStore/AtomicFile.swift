@@ -335,6 +335,14 @@ public struct AtomicFile: Sendable {
 
     // MARK: Helpers
 
+    /// The file `path` stands for: itself, or, if it is a symbolic link, the
+    /// file the chain of links leads to. This is the path `write` and `read`
+    /// work beside, so it is where the `.tmp`, `.previous` and `.corrupt-N`
+    /// files of a linked path are found.
+    public func resolvedPath(_ path: String) throws(StoreError) -> String {
+        try resolvingLinks(path)
+    }
+
     /// `path`, if it is a symbolic link, replaced by the file it leads to
     /// (through a chain of links, a relative link being relative to its own
     /// directory). A link to nothing resolves to where the file would be:

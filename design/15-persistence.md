@@ -138,7 +138,8 @@ to 40 hops; a relative target is relative to the link's directory; a link to
 nothing resolves to where the file would be), then do everything beside the
 real file: `.tmp`, `.previous`, `.corrupt-N`, the rename and the directory sync.
 Renaming over the link itself would replace the link with a regular file and
-leave its target stale. A loop of links is `.invalidArgument`. The simulation
+leave its target stale. `AtomicFile.resolvedPath(_:)` is that resolution, for a
+caller that must find the files beside the real one. A loop of links is `.invalidArgument`. The simulation
 models links as durable from the moment they exist, since the store never
 creates one.
 
@@ -285,7 +286,8 @@ at once on the real file system.
 **Layers above.** `append(building:)` and `compact(withSequence:)` tell their
 closure the sequence number the records, or the snapshot, will carry, under the
 journal's own lock, so a layer that authenticates the sequence (design/24) never
-has to guess it. `Replay.lastSequence` is the number a compaction of that replay
+has to guess it; the fold may return `nil` to decline, and nothing is written.
+`Replay.lastSequence` is the number a compaction of that replay
 is recorded against, and equals `Journal.lastSequence` in every state (tested).
 
 **A lost snapshot stays lost until the app says so.** Quarantining a corrupt
