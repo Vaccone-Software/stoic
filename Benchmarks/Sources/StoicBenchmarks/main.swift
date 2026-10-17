@@ -14,11 +14,12 @@ import Synchronization
 // (DESIGN.md's quality bar), and the gate is the MEDIAN allocations of one
 // call, not the mean. A path that starts child tasks allocates a few extra
 // task-allocator slabs on the calls where the scheduler lands a cancel
-// mid-setup, so its mean moves with machine load; its median does not, while
+// mid-setup, so its mean moves with machine load; its median moves less, and
 // a structural regression (one more box on every call) moves the median by
-// exactly one. `--check` fails when a median exceeds the record, and says
-// when it is below, so the record can be ratcheted down. A loaded machine
-// can show those paths below their record; record on an idle one.
+// exactly one. `--check` fails when a median exceeds the record (plus the
+// path's allowance, if it has one: see `schedulerAllowance`), and says when it
+// is below, so the record can be ratcheted down. A loaded machine can show
+// the task-starting paths below their record; record on an idle one.
 
 /// Every allocation in the process, counted by the malloc logging hook.
 /// The hook runs inside malloc, so it does nothing but an atomic add.
@@ -181,10 +182,28 @@ for result in results {
 }
 
 let arguments = CommandLine.arguments.dropFirst()
-// There is no tolerance: medians are whole numbers, and the median ignores
-// the odd extra allocation another thread or the scheduler makes, so a path
-// whose median exceeds the record has regressed by at least one allocation
-// on every call.
+// There is no tolerance on a deterministic path: medians are whole numbers,
+// and the median ignores the odd extra allocation another thread or the
+// scheduler makes, so a path whose median exceeds the record has regressed by
+// at least one allocation on every call.
+
+/// The paths whose median depends on the scheduler regime, and how far above
+/// its record each may read before it counts as a regression. Every one of
+/// them starts child tasks (`withTimeout`'s timer, `perform`'s attempt and
+/// timer), and the task allocator mallocates 1016-byte slabs in bursts that
+/// depend on when the cancel lands while the timer's sleep is being set up, so
+/// the call count moves with the scheduler and the number of cores, not with
+/// the code. Measured medians of `withTimeout, completes at once`: 19 to 20
+/// on an idle Apple silicon Mac, 18 to 19 loaded, 21 on GitHub's 3-core macOS
+/// runner (recorded 20). The limit of an allowance: on these paths a
+/// regression smaller than it is not caught; a structural +1 on every other
+/// path still is, since they have none. Raise an allowance only with a
+/// measurement of the regime that needs it.
+let schedulerAllowance: [String: Int] = [
+    "withTimeout, completes at once": 2,
+    "perform, first attempt succeeds (remote)": 2,
+    "perform, first attempt succeeds (local)": 2,
+]
 
 if let flag = arguments.first, let path = arguments.dropFirst().first {
     let url = URL(fileURLWithPath: path)
@@ -204,8 +223,11 @@ if let flag = arguments.first, let path = arguments.dropFirst().first {
                 regressions.append("\(result.name): no recorded median allocation count; record one with --record")
                 continue
             }
-            if result.median > recorded {
-                regressions.append("\(result.name): median \(result.median) allocations per call, recorded \(recorded)")
+            let allowance = schedulerAllowance[result.name] ?? 0
+            if result.median > recorded + allowance {
+                let allowed = allowance > 0 ? " (+\(allowance) allowed)" : ""
+                regressions.append(
+                    "\(result.name): median \(result.median) allocations per call, recorded \(recorded)\(allowed)")
             } else if result.median < recorded {
                 improvements.append("\(result.name): median \(result.median) allocations per call, recorded \(recorded)")
             }

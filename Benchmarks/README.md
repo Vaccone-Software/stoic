@@ -17,8 +17,12 @@ tolerance (medians are whole numbers), and one whose median is lower is
 reported so the record can be ratcheted down (record on an idle machine).
 The median, not the mean, because a path that starts tasks allocates a few
 extra task slabs on the calls where the scheduler lands a cancel mid-setup:
-its mean moves with machine load, its median does not, and one more
-allocation on every call moves the median by exactly one. Time is reported,
+its mean moves with machine load, and one more allocation on every call
+moves the median by exactly one. The median of those task-starting paths
+(`withTimeout`, `perform`) still moves with the scheduler and the core count
+(`withTimeout` reads 18 to 21 across machines), so each has an allowance of
++2 over its record, stated in `schedulerAllowance` in `main.swift`: a
+regression smaller than that on those paths is not caught. Time is reported,
 not gated: shared CI machines drift by more than any regression worth
 catching.
 

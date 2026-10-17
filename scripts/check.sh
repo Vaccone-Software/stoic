@@ -113,9 +113,10 @@ fi
 
 step "allocations: no hot path's median call allocates more than recorded (Benchmarks/allocations.json)"
 # Time is reported, not gated (shared CI machines drift). The gate is the
-# median allocations of one call, which the scheduler's bursts on paths that
-# start tasks do not move, and a structural regression does. Fewer than
-# recorded is reported so the record can be ratcheted down with --record.
+# median allocations of one call, with no tolerance, except the few paths
+# that start tasks, whose median the scheduler moves: each has a stated
+# allowance (schedulerAllowance in Benchmarks). Fewer than recorded is
+# reported so the record can be ratcheted down with --record.
 (cd Benchmarks && swift run -c release StoicBenchmarks --check allocations.json)
 
 step "macros (Macros trait): expansion tests, usage tests, schemas against their hand-written twins"
