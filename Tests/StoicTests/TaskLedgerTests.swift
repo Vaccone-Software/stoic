@@ -24,9 +24,14 @@ struct TaskLedgerTests {
     @Test func aLeakedTaskIsReportedByName() async {
         await withTestAmbient(clock: TestClock()) {
             let gate = TestGate()
+            let started = AsyncGate()
             let machine = StateMachine<Int, Int>(initial: 0, label: "leaky") { _, next in .to(next) }
-            machine.whileIn(1, label: "stuck") { _ in await gate.wait() }   // ignores cancellation
+            machine.whileIn(1, label: "stuck") { _ in
+                started.open()
+                await gate.wait()   // ignores cancellation
+            }
             machine.send(1)
+            await started.wait()   // a visit left before its work begins runs none
             machine.send(2)   // leaves state 1; its work is cancelled but never stops
             let leftover = await stoicTasksStillRunning(within: .milliseconds(50))
             #expect(leftover.map(\.label) == ["leaky.stuck"])

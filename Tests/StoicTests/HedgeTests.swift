@@ -170,13 +170,16 @@ struct HedgeTests {
         }
         await clock.waitForSleepers(count: 2)
         await clock.advance(by: .milliseconds(100))
-        await clock.waitForSleepers(count: 1)
+        // No sleep follows the refusal, and attempt 1 is asleep already, so
+        // the refusal itself is what to wait for; the clock must not move
+        // before it, or attempt 1 could finish first and the hedge never ask.
+        #expect(await eventually { events.names.contains("hedge.budget_exhausted") })
         #expect(log.started == [1])
         await clock.advance(by: .milliseconds(400))
         #expect(await task.value == .success("only"))
         #expect(log.started == [1])
         #expect(events.names == ["hedge.budget_exhausted"])
-        #expect(events.events(named: "hedge.budget_exhausted")[0].level == .warning)
+        #expect(events.events(named: "hedge.budget_exhausted").first?.level == .warning)
     }
 
     @Test func eachHedgeSpendsATokenSoABudgetOfOneAllowsOne() async {
@@ -301,7 +304,9 @@ struct HedgeTests {
         }
         await clock.waitForSleepers(count: 2)
         await clock.advance(by: .milliseconds(100))   // 50 ms left: too little for a hedge
-        await clock.waitForSleepers(count: 1)
+        // No sleep follows the skip, and attempt 1 is asleep already, so the
+        // skip itself is what to wait for; the clock must not move before it.
+        #expect(await eventually { events.names.contains("hedge.deadline_skip") })
         #expect(log.started == [1])
         #expect(events.events(named: "hedge.deadline_skip").first?.duration("remaining") == .milliseconds(50))
         await clock.advance(by: .milliseconds(200))
