@@ -69,7 +69,7 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
     }
     let catalogue = Server(failures: 1)
     let episode = try await withUrgency(.interactive) {
-        try await Catalogue.episode.perform { _ throws(Flaky) in try await catalogue.fetch() }
+        try await Catalogue.episode.perform { _ in try await catalogue.fetch() }
     }
     print("  a tap got \(episode)")
     // The payment reaches the server and then the connection is lost: it
