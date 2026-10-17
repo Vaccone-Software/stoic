@@ -22,9 +22,11 @@ import Foundation
 /// What each library may depend on, among the package's own targets. The
 /// layers: the core and the JSON layer stand alone; schemas sit on JSON;
 /// persistence, observability, test support and Foundation's error table
-/// sit on the core; settings and HTTP compose those; the Apple libraries sit
-/// on the core and the Foundation table, and nothing portable ever depends
-/// on one of them.
+/// sit on the core; settings, HTTP and sealed storage compose those (sealed
+/// storage is persistence plus swift-crypto, behind its trait); the Apple
+/// libraries sit on the core and the Foundation table, and nothing portable
+/// ever depends on one of them. Sealed storage does not know `StoicApple`:
+/// an app joins its Keychain to it with an adapter of its own (design/24).
 let layering: [String: Set<String>] = [
     "Stoic": [],
     "StoicJSON": [],
@@ -34,6 +36,7 @@ let layering: [String: Set<String>] = [
     "StoicStore": ["Stoic"],
     "StoicObservability": ["Stoic"],
     "StoicSettings": ["Stoic", "StoicSchema", "StoicStore", "StoicJSON"],
+    "StoicSealed": ["Stoic", "StoicStore"],
     "StoicFoundation": ["Stoic"],
     "StoicHTTP": ["Stoic", "StoicFoundation", "StoicSchema", "StoicJSON"],
     "StoicApple": ["Stoic", "StoicFoundation"],

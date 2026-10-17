@@ -28,6 +28,16 @@ let swiftSyntax: [Target.Dependency] = [
     .product(name: "SwiftParser", package: "swift-syntax", condition: .when(traits: lintTrait)),
 ]
 
+// The sealed-storage library's build setting and its swift-crypto product:
+// present only when `Crypto` is on, as `Lint` and `Macros` do theirs, so a
+// consumer that never enables the trait never fetches swift-crypto (nor
+// builds BoringSSL on Linux). See design/24.
+let cryptoTrait: Set<String> = ["Crypto"]
+let cryptoDefine: SwiftSetting = .define("STOIC_CRYPTO", .when(traits: cryptoTrait))
+let crypto: [Target.Dependency] = [
+    .product(name: "Crypto", package: "swift-crypto", condition: .when(traits: cryptoTrait))
+]
+
 // The macros' build setting and their swift-syntax products: present only
 // when `Macros` is on. The same arrangement as `Lint`, and for the same
 // reason: SwiftPM builds every target of the package, so the macro sources
@@ -100,6 +110,10 @@ let package = Package(
         .library(name: "StoicMacros", targets: ["StoicMacros"]),
         .library(name: "StoicStore", targets: ["StoicStore"]),
         .library(name: "StoicSettings", targets: ["StoicSettings"]),
+        // Sealed storage (design/24): authenticated encryption for files and
+        // journals, keys kept in the app's custody. Needs the `Crypto` trait:
+        // `.package(url: …, traits: ["Crypto"])`.
+        .library(name: "StoicSealed", targets: ["StoicSealed"]),
         // The resilient HTTP client (design/19), with a scripted transport
         // for tests.
         .library(name: "StoicHTTP", targets: ["StoicHTTP"]),
@@ -117,6 +131,10 @@ let package = Package(
             name: "Macros",
             description: "Build the StoicMacros product (@Schema, @Refined). Pulls in swift-syntax, which is fetched only when this trait is enabled."
         ),
+        .trait(
+            name: "Crypto",
+            description: "Build the libraries that seal data (StoicSealed). Pulls in swift-crypto, which is fetched only when this trait is enabled."
+        ),
         .trait(name: "Logging", description: "Send Stoic's events to swift-log (StoicObservability). Fetches swift-log only when enabled."),
         .trait(name: "Metrics", description: "Count Stoic's events with swift-metrics (StoicObservability). Fetches swift-metrics only when enabled."),
         .default(enabledTraits: []),
@@ -125,6 +143,9 @@ let package = Package(
         // Used only by targets conditioned on the `Lint` or `Macros` trait, so a
         // consumer that enables neither never fetches swift-syntax.
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "604.0.0"),
+        // Used only by targets conditioned on the `Crypto` trait. On Apple
+        // platforms `Crypto` is CryptoKit; elsewhere it is BoringSSL.
+        .package(url: "https://github.com/apple/swift-crypto", "3.0.0"..<"6.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.16.0"),
         .package(url: "https://github.com/apple/swift-metrics", from: "2.12.0"),
     ],
@@ -228,6 +249,20 @@ let package = Package(
         .testTarget(
             name: "StoicSettingsTests", dependencies: ["StoicSettings", "Stoic", "StoicSchema", "StoicStore", "StoicJSON", "StoicTesting"],
             swiftSettings: strict),
+        // Sealed storage (design/24): AES-256-GCM over swift-crypto for whole
+        // files and journals, with the keys in a keyring the app keeps in its
+        // own custody. Compiled only with the `Crypto` trait, so adopting the
+        // other libraries fetches no cryptography package.
+        .target(
+            name: "StoicSealed",
+            dependencies: ["Stoic", "StoicStore"] + crypto,
+            swiftSettings: strict + [cryptoDefine]
+        ),
+        .testTarget(
+            name: "StoicSealedTests",
+            dependencies: ["StoicSealed", "Stoic", "StoicStore", "StoicTesting"] + crypto,
+            swiftSettings: strict + [cryptoDefine]
+        ),
         // HTTP (design/19): per-host retry, breaker and bulkhead, idempotency
         // keys, bounded responses decoded through schemas, request
         // coalescing, over a transport that tests replace with a script.
