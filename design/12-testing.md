@@ -35,7 +35,10 @@ cancelled wait returned as if it were satisfied. Both now end the wait with
 an issue. `timeout:` (real time, 5 seconds by default; `nil` for none)
 bounds it, and the message prints the clock's state: the time, every
 sleeper's deadline and how long until it, the number of sleeps begun, and
-how many were asked for. `clock.summary` gives the same text for a test's
+how many were asked for. A wait that times out also ends every sleep on the
+clock, now and later, with `CancellationError`: the test has failed, and work
+parked on a clock nobody will move would otherwise hang the run (a time limit
+cannot end a test awaiting an unstructured task), where this fails one test. `clock.summary` gives the same text for a test's
 own messages. Sleeps carry no labels, so a sleeper is known by its
 deadline.
 

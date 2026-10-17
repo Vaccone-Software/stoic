@@ -86,6 +86,11 @@ public final class TestClock: Clock, Sendable {
         var cancelledBeforeSleeping: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
         var totalSleeps = 0
+        // A wait for sleepers timed out: the test has already failed, and
+        // nothing will move this clock the way it meant to. Every sleep now
+        // ends at once, with `CancellationError`, so that whatever the test
+        // awaits can finish and the failure is one test's, not the run's.
+        var aborted = false
 
         mutating func add(_ sleeper: Sleeper) {
             sleepers[sleeper.id] = sleeper
@@ -206,7 +211,7 @@ public final class TestClock: Clock, Sendable {
                 let (outcome, waiters) = state.withLock { state -> (SleepOutcome, [CheckedContinuation<WaitResult, Never>]) in
                     state.totalSleeps += 1
                     state.arriving.remove(id)
-                    if state.cancelledBeforeSleeping.remove(id) != nil { return (.cancel, state.takeSatisfiedCountWaiters()) }
+                    if state.cancelledBeforeSleeping.remove(id) != nil || state.aborted { return (.cancel, state.takeSatisfiedCountWaiters()) }
                     if deadline.offset <= state.now { return (.wake, state.takeSatisfiedCountWaiters()) }
                     state.add(Sleeper(id: id, deadline: deadline.offset, continuation: continuation))
                     return (.sleep, state.takeSatisfiedCountWaiters())
@@ -319,7 +324,10 @@ public final class TestClock: Clock, Sendable {
     /// a minute later: after `timeout` of *real* time, or when the waiting
     /// task is cancelled, it records an issue that prints the clock's state —
     /// the time, every sleeper's deadline, and how many were asked for — and
-    /// returns.
+    /// returns. A timeout also ends every sleep on the clock, now and later,
+    /// with `CancellationError`: the test has failed, and a test that went on
+    /// to await work parked on a clock nobody will move would hang the whole
+    /// run, where this fails one test.
     ///
     /// - Parameters:
     ///   - count: How many sleepers must be asleep at once.
@@ -379,6 +387,8 @@ public final class TestClock: Clock, Sendable {
     private func wait(
         for target: Target, timeout: Swift.Duration?, sourceLocation: SourceLocation, asked: String, needs: String
     ) async {
+        // The clock already gave up on this test: the issue is recorded.
+        if state.withLock({ $0.aborted }) { return }
         let id = state.withLock { state -> UInt64 in
             defer { state.nextID += 1 }
             return state.nextID
@@ -432,6 +442,10 @@ public final class TestClock: Clock, Sendable {
                 """,
                 sourceLocation: sourceLocation
             )
+            if result == .timedOut {
+                state.withLock { $0.aborted = true }
+                cancelAllSleepers()
+            }
         }
     }
 

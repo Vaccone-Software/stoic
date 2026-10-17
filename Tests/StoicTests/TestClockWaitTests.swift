@@ -54,6 +54,30 @@ struct TestClockWaitTests {
         sleeper.cancel()
     }
 
+    /// A test that fails its wait and then awaits work parked on the clock
+    /// would hang the whole run: a time limit cannot end a test that awaits an
+    /// unstructured task. The failed wait ends every sleep instead.
+    @Test(.failureMode("design/01", "the clock is a test clock that never advances"), .timeLimit(.minutes(1)))
+    func aWaitThatTimesOutReleasesTheWorkParkedOnTheClock() async throws {
+        let clock = TestClock()
+        let parked = Task { try await clock.sleep(for: .seconds(3600)) }
+        let issues = await Self.recordedIssues {
+            await clock.waitForSleepers(count: 5, timeout: .milliseconds(100))
+        }
+        #expect(issues.count == 1)
+        await #expect(throws: CancellationError.self) { try await parked.value }
+        let later = Task { () async -> Bool in
+            do { try await clock.sleep(for: .seconds(1)) } catch { return true }
+            return false
+        }
+        #expect(await later.value, "a sleep begun after the failure ends at once too")
+        #expect(clock.sleeperCount == 0)
+        let again = await Self.recordedIssues {
+            await clock.waitForSleepers(count: 5, timeout: .seconds(30))
+        }
+        #expect(again.isEmpty, "the failure was reported once")
+    }
+
     @Test func aCancelledWaitIsReportedNotTreatedAsSatisfied() async throws {
         let clock = TestClock()
         let issues = await Self.recordedIssues {
