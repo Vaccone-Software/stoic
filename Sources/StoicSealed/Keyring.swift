@@ -14,7 +14,10 @@ public enum KeyringError: Error, Sendable, Hashable, CustomStringConvertible, Re
     case custody(CustodyError)
     /// The custody holds no keyring under that name, and the caller asked
     /// not to create one (``Keyring/IfMissing/fail``), or it has been removed
-    /// since this keyring was opened (``Keyring/reload()``).
+    /// since this keyring was opened (``Keyring/reload()``). On a reload it is
+    /// **a report, not a verdict**: the keys this keyring holds are still held,
+    /// and still open what they sealed, until the caller decides (``Keyring/destroy()``
+    /// is the only way a keyring becomes ``destroyed``).
     case missing
     /// The custody holds something under that name that is not a keyring: too
     /// short, the wrong magic, a checksum that does not match, no keys, a key
@@ -24,7 +27,7 @@ public enum KeyringError: Error, Sendable, Hashable, CustomStringConvertible, Re
     /// A keyring written in a format this release does not read (a newer one).
     /// Left untouched.
     case unsupportedVersion(UInt8)
-    /// The keyring has been destroyed (or found gone on reload): it seals
+    /// The keyring has been destroyed (``Keyring/destroy()``): it seals
     /// nothing, because a key that is not in the custody could never be found
     /// again.
     case destroyed
@@ -274,16 +277,24 @@ public final class Keyring: Sendable {
     /// Reads the custody again, for a process that shares the keyring with
     /// another: after the other rotated or retired, this sees its keys.
     ///
-    /// - Throws: ``KeyringError/missing`` if the item has gone (and the keyring
-    ///   is then destroyed here too), ``KeyringError/corrupt``,
-    ///   ``KeyringError/unsupportedVersion(_:)`` or ``KeyringError/custody(_:)``,
-    ///   each leaving what this keyring holds as it was.
+    /// A reload that finds nothing **changes nothing**. If the item is gone (the
+    /// other process destroyed it, the user deleted it, the device was restored)
+    /// it throws ``KeyringError/missing`` and this keyring keeps the keys it
+    /// holds in memory, which still open whatever they sealed: a second reader
+    /// that polls must not be the thing that makes the data unreadable, and
+    /// those keys may be the only copy left. What to do is the caller's: stop
+    /// and say the key is lost; carry on with the keys in memory (a later
+    /// ``rotate()`` stores the whole ring, so it also puts the item back, which
+    /// may or may not be what whoever removed it wanted); or ``destroy()`` to
+    /// make this keyring forget them.
+    ///
+    /// - Throws: ``KeyringError/missing`` if the item has gone,
+    ///   ``KeyringError/corrupt``, ``KeyringError/unsupportedVersion(_:)`` or
+    ///   ``KeyringError/custody(_:)``, each leaving what this keyring holds as
+    ///   it was (keys, current key, and whether it is destroyed).
     public func reload() throws(KeyringError) {
         try changes.withLock { (_) throws(KeyringError) in
-            guard let stored = try Self.load(name: name, custody: custody) else {
-                state.withLock { $0.keys = []; $0.destroyed = true }
-                throw .missing
-            }
+            guard let stored = try Self.load(name: name, custody: custody) else { throw .missing }
             let keys = try RingFormat.decode(stored)
             state.withLock { $0.keys = keys; $0.destroyed = false }
         }

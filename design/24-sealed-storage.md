@@ -140,7 +140,7 @@ ring.key(id: id)                   // any key held, or nil
 let fresh = try ring.rotate()      // persisted before it is returned
 try ring.retire(id: old.id)        // crypto-shredding
 try ring.destroy()
-try ring.reload()                  // after another process rotated
+try ring.reload()                  // after another process rotated; .missing changes nothing here
 
 // Whole files
 let notes = SealedFile(keyring: ring)                        // 0o600, atomic, over AtomicFile
@@ -301,6 +301,14 @@ no compare-and-swap; two writers overwrite each other. Let one process (the
 app) create and rotate; another (a command-line tool) opens with `.fail` and calls
 `reload()` to see a rotation. The read back after a write catches the common
 interleaving, not every one.
+
+**`reload()` on an item that is gone throws `.missing` and changes nothing.** The keys this keyring
+holds stay held and keep opening what they sealed: a second reader that polls must not be what makes
+sealed data unreadable, and those keys may be the only copy left. Whether the item was removed
+on purpose (the other process called `destroy()`), by the user, or lost with a restore is not
+something the custody can say, so the caller decides: report the key as lost, carry on with the
+keys in memory (a later `rotate()` stores the whole ring, which also puts the item back), or
+`destroy()` this keyring too. `destroy()` is the only call that makes a keyring destroyed.
 
 ## Key custody
 
@@ -593,6 +601,7 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | the custody fails or loses the write of a rotation                        | An error (`.custody`, or `.notPersisted` for a write that was lost); the new key is not used; the keyring is as it was                                                                                                               |
 | a key is retired                                                          | What it sealed can no longer be opened (`.unknownKey`), here and in any process that reloads; retiring twice is not an error; the current key cannot be retired                                                                      |
 | a keyring is destroyed                                                    | The custody item is deleted; `current` throws `.destroyed`; nothing is found or sealed; a delete that fails leaves it usable                                                                                                         |
+| a keyring is reloaded and the custody no longer holds it                  | `reload()` throws `.missing` and changes nothing: the keys in memory are still held and still open what they sealed; only `destroy()` makes a keyring destroyed                                                                     |
 | a second process rotates the keyring the first has open                   | The first cannot open what was sealed under the new key (`.unknownKey`) until `reload()`                                                                                                                                             |
 | keys are used from many threads while the keyring rotates                 | Every value sealed under the current key opens; memory and custody agree                                                                                                                                                             |
 | a file is written and read back                                           | The file is a sealed value with nothing else beside it; no plaintext on disk                                                                                                                                                         |

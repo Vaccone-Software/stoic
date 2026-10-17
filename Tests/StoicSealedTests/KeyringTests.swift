@@ -284,12 +284,41 @@ struct KeyringTests {
         #expect(try reader.current.id == fresh.id)
     }
 
-    @Test func reloadingAKeyringTheCustodyNoLongerHoldsDestroysIt() throws {
+    @Test(.failureMode("design/24", "a keyring is reloaded and the custody no longer holds it"))
+    func reloadingAKeyringTheCustodyNoLongerHoldsReportsItAndDestroysNothing() throws {
         let custody = InMemoryKeyCustody()
         let ring = try open(custody, .create).keyring
+        let old = try ring.current
+        let sealed = try Sealing.seal(bytes("kept"), context: Self.context, key: old)
+        try custody.delete(name: Self.name)
+
+        // A second reader asks, twice: it is told, and nothing changes.
+        for _ in 0..<2 {
+            #expect(throws: KeyringError.missing) { try ring.reload() }
+            #expect(ring.keyIDs == [old.id])
+            #expect(try ring.current.id == old.id)
+            #expect(try Sealing.open(sealed, context: Self.context, keyring: ring) == bytes("kept"), "the keys in memory still open what they sealed")
+        }
+        #expect(custody.names.isEmpty, "a reload writes nothing")
+
+        // Sealing goes on with the key in memory; it is the caller's call.
+        _ = try Sealing.seal(bytes("more"), context: Self.context, key: try ring.current)
+
+        // Only destroy() makes a keyring destroyed.
+        try ring.destroy()
+        #expect(throws: KeyringError.destroyed) { try ring.current }
+        #expect(ring.keyIDs.isEmpty && ring.key(id: old.id) == nil)
+    }
+
+    @Test func aRotationAfterAReloadThatFoundNothingStoresTheWholeRingAgain() throws {
+        let custody = InMemoryKeyCustody()
+        let ring = try open(custody, .create).keyring
+        let old = try ring.current
         try custody.delete(name: Self.name)
         #expect(throws: KeyringError.missing) { try ring.reload() }
-        #expect(throws: KeyringError.destroyed) { try ring.current }
+        let fresh = try ring.rotate()
+        let reader = try open(custody, .fail).keyring
+        #expect(reader.keyIDs == [fresh.id, old.id], "the item is back, with the old key beside the new")
     }
 
     @Test func aReloadThatCannotReadLeavesTheKeyringAsItWas() throws {
