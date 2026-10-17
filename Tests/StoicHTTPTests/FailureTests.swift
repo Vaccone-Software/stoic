@@ -227,6 +227,45 @@ struct HTTPFailureTests {
         }
     }
 
+    // Row: the body decodes with warnings or repairs.
+    @Test(.failureMode("design/19", "the body decodes with warnings or repairs")) func aDecodeThatSucceededWithWarningsIsReportedWithoutItsValues() async throws {
+        try await withRig { (rig) async throws in
+            rig.transport.on(.get("/users/42"), respond: [.json(#"{"id": 42, "name": "Ada", "s3cret-key": "s3cret-value"}"#)])
+            let user = try await rig.api.send(.get("/users/42"), decoding: User.schema)
+            #expect(user == User(id: 42, name: "Ada"), "the value still goes to the caller")
+            let reported = rig.events.events(named: "http.decoded_with_warnings")
+            let event = try #require(reported.first)
+            #expect(reported.count == 1)
+            #expect(event.level == .warning)
+            #expect(event.label == "http api.example.com")
+            #expect(event.text("method") == "GET" && event.text("host") == "api.example.com" && event.text("path") == "/users/42")
+            #expect(event.number("warnings") == 1)
+            #expect(event.number("repairs") == 0)
+            #expect(event.text("codes") == "unknown_key")
+            #expect(event.fields.first { $0.key == "codes" }?.privacy == .public)
+            #expect(event.text("paths") == "$.s3cret-key" || event.text("paths") == #"$["s3cret-key"]"#, "\(event)")
+            #expect(event.fields.first { $0.key == "paths" }?.privacy == .private, "a path can name a key the server chose")
+            #expect(!event.fields.contains { $0.description.contains("s3cret-value") || $0.description.contains("Ada") }, "no value, no body: \(event)")
+            #expect(rig.events.count("http.decoding_failed") == 0)
+        }
+    }
+
+    @Test func aRepairIsCountedAndACleanDecodeSaysNothing() async throws {
+        var policy = HTTPPolicy.testing()
+        policy.decodeOptions = .lenient
+        try await withRig(policy) { (rig) async throws in
+            rig.transport.on(.get("/users/1"), respond: [.json(#"{"id": 7, "name": 5}"#)])
+            rig.transport.on(.get("/users/2"), respond: [.json(#"{"id": 2, "name": "Grace"}"#)])
+            _ = try await rig.api.send(.get("/users/1"), decoding: User.schema)
+            let event = try #require(rig.events.events(named: "http.decoded_with_warnings").first)
+            #expect(event.number("warnings") == 0)
+            #expect(event.number("repairs") == 1)
+            #expect(event.text("path") == "/users/1")
+            _ = try await rig.api.send(.get("/users/2"), decoding: User.schema)
+            #expect(rig.events.count("http.decoded_with_warnings") == 1, "a clean decode records nothing")
+        }
+    }
+
     @Test func aResponseWithinTheCapDecodesEvenWhenItIsOverTheParsersDefaultLimit() async throws {
         let chunk = String(repeating: "x", count: 900_000)
         let pad = Array(repeating: "\"\(chunk)\"", count: 10).joined(separator: ",")

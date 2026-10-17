@@ -44,10 +44,15 @@ struct PreparedRequest: Sendable {
     }
 }
 
-/// A response with the number of requests it took.
+/// A response with the number of requests it took, and what an event about
+/// it says of the request that earned it.
 struct Delivered: Sendable {
     var response: HTTPResponse
     var attempts: Int
+    /// The label and fields of the request the response answers: the last
+    /// hop's, after any redirect.
+    var label: String
+    var fields: [Event.Field]
 }
 
 /// The breaker, rate limiter and bulkhead the client keeps for one host.

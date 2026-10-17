@@ -159,6 +159,7 @@ inside a simulation.
 | the caller's deadline passes mid-backoff      | No further attempt; `.rejected(deadline_exceeded)`                         |
 | the response is 2 GB                          | `.responseTooLarge` after `maxResponseBytes`; connection cancelled         |
 | the body does not match the schema            | `.decoding` with every issue; not retried                                  |
+| the body decodes with warnings or repairs     | The value; one `http.decoded_with_warnings` says what was decided          |
 | ten identical `GET`s at once                  | One request; ten results                                                   |
 | the caller is cancelled                       | The request is cancelled; `CancellationError`                              |
 | a response within the cap has one string over 1 MiB or an array over 100,000 elements | Decoded: the parser's string and container limits are raised to what `maxResponseBytes` can hold |
@@ -183,7 +184,10 @@ inside a simulation.
 
 `http.request` (debug: method, host, path, status, duration, attempt),
 `http.retry` (delay, reason), `http.failed`, `http.coalesced`,
-`http.response_too_large`, `http.decoding_failed`, `http.reauthenticated`,
+`http.response_too_large`, `http.decoding_failed`,
+`http.decoded_with_warnings` (warning: the counts of warnings and repairs and
+their issue codes; the paths, which may name a key the server chose, are
+private), `http.reauthenticated`,
 `http.reauthenticate_failed` (the type of the hook's error, never its text),
 `http.redirected` (status, hop, the method, host and path it leads to, and
 whether the origin changed; never a header or a query);
@@ -330,8 +334,9 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   waiting on a flight gets `.rejected(deadline_exceeded)` with `attempts: 0`
   (it left before the flight reported). The request is cancelled when the last
   caller leaves.
-- **Decoding** uses `Schema.decodeReporting`; only errors fail it (warnings
-  and repairs are dropped). The options are `HTTPPolicy.decodeOptions`
+- **Decoding** uses `Schema.decodeReporting`; only errors fail it. Warnings and
+  repairs do not, and are not dropped either: a decode that succeeded with any
+  records one `http.decoded_with_warnings` (below). The options are `HTTPPolicy.decodeOptions`
   (client-wide) or `send(_:decoding:options:)` (per call). Unknown keys are not
   a `DecodeOptions` setting but each object schema's `UnknownKeyPolicy`, whose
   default `warn` ignores a field the server added; a schema declared `reject`
@@ -362,7 +367,12 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   it leads to (never its query), and `origin_changed`; a refused redirect is an
   `http.failed`. `http.failed` (warning), `http.coalesced` (debug, per caller that joined),
   `http.response_too_large` (warning) and `http.decoding_failed` (notice; the
-  number of errors, never the body). Event labels are `"<client label> <host>"`.
+  number of errors, never the body). `http.decoded_with_warnings` (warning) is
+  recorded once per response that decoded with warnings or repairs: the
+  request's method, host and path, `warnings` and `repairs` counts, `codes` (the
+  distinct issue codes, public) and `paths` (private: a path can name a key the
+  server chose). Never a value or any of the body. With coalescing, each caller
+  that decodes records its own. Event labels are `"<client label> <host>"`.
   No event carries a header, a body, or a response excerpt: the pipeline's error
   type prints as `status_503`, not with the body excerpt that
   `HTTPError.status` holds.

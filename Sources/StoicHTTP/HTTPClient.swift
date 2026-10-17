@@ -103,8 +103,10 @@ public final class HTTPClient: Sendable {
 
     /// Sends `request` and decodes the response body through `schema`. A body
     /// that does not match is ``HTTPError/decoding(_:attempts:)`` with every
-    /// issue, and is not retried. Asks for `application/json` unless the
-    /// request names an `Accept` itself.
+    /// issue, and is not retried. A body that matches, but with warnings or
+    /// repairs (a key the server added, a field repaired to its default),
+    /// returns its value and records one `http.decoded_with_warnings`. Asks
+    /// for `application/json` unless the request names an `Accept` itself.
     ///
     /// - Parameters:
     ///   - request: The request to send.
@@ -134,7 +136,24 @@ public final class HTTPClient: Sendable {
             ]))
             throw HTTPError.decoding(failure, attempts: delivered.attempts)
         }
+        let unerrored = decoded.issues.filter { $0.severity != .error }
+        if !unerrored.isEmpty { noteDecodedWithWarnings(unerrored, of: delivered) }
         return value
+    }
+
+    /// A decode that succeeded can still have decided something: a field
+    /// repaired to its default, an element dropped, a key the server added.
+    /// The value goes to the caller; what was decided is said here, as codes
+    /// and counts. A path may name a key the server chose, so it is private.
+    private func noteDecodedWithWarnings(_ issues: [Issue], of delivered: Delivered) {
+        let codes = Set(issues.map(\.code.rawValue)).sorted().joined(separator: ",")
+        let paths = issues.map { String(describing: $0.path) }.joined(separator: ", ")
+        Ambient.record(Event("http.decoded_with_warnings", level: .warning, label: delivered.label, fields: delivered.fields + [
+            .init("warnings", .int(issues.filter { $0.severity == .warning }.count)),
+            .init("repairs", .int(issues.filter { $0.severity == .repaired }.count)),
+            .init("codes", .string(codes), privacy: .public),
+            .init("paths", .string(paths), privacy: .private),
+        ]))
     }
 
     // MARK: Inspection
@@ -432,7 +451,7 @@ public final class HTTPClient: Sendable {
 
         switch result {
         case .success(let response):
-            return .delivered(Delivered(response: response, attempts: log.count))
+            return .delivered(Delivered(response: response, attempts: log.count, label: prepared.hostLabel(label), fields: prepared.fields))
         case .failure(let error):
             let outcome = finalOutcome(for: error, attempts: log.count, watcher: watcher, host: host)
             if case .failed(let failure) = outcome {
