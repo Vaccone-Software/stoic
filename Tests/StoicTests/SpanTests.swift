@@ -110,9 +110,15 @@ struct SpanTests {
         let events = RecordingInstrumentation()
         try await withTestAmbient(clock: ImmediateClock(), seed: 6, events: events) {
             try await withSpan("request") {
+                // A scope cancels its forks when its body ends, and a fork
+                // cancelled before it began runs none of its work: the body
+                // waits until both have run.
+                let ran = (a: AsyncGate(), b: AsyncGate())
                 try await withTaskScope(label: "work") { scope in
-                    scope.fork(label: "a") { await withSpan("child.a") {} }
-                    scope.fork(label: "b") { await withSpan("child.b") {} }
+                    scope.fork(label: "a") { await withSpan("child.a") {}; ran.a.open() }
+                    scope.fork(label: "b") { await withSpan("child.b") {}; ran.b.open() }
+                    await ran.a.wait()
+                    await ran.b.wait()
                 }
                 async let sibling: Void = withSpan("child.async") {}
                 await sibling
