@@ -271,9 +271,16 @@ public struct SealedFile: Sendable {
                 try fileSystem.setPermissions(file, to: mode)
                 try fileSystem.write(file, bytes, at: 0)
                 try fileSystem.fullSync(file)
-                try fileSystem.close(file)
             } catch {
                 _ = Result { () throws(StoreError) in try fileSystem.close(file) }
+                discard(staged)
+                throw error
+            }
+            // Closed once, and only here: a descriptor closed twice may be
+            // another file's by the second.
+            do throws(StoreError) {
+                try fileSystem.close(file)
+            } catch {
                 discard(staged)
                 throw error
             }
