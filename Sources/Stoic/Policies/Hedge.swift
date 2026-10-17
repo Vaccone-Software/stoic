@@ -176,10 +176,13 @@ public nonisolated(nonsending) func hedge<R: Sendable, Failure: Error>(
                     report("hedge.budget_exhausted", [.init("attempts", .int(started))], level: .warning)
                     break
                 }
+                // Read before the attempt starts: it runs on its own task, and
+                // by the time this one reports, the clock may have moved on.
+                let elapsed = start.duration(to: clock.now)
                 startAttempt()
                 report("hedge.started", [
                     .init("attempt", .int(started)),
-                    .init("elapsed", .duration(start.duration(to: clock.now))),
+                    .init("elapsed", .duration(elapsed)),
                 ])
                 if started < maxAttempts { startTimer() }
 
