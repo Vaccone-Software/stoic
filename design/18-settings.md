@@ -49,6 +49,7 @@ let settings = try SettingsStore.open(at: path, schema: Prefs.schema, format: .h
 settings.fileProblem                            // nil, or .unparsable(issues) with line and column / .unreadable(error); Observable
 try settings.update { $0.scrollSpeed = 900 }    // reads the file again under `<path>.lock`; .busy if another process holds it now
 try await settings.coordinatedUpdate { … }      // the same, waiting up to lockTimeout; .busy after it
+try settings.blockingUpdate(waitingUpTo: .seconds(2)) { … }   // the same, synchronous: BLOCKS THE THREAD while it waits
 try settings.reload()                           // re-read; publish the change, or keep the last good value and say why
 let watch = try settings.watch(debounce: .milliseconds(300))   // reload when the file changes
 ```
@@ -265,7 +266,25 @@ thread, a test clock drives it) up to `lockTimeout`, two seconds by default and
 configurable, then throws `.busy`; a cancelled wait is `CancellationError`. It
 is a separate method, not an `async` overload of `update`, because an `async`
 overload of the same name is the one an `async` caller gets without asking, and
-would break every such caller that does not write `await`. A store opened with
+would break every such caller that does not write `await`.
+
+**A synchronous caller that has to wait** (a settings writer that cannot become
+`async`: it is called from a command handler, or from code that cannot suspend)
+uses `blockingUpdate(waitingUpTo:)`: it tries the lock every 25 ms and sleeps the
+thread between tries, for up to `waitingUpTo` (the store's `lockTimeout` when
+omitted; zero tries once, as `update` does), then throws `.busy`. **It blocks the
+calling thread for as long as it waits, and must not be called on the main actor
+in new code**: use `coordinatedUpdate` wherever the caller can `await`. The wait
+is bounded, and is as long as the other writer holds the lock (one small write).
+It counts *real* time, by the monotonic clock, and not the ambient clock: a
+synchronous caller cannot await the ambient clock's `sleep`, and a test clock
+does not advance while a thread is blocked, so a wait counted on it would never
+end. (The cost is that a test of the wait itself cannot be driven by `TestClock`;
+the wait is a value (`BlockingWait`) that a test stands in for, with a pause that
+advances made-up time and hands the lock over, and one test runs the real wait
+for 120 ms.) A cancelled calling task leaves with `CancellationError`, checked
+before each try (so a task cancelled before it began does not take a free lock
+and write); and it ends at the timeout whatever the lock's holder does. A store opened with
 `crossProcessLock` holds the same lock for its whole life, which every
 command-line tool that takes it per edit would then wait on for ever: with it
 set, the store's own hold is the lock its updates use.
@@ -330,6 +349,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | a hand-edited file has a file header          | Written first on every update, ignored on read, never carried, and never seen by the schema (a `json` value does not hold it); a header key that is a setting, or a schema that rejects unknown keys, is refused by `open` with `.invalidArgument` |
 | a hand-edited file was changed since the store read it | The update reads it again under the lock and applies its change to what is there; nothing the other writer did is lost; the store adopts it even when the change is a no-op |
 | another process holds the lock on a hand-edited file | `coordinatedUpdate` waits up to `lockTimeout` on the ambient clock, then `.busy` (`settings.busy`), reading and writing nothing; `update` is `.busy` at once; a cancelled wait is `CancellationError` |
+| a synchronous update has to wait for the other writer's lock | `blockingUpdate(waitingUpTo:)` blocks the thread, polling every 25 ms in real time; it updates when the lock is free (applied to what the other writer left), else `.busy` after exactly the wait (`settings.busy` with how long), reading and writing nothing; a cancelled task is `CancellationError` |
 | two processes update a hand-edited file at once | Serialised by the lock, each applying its change to the other's result: every update lands |
 | the app holds the lock for life and the file is hand-edited | Its updates use that hold and take no second lock (which would conflict with it) |
 | a hand-edited file is replaced by a rename    | `reload()` (or the watch) publishes the new value; observers are told |

@@ -225,6 +225,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// A test seam: run between a reload's read of the file and its
     /// publication, to put another writer exactly there.
     let betweenReloadAndPublish = Mutex<(@Sendable () -> Void)?>(nil)
+    /// What ``blockingUpdate(waitingUpTo:_:)`` measures and paces its wait
+    /// with: real time. A test seam.
+    let blockingWait = Mutex(BlockingWait.real)
 
     /// Opens the settings at `path`. Never fails because of what is in the
     /// file (a hand-edited file that cannot be read is a ``fileProblem``, not a
@@ -469,6 +472,42 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
     }
 
+    /// ``update(_:)``, waiting for another process that is writing a
+    /// hand-edited file to let go of its lock, **and blocking the calling
+    /// thread while it waits**.
+    ///
+    /// For callers that are synchronous and cannot become `async`: a command
+    /// handler, a settings writer called from a place that cannot suspend. If
+    /// you can `await`, use ``coordinatedUpdate(lockTimeout:_:)``, which waits
+    /// without holding a thread; and **never call this on the main actor in new
+    /// code**, where a wait of up to `waitingUpTo` freezes the interface. (The
+    /// wait is bounded, and is as long as the other writer holds the lock, which
+    /// is one small write: a few milliseconds, then the update itself.)
+    ///
+    /// - **The wait is real time.** It tries the lock every 25 ms by the
+    ///   monotonic clock and sleeps the thread between tries. It does not use
+    ///   the ambient clock: a test clock does not advance while a thread is
+    ///   blocked, so waiting on it would never end, and its `sleep` is `async`.
+    /// - **It ends** when the lock is free, after `waitingUpTo` with
+    ///   ``UpdateError/busy`` (`settings.busy`, with how long it waited), or
+    ///   when the calling task is cancelled, with `CancellationError`, checked
+    ///   between tries. Nothing is read or written until the lock is held.
+    /// - For an app-owned store there is no other writer, and this is
+    ///   ``update(_:)``; one opened with `crossProcessLock` already holds the
+    ///   lock and does not wait.
+    ///
+    /// - Parameter waitingUpTo: How long to wait for the lock; the store's
+    ///   ``HandEditedOptions/lockTimeout`` (two seconds) when `nil`. Zero tries
+    ///   once, as ``update(_:)`` does.
+    @discardableResult
+    public func blockingUpdate(waitingUpTo wait: Duration? = nil, _ change: (inout Value) throws -> Void) throws -> Value {
+        guard format == .handEdited else { return try update(change) }
+        defer { notifyObservers() }
+        let held = try lockBlocking(waitingUpTo: wait ?? editing.lockTimeout)
+        defer { release(held) }
+        return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
+    }
+
     private func updateAppOwned(_ change: (inout Value) throws -> Void) throws -> Value {
         let (old, source, document, repaired) = current.withLock { ($0.value, $0.source, $0.document, $0.repaired) }
         if case .newerFormat = source { throw UpdateError.newerFormat }
@@ -542,18 +581,49 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// the other writers already.
     private func lockWithoutWaiting() throws -> FileLock? {
         guard lock == nil else { return nil }
-        let candidate = FileLock(path: path + ".lock", fileSystem: file.fileSystem)
-        let acquired: Bool
-        do throws(StoreError) {
-            acquired = try candidate.tryAcquire()
-        } catch {
-            throw UpdateError.storage(error)
-        }
-        guard acquired else {
-            Ambient.record(Event("settings.busy", level: .warning, label: path, fields: [.init("waitMs", .int(0))]))
+        guard let candidate = try tryLock() else {
+            recordBusy(waited: .zero)
             throw UpdateError.busy
         }
         return candidate
+    }
+
+    /// One try at the lock on `<path>.lock`: the lock if it was free, `nil` if
+    /// another holds it.
+    private func tryLock() throws(UpdateError) -> FileLock? {
+        let candidate = FileLock(path: path + ".lock", fileSystem: file.fileSystem)
+        do throws(StoreError) {
+            return try candidate.tryAcquire() ? candidate : nil
+        } catch {
+            throw .storage(error)
+        }
+    }
+
+    /// ``lockWithoutWaiting()``, trying again every ``BlockingWait/pollInterval``
+    /// for up to `timeout`, on the thread. Real time, for the reason
+    /// ``BlockingWait`` gives.
+    private func lockBlocking(waitingUpTo timeout: Duration) throws -> FileLock? {
+        guard lock == nil else { return nil }
+        let wait = blockingWait.withLock { $0 }
+        let started = wait.now()
+        while true {
+            // Cancellation is cancellation, not a reason the lock was busy; and a
+            // task that was cancelled does not go on to write.
+            if Task.isCancelled { throw CancellationError() }
+            if let held = try tryLock() { return held }
+            let waited = wait.now() - started
+            guard waited < timeout else {
+                recordBusy(waited: waited)
+                throw UpdateError.busy
+            }
+            wait.pause(min(BlockingWait.pollInterval, timeout - waited))
+        }
+    }
+
+    private func recordBusy(waited: Duration) {
+        let components = waited.components
+        let milliseconds = components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000
+        Ambient.record(Event("settings.busy", level: .warning, label: path, fields: [.init("waitMs", .int(Int(milliseconds)))]))
     }
 
     private func lockWaiting(up timeout: Duration) async throws -> FileLock? {
@@ -569,11 +639,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
                 // Cancellation is cancellation, not a reason the lock was busy.
                 throw CancellationError()
             case .rejected:
-                let components = timeout.components
-                let milliseconds = components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000
-                Ambient.record(Event("settings.busy", level: .warning, label: path, fields: [
-                    .init("waitMs", .int(Int(milliseconds))),
-                ]))
+                recordBusy(waited: timeout)
                 throw UpdateError.busy
             }
         }
