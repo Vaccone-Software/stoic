@@ -373,6 +373,37 @@ struct StateMachineTests {
         _ = kept
     }
 
+    /// A stream holds its own lock while it runs its termination handler, and
+    /// the machine's handler takes the machine's lock: a machine that yielded
+    /// while holding its lock deadlocked against an observer that stopped
+    /// listening at that moment. A deadlock is not something a time limit can
+    /// end: the threads that would enforce it are the ones stuck.
+    @Test(.failureMode("design/07", "an observer stops listening while the machine moves"))
+    func anObserverThatStopsListeningWhileTheMachineMovesBlocksNeither() async {
+        enum Tick: Sendable { case tick }
+        let machine = StateMachine<Int, Tick>(initial: 0, label: "counter", historyLimit: 0, clock: TestClock().erased) { count, _ in
+            .to(count + 1)
+        }
+        let stop = SendableBox(false)
+        let senders = (0..<2).map { _ in
+            Task {
+                while !stop.value {
+                    machine.send(.tick)
+                    await Task.yield()
+                }
+            }
+        }
+        for _ in 0..<2_000 {
+            let observer = Task { for await _ in machine.states() {} }
+            await Task.yield()
+            observer.cancel()
+            await observer.value
+        }
+        stop.mutate { $0 = true }
+        for sender in senders { await sender.value }
+        #expect(await eventually { machine.observerCount == 0 }, "every observer that stopped is forgotten")
+    }
+
     @Test func aTimeoutCountsFromEntryNotFromWhenItsTimerFirstRuns() async {
         let clock = TestClock()
         let machine = StateMachine(initial: Phase.idle, label: "dictation", clock: clock.erased, transition: Self.transitions)

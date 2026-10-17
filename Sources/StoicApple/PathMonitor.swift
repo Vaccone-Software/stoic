@@ -197,11 +197,19 @@ private final class Debouncer: Sendable {
         var pending: Pending?
         var generation: UInt64 = 0
         var stopped = false
+        // Paths decided on and not yet yielded, in order.
+        var outbox: [NetworkPath] = []
     }
 
     private let settle: Duration
     private let continuation: AsyncStream<NetworkPath>.Continuation
     private let state = Mutex(State())
+    // Keeps yields in the order they were decided. A stream holds its own
+    // lock while it runs its `onTermination` handler, and that handler
+    // calls `stop()`, which takes `state`, so `state` is never held while
+    // yielding. Lock order: `publishing`, then `state`, never the reverse;
+    // `stop()` takes only `state`.
+    private let publishing = Mutex(())
 
     init(settle: Duration, continuation: AsyncStream<NetworkPath>.Continuation) {
         self.settle = settle
@@ -230,7 +238,7 @@ private final class Debouncer: Sendable {
             // The first path, or no debouncing: deliver now.
             if state.delivered == nil || settle <= .zero {
                 state.delivered = path
-                continuation.yield(path)
+                state.outbox.append(path)
                 return nil
             }
             // Back to what was delivered: the change was a glitch.
@@ -251,6 +259,7 @@ private final class Debouncer: Sendable {
             return old
         }
         superseded?.cancel()
+        publish()
     }
 
     private func settled(_ path: NetworkPath, generation: UInt64) {
@@ -258,7 +267,23 @@ private final class Debouncer: Sendable {
             guard !state.stopped, let pending = state.pending, pending.generation == generation else { return }
             state.pending = nil
             state.delivered = path
-            continuation.yield(path)
+            state.outbox.append(path)
+        }
+        publish()
+    }
+
+    /// Yields every path decided on and not yet yielded, in order; called
+    /// outside `state`, by whoever decided.
+    private func publish() {
+        publishing.withLock { _ in
+            while true {
+                let batch = state.withLock { state -> [NetworkPath] in
+                    defer { state.outbox.removeAll() }
+                    return state.outbox
+                }
+                if batch.isEmpty { return }
+                for path in batch { continuation.yield(path) }
+            }
         }
     }
 }

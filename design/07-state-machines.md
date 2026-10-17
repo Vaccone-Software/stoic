@@ -100,7 +100,10 @@ cancellation handlers on the cancelling thread, at once, and a handler that
 reads the machine (or work observing `states()`, whose stream ends on
 cancellation) must not find it locked. The transition function and
 `whileIn` predicates do run under the lock; one that uses a machine is a
-precondition failure that says so, not the lock's own abort.
+precondition failure that says so, not the lock's own abort. States are
+yielded to `states()` observers outside the lock too, in transition order: a
+stream holds its own lock while it runs its termination handler, and the
+machine's handler takes the machine's lock.
 `states()` streams the current state with newest-only buffering — a UI
 wants where the machine is, not every step it took.
 
@@ -137,6 +140,7 @@ events; use typestate for values whose protocol a single caller drives.
 | the state is left before its timeout          | The timer is cancelled; no event                     |
 | a thousand tasks send events at once          | Applied one at a time; none lost                     |
 | state work's cancellation handler uses the machine | Safe: work is cancelled once the lock is released |
+| an observer stops listening while the machine moves | Neither waits for the other: states are yielded outside the lock, in order |
 | a transition function uses the machine        | Precondition failure naming the rule                 |
 | a state is left while its work is still cleaning up | The next visit's work starts once that work has stopped |
 | state work does not stop within its shutdown timeout | Abandoned and reported; the next visit's work starts |

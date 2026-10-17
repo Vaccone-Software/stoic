@@ -73,10 +73,13 @@ public final class FakePathMonitor: PathMonitor {
 
     /// Makes `path` the current one and delivers it to every subscription.
     public func send(_ path: NetworkPath) {
-        state.withLock { state in
+        // Yielded outside the lock: a stream holds its own lock while it runs
+        // its termination handler, which takes this one.
+        let subscribers = state.withLock { state in
             state.current = path
-            for continuation in state.subscribers.values { continuation.yield(path) }
+            return Array(state.subscribers.values)
         }
+        subscribers.forEach { $0.yield(path) }
     }
 
     /// Ends every open subscription, as a monitor that was cancelled would.

@@ -176,6 +176,35 @@ struct ReachabilityTests {
         #expect(await task.value == .failure(.monitorEnded))
     }
 
+    /// A stream holds its own lock while it runs its termination handler, and
+    /// the handlers of the debounce and of the fake monitor take their own
+    /// locks: a path yielded while holding one deadlocked against a consumer
+    /// that stopped listening at that moment. A deadlock is not something a
+    /// time limit can end: the threads that would enforce it are the ones stuck.
+    @Test(.failureMode("design/21", "the consumer stops listening"))
+    func aConsumerThatStopsWhilePathsArriveBlocksNeitherSide() async {
+        let monitor = FakePathMonitor(.satisfied)
+        let stop = SendableBox(false)
+        let sender = Task {
+            var up = false
+            while !stop.value {
+                monitor.send(up ? .satisfied : .unsatisfied)
+                up.toggle()
+                await Task.yield()
+            }
+        }
+        for _ in 0..<2_000 {
+            let consumer = Task { for await _ in monitor.stablePaths(settle: .zero) {} }
+            await Task.yield()
+            consumer.cancel()
+            await consumer.value
+        }
+        stop.mutate { $0 = true }
+        await sender.value
+        await monitor.waitUntilIdle()
+        #expect(monitor.subscriberCount == 0)
+    }
+
     @Test(.failureMode("design/21", "the consumer stops listening"))
     func aConsumerThatStopsLeavesNothingRunning() async {
         let clock = TestClock()

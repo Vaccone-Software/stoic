@@ -136,11 +136,20 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         var activities: [Activity] = []
         var observers: [UInt64: AsyncStream<State>.Continuation] = [:]
         var nextObserver: UInt64 = 0
+        // States entered but not yet yielded, each with the observers there
+        // were when it was entered.
+        var outbox: [(state: State, observers: [AsyncStream<State>.Continuation])] = []
     }
 
     private let transition: TransitionFunction
     private let clock: AnyClock
     private let core: Mutex<Core>
+    // Keeps yields to observers in transition order. A stream holds its own
+    // lock while it runs its `onTermination` handler, and the handler takes
+    // `core`, so `core` is never held while yielding. Lock order:
+    // `publishing`, then `core`, never the reverse; nothing a stream can
+    // call takes `publishing`.
+    private let publishing = Mutex(())
     private let registrar = ObservationRegistrar()
     // Built once: a key path into a generic class is otherwise rebuilt at run
     // time, demangling its generic arguments, every time its literal is
@@ -274,6 +283,8 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             return (leaving, core.exit, observers)
         }
         for task in leaving { task.cancel() }
+        // The last states entered reach the observers before the end does.
+        publish()
         for observer in observers { observer.finish() }
         await exit?.value
     }
@@ -301,6 +312,24 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             self?.core.withLock { _ = $0.observers.removeValue(forKey: id) }
         }
         return stream
+    }
+
+    /// Yields every state entered and not yet yielded, in order, to the
+    /// observers it was entered with: called outside `core`, by whoever
+    /// entered it.
+    private func publish() {
+        publishing.withLock { _ in
+            while true {
+                let batch = core.withLock { core -> [(state: State, observers: [AsyncStream<State>.Continuation])] in
+                    defer { core.outbox.removeAll() }
+                    return core.outbox
+                }
+                if batch.isEmpty { return }
+                for entered in batch {
+                    for observer in entered.observers { observer.yield(entered.state) }
+                }
+            }
+        }
     }
 
     /// How many `states()` streams are still being listened to.
@@ -334,6 +363,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
 
     private func apply(_ event: Event, onlyDuring visit: UInt64?) {
         var leaving: [Task<Void, Never>] = []
+        var observed = false
         let outcome = core.withLock { core -> Outcome in
             if core.isShutDown { return .stale }
             if let visit, core.visit != visit { return .stale }
@@ -344,6 +374,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                 return .invalid(core.state, reason)
             case .to(let next, let timeout):
                 if !core.stateWork.isEmpty || core.timer != nil { leaving = leave(&core) }
+                observed = !core.observers.isEmpty
                 return .moved(enter(next, timeout: timeout, cause: event, core: &core))
             }
         }
@@ -352,8 +383,9 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         // at once, and one that touches the machine must not find it locked.
         for task in leaving { task.cancel() }
         // Observers and events are notified outside the lock: neither an
-        // observation callback nor an instrumentation sink may be able to
-        // deadlock the machine.
+        // observation callback, an instrumentation sink, nor an observer that
+        // stops listening may be able to deadlock the machine.
+        if observed { publish() }
         if case .moved = outcome {
             registrar.withMutation(of: self, keyPath: stateKeyPath) {}
             registrar.withMutation(of: self, keyPath: historyKeyPath) {}
@@ -446,7 +478,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             core.historyHead = (core.historyHead + 1) % historyLimit
         }
         if !core.observers.isEmpty {
-            for observer in core.observers.valuesInKeyOrder { observer.yield(next) }
+            core.outbox.append((next, core.observers.valuesInKeyOrder))
         }
 
         // Enter: start the new visit's work and its timer.
