@@ -39,6 +39,24 @@ public struct HTTPPolicy: Sendable {
     /// after at least a second whatever this set holds.
     public var retryStatuses: Set<Int>
 
+    /// Whether a `409` answering a request that carries an idempotency key
+    /// means "an earlier attempt with this key is still being processed"
+    /// (the default, `true`: it is retried after at least a second, and the
+    /// error says so to an outer retry) or is the server's final answer.
+    ///
+    /// A `409` is ambiguous, and no rule that reads only the status can tell
+    /// the two apart. Stripe and most payment APIs use it for "in progress";
+    /// Resend answers `409 invalid_idempotent_request` for the *same key with
+    /// a different body*, which no retry can fix. Turn this off for a server
+    /// whose `409` is a refusal: the call fails at once with
+    /// ``HTTPError/status(_:excerpt:retryAfter:keyed:attempts:)`` whose `keyed` is
+    /// `false`, which classifies as `.stop`. `425` (Too Early) is always read as
+    /// in progress; a `409` that ``retryOnResponse`` asks to retry is retried
+    /// as that verdict says, after the schedule's delay, not as "in progress".
+    ///
+    /// Not a parameter of `init`: set it on the value (`var policy = HTTPPolicy.standard`).
+    public var keyedConflictIsInProgress = true
+
     /// The longest a `Retry-After` is honoured. A server asking for more is
     /// waited for this long, not longer (and never past the caller's
     /// deadline). Default 60 s.
@@ -199,6 +217,26 @@ public struct HTTPPolicy: Sendable {
     ///
     /// A new value each time, so each client gets its own retry budget.
     public static var standard: HTTPPolicy { HTTPPolicy() }
+
+    /// One attempt, no breaker, the attempt timeout kept: for a caller whose
+    /// retrying lives elsewhere, such as an `Outbox`, whose delivery is retried
+    /// on its own schedule across runs and launches.
+    ///
+    /// A request that fails fails at once, and the error classifies itself
+    /// (``HTTPError/retryDecision``) for whoever retries. There is no breaker
+    /// because a delivery loop that waits minutes or hours between runs does
+    /// not need one to protect the host, and a breaker that opened on its
+    /// failures would refuse the next run's first request, on a stale verdict.
+    /// The rest is the standard policy's: the 10 s attempt timeout (a request
+    /// that hangs is not an attempt that never ends), at most 8 requests in
+    /// flight to a host, redirects followed. Inside another retry's attempt the
+    /// client already makes one attempt (design/19, Nested retries); this is
+    /// the same without depending on being nested, and without the breaker.
+    ///
+    /// A new value each time, like ``standard``.
+    public static var singleAttempt: HTTPPolicy {
+        HTTPPolicy(schedule: Schedule.immediate.attempts(1), breaker: nil)
+    }
 
     public static let standardSchedule: BoundedSchedule =
         Schedule.exponential(base: .milliseconds(200)).capped(at: .seconds(10)).jittered().attempts(3)

@@ -71,6 +71,18 @@ retried after at least a second: the server's `Retry-After` if that is longer,
 else one second, in place of the schedule's delay. Without a key a `409` is the
 server's answer, and final.
 
+A `409` is ambiguous, and no rule that reads only the status can tell the two
+meanings apart: Stripe and most payment APIs answer it for "in progress", but
+Resend answers `409 invalid_idempotent_request` for the *same key with a
+different body*, which no retry can fix, and the body is the server's wording,
+not a contract. So the reading is the policy's to change:
+`HTTPPolicy.keyedConflictIsInProgress` (default `true`, as above). Off, a keyed
+`409` is final like an unkeyed one: the call fails at once with `.status`, whose
+`keyed` is `false`, so `HTTPError.retryDecision` says `.stop` to an outbox or a
+`perform` too (the error carries the client's reading; it has no policy to ask).
+`425` is always "in progress" (Too Early is not ambiguous), and a `409` that
+`retryOnResponse` asks to retry is retried as that verdict says.
+
 **Statuses.** 2xx is success. 408, 429, 500, 502, 503 and 504 are retried,
 after `Retry-After` when the server gives one (both the seconds and the
 HTTP-date form), capped by the schedule's maximum and the caller's
@@ -196,6 +208,8 @@ inside a simulation.
 | a redirect chain is longer than the limit | `.redirectRefused(limit)` once `maxRedirects` (10) have been followed |
 | the caller's deadline passes during a redirect chain | `.rejected(deadline_exceeded)`: one deadline spans every hop |
 | a keyed request is answered 409 or 425 | "In progress": retried after at least 1 s, or the `Retry-After`; without a key it is the server's answer, `.status` |
+| a keyed request is answered 409 and the policy reads it as a refusal | `keyedConflictIsInProgress` is `false`: final at once, `.status` with `keyed: false`, which classifies as `.stop`; `425` is still "in progress" |
+| a call is made under `singleAttempt`   | One attempt: a failure is the error, with no backoff and no breaker to open on it; a hung attempt is cut at the attempt timeout, `.timedOut(attempt: 1)` |
 | a call runs inside a `perform` attempt | One attempt through none of the client's retry, breaker, bulkhead or rate limit; the operation retries, by `HTTPError`'s classification |
 | a call inside a `perform` attempt fails before a connection exists | `neverReachedBackend`: a not-repeatable operation is tried again |
 | a call inside a `perform` attempt fails after its request may have been sent | Not `neverReachedBackend` (a lost connection, a 503, a failure after a redirect): a not-repeatable operation is not repeated |
@@ -339,7 +353,14 @@ flight (at most, now) and requests aborted (cancelled, or cut at the limit).
   chain has left that origin.
 - **Nested retries.** The client keeps Stoic's default, `nesting:
   .singleAttempt`: inside another retry's attempt (an `Outbox` delivery, say)
-  it makes one attempt and the outer retry owns the retrying.
+  it makes one attempt and the outer retry owns the retrying. A client whose
+  retrying lives elsewhere always says so with `HTTPPolicy.singleAttempt`: one
+  attempt, no breaker (a delivery loop that comes back after minutes or hours
+  needs none to protect the host, and a breaker would refuse its next run's first
+  request on a verdict from the last), the attempt timeout kept (10 s, so a hung
+  request is not an attempt that never ends). The rest is the standard policy's:
+  the bulkhead, redirects, byte limits. Its failures are `HTTPError`s that
+  classify themselves for whoever retries.
 - **Inside a `perform` attempt** the client does not retry at all (design/22,
   Inside StoicHTTP). It asks the core whether the task runs inside a live
   attempt of a `perform` (a `package` function, the frame the operation

@@ -531,8 +531,12 @@ public final class HTTPClient: Sendable {
         case .failed(let attempt):
             switch attempt {
             case .status(let code, let excerpt, let retryAfter, _):
-                return .failed(.status(
-                    code, excerpt: excerpt, retryAfter: retryAfter, keyed: prepared.request.carriesIdempotencyKey, attempts: attempts))
+                // `keyed` carries the in-progress reading, so an outer retry
+                // classifies the error as this client did (a conflict the
+                // policy takes as a refusal is not a wait to the outbox either).
+                let keyed = prepared.request.carriesIdempotencyKey
+                    && (code != 409 || policy.keyedConflictIsInProgress)
+                return .failed(.status(code, excerpt: excerpt, retryAfter: retryAfter, keyed: keyed, attempts: attempts))
             case .transport(let code):
                 return .failed(.transport(code, attempts: attempts))
             case .timedOut:

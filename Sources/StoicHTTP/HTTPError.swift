@@ -19,7 +19,10 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// APIs put their explanation; `retryAfter` is the server's `Retry-After`
     /// as sent, before the policy capped it. `keyed` says the request carried
     /// an `Idempotency-Key`, which is what makes a `409` or `425` "in
-    /// progress" rather than a refusal (``retryDecision``).
+    /// progress" rather than a refusal (``retryDecision``). It is `false` for
+    /// a `409` when ``HTTPPolicy/keyedConflictIsInProgress`` is off: the
+    /// policy has said that this server's `409` is a refusal, and the error
+    /// carries that reading to whatever retries around the client.
     case status(Int, excerpt: String, retryAfter: Duration?, keyed: Bool = false, attempts: Int)
 
     /// The request did not complete: the network failed in the way `code`
@@ -233,7 +236,7 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
         guard safeToRepeat else { return .stop }
         switch self {
         case .status(let code, _, let retryAfter, let verdict):
-            let inProgress = keyed && InProgress.statuses.contains(code)
+            let inProgress = keyed && InProgress.statuses.contains(code) && (code != 409 || policy.keyedConflictIsInProgress)
             var decision: RetryDecision
             switch verdict {
             case .stop?:
