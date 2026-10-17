@@ -52,7 +52,8 @@ internal import Synchronization
 /// - **An update reads the file again under a lock** on `<path>.lock`, so an
 ///   edit made a moment ago is not lost: ``coordinatedUpdate(lockTimeout:_:)``
 ///   waits for another process, ``update(_:)`` does not.
-/// - **Outside changes arrive** through ``reload()``.
+/// - **Outside changes arrive** through ``reload()``, and ``watch(debounce:)``
+///   calls it when the file changes.
 ///
 /// Reads are cheap (a lock); updates do file I/O on the calling thread, so
 /// make them off the main actor when latency matters.

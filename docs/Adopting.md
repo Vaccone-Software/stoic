@@ -76,6 +76,12 @@ swiftSettings: [
 9. **Settings written with `Data.write`** → `SettingsStore.open(at:schema:)`:
    validated updates, crash-safe writes, migrations, and an older build that
    cannot destroy what a newer one saved.
+   For a config file people edit by hand while the app runs (and a command-line
+   tool may edit too), open it with `format: .handEdited`: a file with a typo is
+   never renamed or overwritten, the issue says `line:column`, an update reads
+   the file again under a lock (`coordinatedUpdate` waits for the other writer),
+   writes are sparse and byte-stable, and `watch()` picks up edits made outside
+   the app. Say `missingVersion: .current` in the schema of such a file.
 10. **Handles closed under a wedged call** → when a scope's work may be
     abandoned, declare the handle's release `ifWorkAbandoned: .quarantine`.
 

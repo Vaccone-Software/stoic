@@ -103,6 +103,7 @@ public enum EventCatalog {
         Entry(name: "settings.newer_format", level: .warning, meaning: "Settings were written by a newer app version; opened read-only and left untouched."),
         Entry(name: "settings.recovered", level: .warning, meaning: "The settings file was unusable; the previous generation was used and the file quarantined."),
         Entry(name: "settings.rejected", level: .notice, meaning: "A settings update produced a value the schema refuses; nothing changed."),
+        Entry(name: "settings.reload_failed", level: .warning, meaning: "A reload the file watcher started failed (an app-owned file whose read failed); the value is as it was."),
         Entry(name: "settings.reloaded", level: .info, meaning: "A reload found a hand-edited settings file changed (by a person or another process) and published what it holds."),
         Entry(name: "settings.repaired", level: .warning, meaning: "Invalid settings fields fell back to their defaults; reports how many."),
         Entry(name: "settings.reset", level: .error, meaning: "No settings file was usable; the defaults were used and the files quarantined."),

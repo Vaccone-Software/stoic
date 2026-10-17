@@ -49,6 +49,7 @@ settings.fileProblem                            // nil, or .unparsable(issues) w
 try settings.update { $0.scrollSpeed = 900 }    // reads the file again under `<path>.lock`; .busy if another process holds it now
 try await settings.coordinatedUpdate { … }      // the same, waiting up to lockTimeout; .busy after it
 try settings.reload()                           // re-read; publish the change, or keep the last good value and say why
+let watch = try settings.watch(debounce: .milliseconds(300))   // reload when the file changes
 ```
 
 and `StoicJSON` the pieces of an undo history: `JSONChange.between(old, new)`
@@ -63,7 +64,8 @@ invalid field falls back to its default with a `repaired` issue instead of
 discarding every other setting. A file that cannot be used at all (torn,
 not JSON, the wrong shape) is quarantined, never deleted, and the previous
 generation is tried; failing that, the defaults. `source` says which, and
-why.
+why. (That is the app-owned file. A hand-edited one is the person's, and is
+never quarantined: see *A file a person edits*.)
 
 **A repaired value stays in the file.** A value the schema does not accept
 may be a newer build's (a range it widened, an enumeration case it added,
@@ -234,11 +236,21 @@ would break every such caller that does not write `await`. A store opened with
 command-line tool that takes it per edit would then wait on for ever: with it
 set, the store's own hold is the lock its updates use.
 
-**Changes from outside arrive through `reload()`.** `reload()` re-reads the
-file and publishes what it holds, or keeps the last good value and reports why.
-It never throws for a hand-edited file, never touches it, and does nothing when
-the file is byte-for-byte what the store last read or wrote (nothing published,
-nothing reported).
+**Changes from outside arrive through `reload()` and `watch`.** `reload()`
+re-reads the file and publishes what it holds, or keeps the last good value and
+reports why. It never throws for a hand-edited file, never touches it, and does
+nothing when the file is byte-for-byte what the store last read or wrote
+(nothing published, nothing reported). `watch(debounce:)` calls it when the file
+changes: it watches the file's *directory* (design/15), so an editor that saves
+by renaming a new file over the old, and a file that does not exist yet, are
+both seen. The reload runs once the file has been quiet for `debounce` (0.3 s by
+default) on the ambient clock, so an editor's several writes, or a tool saving
+twice, are one reload. **The store's own writes are reported by the watcher too,
+and the reload finds nothing changed**: the watcher cannot tell them from an
+editor's, and comparing the bytes costs one read. A platform that cannot say
+which entry of the directory changed (kqueue) reports changes to other files
+too, with the same result. The watch does not keep the store alive, and ends
+with its `SettingsWatch` (`stop()`, or dropping it).
 
 **Migrations are read through and written new.** A renamed key (a migration or
 an alias) is read from the old spelling, with a `migrated` or `deprecated_key`
@@ -286,6 +298,11 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | the app holds the lock for life and the file is hand-edited | Its updates use that hold and take no second lock (which would conflict with it) |
 | a hand-edited file is replaced by a rename    | `reload()` (or the watch) publishes the new value; observers are told |
 | the store's own write is reported by the watcher | The reload finds the file as the store left it: nothing published or reported |
+| several changes arrive in a burst             | One reload, once the file has been quiet for `debounce` (the last change restarts the wait) |
+| the hand-edited file is edited while the app runs | The watch reloads it after `debounce`: a create, a write in place and a save by rename are all seen; a half-saved file is a `fileProblem` until the next save |
+| the hand-edited file does not exist yet       | `watch` works (the directory is watched); the file is picked up when it is created |
+| the watch is stopped or dropped               | No reload starts for it; the store is unaffected, and is not kept alive by it |
+| the watch cannot start                        | `watch` throws the `StoreError`: `.notFound` for a missing directory, `.unsupported`, `.invalidArgument` for a debounce that is not positive |
 
 ## Events
 
@@ -295,7 +312,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 `settings.save_failed`; for a hand-edited file `settings.unparsed` (reason, the
 line and column of the first problem, which value is kept), `settings.reloaded`
 (source, issue count), `settings.update_refused` (reason), `settings.busy` (how
-long it waited) and `settings.lock_release_failed`.
+long it waited), `settings.reload_failed` and `settings.lock_release_failed`.
 None carries a setting's value: issues are counted and positioned, never quoted.
 
 ## Testing
@@ -303,4 +320,8 @@ None carries a setting's value: issues are counted and positioned, never quoted.
 Every row above on the simulated file system, including a crash at every
 point of an update (old value or new, never a mix, never unreadable), and
 a newer document surviving an older store's open and attempted update. The
-hand-edited rows run on a test clock (the lock's wait is the ambient clock's).
+hand-edited rows run on a test clock (the lock's wait and the watch's debounce
+are the ambient clock's), with the simulated file system calling the watcher as
+a real one would; one test runs the watch on the real file system, where the
+platform's own mechanism (kqueue or inotify) delivers a create, a write in place
+and a save by rename, and waits on the store's own value, never on a sleep.
