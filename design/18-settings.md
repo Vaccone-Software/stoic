@@ -56,6 +56,8 @@ try settings.blockingUpdate(waitingUpTo: .seconds(2)) { … }   // the same, syn
 try settings.reload()                           // re-read; publish the change, or keep the last good value and say why
 try settings.materialize()                      // write the file if there is none (first launch); a file that is there is never touched
 let copy = try settings.replaceUnusableFile(with: Prefs())   // "reset": copy the unreadable file aside, then replace it
+try settings.blockingMaterialize(waitingUpTo: .seconds(2))   // the same two, synchronous, waiting for the other writer's lock:
+try settings.blockingReplaceUnusableFile(with: Prefs(), waitingUpTo: .seconds(2), source: "reset")   //   BLOCK THE THREAD while they wait
 let watch = try settings.watch(debounce: .milliseconds(300))   // reload when the file changes
 ```
 
@@ -369,6 +371,23 @@ which entry of the directory changed (kqueue) reports changes to other files
 too, with the same result. The watch does not keep the store alive, and ends
 with its `SettingsWatch` (`stop()`, or dropping it).
 
+**A first launch or a reset that has to wait** (a command-line tool beside the
+app is writing at that moment, and the caller cannot `await`) uses the blocking
+forms: `blockingMaterialize(waitingUpTo:)` and
+`blockingReplaceUnusableFile(with:keepingCopyAt:waitingUpTo:source:)`. The wait
+is `blockingUpdate`'s, in every particular (real time by the monotonic clock,
+polled every 25 ms, `nil` is the store's `lockTimeout`, `.zero` tries once as the
+plain call does, a cancelled task is `CancellationError` checked before each try,
+**the thread is blocked**, not on the main actor in new code), and nothing is
+read, copied or written until the lock is held. After it every step is the plain
+call's: a file made by the other writer while the call waited is found there and
+not written over (`false`); a file the person fixed meanwhile is `.fileIsUsable`;
+the person's bytes are copied and checked before anything is replaced. A wait that
+ends is `.busy` (`UpdateError` for materialize, `ReplaceError` for replace), with
+`settings.busy`. A replacement that happened carries its `source` on the `.reset`
+change. There is no async form of either: a caller that can `await` has no reason to
+reset a configuration in a place that cannot, and the plain calls say `.busy` at once.
+
 **Writing the whole file, on purpose.** Two calls write the file *as a whole*,
 each only when the app says so, and neither is ever an effect of opening, reloading
 or updating:
@@ -446,6 +465,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | a hand-edited file was changed since the store read it | The update reads it again under the lock and applies its change to what is there; nothing the other writer did is lost; the store adopts it even when the change is a no-op |
 | another process holds the lock on a hand-edited file | `coordinatedUpdate` waits up to `lockTimeout` on the ambient clock, then `.busy` (`settings.busy`), reading and writing nothing; `update` is `.busy` at once; a cancelled wait is `CancellationError` |
 | a synchronous update has to wait for the other writer's lock | `blockingUpdate(waitingUpTo:)` blocks the thread, polling every 25 ms in real time; it updates when the lock is free (applied to what the other writer left), else `.busy` after exactly the wait (`settings.busy` with how long), reading and writing nothing; a cancelled task is `CancellationError` |
+| a first launch or a reset has to wait for the other writer's lock | `blockingMaterialize` and `blockingReplaceUnusableFile` poll every 25 ms in real time up to `waitingUpTo` (the store's `lockTimeout` when `nil`; `.zero` tries once), reading, copying and writing nothing until they hold it; then they do what the plain call does (a file made meanwhile is found there; a file fixed meanwhile is `.fileIsUsable`; the person's bytes are copied and checked first); after the wait `.busy` with `settings.busy`; a cancelled task is `CancellationError` before any try, so no free lock is taken and nothing written |
 | there is no file and the app materializes it | The sparse current value with the header is written, mode `0600`; `true`; `settings.materialized` |
 | a file is there and the app materializes it | Nothing is read as a reason to write, nothing is changed: readable, garbage or empty, byte for byte; `false` |
 | two processes materialize the file at once | Serialised by the lock; the first writes, the second finds the file there and writes nothing |

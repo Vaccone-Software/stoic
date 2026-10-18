@@ -76,36 +76,66 @@ extension SettingsStore {
         defer { notifyObservers() }
         let held = format == .handEdited ? try lockWithoutWaiting() : nil
         defer { release(held) }
-        return try writing.withLock { _ throws(UpdateError) -> Bool in
-            let present: Bool
-            do throws(StoreError) {
-                present = try file.fileSystem.exists(path)
-            } catch {
-                throw .storage(error)
-            }
-            if present { return false }
-            // What is held may be older than a deletion made since: adopt that first, as an update does.
-            let state = format == .handEdited ? refresh() : current.withLock { $0 }
-            let written: Written
-            do throws(StoreError) {
-                written = try write(state.value, carrying: state.document, repaired: state.repaired)
-            } catch where error.kind == .durabilityUnknown {
-                let json = encoded(state.value, carrying: state.document, repaired: state.repaired)
-                publish(committed(state.value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .update)
-                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
-                    .init("error", .error(error)), .init("during", .string("materialize"), privacy: .public),
-                ]))
-                throw .durabilityUnknown(error)
-            } catch {
-                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
-                    .init("error", .error(error)), .init("during", .string("materialize"), privacy: .public),
-                ]))
-                throw .storage(error)
-            }
-            publish(committed(state.value, written), cause: .update)
-            Ambient.record(Event("settings.materialized", level: .info, label: path))
-            return true
+        return try writing.withLock { _ throws(UpdateError) -> Bool in try materializeLocked() }
+    }
+
+    /// ``materialize()``, waiting for another process that holds the lock on a
+    /// hand-edited file to let go, **and blocking the calling thread while it
+    /// waits**: for a first launch that cannot `await`, which would otherwise
+    /// see `.busy` whenever a command-line tool happened to be writing at that
+    /// moment, and have to write the retry itself.
+    ///
+    /// The wait is ``blockingUpdate(waitingUpTo:_:)``'s, with its cautions: real
+    /// time, polled every 25 ms, not on the main actor in new code, ended by the
+    /// lock being free, by `waitingUpTo` (``UpdateError/busy``, `settings.busy`),
+    /// or by cancellation (`CancellationError`, checked between tries), and
+    /// nothing is read or written until the lock is held. `.zero` tries once,
+    /// as ``materialize()`` does. For an app-owned store there is no other
+    /// writer to wait for.
+    ///
+    /// - Parameters:
+    ///   - wait: How long to wait for the lock; the store's
+    ///     ``HandEditedOptions/lockTimeout`` when `nil`.
+    /// - Returns: Whether it wrote the file.
+    /// - Throws: ``UpdateError``, or `CancellationError`.
+    @discardableResult
+    public func blockingMaterialize(waitingUpTo wait: Duration? = nil) throws -> Bool {
+        defer { notifyObservers() }
+        let held = format == .handEdited ? try lockBlocking(waitingUpTo: wait ?? editing.lockTimeout) : nil
+        defer { release(held) }
+        return try writing.withLock { _ throws(UpdateError) -> Bool in try materializeLocked() }
+    }
+
+    /// The writing of the file, under `writing` and the lock.
+    private func materializeLocked() throws(UpdateError) -> Bool {
+        let present: Bool
+        do throws(StoreError) {
+            present = try file.fileSystem.exists(path)
+        } catch {
+            throw .storage(error)
         }
+        if present { return false }
+        // What is held may be older than a deletion made since: adopt that first, as an update does.
+        let state = format == .handEdited ? refresh() : current.withLock { $0 }
+        let written: Written
+        do throws(StoreError) {
+            written = try write(state.value, carrying: state.document, repaired: state.repaired)
+        } catch where error.kind == .durabilityUnknown {
+            let json = encoded(state.value, carrying: state.document, repaired: state.repaired)
+            publish(committed(state.value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .update)
+            Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                .init("error", .error(error)), .init("during", .string("materialize"), privacy: .public),
+            ]))
+            throw .durabilityUnknown(error)
+        } catch {
+            Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                .init("error", .error(error)), .init("during", .string("materialize"), privacy: .public),
+            ]))
+            throw .storage(error)
+        }
+        publish(committed(state.value, written), cause: .update)
+        Ambient.record(Event("settings.materialized", level: .info, label: path))
+        return true
     }
 
     // MARK: Replacing an unusable file
@@ -159,36 +189,85 @@ extension SettingsStore {
         }
         defer { release(held) }
         return try writing.withLock { _ throws(ReplaceError) -> String in
-            let state = refresh()
-            guard state.problem != nil else { throw .fileIsUsable }
-            let problems = schema.validate(value)
-            guard problems.isEmpty else {
-                Ambient.record(Event("settings.rejected", level: .notice, label: path, fields: [.init("issues", .int(problems.count))]))
-                throw .invalid(problems)
-            }
-            let copyPath = try copyBrokenFile(to: copy)
-            let written: Written
-            do throws(StoreError) {
-                written = try write(value, carrying: nil, repaired: [])
-            } catch where error.kind == .durabilityUnknown {
-                let json = encoded(value, carrying: nil, repaired: [])
-                publish(committed(value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .reset)
-                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
-                    .init("error", .error(error)), .init("during", .string("replace"), privacy: .public),
-                ]))
-                throw .durabilityUnknown(error, copy: copyPath)
-            } catch {
-                Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
-                    .init("error", .error(error)), .init("during", .string("replace"), privacy: .public),
-                ]))
-                throw .storage(error, copy: copyPath)
-            }
-            publish(committed(value, written), cause: .reset)
-            Ambient.record(Event("settings.replaced", level: .warning, label: path, fields: [
-                .init("copy", .string(copyPath)),
-            ]))
-            return copyPath
+            try replaceLocked(with: value, keepingCopyAt: copy, source: nil)
         }
+    }
+
+    /// ``replaceUnusableFile(with:keepingCopyAt:)``, waiting for another process
+    /// that holds the lock on the file to let go, **and blocking the calling
+    /// thread while it waits**: for a "reset configuration" command that cannot
+    /// `await`, and should not answer "try again" because a command-line tool
+    /// happened to be writing at that moment.
+    ///
+    /// The wait is ``blockingUpdate(waitingUpTo:_:)``'s, with its cautions: real
+    /// time, polled every 25 ms, not on the main actor in new code, ended by the
+    /// lock being free, by `waitingUpTo` (``ReplaceError/busy``, `settings.busy`),
+    /// or by cancellation (`CancellationError`, checked between tries), and
+    /// nothing is read, copied or written until the lock is held. `.zero` tries
+    /// once, as ``replaceUnusableFile(with:keepingCopyAt:)`` does. Every step
+    /// after the lock is that call's, with its guarantees: the person's bytes are
+    /// copied and checked before anything is replaced.
+    ///
+    /// - Parameters:
+    ///   - value: What the file holds afterwards; usually the defaults.
+    ///   - copy: Where the person's bytes go, in a directory that exists.
+    ///   - wait: How long to wait for the lock; the store's
+    ///     ``HandEditedOptions/lockTimeout`` when `nil`.
+    ///   - source: Who is doing it, carried to the ``SettingsChange`` it makes
+    ///     (cause ``SettingsChange/Cause/reset``; ``SettingsChange/source``).
+    /// - Returns: Where the copy is.
+    /// - Throws: ``ReplaceError``, or `CancellationError`.
+    @discardableResult
+    public func blockingReplaceUnusableFile(
+        with value: Value, keepingCopyAt copy: String? = nil, waitingUpTo wait: Duration? = nil, source: String? = nil
+    ) throws -> String {
+        guard format == .handEdited else { throw ReplaceError.notHandEdited }
+        defer { notifyObservers() }
+        let held: FileLock?
+        do {
+            held = try lockBlocking(waitingUpTo: wait ?? editing.lockTimeout)
+        } catch UpdateError.storage(let failure) {
+            throw ReplaceError.lockFailed(failure)
+        } catch UpdateError.busy {
+            throw ReplaceError.busy
+        }
+        defer { release(held) }
+        return try writing.withLock { _ throws(ReplaceError) -> String in
+            try replaceLocked(with: value, keepingCopyAt: copy, source: source)
+        }
+    }
+
+    /// The replacement, under `writing` and the lock.
+    private func replaceLocked(with value: Value, keepingCopyAt copy: String?, source: String?) throws(ReplaceError) -> String {
+        let state = refresh()
+        guard state.problem != nil else { throw .fileIsUsable }
+        let problems = schema.validate(value)
+        guard problems.isEmpty else {
+            Ambient.record(Event("settings.rejected", level: .notice, label: path, fields: [.init("issues", .int(problems.count))]))
+            throw .invalid(problems)
+        }
+        let copyPath = try copyBrokenFile(to: copy)
+        let written: Written
+        do throws(StoreError) {
+            written = try write(value, carrying: nil, repaired: [])
+        } catch where error.kind == .durabilityUnknown {
+            let json = encoded(value, carrying: nil, repaired: [])
+            publish(committed(value, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .reset, source: source)
+            Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                .init("error", .error(error)), .init("during", .string("replace"), privacy: .public),
+            ]))
+            throw .durabilityUnknown(error, copy: copyPath)
+        } catch {
+            Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
+                .init("error", .error(error)), .init("during", .string("replace"), privacy: .public),
+            ]))
+            throw .storage(error, copy: copyPath)
+        }
+        publish(committed(value, written), cause: .reset, source: source)
+        Ambient.record(Event("settings.replaced", level: .warning, label: path, fields: [
+            .init("copy", .string(copyPath)),
+        ]))
+        return copyPath
     }
 
     /// Copies the file's bytes to `requested` (or the next free `<path>.broken-N`),

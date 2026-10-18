@@ -20,7 +20,9 @@ public struct SettingsChange<Value: Sendable & Equatable>: Sendable, Equatable {
 
     /// Who the app says did it: the `source` its caller gave the update
     /// (``SettingsStore/update(source:_:)``, ``SettingsStore/coordinatedUpdate(lockTimeout:source:_:)``,
-    /// ``SettingsStore/blockingUpdate(waitingUpTo:source:_:)``), so a history can say "the settings window", "the `lodestar config` command",
+    /// ``SettingsStore/blockingUpdate(waitingUpTo:source:_:)`` and
+    /// ``SettingsStore/blockingReplaceUnusableFile(with:keepingCopyAt:waitingUpTo:source:)``),
+    /// so a history can say "the settings window", "the `lodestar config` command",
     /// "an import" without a side channel that has to be kept in step with the
     /// order changes are announced in.
     ///
