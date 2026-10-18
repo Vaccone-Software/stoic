@@ -184,6 +184,10 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let index = parameters["index"]?.number?.lexeme ?? "?"
             let reason = parameters["reason"]?.string.map { ": " + $0 } ?? ""
             return "dropped the element at index \(index), which is invalid\(reason)"
+        case .droppedEntry:
+            let key = parameters["key"]?.string ?? lastKey
+            let reason = parameters["reason"]?.string.map { ": " + $0 } ?? ""
+            return "dropped the entry `\(key)`, which is invalid\(reason)"
         case .versionTooNew:
             let found = parameters["version"]?.number?.lexeme ?? "?"
             let supported = parameters["supported"]?.number?.lexeme ?? "?"

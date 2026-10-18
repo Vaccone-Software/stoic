@@ -147,8 +147,9 @@ public struct TransformNode: Sendable {
     /// or 1e400 as values the number refuses: whether the conversion does is
     /// for its own ``counterexamples`` to say.
     public var readsNumberDigits: Bool
-    /// Whether the conversion drops the elements of an array base that do
-    /// not decode, with a warning each, instead of failing. A generator's
+    /// Whether the conversion drops the elements of an array base (or the
+    /// entries of a dictionary base) that do not decode, with a warning
+    /// each, instead of failing. A generator's
     /// mutation that breaks an element is then expected to cause that
     /// warning, and a JSON Schema validator, which has no such tolerance,
     /// is not asked to agree about it.

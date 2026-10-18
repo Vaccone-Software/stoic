@@ -97,6 +97,11 @@ public struct IssueCode: RawRepresentable, Hashable, Sendable, CustomStringConve
     /// parameters.
     public static let droppedElement = IssueCode(rawValue: "dropped_element")
 
+    /// A warning: an entry of a lossy dictionary that did not decode and was
+    /// left out. Its `key` and the first problem with it are in the
+    /// parameters.
+    public static let droppedEntry = IssueCode(rawValue: "dropped_entry")
+
     // MARK: Versions
 
     /// A document of a version newer than the schema's, which the schema

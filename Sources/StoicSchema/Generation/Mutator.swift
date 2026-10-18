@@ -128,6 +128,8 @@ struct Mutator {
             if transform.readsNumberDigits { inner.doubleLimits = false }
             if transform.dropsInvalidElements, case .array(let element, let constraints) = transform.base {
                 collectArray(element, constraints, value, path, inner, &out, lossy: true)
+            } else if transform.dropsInvalidElements, case .dictionary(let element, let constraints) = transform.base {
+                collectDictionary(element, constraints, value, path, inner, &out, lossy: true)
             } else if transform.clampsToRange {
                 let ranges = transform.base.constraints.compactMap { constraint -> NumberRange? in
                     if case .range(let range) = constraint.kind { range } else { nil }
@@ -512,7 +514,8 @@ struct Mutator {
         _ value: JSONValue,
         _ path: JSONPath,
         _ context: Context,
-        _ out: inout [Mutation]
+        _ out: inout [Mutation],
+        lossy: Bool = false
     ) {
         guard case .object(let entries) = value else { return }
         let (low, high) = countLimits(constraints)
@@ -547,6 +550,27 @@ struct Mutator {
         }
         var inner = context
         inner.genericDone = false
+        if lossy {
+            // A broken entry is dropped with one warning, whatever was wrong
+            // with it. Dropping shrinks the table, so it is a unit when a
+            // minimum count could be crossed, and no entry is broken where
+            // the table has none to spare.
+            if low != nil { inner.unit = context.unit ?? path }
+            guard entries.count > (low ?? 0) else { return }
+            for member in entries.prefix(3) {
+                let entryPath = path.appending(key: member.key)
+                var found: [Mutation] = []
+                collect(element, member.value, entryPath, inner, &found)
+                for var mutation in found {
+                    if mutation.expected.contains(where: { $0.severity == .error }) {
+                        mutation.expected = [ExpectedIssue(path: entryPath, code: .droppedEntry, severity: .warning)]
+                        mutation.isTolerated = true
+                    }
+                    out.append(mutation)
+                }
+            }
+            return
+        }
         for member in entries.prefix(3) {
             collect(element, member.value, path.appending(key: member.key), inner, &out)
         }

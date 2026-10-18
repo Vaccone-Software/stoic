@@ -242,6 +242,21 @@ extension DecodeState {
     }
 }
 
+extension DecodeState {
+    /// Replaces what was recorded for a dictionary entry, from `mark` on, with
+    /// one warning that the entry under `key` was dropped. The reason is the
+    /// first error it caused, in words. Called with the path at the entry.
+    mutating func dropEntry(key: String, since mark: Int, errorsBefore: Int) {
+        let reason = issues[mark...].first { $0.severity == .error }?.message
+        issues.removeSubrange(mark...)
+        offsets.removeSubrange(mark...)
+        errorCount = errorsBefore
+        var parameters: JSONObject = ["key": .string(key)]
+        if let reason { parameters["reason"] = .string(reason) }
+        report(.droppedEntry, severity: .warning, parameters: parameters)
+    }
+}
+
 /// What an encode carries: how to write, and what could not be written.
 struct EncodeState {
     var style: EncodeStyle

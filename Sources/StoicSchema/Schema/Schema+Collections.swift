@@ -128,6 +128,13 @@ extension Schema {
         of value: Schema<Entry>,
         _ constraints: Constraint...
     ) -> Schema<[String: Entry]> where Value == [String: Entry] {
+        dictionarySchema(of: value, constraints)
+    }
+
+    private static func dictionarySchema<Entry: Sendable>(
+        of value: Schema<Entry>,
+        _ constraints: [Constraint]
+    ) -> Schema<[String: Entry]> {
         Schema<[String: Entry]>(
             node: .dictionary(value: value.node, constraints: constraints),
             decoder: { json, state in
@@ -173,5 +180,101 @@ extension Schema {
                 }
                 return .object(object)
             })
+    }
+
+    /// ``dictionary(of:_:)`` whose values carry a description, so the JSON
+    /// Schema export can say what each entry means.
+    ///
+    ///     .dictionary(of: .bool, valueDoc: "true to never record clips from this app")
+    ///
+    /// The description is written beside the values' schema (`additionalProperties`
+    /// is `{"type": "boolean", "description": "…"}`); decoding is unchanged.
+    /// It is ``documented(_:)`` on the value schema, for a dictionary.
+    public static func dictionary<Entry: Sendable>(
+        of value: Schema<Entry>,
+        _ constraints: Constraint...,
+        valueDoc: String
+    ) -> Schema<[String: Entry]> where Value == [String: Entry] {
+        dictionarySchema(of: value.documented(valueDoc), constraints)
+    }
+
+    /// A dictionary that survives its bad entries: an entry whose value does
+    /// not decode is left out, and the rest are kept.
+    ///
+    /// For a table a person fills in by hand (a per-app override, a list of
+    /// routes), where one wrong value should cost that entry and not the
+    /// whole table (which ``dictionary(of:_:)`` repairs to empty under
+    /// `.lenient`). Each dropped entry is one `dropped_entry` warning at its
+    /// own path (`$.apps["com.example.Foo"]`) carrying its `key` and the
+    /// first reason in the parameters; the entry's own errors are not
+    /// reported. A value that is not an object at all is still a
+    /// `type_mismatch`, and a key spelt two ways that Swift reads as one
+    /// (`"é"` and `"e\u{301}"`) drops the second, with a warning, where the
+    /// strict form refuses the document.
+    ///
+    /// The dictionary's own constraints (`.count`) are checked on what is
+    /// kept, so a table that falls under its minimum after dropping is still
+    /// an error. `valueDoc` describes the values in the export, as for
+    /// ``dictionary(of:_:valueDoc:)``.
+    public static func lossyDictionary<Entry: Sendable>(
+        of value: Schema<Entry>,
+        _ constraints: Constraint...,
+        valueDoc: String? = nil
+    ) -> Schema<[String: Entry]> where Value == [String: Entry] {
+        let value = valueDoc.map { value.documented($0) } ?? value
+        let strict = dictionarySchema(of: value, constraints)
+        var transform = TransformNode(
+            base: strict.node, name: "lossy dictionary",
+            description: "an object whose invalid entries are dropped",
+            keywords: ["x-stoic-lossy": true], dropsInvalidElements: true)
+        transform.isTransparent = true
+        return Schema<[String: Entry]>(
+            node: .transformed(transform),
+            decoder: { json, state in
+                guard case .object(let object) = json else {
+                    state.typeMismatch(expected: "an object", found: json)
+                    return nil
+                }
+                var entries: [String: Entry] = [:]
+                var kept = JSONObject()
+                entries.reserveCapacity(object.count)
+                for member in object {
+                    let mark = state.issues.count
+                    let errorsBefore = state.errorCount
+                    state.push(key: member.key)
+                    if entries.index(forKey: member.key) != nil {
+                        state.report(
+                            .duplicateKey, parameters: ["key": .string(member.key), "other": .string(member.key)],
+                            suggestionsAreFromInput: false)
+                        state.dropEntry(key: member.key, since: mark, errorsBefore: errorsBefore)
+                    } else if let decoded = value.decoder(member.value, &state) {
+                        entries[member.key] = decoded
+                        kept[member.key] = member.value
+                    } else {
+                        state.dropEntry(key: member.key, since: mark, errorsBefore: errorsBefore)
+                    }
+                    state.pop()
+                }
+                return state.apply(constraints, to: .object(kept)) ? entries : nil
+            },
+            encoder: strict.encoder)
+    }
+
+    /// Documents a value's schema: the export writes `doc` as its
+    /// `description`, and nothing else changes.
+    ///
+    /// For a place a field's own `doc:` cannot reach: the values of a
+    /// dictionary, the elements of an array.
+    ///
+    ///     .dictionary(of: Schema.bool.documented("true to never record clips from this app"))
+    ///
+    /// Decoding, encoding, generation and the constraints are the schema's
+    /// own. A `description` the schema already carries is replaced.
+    public func documented(_ doc: String) -> Schema<Value> {
+        var transform = TransformNode(
+            base: node, name: "documented value", description: node.expectation,
+            keywords: ["description": .string(doc)], isAnnotated: false)
+        transform.isTransparent = true
+        return Schema(node: .transformed(transform), decoder: decoder, encoder: encoder, absent: absent)
     }
 }

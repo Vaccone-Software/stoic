@@ -252,6 +252,7 @@ schema and throws one `DecodingError` listing every issue.
 | a tagged union with an unknown case meets a tag it does not know | The object is read as that case; an `unknown_case` warning at the discriminator naming the tag and the case, with the nearest known tag; the payload is handed over unread (kept, if the case holds it, and written back as it came); the document is still accepted |
 | an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
 | a number outside a clamped range is read    | `clampingToRange()`: the nearest inclusive bound is the value, and an `out_of_range` *warning* (`repair`: "clamped to 4000") says so, in every mode; an exclusive bound, `.multipleOf` and the rest still refuse; a non-number is still `type_mismatch` |
+| an entry of a lossy dictionary is invalid    | Dropped, with a `dropped_entry` warning at the entry's own path carrying its `key` and the first reason; the rest are kept, and the entry's own errors are not reported (`Schema.dictionary` still fails the whole table) |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
@@ -1213,6 +1214,40 @@ not ask.
   expects that warning, and no error, for a number a bound moves (and for one
   that would have been `precision_loss`, because the clamp comes first), and
   marks the mutation tolerated so the agreement check skips it.
+
+### Lossy dictionaries and documented values
+
+- **`Schema.lossyDictionary(of:_:valueDoc:)`** is `lossyArray` for a table a
+  person fills in. Each entry whose value does not decode is left out and
+  answered with one `dropped_entry` warning at the entry's own path
+  (`$.apps["com.example.Foo"]`), with its `key` and the first reason in the
+  parameters; the errors the entry would have raised are removed with it, so
+  an entry with three problems is one warning. The good entries survive, where
+  `Schema.dictionary` fails the whole table (and `.lenient` repairs it to
+  empty). A value that is not an object is still a `type_mismatch`; a key
+  spelt two ways Swift reads as one (`"é"` and `"e\u{301}"`), which the strict
+  form refuses as `duplicate_key`, drops the second, with a warning, where it
+  cannot be lost silently.
+- **The table's own constraints** (`.count`) are checked on what is kept, so
+  a table that falls under its minimum after dropping is an error.
+- **A new code, `dropped_entry`,** rather than `dropped_element` with a key:
+  a reader that handles `dropped_element` reads an `index` from its
+  parameters, which an entry does not have. The family and the severity are
+  the same.
+- **Representation.** A transparent `.transformed` node over the dictionary
+  with `dropsInvalidElements` and the keyword `x-stoic-lossy`; the value
+  schema stays in `additionalProperties`. The mutator expects the warning for a
+  mutation inside an entry (and leaves entries alone where the table would fall
+  under its minimum); a JSON Schema validator rejects the entry, so those
+  mutations are marked `isTolerated`.
+- **`documented(_:)`** gives any schema a description for the export, and
+  nothing else: `.dictionary(of: .bool, valueDoc: "true to never record clips
+  from this app")` writes it as the `description` of `additionalProperties`,
+  which a field's own `doc:` cannot reach. It is a transparent
+  `.transformed` node carrying the keyword `description` and no
+  `x-stoic-transform`, so decoding, generation and every constraint are the
+  schema's own. `valueDoc:` on `dictionary(of:)` (an overload) and
+  `lossyDictionary(of:)` is `documented` on the value schema.
 
 ## Non-goals
 
