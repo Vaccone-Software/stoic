@@ -159,7 +159,7 @@ struct DecodeState {
                 path: JSONPath(path.components + violation.relativePath.components),
                 sourcePath: JSONPath(inputPath.components + violation.relativePath.components),
                 parameters: violation.parameters, expected: violation.expected, actual: violation.actual,
-                suggestions: [])
+                suggestions: violation.suggestions)
         }
         return violations.isEmpty
     }

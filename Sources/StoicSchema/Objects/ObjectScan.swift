@@ -291,7 +291,14 @@ func readField<V: Sendable>(
     if let value = spec.schema.decoder(hit.value, &state) { return value }
     if state.isLenient, let fallback = spec.defaultValue {
         var scratch = EncodeState(style: .full)
-        let shown = spec.isSecret ? nil : spec.schema.encoder(fallback, &scratch)?.briefDescription
+        // A default that is a scalar is worth saying ("used the default 1200"); a
+        // list or an object is not ("used the default an object with 5 entries").
+        let shown = spec.isSecret ? nil : spec.schema.encoder(fallback, &scratch).flatMap { encoded -> String? in
+            switch encoded {
+            case .array, .object: nil
+            case .string, .number, .bool, .null: encoded.briefDescription
+            }
+        }
         state.repair(since: mark, errorsBefore: errorsBefore, using: shown)
         return fallback
     }

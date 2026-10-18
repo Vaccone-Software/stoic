@@ -11,6 +11,17 @@ struct Violation {
     var expected: String
     /// The offending value as JSON text, or `nil` when it adds nothing.
     var actual: String?
+    /// For a string that names none of a closed set of strings: the string and
+    /// the set, so that a did-you-mean can be computed if the issue is
+    /// recorded (it is the expensive part of an explanation).
+    var nearTo: String?
+    var among: [String] = []
+
+    /// The spellings the value was probably meant to be, nearest first.
+    var suggestions: [String] {
+        guard let nearTo else { return [] }
+        return Suggestions.nearest(to: nearTo, among: among)
+    }
 }
 
 /// Runs constraints against JSON values: the single interpreter that the
@@ -104,7 +115,12 @@ struct ConstraintChecker {
 
         case (.oneOf(let allowed), _):
             guard !allowed.contains(value) else { return [] }
-            return [Violation(code: .notOneOf, expected: expected, actual: value.briefDescription)]
+            var violation = Violation(code: .notOneOf, expected: expected, actual: value.briefDescription)
+            if case .string(let text) = value {
+                violation.nearTo = text
+                violation.among = allowed.compactMap(\.string)
+            }
+            return [violation]
 
         case (.unique, .array(let elements)):
             var first: [JSONValue: Int] = [:]
@@ -221,7 +237,7 @@ extension Array where Element == Constraint {
             Issue(
                 path: JSONPath(path.components + violation.relativePath.components),
                 code: violation.code, parameters: violation.parameters,
-                expected: violation.expected, actual: violation.actual)
+                expected: violation.expected, actual: violation.actual, suggestions: violation.suggestions)
         }
     }
 }
