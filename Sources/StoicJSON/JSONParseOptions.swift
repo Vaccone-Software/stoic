@@ -22,6 +22,10 @@ public struct JSONParseOptions: Sendable, Hashable {
     /// is unpredictable otherwise, and real parsers disagree about which
     /// value wins. A document two systems read differently is a classic
     /// source of security bugs, so the default is to refuse it.
+    ///
+    /// A policy that accepts a repeat does not hide it: the document lists
+    /// each one (``JSONDocument/repeatedKeys``), and a reader that accepts
+    /// them says so to whoever wrote the text.
     public enum DuplicateKeys: Sendable, Hashable {
         /// Fail with ``JSONParseError/Code-swift.struct/duplicateKey``.
         case reject

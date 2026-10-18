@@ -244,6 +244,7 @@ schema and throws one `DecodingError` listing every issue.
 | a number rounds, as a `Double`, across one of its constraints | `precision_loss` naming the constraint and the value it became; no value, so a `Refined` is never decoded holding a value its own initialiser refuses |
 | a secret field is invalid                    | Issue without `actual`                                                    |
 | the input has duplicate keys                 | Rejected by StoicJSON with both locations                                 |
+| a repeated key is accepted by `.lastWins` or `.firstWins` | The value holds the occurrence the policy keeps; `JSONDocument.repeatedKeys` lists each repeat after the first (path, key, where it was first said, where it is said again, which was kept; at most 1,000) |
 | a default changed between releases           | Old documents keep the value they had, via a `pinDefault` migration       |
 | a date-time is not RFC 3339                  | `invalid_format` saying what is wrong (no month 13, no offset); no value  |
 | a decimal is not a number                    | `invalid_format` saying why (a comma, a `+`, no digit before the point); more digits than a `Decimal` holds is `out_of_range`, never rounded |

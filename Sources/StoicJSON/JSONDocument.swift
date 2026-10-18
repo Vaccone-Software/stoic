@@ -20,6 +20,13 @@ public struct JSONDocument: Sendable {
     private let nodes: [RangeNode]
     private let childTable: [UInt32]
     private let rootNode: UInt32
+    private let repeats: [RepeatedKeyRecord]
+    private let kept: JSONRepeatedKey.Kept
+
+    /// The most repeated keys a document remembers. A hostile file of
+    /// nothing but one key said a million times would otherwise cost a
+    /// record for each.
+    public static let repeatedKeyLimit = 1_000
 
     init(core: ParserCore) {
         value = core.root
@@ -28,10 +35,13 @@ public struct JSONDocument: Sendable {
         nodes = core.nodes
         childTable = core.childTable
         rootNode = core.rootNode
+        repeats = core.repeatedKeys
+        kept = core.keptOnRepeat
     }
 
     private init(
-        value: JSONValue, source: [UInt8], lineMap: LineMap, nodes: [RangeNode], childTable: [UInt32], rootNode: UInt32
+        value: JSONValue, source: [UInt8], lineMap: LineMap, nodes: [RangeNode], childTable: [UInt32], rootNode: UInt32,
+        repeats: [RepeatedKeyRecord], kept: JSONRepeatedKey.Kept
     ) {
         self.value = value
         self.source = source
@@ -39,6 +49,8 @@ public struct JSONDocument: Sendable {
         self.nodes = nodes
         self.childTable = childTable
         self.rootNode = rootNode
+        self.repeats = repeats
+        self.kept = kept
     }
 
     /// Parses `bytes`. See ``JSONParseOptions`` for dialects and limits.
@@ -76,8 +88,33 @@ public struct JSONDocument: Sendable {
         nodes[Int(rootNode)].childStart = UInt32(childTable.count)
         nodes[Int(rootNode)].childCount = UInt32(children.count)
         childTable.append(contentsOf: children)
+        let remaining = repeats.filter { repeated in
+            !(repeated.path.components.count == 1 && keys.contains { $0.utf8.elementsEqual(repeated.key.utf8) })
+        }
         return JSONDocument(
-            value: .object(kept), source: source, lineMap: lineMap, nodes: nodes, childTable: childTable, rootNode: rootNode)
+            value: .object(kept), source: source, lineMap: lineMap, nodes: nodes, childTable: childTable, rootNode: rootNode,
+            repeats: remaining, kept: self.kept)
+    }
+
+    // MARK: Repeated keys
+
+    /// The keys an object said more than once, which the parse options
+    /// (``JSONParseOptions/DuplicateKeys/firstWins`` or ``JSONParseOptions/DuplicateKeys/lastWins``)
+    /// resolved instead of refusing, in the order the text repeated them: one
+    /// for each occurrence after the first. Empty for text without repeats,
+    /// and always under `.reject`, which fails at the first. At most
+    /// ``repeatedKeyLimit`` are kept.
+    ///
+    /// A reader that accepts repeats should still say so: a value that is
+    /// silently one of two is how the same file comes to mean two things.
+    public var repeatedKeys: [JSONRepeatedKey] {
+        guard !repeats.isEmpty else { return [] }
+        let ranges = ranges(ofOffsets: repeats.map { $0.start..<$0.end })
+        let firsts = lineMap.locations(ofOffsets: repeats.map(\.first), in: source)
+        return repeats.indices.map { index in
+            JSONRepeatedKey(
+                path: repeats[index].path, key: repeats[index].key, first: firsts[index], repeated: ranges[index], kept: kept)
+        }
     }
 
     // MARK: Locations

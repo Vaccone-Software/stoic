@@ -84,6 +84,16 @@ struct RangeNode: Sendable {
     var childCount: UInt32
 }
 
+/// A repeated key the parser resolved, as offsets: lines and columns are
+/// found only when somebody asks (see ``JSONDocument/repeatedKeys``).
+struct RepeatedKeyRecord: Sendable {
+    var path: JSONPath
+    var key: String
+    var first: Int
+    var start: Int
+    var end: Int
+}
+
 struct ParserCore {
     enum Kind { case array, object }
 
@@ -137,6 +147,11 @@ struct ParserCore {
     private(set) var rootNode: UInt32 = 0
     private(set) var nodes: [RangeNode] = []
     private(set) var childTable: [UInt32] = []
+    /// The repeats a `.firstWins` or `.lastWins` policy resolved, up to
+    /// ``JSONDocument/repeatedKeyLimit``; none under `.reject`, which fails.
+    private(set) var repeatedKeys: [RepeatedKeyRecord] = []
+    /// Which occurrence a repeat leaves in the value.
+    var keptOnRepeat: JSONRepeatedKey.Kept { duplicateKeys == .firstWins ? .first : .last }
 
     init(bytes: [UInt8], options: JSONParseOptions, trackRanges: Bool) {
         self.bytes = bytes
@@ -356,6 +371,14 @@ struct ParserCore {
                 )
             }
             frames[top].pendingDuplicateSlot = slot
+            // Resolved, not refused: the document remembers it, so a reader that
+            // chose to accept a repeat can still say that there was one. Bounded,
+            // for a hostile document of nothing but repeats.
+            if trackRanges, repeatedKeys.count < JSONDocument.repeatedKeyLimit {
+                repeatedKeys.append(
+                    RepeatedKeyRecord(
+                        path: currentPath(), key: key, first: frames[top].keyOffsets[slot], start: keyStart, end: position))
+            }
         }
 
         try skipTrivia()
@@ -429,7 +452,7 @@ struct ParserCore {
                 guard allowComments else {
                     throw fail(
                         .commentNotAllowed, at: position,
-                        "comments are not allowed here (the options set allowComments to false); remove it"
+                        "comments are not allowed in this file; remove it"
                     )
                 }
                 if bytes[position + 1] == UInt8(ascii: "/") {

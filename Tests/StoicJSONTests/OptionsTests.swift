@@ -53,6 +53,53 @@ struct OptionsTests {
         #expect(value.count == 2)
     }
 
+    @Test(.failureMode("design/06", "a repeated key is accepted by `.lastWins` or `.firstWins`"))
+    func aResolvedRepeatIsRememberedWithBothPlacesAndWhichWasKept() throws {
+        let text = "{\n  \"a\": 1,\n  \"b\": {\"c\": 1,\n    \"c\": 2},\n  \"a\": 3\n}"
+        let last = try #require(parseDocument(text, JSONParseOptions(duplicateKeys: .lastWins)))
+        let repeats = last.repeatedKeys
+        #expect(repeats.map(\.key) == ["c", "a"], "in the order the text repeated them")
+        #expect(repeats.map(\.kept) == [.last, .last])
+        #expect(repeats[1].path == JSONPath([.key("a")]))
+        #expect(repeats[1].first.line == 2)
+        #expect(repeats[1].first.column == 3)
+        #expect(repeats[1].repeated.start.line == 5)
+        #expect(repeats[1].repeated.start.column == 3)
+        #expect(repeats[1].repeated.end.column == 6, "the key, quotes included")
+        #expect(repeats[0].path == JSONPath([.key("b"), .key("c")]), "the path of the repeated member")
+        #expect(repeats[0].first.line == 3)
+        #expect(repeats[0].repeated.start.line == 4)
+        #expect(last.value.value(at: JSONPath([.key("a")])) == 3)
+
+        let first = try #require(parseDocument(text, JSONParseOptions(duplicateKeys: .firstWins)))
+        #expect(first.repeatedKeys.map(\.kept) == [.first, .first])
+        #expect(first.value.value(at: JSONPath([.key("a")])) == 1)
+    }
+
+    @Test func eachOccurrenceAfterTheFirstIsOneRepeatAndAllPointAtTheFirst() throws {
+        let document = try #require(parseDocument(#"{"a":1,"a":2,"a":3}"#, JSONParseOptions(duplicateKeys: .lastWins)))
+        #expect(document.repeatedKeys.count == 2)
+        #expect(document.repeatedKeys.allSatisfy { $0.first.column == 2 })
+        #expect(document.repeatedKeys.map(\.repeated.start.column) == [8, 14])
+    }
+
+    @Test func textWithoutRepeatsHasNoneAndRejectNeverRecordsOne() throws {
+        #expect(try #require(parseDocument(#"{"a":1,"b":{"a":2}}"#, JSONParseOptions(duplicateKeys: .lastWins))).repeatedKeys.isEmpty)
+        #expect(try #require(parseDocument(#"{"a":1}"#)).repeatedKeys.isEmpty)
+    }
+
+    @Test func aDocumentOfNothingButRepeatsRemembersOnlyTheFirstThousand() throws {
+        let text = "{" + Array(repeating: #""a":1"#, count: 5000).joined(separator: ",") + "}"
+        let document = try #require(parseDocument(text, JSONParseOptions(duplicateKeys: .lastWins)))
+        #expect(document.repeatedKeys.count == JSONDocument.repeatedKeyLimit)
+    }
+
+    @Test func leavingOutRootMembersLeavesOutTheirRepeatsToo() throws {
+        let document = try #require(parseDocument(#"{"$schema":"x","$schema":"y","a":1,"a":2}"#, JSONParseOptions(duplicateKeys: .lastWins)))
+        let kept = document.removingRootMembers(["$schema"])
+        #expect(kept.repeatedKeys.map(\.key) == ["a"])
+    }
+
     @Test func sameKeyInDifferentObjectsIsNotADuplicate() {
         #expect(parse(#"[{"a":1},{"a":2}]"#).value != nil)
         #expect(parse(#"{"a":{"a":1}}"#).value != nil)
@@ -368,6 +415,7 @@ struct OptionsTests {
         #expect(line.code == .commentNotAllowed)
         #expect(line.location.line == 2)
         #expect(line.location.column == 11)
+        #expect(line.message == "comments are not allowed in this file; remove it", "no option's name, for an app to show as it is")
         let block = try #require(parse("/* head */ [1]", Self.withoutComments).error)
         #expect(block.code == .commentNotAllowed)
         #expect(block.location.column == 1)
