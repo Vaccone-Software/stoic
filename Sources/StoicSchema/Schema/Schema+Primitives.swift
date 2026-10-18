@@ -212,6 +212,42 @@ extension Schema where Value == JSONValue {
 }
 
 extension Schema where Value == JSONValue {
+    /// Any JSON value, passed through untouched, that the JSON Schema export
+    /// describes with `jsonSchema`.
+    ///
+    ///     Field("graph", \.graph, .json(jsonSchema: ["$ref": "#/$defs/Graph"]),
+    ///           doc: "The gesture graph.")
+    ///
+    /// For a field whose shape the app owns outside the schema (a graph a
+    /// plug-in validates, a document another tool defines) but whose editor
+    /// should still know it. The members are written into the field's
+    /// schema in the export, over `{}`: decoding and encoding are
+    /// ``json(_:)``'s own, so the fragment is documentation for the editor and
+    /// not enforced by Stoic. A fragment that refuses documents the app
+    /// accepts is the app's to keep honest (a schema suite's generated values
+    /// are arbitrary JSON, so it is for a fragment that admits them).
+    ///
+    /// The fragment is written as it is, apart from the Draft-07 pass of
+    /// ``JSONSchemaOptions``: a `$ref` into `#/$defs/` is pointed at
+    /// `#/definitions/`, and one that has neighbours (the field's
+    /// `description`) is wrapped as that draft needs. Definitions it points at
+    /// are the app's to add to the document.
+    public static func json(_ constraints: Constraint..., jsonSchema fragment: JSONObject) -> Schema<JSONValue> {
+        var transform = TransformNode(
+            base: .json(constraints: constraints), name: "JSON with a schema", description: "any JSON value",
+            keywords: fragment, isAnnotated: false)
+        transform.isTransparent = true
+        return Schema<JSONValue>(
+            node: .transformed(transform),
+            decoder: { json, state in
+                guard state.apply(constraints, to: json) else { return nil }
+                return json
+            },
+            encoder: { value, _ in value })
+    }
+}
+
+extension Schema where Value == JSONValue {
     /// Any JSON object, passed through untouched: for a document whose
     /// top level is a table the app reads by key (a configuration of
     /// sections) and whose members it does not declare.

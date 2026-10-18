@@ -261,6 +261,7 @@ schema and throws one `DecodingError` listing every issue.
 | a JSON Schema is exported for an editor | `jsonSchema(options:)`: `draft07` writes `definitions`, `#/definitions/…` and a `$ref` with neighbours as `allOf`; `closesObjects` says `additionalProperties: false` on every described object whatever its policy (not on a dictionary's free keys); `extraRootProperties` declares the header keys at the top. The default options are the document that was always written |
 | a field with a list or an object as its default is repaired | Under `.lenient` the default stands in and the issue says "used the default", with no rendering of a composite (a scalar default is said: "used the default 1200") |
 | a string is not one of a closed list | `not_one_of` with the list as the expectation and the nearest spellings as suggestions (up to three, as for an enumeration's cases); none for a secret, and none for a value that is not a string |
+| a json field carries a JSON Schema fragment for export | `Schema.json(jsonSchema:)`: the fragment is written into the field's schema over `{}` (with the field's `description`); decoding is `json()`'s; a `$ref` into `#/$defs/` is repointed, and wrapped beside its neighbours, in Draft-07 |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
@@ -1259,6 +1260,18 @@ not ask.
   `x-stoic-transform`, so decoding, generation and every constraint are the
   schema's own. `valueDoc:` on `dictionary(of:)` (an overload) and
   `lossyDictionary(of:)` is `documented` on the value schema.
+
+### A `json` field that carries a schema
+
+`Schema.json(jsonSchema: fragment)` is `json()` whose export is the fragment: the
+shape of a value the app owns outside the schema (a graph another tool checks)
+reaches the editor without a hand-patched document. The fragment's members are
+written over `{}`, so a `$ref`, a `type` or a `maxLength` stands as written, and
+the field's `description` beside them; Stoic enforces none of it, and a transparent
+`.transformed` node (no `x-stoic-transform`, no examples needed) carries it as
+`keywords`. The Draft-07 pass treats it as any schema: `#/$defs/` becomes
+`#/definitions/` and a `$ref` with neighbours is wrapped. Definitions it points at
+are the app's to add.
 
 ### An object read from `null`
 

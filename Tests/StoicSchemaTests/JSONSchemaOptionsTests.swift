@@ -136,3 +136,48 @@ struct JSONSchemaOptionsTests {
         #expect(!validator.accepts(typo))
     }
 }
+
+/// A field whose shape is another tool's, with the fragment an editor reads.
+struct Graphed: Sendable, Equatable {
+    var graph = JSONValue.object(JSONObject())
+    var note = JSONValue.null
+
+    static let schema = Schema.object(Graphed.self, default: Graphed()) {
+        Field("graph", \.graph, .json(jsonSchema: ["$ref": "#/$defs/Graph"]), doc: "The gesture graph.")
+        Field("note", \.note, .json(jsonSchema: ["type": ["string", "null"], "maxLength": 80]), doc: "A note.")
+    }
+}
+
+@Suite("A json field that carries a JSON Schema fragment")
+struct JSONFragmentTests {
+    @Test func decodingAndEncodingAreThoseOfAnyJSON() {
+        let decoded = Graphed.schema.decode(["graph": ["nodes": [1, 2]], "note": 5])
+        #expect(decoded.value?.graph == ["nodes": [1, 2]])
+        #expect(decoded.value?.note == 5)
+        #expect(decoded.issues.isEmpty)
+        #expect(Graphed.schema.encode(Graphed(graph: ["a": 1]), style: .sparse) == ["graph": ["a": 1]])
+    }
+
+    @Test(.failureMode("design/06", "a json field carries a JSON Schema fragment for export"))
+    func theExportWritesTheFragmentAndTheFieldsDescription() throws {
+        let properties = try #require(Graphed.schema.jsonSchema().object?["properties"]?.object)
+        let graph = try #require(properties["graph"]?.object)
+        #expect(graph["$ref"] == "#/$defs/Graph")
+        #expect(graph["description"] == "The gesture graph.")
+        #expect(graph["x-stoic-transform"] == nil)
+        #expect(properties["note"]?.object?["maxLength"]?.number?.lexeme == "80")
+    }
+
+    @Test func draft07PointsTheReferenceAtDefinitionsAndWrapsItWithItsDescription() throws {
+        let document = Graphed.schema.jsonSchema(options: JSONSchemaOptions(draft: .draft07))
+        let graph = try #require(document.object?["properties"]?.object?["graph"]?.object)
+        #expect(graph["$ref"] == nil)
+        #expect(graph["allOf"] == [["$ref": "#/definitions/Graph"]])
+        #expect(graph["description"] == "The gesture graph.")
+    }
+
+    @Test func theSuiteKnowsItNeedsNoExamples() {
+        let generator = SchemaGenerator(Graphed.schema)
+        #expect(generator.transformsWithoutExamples.isEmpty)
+    }
+}
