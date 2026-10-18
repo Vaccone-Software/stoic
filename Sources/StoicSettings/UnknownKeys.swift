@@ -62,31 +62,72 @@ enum UnknownKeys {
     }
 }
 
-/// A field the load repaired (its value was one the schema does not accept,
-/// so the default stood in), with the value the file held.
+/// Something the load did not keep and a write must put back: a field it
+/// repaired, or an entry of a lossy dictionary it dropped.
+///
+/// A *repaired field* is one whose value the schema does not accept, so the
+/// default stood in, with the value the file held.
 ///
 /// A newer build may have written that value: a range it widened, an
 /// enumeration case it added, without a new version. Until the app changes
 /// the field, every write puts the file's value back, so an older build
 /// never destroys it by saving something else.
+///
+/// A *dropped entry* is one entry of a `lossyDictionary` whose value the schema
+/// does not accept, left out of the value with a `dropped_entry` warning. It is
+/// still what the person wrote, in their file, and an unrelated write must not
+/// destroy it: it is put back, at its place among the entries, until the app
+/// sets that key (the app's value replaces it) or empties the table.
 struct RepairedField: Sendable, Equatable {
-    /// Where the field is. Only paths through objects are carried.
+    /// Where the field (or the entry) is. Only paths through objects are carried.
     let path: JSONPath
     /// What the file held there.
     let original: JSONValue
     /// The repaired value, fully encoded: while the value about to be written
-    /// still encodes to this, the app has not changed the field.
+    /// still encodes to this, the app has not changed the field. `nil` for a
+    /// dropped entry: the app has not set the key while it is absent.
     let repairedTo: JSONValue?
+    /// For a dropped entry, the table it was dropped from.
+    let table: Table?
 
-    /// The fields of `issues` that were repaired, with what `document` held
-    /// for each and what `repaired` (the full encoding of the decoded value)
-    /// holds now.
+    /// The table a dropped entry belongs to, as the load saw it.
+    struct Table: Sendable, Equatable {
+        /// Where the table is.
+        let path: JSONPath
+        /// The table as the load decoded it, fully encoded.
+        let loaded: JSONValue?
+        /// The keys before the entry in the file, nearest first, so that the
+        /// entry goes back where it was in a layout that keeps the file's order.
+        let preceding: [String]
+    }
+
+    init(path: JSONPath, original: JSONValue, repairedTo: JSONValue?, table: Table? = nil) {
+        self.path = path
+        self.original = original
+        self.repairedTo = repairedTo
+        self.table = table
+    }
+
+    /// The fields of `issues` that were repaired and the entries that were
+    /// dropped, with what `document` held for each and what `repaired` (the
+    /// full encoding of the decoded value) holds now.
     static func found(in issues: [Issue], document: JSONValue?, repaired: JSONValue) -> [RepairedField] {
         guard let document else { return [] }
-        return issues.filter { $0.severity == .repaired }.compactMap { issue in
-            guard issue.path.components.allSatisfy({ if case .key = $0 { true } else { false } }),
+        return issues.compactMap { issue in
+            guard issue.severity == .repaired || issue.code == .droppedEntry,
+                  issue.path.components.allSatisfy({ if case .key = $0 { true } else { false } }),
                   let original = document.value(at: issue.path) else { return nil }
-            return RepairedField(path: issue.path, original: original, repairedTo: repaired.value(at: issue.path))
+            guard issue.code == .droppedEntry else {
+                return RepairedField(path: issue.path, original: original, repairedTo: repaired.value(at: issue.path))
+            }
+            guard let table = issue.path.parent, case .key(let key)? = issue.path.components.last else { return nil }
+            var preceding: [String] = []
+            if case .object(let members)? = document.value(at: table) {
+                preceding = members.keys.prefix { $0 != key }.reversed()
+            }
+            return RepairedField(
+                path: issue.path, original: original, repairedTo: nil,
+                table: Table(path: table, loaded: repaired.value(at: table), preceding: preceding))
         }
     }
 
@@ -97,12 +138,47 @@ struct RepairedField: Sendable, Equatable {
         var result = encoded
         var carried: [RepairedField] = []
         for field in fields where full.value(at: field.path) == field.repairedTo {
-            if let restored = result.setting(field.original, at: field.path) {
+            if let table = field.table {
+                guard !table.isEmptied(in: full), let restored = table.restoring(field, into: result) else { continue }
+                result = restored
+                carried.append(field)
+            } else if let restored = result.setting(field.original, at: field.path) {
                 result = restored
                 carried.append(field)
             }
         }
         return (result, carried)
+    }
+}
+
+extension RepairedField.Table {
+    /// Whether the app has removed the table: it held entries when the load
+    /// decoded it, and `full` has it absent or empty now. What was dropped from
+    /// it goes with it.
+    func isEmptied(in full: JSONValue) -> Bool {
+        guard case .object(let before)? = loaded, !before.isEmpty else { return false }
+        guard let now = full.value(at: path) else { return true }
+        return now.object?.isEmpty ?? false
+    }
+
+    /// `encoded` with `field`'s entry put into the table, after the nearest of
+    /// the keys that preceded it that is there (first, if none is), or `nil` if
+    /// the table cannot hold it (something on the way is not an object). A table
+    /// that sparse output left out, being all defaults, is made.
+    func restoring(_ field: RepairedField, into encoded: JSONValue) -> JSONValue? {
+        guard case .key(let key)? = field.path.components.last else { return nil }
+        let members: JSONObject
+        switch encoded.value(at: path) {
+        case .object(let existing)?: members = existing
+        case nil: members = JSONObject()
+        default: return nil
+        }
+        guard members[key] == nil else { return encoded }
+        let entry = JSONObject.Member(key: key, value: field.original)
+        var ordered = Array(members)
+        let after = preceding.lazy.compactMap { name in ordered.firstIndex { $0.key == name } }.first
+        ordered.insert(entry, at: after.map { $0 + 1 } ?? 0)
+        return encoded.setting(.object(JSONObject(ordered)), at: path)
     }
 }
 

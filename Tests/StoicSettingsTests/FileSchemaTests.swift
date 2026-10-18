@@ -70,6 +70,17 @@ struct Ordered: Sendable, Equatable {
     }
 }
 
+/// A table a person fills in by hand, whose bad entries the schema drops.
+struct Excluded: Sendable, Equatable {
+    var theme = "light"
+    var excludeApps: [String: Bool] = [:]
+
+    static let schema = Schema.object(Excluded.self, default: Excluded()) {
+        Field("theme", \.theme, .string(), doc: "The theme.")
+        Field("exclude-apps", \.excludeApps, .lossyDictionary(of: .bool, valueDoc: "true to exclude this app"), doc: "Excluded apps.")
+    }
+}
+
 @Suite("Settings store: a schema over a file people edit")
 struct FileSchemaTests {
     static let path = "/d/prefs.json"
@@ -218,5 +229,126 @@ struct FileSchemaTests {
         }
 
         """)
+    }
+
+    static func openExcluded(_ disk: some FileSystem, layout: HandEditedOptions.Layout = .canonical) throws -> SettingsStore<Excluded> {
+        try SettingsStore.open(
+            at: path, schema: Excluded.schema, format: .handEdited, fileSystem: disk,
+            options: .init(handEdited: HandEditedOptions(fileHeader: ["$schema": "s.json"], layout: layout)))
+    }
+
+    static let excluded = #"{"theme": "dark", "exclude-apps": {"com.c": true, "com.a": true, "com.b": "yes"}}"#
+
+    @Test(.failureMode("design/18", "a hand-edited file has an entry its lossy table dropped"))
+    func anEntryTheTableDroppedIsKeptThroughAnUnrelatedWriteAtItsPlace() throws {
+        let disk = try HandEditedTests.disk()
+        try HandEditedTests.place(Self.excluded, on: disk, at: Self.path)
+        let settings = try Self.openExcluded(disk)
+        #expect(settings.value.excludeApps == ["com.a": true, "com.c": true])
+        #expect(settings.issues.map { "\($0.path) \($0.code)" } == ["$[\"exclude-apps\"][\"com.b\"] dropped_entry"])
+        try settings.update { $0.theme = "light" }
+        // Canonical layout orders a table's entries alphabetically: the bad one is where it sorts.
+        #expect(HandEditedTests.text(disk, at: Self.path) == """
+        {
+          "$schema": "s.json",
+          "exclude-apps": {
+            "com.a": true,
+            "com.b": "yes",
+            "com.c": true
+          }
+        }
+
+        """)
+        // And stays through the next write, and a reload.
+        try settings.update { $0.theme = "dark" }
+        #expect(HandEditedTests.text(disk, at: Self.path)?.contains(#""com.b": "yes""#) == true)
+        let reopened = try Self.openExcluded(disk)
+        #expect(reopened.issues.map(\.code) == [.droppedEntry])
+    }
+
+    @Test func theSourceOrderLayoutPutsItBackAfterTheEntryThatPrecededIt() throws {
+        let disk = try HandEditedTests.disk()
+        try HandEditedTests.place(#"{"exclude-apps": {"com.z": true, "com.b": "yes", "com.a": true}}"#, on: disk, at: Self.path)
+        let settings = try Self.openExcluded(disk, layout: .sourceOrder)
+        try settings.update { $0.theme = "dark" }
+        let text = try #require(HandEditedTests.text(disk, at: Self.path))
+        let order = ["com.a", "com.b", "com.z"].compactMap { text.range(of: "\"\($0)\"")?.lowerBound }
+        // The encoder writes the kept entries sorted (a, z); the bad one follows its predecessor in the file (z).
+        #expect(order.count == 3)
+        #expect(text.range(of: "\"com.z\"")!.lowerBound < text.range(of: "\"com.b\"")!.lowerBound)
+    }
+
+    @Test func settingThatKeyReplacesItAndTheOtherEntriesAreStillKept() throws {
+        let disk = try HandEditedTests.disk()
+        try HandEditedTests.place(Self.excluded, on: disk, at: Self.path)
+        let settings = try Self.openExcluded(disk)
+        try settings.update { $0.excludeApps["com.b"] = false }
+        let text = try #require(HandEditedTests.text(disk, at: Self.path))
+        #expect(text.contains(#""com.b": false"#))
+        #expect(!text.contains("yes"))
+        let reopened = try Self.openExcluded(disk)
+        #expect(reopened.value.excludeApps == ["com.a": true, "com.b": false, "com.c": true])
+        #expect(reopened.issues.isEmpty)
+    }
+
+    @Test func removingTheTableOrEveryEntryRemovesWhatWasDroppedFromIt() throws {
+        for edit in [
+            { (value: inout Excluded) in value.excludeApps = [:] },
+            { (value: inout Excluded) in value.excludeApps.removeAll() },
+        ] {
+            let disk = try HandEditedTests.disk()
+            try HandEditedTests.place(Self.excluded, on: disk, at: Self.path)
+            let settings = try Self.openExcluded(disk)
+            try settings.update(edit)
+            #expect(HandEditedTests.text(disk, at: Self.path) == "{\n  \"$schema\": \"s.json\",\n  \"theme\": \"dark\"\n}\n")
+        }
+        // Removing one entry of several is an edit of the table, not the table's removal.
+        let disk = try HandEditedTests.disk()
+        try HandEditedTests.place(Self.excluded, on: disk, at: Self.path)
+        let settings = try Self.openExcluded(disk)
+        try settings.update { $0.excludeApps["com.a"] = nil }
+        let text = try #require(HandEditedTests.text(disk, at: Self.path))
+        #expect(text.contains(#""com.b": "yes""#) && text.contains("com.c") && !text.contains("com.a"))
+    }
+
+    @Test func aTableWhoseEveryEntryWasBadIsMadeAgainOnAnUnrelatedWrite() throws {
+        let disk = try HandEditedTests.disk()
+        try HandEditedTests.place(#"{"exclude-apps": {"com.b": "yes"}}"#, on: disk, at: Self.path)
+        let settings = try Self.openExcluded(disk)
+        #expect(settings.value == Excluded())
+        try settings.update { $0.theme = "dark" }
+        #expect(HandEditedTests.text(disk, at: Self.path) == """
+        {
+          "$schema": "s.json",
+          "theme": "dark",
+          "exclude-apps": {
+            "com.b": "yes"
+          }
+        }
+
+        """)
+        try settings.update { $0.excludeApps["com.a"] = true }
+        #expect(HandEditedTests.text(disk, at: Self.path)?.contains(#""com.b": "yes""#) == true)
+    }
+
+    @Test func aCompositeEntryIsKeptVerbatimToo() throws {
+        let disk = try HandEditedTests.disk()
+        try HandEditedTests.place(#"{"exclude-apps": {"com.a": true, "com.b": {"x": [1, 2.50, null]}}}"#, on: disk, at: Self.path)
+        let settings = try Self.openExcluded(disk)
+        try settings.update { $0.theme = "dark" }
+        let reopened = try Self.openExcluded(disk)
+        #expect(reopened.issues.map(\.code) == [.droppedEntry])
+        #expect(HandEditedTests.text(disk, at: Self.path)?.contains(#""x": ["#) == true)
+    }
+
+    @Test func anAppOwnedFileKeepsItsDroppedEntryToo() throws {
+        let disk = try HandEditedTests.disk()
+        try AtomicFile(fileSystem: disk).write(Array(Self.excluded.utf8), to: Self.path)
+        let settings = try SettingsStore.open(at: Self.path, schema: Excluded.schema, fileSystem: disk)
+        #expect(settings.value.excludeApps == ["com.a": true, "com.c": true])
+        try settings.update { $0.theme = "light" }
+        let reopened = try SettingsStore.open(at: Self.path, schema: Excluded.schema, fileSystem: disk)
+        #expect(reopened.issues.map(\.code) == [.droppedEntry])
+        #expect(reopened.value.excludeApps == ["com.a": true, "com.c": true])
     }
 }

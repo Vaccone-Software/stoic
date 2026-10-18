@@ -1236,6 +1236,9 @@ not ask.
   spelt two ways Swift reads as one (`"é"` and `"e\u{301}"`), which the strict
   form refuses as `duplicate_key`, drops the second, with a warning, where it
   cannot be lost silently.
+- **A hand-edited settings file keeps what was dropped.** The entry is not in the
+  value, but it is the person's text: a settings store writes it back, in place,
+  until the app sets that key or empties the table (design/18).
 - **The table's own constraints** (`.count`) are checked on what is kept, so
   a table that falls under its minimum after dropping is an error.
 - **A new code, `dropped_entry`,** rather than `dropped_element` with a key:
