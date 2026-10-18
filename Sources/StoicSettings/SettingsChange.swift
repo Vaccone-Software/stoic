@@ -58,3 +58,53 @@ public struct SettingsChange<Value: Sendable & Equatable>: Sendable, Equatable {
         case reset
     }
 }
+
+/// A change of a hand-edited file's usability: it stopped parsing, parses again,
+/// or is wrong in another way than before. What an app that shows "your settings
+/// file has a problem at line 12" needs to learn, without Observation: from
+/// ``SettingsStore/problems(buffering:)``.
+///
+/// There is one for each time ``SettingsStore/fileProblem`` changed. A reload
+/// that finds the same problem again (a person saving the same typo twice) is
+/// none, and neither is one that finds the file as the store last saw it.
+/// Nothing is announced for the state a store opened in: read
+/// ``SettingsStore/fileProblem``, then listen.
+public struct SettingsProblemChange: Sendable, Equatable {
+    /// What was wrong with the file; `nil` if nothing was.
+    public var old: SettingsFileProblem?
+
+    /// What is wrong with it now; `nil` if it can be used (or is gone, which
+    /// gives the defaults and is no problem).
+    public var new: SettingsFileProblem?
+
+    /// How the store found out.
+    public var cause: Cause
+
+    public init(old: SettingsFileProblem?, new: SettingsFileProblem?, cause: Cause) {
+        self.old = old
+        self.new = new
+        self.cause = cause
+    }
+
+    /// The file could be used and no longer can: it stopped parsing (or became
+    /// unreadable). The last good value stands.
+    public var began: Bool { old == nil && new != nil }
+
+    /// The file could not be used and now can: it parses again. The value is
+    /// the file's, and a change of it (``SettingsStore/changes(buffering:)``) comes
+    /// with this one if the fix changed anything.
+    public var ended: Bool { old != nil && new == nil }
+
+    /// How the store learned that the file's problem changed.
+    public enum Cause: Sendable, Hashable {
+        /// It read the file and found it so: ``SettingsStore/reload()`` or the
+        /// watch that calls it, or an update that read the file again under
+        /// its lock (which is then refused if the file is unusable).
+        case reload
+
+        /// The app replaced the unusable file on purpose
+        /// (``SettingsStore/replaceUnusableFile(with:keepingCopyAt:)``), which
+        /// ends the problem.
+        case reset
+    }
+}

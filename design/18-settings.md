@@ -50,6 +50,7 @@ var options = SettingsStore<Prefs>.Options(handEdited: HandEditedOptions(
 let settings = try SettingsStore.open(at: path, schema: Prefs.schema, format: .handEdited, options: options)
 
 settings.fileProblem                            // nil, or .unparsable(issues) with line and column / .unreadable(error); Observable
+for await change in settings.problems() { … }   // SettingsProblemChange(old:, new:, cause:), began / ended: "stopped parsing" and "parses again", without Observation
 try settings.update { $0.scrollSpeed = 900 }    // reads the file again under `<path>.lock`; .busy if another process holds it now
 try await settings.coordinatedUpdate { … }      // the same, waiting up to lockTimeout; .busy after it
 try settings.blockingUpdate(waitingUpTo: .seconds(2)) { … }   // the same, synchronous: BLOCKS THE THREAD while it waits
@@ -156,7 +157,27 @@ under its lock and found it moved, which is *two* changes: the edit, then the ap
 own) or `.reset` (`replaceUnusableFile`). Changes are announced in the order they were
 committed, after the commit's locks are released and before the call that made
 them returns, by whichever call got there first (the way observers are told), and each
-change's `old` is the previous one's `new`. **Who did it** is the app's to say, and the store only carries it: each update
+change's `old` is the previous one's `new`. **The file's problem has a stream of its own.** `fileProblem` is Observable, which
+suits a view; an app that must tell its person "your settings file has a problem at
+line 12" and "it is fine again" from a model that is not a view, or that logs, wants
+the same as events. `problems(buffering:)` is an `AsyncStream` of
+`SettingsProblemChange(old:new:cause:)`, one for each time `fileProblem` changed:
+`began` (the file could be used and no longer can), `ended` (it parses again, or is
+gone, which gives the defaults and is no problem), or neither (the problem moved: a
+typo fixed and another made, a different line). It is a stream *beside* `changes`
+and not a case of it, because a change of the value says what it was and what it is,
+and a problem leaves the value as it was: an event with an `old` equal to its `new`
+would break the one thing `changes` promises, "once per change of the value", for
+every app that reads it. The two are told in the order each was committed, by the
+same calls and with the same bound (`settings.change_dropped` counts both), and a
+fix that also changes the value is one change on each, the order between the two
+streams being undefined. A reload that finds the same problem (a person saving the
+same typo twice, with a space more) or the file as it was is none; an update that
+finds the file broken, which it refuses, announces it, `cause: .reload`; a reset
+announces its end, `cause: .reset`. Nothing is said for the state the store opened in
+(read `fileProblem`, then listen), and an app-owned store has none to say.
+
+**Who did it** is the app's to say, and the store only carries it: each update
 has a variant that takes a `source` (`update(source:_:)`, `coordinatedUpdate(lockTimeout:source:_:)`,
 `blockingUpdate(waitingUpTo:source:_:)`), and the change that update makes has it
 as `SettingsChange.source`, as given (`nil` when none was; the empty string is a
@@ -473,6 +494,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | an app replaces an unusable hand-edited file | The person's bytes are copied (checked) to `<path>.broken-N` or the given path, then the replacement is written and published (`fileProblem` clears); the path of the copy is returned; `settings.replaced`. A failed copy leaves the file as it was; a failed write leaves it and the copy; a crash never leaves the new file without the copy |
 | an app replaces a hand-edited file that can be read | `.fileIsUsable`; no copy, nothing written; the fix the person made is adopted, as an update would |
 | the value of a store changes | One `SettingsChange` (`old`, `new`, `cause`) on each stream made before the commit, in commit order, announced before the committing call returns; none for a write or reload that leaves the value as it was or changes only the issues |
+| the file's problem changes | One `SettingsProblemChange` (`old`, `new`, `cause`: `.reload` or `.reset`) on each `problems()` stream made before the commit, in commit order, announced before the committing call returns: `began` when the file stops parsing (or becomes unreadable), `ended` when it parses again, is gone, or is replaced, neither when the problem moves; none for the same problem again, for the file as the store last saw it, or for the state a store opened in; none from an app-owned store |
 | an update is given a source | `SettingsChange.source` of the change it makes is that string, exactly (the empty string too; `nil` without one), for `update`, `coordinatedUpdate` and `blockingUpdate`, app-owned stores included; an update that changes nothing is no change; the `.reload` change it finds in the file has none |
 | an update finds the hand-edited file changed | Two changes: the file's edit (`.reload`, from the value the store held to what the file holds), then the app's own (`.update`, from there) |
 | a reader of the changes falls behind | Its buffer keeps the newest `buffering`; the oldest are dropped, `settings.change_dropped` says how many, and the chain of `old` and `new` shows the gap |

@@ -62,6 +62,8 @@ internal import Synchronization
 /// - **Outside changes arrive** through ``reload()``, and ``watch(debounce:)``
 ///   calls it when the file changes. ``changes(buffering:)`` says what changed,
 ///   from what, and why.
+///   ``problems(buffering:)`` says when the file stopped parsing and when it
+///   parses again, without Observation.
 /// - **The file is written whole only on purpose:** ``materialize()`` creates a
 ///   missing file, ``replaceUnusableFile(with:keepingCopyAt:)`` replaces one that
 ///   cannot be read, after keeping the person's bytes.
@@ -204,6 +206,8 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         /// The changes of the value in those commits, for the streams that were
         /// listening when each was committed.
         var unannounced: [Announcement] = []
+        /// The changes of the file's problem in those commits, likewise.
+        var unannouncedProblems: [ProblemAnnouncement] = []
     }
 
     /// What reading a hand-edited file found, as far as comparing it with the
@@ -221,10 +225,18 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         let listeners: [AsyncStream<SettingsChange<Value>>.Continuation]
     }
 
-    /// The streams of ``changes(buffering:)`` that have not ended.
+    /// A change of the file's problem, and the streams to tell of it.
+    struct ProblemAnnouncement {
+        let change: SettingsProblemChange
+        let listeners: [AsyncStream<SettingsProblemChange>.Continuation]
+    }
+
+    /// The streams of ``changes(buffering:)`` and ``problems(buffering:)`` that
+    /// have not ended.
     struct Listeners {
         var next: UInt64 = 0
         var continuations: [UInt64: AsyncStream<SettingsChange<Value>>.Continuation] = [:]
+        var problemContinuations: [UInt64: AsyncStream<SettingsProblemChange>.Continuation] = [:]
     }
 
     /// The observable properties, for notifying only what changed.
@@ -420,11 +432,15 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
 
     deinit {
         // A stream of changes ends with the store, after what it still holds.
-        let ending = listeners.withLock { listeners in
-            defer { listeners.continuations = [:] }
-            return Array(listeners.continuations.values)
+        let (ending, endingProblems) = listeners.withLock { listeners in
+            defer {
+                listeners.continuations = [:]
+                listeners.problemContinuations = [:]
+            }
+            return (Array(listeners.continuations.values), Array(listeners.problemContinuations.values))
         }
         for continuation in ending { continuation.finish() }
+        for continuation in endingProblems { continuation.finish() }
     }
 
     // MARK: Reading
@@ -509,6 +525,46 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         }
         continuation.onTermination = { [weak self] _ in
             self?.listeners.withLock { _ = $0.continuations.removeValue(forKey: id) }
+        }
+        return stream
+    }
+
+    /// The changes of the hand-edited file's problem from now on: it stopped
+    /// parsing, parses again, or is wrong in another way than before
+    /// (``SettingsProblemChange``). For an app that must tell its person
+    /// "your settings file has a problem at line 12" and "it is fine again",
+    /// and does not want to hold an Observation tracking for it.
+    ///
+    ///     for await change in settings.problems() {
+    ///         if let problem = change.new { show("\(problem)") } else { dismissTheWarning() }
+    ///     }
+    ///
+    /// It is the stream of ``fileProblem``, with the guarantees of
+    /// ``changes(buffering:)``: once per change, in the order they were committed,
+    /// told after the commit's lock is released and by the call that committed it,
+    /// so a reload has announced its problem by the time it returns; a reload that
+    /// finds the same problem, or the file as the store last saw it, is none;
+    /// a stream hears only of what is committed after it was made (read
+    /// ``fileProblem``, then listen); the buffer is bounded, the oldest unread are
+    /// dropped and reported (`settings.change_dropped`); it ends with the store,
+    /// and when its reader is cancelled or leaves the loop. A problem and the
+    /// value it keeps are separate streams: a fix that also changes the value is
+    /// one change on each (`ended` here, and one of ``changes(buffering:)``),
+    /// and the order between the two streams is not defined. An app-owned store
+    /// has no problem to announce; its stream is silent until the store goes.
+    ///
+    /// - Parameter limit: How many changes a reader may be behind by; at least
+    ///   1. 64 by default.
+    public func problems(buffering limit: Int = 64) -> AsyncStream<SettingsProblemChange> {
+        precondition(limit >= 1, "SettingsStore.problems: buffering must be at least 1")
+        let (stream, continuation) = AsyncStream<SettingsProblemChange>.makeStream(bufferingPolicy: .bufferingNewest(limit))
+        let id = listeners.withLock { listeners -> UInt64 in
+            listeners.next += 1
+            listeners.problemContinuations[listeners.next] = continuation
+            return listeners.next
+        }
+        continuation.onTermination = { [weak self] _ in
+            self?.listeners.withLock { _ = $0.problemContinuations.removeValue(forKey: id) }
         }
         return stream
     }
@@ -934,10 +990,13 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     func publish(_ next: Current, cause: SettingsChange<Value>.Cause, source: String? = nil) {
         // Who is listening when the value changes, not when it is announced:
         // a stream hears of what was committed after it began, no earlier.
-        let listening = listeners.withLock { Array($0.continuations.values) }
+        let (listening, listeningToProblems) = listeners.withLock {
+            (Array($0.continuations.values), Array($0.problemContinuations.values))
+        }
         current.withLock { current in
             var changed = current.unnotified
             var unannounced = current.unannounced
+            var unannouncedProblems = current.unannouncedProblems
             if current.value != next.value {
                 changed.insert(.value)
                 if !listening.isEmpty {
@@ -947,10 +1006,21 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             }
             if current.issues != next.issues { changed.insert(.issues) }
             if current.source != next.source { changed.insert(.source) }
-            if current.problem != next.problem { changed.insert(.problem) }
+            if current.problem != next.problem {
+                changed.insert(.problem)
+                if !listeningToProblems.isEmpty {
+                    // An update only commits over a file that could be used, so the
+                    // problem changes with what a read of the file found, or a reset.
+                    let how: SettingsProblemChange.Cause = cause == .reset ? .reset : .reload
+                    unannouncedProblems.append(ProblemAnnouncement(
+                        change: SettingsProblemChange(old: current.problem, new: next.problem, cause: how),
+                        listeners: listeningToProblems))
+                }
+            }
             current = next
             current.unnotified = changed
             current.unannounced = unannounced
+            current.unannouncedProblems = unannouncedProblems
         }
     }
 
@@ -960,15 +1030,21 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// then the value it reads is the latest committed, never an older one.
     func notifyObservers() {
         let (changed, dropped) = announcing.withLock { _ -> (Set<Observed>, Int) in
-            let (changed, announcements) = current.withLock { current in
+            let (changed, announcements, problems) = current.withLock { current in
                 defer {
                     current.unnotified = []
                     current.unannounced = []
+                    current.unannouncedProblems = []
                 }
-                return (current.unnotified, current.unannounced)
+                return (current.unnotified, current.unannounced, current.unannouncedProblems)
             }
             var dropped = 0
             for announcement in announcements {
+                for listener in announcement.listeners {
+                    if case .dropped = listener.yield(announcement.change) { dropped += 1 }
+                }
+            }
+            for announcement in problems {
                 for listener in announcement.listeners {
                     if case .dropped = listener.yield(announcement.change) { dropped += 1 }
                 }
