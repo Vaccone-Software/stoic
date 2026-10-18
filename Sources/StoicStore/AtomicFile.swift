@@ -91,6 +91,25 @@ public struct AtomicFile: Sendable {
         /// byte is written) the file is as open as that mode is.
         public var newFileMode: UInt16?
 
+        /// How much of a write is made durable before it returns.
+        public enum Durability: Sendable, Hashable {
+            /// `fullSync` the temporary file, rename it, and sync the
+            /// directory: after the call returns the new bytes survive a
+            /// power loss, and a directory sync that fails is
+            /// `.durabilityUnknown`. The default.
+            case full
+            /// `sync` (plain `fsync`) the temporary file, and rename it; the
+            /// directory is not synced. A write is still all-or-nothing, and
+            /// a crash of the process never loses it, but a power loss may
+            /// undo it (the old value, or no file, is what is read). For
+            /// what is written often and may be lost whole: a cache entry,
+            /// the blob of a clipboard history.
+            case standard
+        }
+
+        /// How much of a write is made durable. ``Durability/full`` by default.
+        public var durability: Durability = .full
+
         public init(
             envelope: Bool = true, keepPrevious: Bool = false, checksFreeSpace: Bool = true, quarantineLimit: Int = 8,
             newFileMode: UInt16? = nil
@@ -100,6 +119,16 @@ public struct AtomicFile: Sendable {
             self.checksFreeSpace = checksFreeSpace
             self.quarantineLimit = quarantineLimit
             self.newFileMode = newFileMode
+        }
+
+        public init(
+            envelope: Bool = true, keepPrevious: Bool = false, checksFreeSpace: Bool = true, quarantineLimit: Int = 8,
+            newFileMode: UInt16? = nil, durability: Durability
+        ) {
+            self.init(
+                envelope: envelope, keepPrevious: keepPrevious, checksFreeSpace: checksFreeSpace, quarantineLimit: quarantineLimit,
+                newFileMode: newFileMode)
+            self.durability = durability
         }
     }
 
@@ -169,7 +198,10 @@ public struct AtomicFile: Sendable {
             do throws(StoreError) {
                 try fileSystem.setPermissions(file, to: mode)
                 try fileSystem.write(file, image, at: 0)
-                try fileSystem.fullSync(file)
+                switch options.durability {
+                case .full: try fileSystem.fullSync(file)
+                case .standard: try fileSystem.sync(file)
+                }
             } catch {
                 closeQuietly(file)
                 throw error
@@ -199,6 +231,7 @@ public struct AtomicFile: Sendable {
         }
         // From here the new bytes are what every reader sees. A failure now
         // is not "nothing changed", and must not be reported as if it were.
+        guard options.durability == .full else { return }
         do throws(StoreError) {
             try fileSystem.syncDirectory(directory)
         } catch {

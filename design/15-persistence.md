@@ -179,6 +179,12 @@ makes, parents included, gets `newDirectoryMode`. The defaults are `0o644` and
 
 ### Atomic file
 
+`AtomicFile.Options.durability` is `.full` by default (`fullSync` the temporary, rename,
+sync the directory: `.durabilityUnknown` if that last sync fails) or `.standard`
+(`FileSystem.sync`, which is plain `fsync` on `PosixFileSystem`, then the rename, and no
+directory sync): still all-or-nothing, but a power loss may undo the write, for a value
+written often that may be lost whole.
+
 Symbolic links: `write` and `read` first resolve `path` through any links (up
 to 40 hops; a relative target is relative to the link's directory; a link to
 nothing resolves to where the file would be), then do everything beside the

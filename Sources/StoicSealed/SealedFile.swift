@@ -60,11 +60,27 @@ public struct SealedFile: Sendable {
         public var checksFreeSpace: Bool
         /// The permission bits of a file this write *creates*. `0o600`.
         public var newFileMode: UInt16
+        /// How much of a write is made durable before it returns:
+        /// ``AtomicFile/Options/Durability/full`` (the default) is what a
+        /// value that must survive a power loss wants;
+        /// ``AtomicFile/Options/Durability/standard`` is plain `fsync` and no
+        /// directory sync, for sealed values written often that may be lost
+        /// whole (a power loss may bring the old value back; it never leaves
+        /// a torn one). Adoption of a plaintext file is always full.
+        public var durability: AtomicFile.Options.Durability = .full
 
         public init(keepPrevious: Bool = false, checksFreeSpace: Bool = true, newFileMode: UInt16 = 0o600) {
             self.keepPrevious = keepPrevious
             self.checksFreeSpace = checksFreeSpace
             self.newFileMode = newFileMode
+        }
+
+        public init(
+            keepPrevious: Bool = false, checksFreeSpace: Bool = true, newFileMode: UInt16 = 0o600,
+            durability: AtomicFile.Options.Durability
+        ) {
+            self.init(keepPrevious: keepPrevious, checksFreeSpace: checksFreeSpace, newFileMode: newFileMode)
+            self.durability = durability
         }
     }
 
@@ -92,7 +108,8 @@ public struct SealedFile: Sendable {
     /// `AtomicFile` with no envelope: the file is the sealed value.
     private func atomicFile(keepPrevious: Bool) -> AtomicFile {
         AtomicFile(fileSystem: fileSystem, options: .init(
-            envelope: false, keepPrevious: keepPrevious, checksFreeSpace: options.checksFreeSpace, newFileMode: options.newFileMode
+            envelope: false, keepPrevious: keepPrevious, checksFreeSpace: options.checksFreeSpace, newFileMode: options.newFileMode,
+            durability: options.durability
         ))
     }
 

@@ -149,6 +149,11 @@ try notes.write(plaintext, to: path, context: ctx)
 let plain = try notes.read(path, context: ctx)               // nil if there is no file
 try notes.adopt(path: path, context: ctx)                    // seal an existing plaintext file in place
 
+// A file under a key of its own (one for each object: a clip, a message), and a cheaper write
+let blobs = SealedObjectFile(options: .init(durability: .standard))   // or .full, the default
+try blobs.write(plaintext, to: path, context: ctx, key: objectKey)
+let plain = try blobs.read(path, context: ctx, key: objectKey)       // nil if there is no file
+
 // Journals
 let log = try SealedJournal.open(at: path, context: SealContext("app.log", "main"), keyring: ring)
 try log.append(batch: [a, b])
@@ -443,6 +448,23 @@ authenticates every byte, and an envelope's CRC would turn a tampered file into 
   leave the file where it is: not quarantined, renamed or removed.
 - **Symbolic links** are followed as `AtomicFile` follows them.
 
+### A file under a key of its own
+
+`SealedObjectFile` is `SealedFile` for a caller that keeps a key for each object, inside
+a sealed record of its own: a clipboard blob, a message body. Dropping the key is the
+object's deletion (crypto-shredding with no ring to rotate), and rotating a ring rewrites
+none of them. It takes the key on every call and stores nothing; there is no previous
+generation (an object has one key) and no adoption. Everything else is `SealedFile`'s: no
+envelope, `0o600` before the first byte, failures reported and the file left alone.
+
+`SealedFile.Options.durability` (and `AtomicFile.Options.durability`, which it is) is how
+much a write pays. `.full`, the default, is `fullSync` of the temporary, the rename and a
+directory sync. `.standard` is `FileSystem.sync` (plain `fsync`: the data is at the drive, not
+flushed from its cache) and the rename: still all-or-nothing, since the sealed value is
+complete before it is renamed, and a crash of the process loses nothing, but a power loss
+may undo the write (the old value, or no file, is what `read` finds), and a directory sync
+that is never made is never reported. For what is written often and may be lost whole.
+
 ### Adopting a plaintext file
 
 `read` on a file an earlier version wrote in the clear is `.seal(.notSealed)`, so the
@@ -633,6 +655,8 @@ id or a byte of plaintext**, which a test checks over a run that adopts, writes,
 | keys are used from many threads while the keyring rotates                 | Every value sealed under the current key opens; memory and custody agree                                                                                                                                                             |
 | a file is written and read back                                           | The file is a sealed value with nothing else beside it; no plaintext on disk                                                                                                                                                         |
 | a file is created                                                         | `0o600`, set before the first byte; a replacement keeps the mode it replaces                                                                                                                                                         |
+| a file is sealed under a key of the caller's own                          | `SealedObjectFile`: the same file as `SealedFile` writes, opened only under that key (`.seal(.unknownKey)` for another's, `.tampered` for another context); nothing is stored but the file |
+| a sealed file is written with standard durability                         | `Options.durability == .standard`: plain `fsync` of the temporary and a rename, no `F_FULLFSYNC` and no directory sync; all-or-nothing, a power loss may bring the old value back |
 | a previous generation is kept                                             | It is sealed; `read` uses it only when the current file is missing                                                                                                                                                                   |
 | a file is plaintext, altered, cut, or sealed under a key that is gone     | `.notSealed`, `.tampered`, `.torn`, `.unknownKey` respectively; the file is left as it is                                                                                                                                            |
 | the process dies at any instruction of a write                            | `read` finds the old value or the new, never a torn file, and no file holds plaintext                                                                                                                                                |

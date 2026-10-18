@@ -68,6 +68,15 @@ public protocol FileSystem: Sendable {
     /// drive's cache), `fsync` where it does not.
     func fullSync(_ file: OpenFile) throws(StoreError)
 
+    /// Makes the file's data durable as the platform's plain `fsync` does: on
+    /// Apple platforms the data reaches the drive, which may hold it in a
+    /// volatile cache, so a power loss can still take it. Much cheaper than
+    /// ``fullSync(_:)``, and enough for a value that may be lost whole (never
+    /// torn: it is made before the rename that publishes it). The default is
+    /// ``fullSync(_:)``, for a file system with nothing cheaper (the
+    /// simulation, which models what survives a crash and has one kind of sync).
+    func sync(_ file: OpenFile) throws(StoreError)
+
     func close(_ file: OpenFile) throws(StoreError)
 
     /// Makes the creates, renames and removes in `directory` durable.
@@ -173,6 +182,8 @@ public protocol FileSystem: Sendable {
 
 extension FileSystem {
     public var newFileMode: UInt16 { 0o644 }
+
+    public func sync(_ file: OpenFile) throws(StoreError) { try fullSync(file) }
 
     public func readLink(_ path: String) throws(StoreError) -> String? { nil }
 

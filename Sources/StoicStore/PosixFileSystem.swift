@@ -174,6 +174,10 @@ public final class PosixFileSystem: FileSystem {
         #endif
     }
 
+    public func sync(_ file: OpenFile) throws(StoreError) {
+        try plainSync(file)
+    }
+
     private func plainSync(_ file: OpenFile) throws(StoreError) {
         while CSys.fsyncFile(file.rawValue) != 0 {
             if errno != EINTR { throw StoreError(errno: errno, operation: "fsync") }
