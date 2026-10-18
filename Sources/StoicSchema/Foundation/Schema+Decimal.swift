@@ -105,7 +105,7 @@ extension Schema where Value == Decimal {
             }
             // A number, or text that spells one. The base is "anything" and
             // the alternatives are keywords, because a node has one type.
-            var exporter = JSONSchemaExporter()
+            var exporter = JSONSchemaExporter(options: JSONSchemaOptions())
             var number = exporter.export(.number(constraints: constraints), location: "$")
             number["format"] = "decimal"
             keywords["anyOf"] = .array([

@@ -57,18 +57,44 @@ extension Schema {
 
     /// ``jsonSchema()`` together with a list of the rules it could only annotate.
     public func jsonSchemaExport() -> JSONSchemaExport {
-        var exporter = JSONSchemaExporter()
-        let root = exporter.export(node, location: "$")
+        jsonSchemaExport(options: JSONSchemaOptions())
+    }
+
+    /// The schema as a JSON Schema document written as `options` say: in
+    /// Draft-07 rather than 2020-12, with every object closed whatever its
+    /// unknown-key policy, and the keys of a file header admitted at the top.
+    /// See ``JSONSchemaOptions``; the default options are ``jsonSchema()``.
+    ///
+    /// Closing and the header keys change what a validator accepts, not what the
+    /// decoder does: the decoder is still the authority, and an `additionalProperties:
+    /// false` on an object that reads with `.warn` says "an editor should flag this",
+    /// which the decoder answers with a warning.
+    public func jsonSchema(options: JSONSchemaOptions) -> JSONValue {
+        jsonSchemaExport(options: options).schema
+    }
+
+    /// ``jsonSchema(options:)`` together with a list of the rules it could only annotate.
+    public func jsonSchemaExport(options: JSONSchemaOptions) -> JSONSchemaExport {
+        var exporter = JSONSchemaExporter(options: options)
+        var root = exporter.export(node, location: "$")
+        if !options.extraRootProperties.isEmpty, var properties = root["properties"]?.object {
+            for member in options.extraRootProperties where properties[member.key] == nil {
+                properties[member.key] = member.value
+            }
+            root["properties"] = .object(properties)
+        }
         var document = JSONObject()
         document["$schema"] = "https://json-schema.org/draft/2020-12/schema"
         for member in root { document[member.key] = member.value }
         if !exporter.definitions.isEmpty { document["$defs"] = .object(exporter.definitions) }
+        if options.draft == .draft07 { document = JSONSchemaDraft07.root(document) }
         return JSONSchemaExport(schema: .object(document), unenforced: exporter.unenforced)
     }
 }
 
 /// Walks a ``SchemaNode`` and writes JSON Schema.
 struct JSONSchemaExporter {
+    let options: JSONSchemaOptions
     var definitions = JSONObject()
     var unenforced: [JSONSchemaExport.Unenforced] = []
     private var started: Set<String> = []
@@ -206,7 +232,7 @@ struct JSONSchemaExporter {
         }
         out["properties"] = .object(properties)
         if !required.isEmpty { out["required"] = .array(required) }
-        if object.unknownKeys == .reject { out["additionalProperties"] = false }
+        if object.unknownKeys == .reject || options.closesObjects { out["additionalProperties"] = false }
         if object.unknownKeys == .preserve { out["x-stoic-preserves-unknown"] = true }
         return out
     }

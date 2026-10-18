@@ -110,4 +110,28 @@ struct FileSchemaTests {
         #expect(issue.path.description == "$.theme")
         #expect(issue.source?.start.line == 4)
     }
+
+    @Test func theHeaderMakesTheRootPropertiesOfAClosedDocument() throws {
+        let header: SettingsFileHeader = ["$schema": "prefs-schema.json", "version": 3, "ratio": 0.5, "on": true, "none": .null, "list": [], "map": [:]]
+        let properties = header.jsonSchemaProperties
+        #expect(properties["$schema"] == ["type": "string"])
+        #expect(properties["version"] == ["type": "integer"])
+        #expect(properties["ratio"] == ["type": "number"])
+        #expect(properties["on"] == ["type": "boolean"])
+        #expect(properties["none"] == ["type": "null"])
+        #expect(properties["list"] == ["type": "array"])
+        #expect(properties["map"] == ["type": "object"])
+        #expect(properties.map(\.key) == header.keys)
+
+        // The file the store writes, whose header the schema does not describe, is valid against the closed document.
+        var options = JSONSchemaOptions(draft: .draft07, closesObjects: true)
+        options.extraRootProperties = (["$schema": "prefs-schema.json"] as SettingsFileHeader).jsonSchemaProperties
+        let validator = JSONSchemaValidator(FilePrefs.schema.jsonSchema(options: options))
+        let disk = try HandEditedTests.disk()
+        let settings = try Self.open(disk)
+        try settings.update { $0.theme = "dark" }
+        let file = try JSONValue(parsing: try #require(HandEditedTests.text(disk, at: Self.path)))
+        #expect(validator.accepts(file))
+        #expect(!JSONSchemaValidator(FilePrefs.schema.jsonSchema(options: JSONSchemaOptions(closesObjects: true))).accepts(file))
+    }
 }

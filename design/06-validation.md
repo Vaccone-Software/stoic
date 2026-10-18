@@ -200,6 +200,9 @@ parses back.
   `5.0`, which `.strict` refuses for an integer; every integer (and integer
   enumeration) carries `x-stoic-integer-spelling` and an `integer-spelling`
   entry in the summary.
+  `JSONSchemaOptions` (`jsonSchema(options:)`) writes the same document for an
+  editor: Draft-07, every object closed, a file header admitted (see "A JSON
+  Schema for an editor").
 - **Generators.** Every schema derives valid values biased to boundaries
   (lower, lower+1, upper−1, upper, empty and full collections, astral and
   combining Unicode) and _invalid documents_ — a valid one with one minimal
@@ -255,6 +258,7 @@ schema and throws one `DecodingError` listing every issue.
 | an entry of a lossy dictionary is invalid    | Dropped, with a `dropped_entry` warning at the entry's own path carrying its `key` and the first reason; the rest are kept, and the entry's own errors are not reported (`Schema.dictionary` still fails the whole table) |
 | a section that may be null is null          | `readingNullAsEmpty()`: read as `{}`, every field its default, no issue, in every mode; nothing remembers the null, so a sparse write omits the section. Without it, `null` is a `type_mismatch` |
 | a document is read that a schema's normalization rewrites | `normalizing(_:)`: the raw JSON is tidied before it is decoded, on every read, silently (an old key becomes the new, the new winning if both are there; an old enumeration spelling the new; a custom edit); `retired` paths vanish with no `unknown_key`; an operation that fails is `normalization_failed`. Issues point at the text, not the whole object |
+| a JSON Schema is exported for an editor | `jsonSchema(options:)`: `draft07` writes `definitions`, `#/definitions/…` and a `$ref` with neighbours as `allOf`; `closesObjects` says `additionalProperties: false` on every described object whatever its policy (not on a dictionary's free keys); `extraRootProperties` declares the header keys at the top. The default options are the document that was always written |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
@@ -1330,6 +1334,42 @@ is that, declared.
   (the normalization may be what forgives it, and the export, which describes
   the current format, rightly rejects it), so mutations and accumulations the
   normalization changes are skipped.
+
+### A JSON Schema for an editor
+
+`jsonSchema()` describes the wire format in Draft 2020-12 and closes an
+object only if it *rejects* unknown keys. A settings file is read with `.warn`
+(the app starts and says what it ignored), and an editor that is to underline
+`scrol_speed` as the person types it needs the closed form and a draft it
+reads. `jsonSchema(options:)` and `jsonSchemaExport(options:)` take a
+`JSONSchemaOptions`, whose defaults write exactly what `jsonSchema()` has
+always written.
+
+- **`closesObjects`** writes `additionalProperties: false` on every object the
+  schema describes, **whatever its unknown-key policy**: the document is for the
+  editor, the policy is the app's, and the decoder still answers an unknown
+  key under `.warn` with a warning. A dictionary's or `json` value's free keys
+  are not closed; an object that preserves unknown keys is, and keeps its
+  `x-stoic-preserves-unknown` annotation. A flat union branch is closed with
+  its discriminator among the properties.
+- **`extraRootProperties`** (key, schema) are declared in the root's
+  `properties` when the root is an object: the keys of a file header
+  (`"$schema"`, a `version` the schema does not manage) that the app writes and
+  a closed document would otherwise flag, and that the store ignores on read
+  (design/18). A key the schema declares keeps the schema's own entry.
+  StoicSettings makes them from a header, `SettingsFileHeader.jsonSchemaProperties`,
+  each admitting the *kind* of value the header holds and no more, since a file
+  an earlier release wrote has another version's header.
+- **`draft`**: `.draft2020_12` (the default) or `.draft07`. The Draft-07 document
+  is the 2020-12 one with four things said its way, in a final pass over the
+  schema-valued keywords: `$schema` is Draft-07's URI, `$defs` is `definitions`,
+  every `#/$defs/X` is `#/definitions/X`, and a `$ref` that has neighbours
+  (a `description` or `default` written beside a reference) becomes
+  `allOf: [{"$ref": …}]` beside them, because Draft-07 ignores what sits beside a
+  `$ref`. Nothing else Stoic writes differs (`const`, `anyOf`/`oneOf`, `type`
+  lists, the exclusive bounds as numbers, `deprecated` and the `x-stoic-`
+  annotations, which are unknown keywords there and ignored). The library's own
+  validator checks both drafts against the decoder on generated documents.
 
 ## Non-goals
 

@@ -317,6 +317,11 @@ say one `version` while the file, written with the app's header, said another).
 Positions are still the text's.
 A header key may not be a field, an alias or the version key of the schema, and
 the schema must not reject unknown keys, or `open` throws `.invalidArgument`.
+The JSON Schema an editor reads for the file is `schema.jsonSchema(options:)`
+(design/06), closed (`closesObjects`, so a typo is underlined whatever the
+schema's policy) and with the header's keys admitted at the top
+(`extraRootProperties: header.jsonSchemaProperties`), so the `"$schema"` the store
+writes is not itself flagged.
 
 **The app may give the order of some keys** (`layout: .canonical(order:)`, with a
 `KeyOrder`). The schema declares an order for the objects it describes; for
