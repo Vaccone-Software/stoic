@@ -179,6 +179,65 @@ struct SimulationEscapeTests {
         #expect(run.report.description.contains("nothing escaped"))
     }
 
+    // MARK: The executor outlives an enqueue from outside
+
+    /// Holds one enqueue from another thread open between "the job is
+    /// queued" and "the driver is signalled".
+    private final class Window: Sendable {
+        let published = Atomic<Bool>(false)
+        let armed = Atomic<Bool>(true)
+        /// Signalled once the body has suspended, so the thread resumes it
+        /// from outside rather than before it has waited.
+        let suspended = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+    }
+
+    /// A thread that is not the driver hands the executor its last job, and
+    /// is slow to signal: the driver runs the job, the body ends, the run is
+    /// over and its executor released, all inside that call. It used to
+    /// signal the freed executor (a heap-use-after-free under Address
+    /// Sanitizer, seen once in tens of thousands of runs under load).
+    @Test func theExecutorOutlivesTheEnqueueThatHandsItsLastJobToTheDriver() async throws {
+        let window = Window()
+        let run = try await simulate(seed: 3, limits: Self.patient, allowEscapes: true) { _ in
+            let executor = try #require(Ambient.current.taskExecutor as? SimulationExecutor)
+            let driver = currentThreadID()
+            executor.afterPublishing.withLock {
+                $0 = .init {
+                    guard currentThreadID() != driver, window.armed.exchange(false, ordering: .acquiringAndReleasing) else { return }
+                    window.published.store(true, ordering: .releasing)
+                    window.release.wait()
+                }
+            }
+            // Keeps the driver running jobs, so it finds the one from outside
+            // without anyone signalling it. It first runs when the body has
+            // suspended.
+            let spinner = Task(executorPreference: executor) {
+                window.suspended.signal()
+                while !window.published.load(ordering: .acquiring) { await Task.yield() }
+            }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async {
+                    window.suspended.wait()
+                    continuation.resume()
+                    window.finished.signal()
+                }
+            }
+            await spinner.value
+            return 1
+        }
+        #expect(run.value == 1)
+        window.release.signal()
+        // The enqueue goes on to signal; the test ends only after it has.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                window.finished.wait()
+                continuation.resume()
+            }
+        }
+    }
+
     // MARK: Many seeds
 
     @Test func manySeedsRecordOneIssueNotOnePerSeed() async throws {

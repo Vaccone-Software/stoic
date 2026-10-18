@@ -905,6 +905,17 @@ final class SimulationExecutor: TaskExecutor {
     }
 
     func enqueue(_ job: consuming ExecutorJob) {
+        // The moment the job is in the queue, the driver may run it from
+        // another thread, finish the body, and release the simulation, and
+        // with it this executor, while this call still has the arrival to
+        // signal. The runtime does not keep an executor alive for the length
+        // of its own `enqueue`: a task's preference outlives the job only
+        // until the task is freed, and the job being queued may be its last.
+        // So this call holds its own reference, taken while the executor is
+        // certainly alive (the runtime is calling it) and given back last.
+        // unsafe: balanced by the release in the defer.
+        let keepAlive = unsafe Unmanaged.passRetained(self)
+        defer { unsafe keepAlive.release() }
         let job = UnownedJob(job)
         let thread = currentThreadID()
         // The task's identity is read from the job's description, outside the lock.
@@ -943,8 +954,27 @@ final class SimulationExecutor: TaskExecutor {
             state.jobs.append(entry)
             if state.pct != nil { Self.siftUp(&state.jobs, state.jobs.count - 1) }
         }
+        #if DEBUG
+        // A test's seam: the window in which the job is queued and this call
+        // has not yet signalled, held open so a test can prove the executor
+        // outlives it.
+        afterPublishing.withLock { $0 }?.run()
+        #endif
         arrival.signal()
     }
+
+    #if DEBUG
+    /// Runs on the enqueuing thread after the job is queued and before the
+    /// driver is signalled; see ``enqueue(_:)``.
+    let afterPublishing = Mutex<Hook?>(nil)
+
+    /// A struct, not a bare closure: a closure read back out of a `Mutex`
+    /// is stored again wrapped in a reabstraction thunk, one more layer on
+    /// every read, and a hook read once per job overflows the stack.
+    struct Hook: Sendable {
+        let run: @Sendable () -> Void
+    }
+    #endif
 
     /// Marks the calling thread as the driver. Jobs enqueued from any other
     /// thread after this are work from outside the simulation.
