@@ -34,7 +34,8 @@ settings.value.scrollSpeed                      // Observable
 try settings.update { $0.scrollSpeed = 900 }    // validated, durable, then published
 settings.issues                                 // what the last load repaired or warned about
 settings.source                                 // .file, .previousGeneration, .defaults(reason), …
-for await change in settings.changes() { … }    // SettingsChange(old:, new:, cause: .update / .reload / .reset), once per change of the value
+for await change in settings.changes() { … }    // SettingsChange(old:, new:, cause: .update / .reload / .reset, source:), once per change of the value
+try settings.update(source: "settings window") { … }   // the tag rides on the change this makes (coordinatedUpdate and blockingUpdate take one too)
 ```
 
 A file a person edits (`.handEdited`) adds:
@@ -153,7 +154,15 @@ under its lock and found it moved, which is *two* changes: the edit, then the ap
 own) or `.reset` (`replaceUnusableFile`). Changes are announced in the order they were
 committed, after the commit's locks are released and before the call that made
 them returns, by whichever call got there first (the way observers are told), and each
-change's `old` is the previous one's `new`. A stream hears only of what is committed
+change's `old` is the previous one's `new`. **Who did it** is the app's to say, and the store only carries it: each update
+has a variant that takes a `source` (`update(source:_:)`, `coordinatedUpdate(lockTimeout:source:_:)`,
+`blockingUpdate(waitingUpTo:source:_:)`), and the change that update makes has it
+as `SettingsChange.source`, as given (`nil` when none was; the empty string is a
+tag), so a history can say "the settings window" or "an import" without a side
+channel to keep in step with the order changes are announced in. The store never
+reads it and never logs it. A change that arrived from the file has none, even
+when the update that found it had one: the edit was not the app's, which is the
+point of the `.reload` and `.update` pair. A stream hears only of what is committed
 after it was made. It is a stream and not a callback because an app keeps history from
 an `async` context, in order, with a bound; the choice between the two is Observation's
 for showing a value (`value`) and a stream's for recording what happened to it. The
@@ -444,6 +453,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | an app replaces an unusable hand-edited file | The person's bytes are copied (checked) to `<path>.broken-N` or the given path, then the replacement is written and published (`fileProblem` clears); the path of the copy is returned; `settings.replaced`. A failed copy leaves the file as it was; a failed write leaves it and the copy; a crash never leaves the new file without the copy |
 | an app replaces a hand-edited file that can be read | `.fileIsUsable`; no copy, nothing written; the fix the person made is adopted, as an update would |
 | the value of a store changes | One `SettingsChange` (`old`, `new`, `cause`) on each stream made before the commit, in commit order, announced before the committing call returns; none for a write or reload that leaves the value as it was or changes only the issues |
+| an update is given a source | `SettingsChange.source` of the change it makes is that string, exactly (the empty string too; `nil` without one), for `update`, `coordinatedUpdate` and `blockingUpdate`, app-owned stores included; an update that changes nothing is no change; the `.reload` change it finds in the file has none |
 | an update finds the hand-edited file changed | Two changes: the file's edit (`.reload`, from the value the store held to what the file holds), then the app's own (`.update`, from there) |
 | a reader of the changes falls behind | Its buffer keeps the newest `buffering`; the oldest are dropped, `settings.change_dropped` says how many, and the chain of `old` and `new` shows the gap |
 | two processes update a hand-edited file at once | Serialised by the lock, each applying its change to the other's result: every update lands |

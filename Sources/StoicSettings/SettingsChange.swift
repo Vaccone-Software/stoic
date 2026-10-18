@@ -18,10 +18,24 @@ public struct SettingsChange<Value: Sendable & Equatable>: Sendable, Equatable {
     /// Why it changed.
     public var cause: Cause
 
-    public init(old: Value, new: Value, cause: Cause) {
+    /// Who the app says did it: the `source` its caller gave the update
+    /// (``SettingsStore/update(source:_:)``, ``SettingsStore/coordinatedUpdate(lockTimeout:source:_:)``,
+    /// ``SettingsStore/blockingUpdate(waitingUpTo:source:_:)``), so a history can say "the settings window", "the `lodestar config` command",
+    /// "an import" without a side channel that has to be kept in step with the
+    /// order changes are announced in.
+    ///
+    /// The store never reads it: it is carried from the call to the change it
+    /// made, as given, and is `nil` when the caller gave none. A change that
+    /// came from the file (``Cause/reload``) has none, even when the update
+    /// that found it carried one: the edit was not the app's. Not in the
+    /// events (a tag is the app's, and may say what the store would not log).
+    public var source: String?
+
+    public init(old: Value, new: Value, cause: Cause, source: String? = nil) {
         self.old = old
         self.new = new
         self.cause = cause
+        self.source = source
     }
 
     /// Why the value of a store changed.

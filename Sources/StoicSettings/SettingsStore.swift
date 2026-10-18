@@ -530,13 +530,24 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///   durability is in doubt.
     @discardableResult
     public func update(_ change: (inout Value) throws -> Void) throws -> Value {
+        try update(source: nil, change)
+    }
+
+    /// ``update(_:)``, saying who is changing the settings: `source` rides on the
+    /// ``SettingsChange`` the update makes (``SettingsChange/source``), as given.
+    @discardableResult
+    public func update(source: String, _ change: (inout Value) throws -> Void) throws -> Value {
+        try update(source: Optional(source), change)
+    }
+
+    private func update(source: String?, _ change: (inout Value) throws -> Void) throws -> Value {
         defer { notifyObservers() }
         guard format == .handEdited else {
-            return try writing.withLock { _ throws -> Value in try updateAppOwned(change) }
+            return try writing.withLock { _ throws -> Value in try updateAppOwned(change, source: source) }
         }
         let held = try lockWithoutWaiting()
         defer { release(held) }
-        return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
+        return try writing.withLock { _ throws -> Value in try updateHandEdited(change, source: source) }
     }
 
     /// ``update(_:)``, waiting for another process that is writing a
@@ -559,11 +570,26 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     public func coordinatedUpdate(
         lockTimeout: Duration? = nil, _ change: (inout Value) throws -> Void
     ) async throws -> Value {
-        guard format == .handEdited else { return try update(change) }
+        try await coordinatedUpdate(lockTimeout: lockTimeout, source: nil, change)
+    }
+
+    /// ``coordinatedUpdate(lockTimeout:_:)``, saying who is changing the settings
+    /// (``SettingsChange/source``).
+    @discardableResult
+    public func coordinatedUpdate(
+        lockTimeout: Duration? = nil, source: String, _ change: (inout Value) throws -> Void
+    ) async throws -> Value {
+        try await coordinatedUpdate(lockTimeout: lockTimeout, source: Optional(source), change)
+    }
+
+    private func coordinatedUpdate(
+        lockTimeout: Duration?, source: String?, _ change: (inout Value) throws -> Void
+    ) async throws -> Value {
+        guard format == .handEdited else { return try update(source: source, change) }
         defer { notifyObservers() }
         let held = try await lockWaiting(up: lockTimeout ?? editing.lockTimeout)
         defer { release(held) }
-        return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
+        return try writing.withLock { _ throws -> Value in try updateHandEdited(change, source: source) }
     }
 
     /// ``update(_:)``, waiting for another process that is writing a
@@ -597,25 +623,40 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     ///   - change: The change to make, as for ``update(_:)``.
     @discardableResult
     public func blockingUpdate(waitingUpTo wait: Duration? = nil, _ change: (inout Value) throws -> Void) throws -> Value {
-        guard format == .handEdited else { return try update(change) }
+        try blockingUpdate(waitingUpTo: wait, source: nil, change)
+    }
+
+    /// ``blockingUpdate(waitingUpTo:_:)``, saying who is changing the settings
+    /// (``SettingsChange/source``).
+    @discardableResult
+    public func blockingUpdate(
+        waitingUpTo wait: Duration? = nil, source: String, _ change: (inout Value) throws -> Void
+    ) throws -> Value {
+        try blockingUpdate(waitingUpTo: wait, source: Optional(source), change)
+    }
+
+    private func blockingUpdate(
+        waitingUpTo wait: Duration?, source: String?, _ change: (inout Value) throws -> Void
+    ) throws -> Value {
+        guard format == .handEdited else { return try update(source: source, change) }
         defer { notifyObservers() }
         let held = try lockBlocking(waitingUpTo: wait ?? editing.lockTimeout)
         defer { release(held) }
-        return try writing.withLock { _ throws -> Value in try updateHandEdited(change) }
+        return try writing.withLock { _ throws -> Value in try updateHandEdited(change, source: source) }
     }
 
-    private func updateAppOwned(_ change: (inout Value) throws -> Void) throws -> Value {
-        let (old, source, document, repaired) = current.withLock { ($0.value, $0.source, $0.document, $0.repaired) }
-        if case .newerFormat = source { throw UpdateError.newerFormat }
+    private func updateAppOwned(_ change: (inout Value) throws -> Void, source: String?) throws -> Value {
+        let (old, held, document, repaired) = current.withLock { ($0.value, $0.source, $0.document, $0.repaired) }
+        if case .newerFormat = held { throw UpdateError.newerFormat }
         var new = old
         try change(&new)
         if new == old { return old }
-        return try commit(new, carrying: document, repaired: repaired)
+        return try commit(new, carrying: document, repaired: repaired, source: source)
     }
 
     /// The update of a hand-edited file, with the cross-process lock held:
     /// read the file as it stands, make the change to what it holds, write.
-    private func updateHandEdited(_ change: (inout Value) throws -> Void) throws -> Value {
+    private func updateHandEdited(_ change: (inout Value) throws -> Void, source: String?) throws -> Value {
         let state = refresh()
         if let problem = state.problem {
             Ambient.record(Event("settings.update_refused", level: .warning, label: path, fields: [
@@ -627,11 +668,11 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         var new = state.value
         try change(&new)
         if new == state.value { return state.value }
-        return try commit(new, carrying: state.document, repaired: state.repaired)
+        return try commit(new, carrying: state.document, repaired: state.repaired, source: source)
     }
 
     /// Validates `new`, writes it, and publishes it: the end of every update.
-    private func commit(_ new: Value, carrying document: JSONValue?, repaired: [RepairedField]) throws -> Value {
+    private func commit(_ new: Value, carrying document: JSONValue?, repaired: [RepairedField], source: String?) throws -> Value {
         let problems = schema.validate(new)
         guard problems.isEmpty else {
             Ambient.record(Event("settings.rejected", level: .notice, label: path, fields: [
@@ -646,7 +687,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             // The file holds the new value, so memory must too: the next
             // launch reads it unless the power fails first.
             let json = encoded(new, carrying: document, repaired: repaired)
-            publish(committed(new, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .update)
+            publish(committed(new, Written(json: json.json, repaired: json.repaired, bytes: bytes(for: json.json))), cause: .update, source: source)
             Ambient.record(Event("settings.save_failed", level: .error, label: path, fields: [
                 .init("error", .error(error)), .init("during", .string("update"), privacy: .public),
             ]))
@@ -657,7 +698,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             ]))
             throw UpdateError.storage(error)
         }
-        publish(committed(new, written), cause: .update)
+        publish(committed(new, written), cause: .update, source: source)
         Ambient.record(Event("settings.saved", level: .debug, label: path))
         return new
     }
@@ -698,7 +739,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// ``lockWithoutWaiting()``, trying again every ``BlockingWait/pollInterval``
     /// for up to `timeout`, on the thread. Real time, for the reason
     /// ``BlockingWait`` gives.
-    private func lockBlocking(waitingUpTo timeout: Duration) throws -> FileLock? {
+    func lockBlocking(waitingUpTo timeout: Duration) throws -> FileLock? {
         guard lock == nil else { return nil }
         let wait = blockingWait.withLock { $0 }
         let started = wait.now()
@@ -890,7 +931,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
     /// Commits `next` as the current value. Called under `writing`, so
     /// commits happen in the order updates and reloads were serialised; what
     /// changed is remembered for ``notifyObservers()``.
-    func publish(_ next: Current, cause: SettingsChange<Value>.Cause) {
+    func publish(_ next: Current, cause: SettingsChange<Value>.Cause, source: String? = nil) {
         // Who is listening when the value changes, not when it is announced:
         // a stream hears of what was committed after it began, no earlier.
         let listening = listeners.withLock { Array($0.continuations.values) }
@@ -901,7 +942,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
                 changed.insert(.value)
                 if !listening.isEmpty {
                     unannounced.append(Announcement(
-                        change: SettingsChange(old: current.value, new: next.value, cause: cause), listeners: listening))
+                        change: SettingsChange(old: current.value, new: next.value, cause: cause, source: source), listeners: listening))
                 }
             }
             if current.issues != next.issues { changed.insert(.issues) }
