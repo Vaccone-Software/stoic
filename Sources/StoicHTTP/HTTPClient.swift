@@ -750,13 +750,22 @@ public final class HTTPClient: Sendable {
             case .buffered:
                 return Received(response: try await transport.send(request, maxResponseBytes: limit), stream: nil)
             case .streamed(_, let accepted):
-                let streamed = try await transport.stream(request, maxResponseBytes: limit)
+                // The transport is given no limit, because the limit is for the body the caller
+                // asked for, not for whatever answers: a `404` page larger than a small file's
+                // limit is a `404`, not "too large". The limit is applied below, to a body that
+                // is wanted (the declared length here, the bytes as they are read by
+                // `GuardedBody`); a failure's body is only ever read as far as its excerpt.
+                let streamed = try await transport.stream(request, maxResponseBytes: .max)
                 var head = HTTPResponse(status: streamed.status, headers: streamed.headers)
                 if Redirects.isRedirect(head) {
                     streamed.body.cancel()
                     return Received(response: head, stream: nil)
                 }
                 if streamed.isSuccess || accepted.contains(streamed.status) {
+                    if let declared = streamed.headers["Content-Length"].flatMap({ Int($0) }), declared > limit {
+                        streamed.body.cancel()
+                        throw HTTPTransportError.responseTooLarge(limit: limit)
+                    }
                     return Received(response: head, stream: streamed.body)
                 }
                 head.body = try await streamed.body.prefix(excerptBytes)

@@ -368,6 +368,24 @@ struct DownloadTests {
         }
     }
 
+    @Test(.failureMode("design/23", "an error response has a body larger than the byte limit"))
+    func anErrorBodyLargerThanTheLimitIsStillTheStatus() async throws {
+        try await withHarness { h in
+            // A small file pinned at 100 bytes, and a 404 page of 50,000 (declared and delivered):
+            // the limit is for the file, not for what answers in its place.
+            h.transport.on(Self.route, respond: [.streaming(fileBytes(50_000), status: 404)])
+            let task = h.start(try download(fileBytes(100)))
+            guard case DownloadError.http(let error)? = await failure(of: task) else {
+                Issue.record("expected the status, not the byte limit")
+                return
+            }
+            #expect(error.statusCode == 404)
+            #expect(h.transport.requestCount == 1)
+            #expect(h.events.count("download.retry") == 0)
+            #expect(h.contents(partialPath) == nil)
+        }
+    }
+
     @Test(arguments: [401, 403, 410])
     func otherClientErrorsAreFinalToo(status: Int) async throws {
         try await withHarness { h in

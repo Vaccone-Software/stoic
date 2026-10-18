@@ -303,7 +303,9 @@ public final class ScriptedTransport: HTTPTransport {
             case .response(let status, let headers, let body):
                 if body.count > maxResponseBytes { throw TooLarge() }
                 return .whole(HTTPResponse(status: status, headers: headers, body: body))
-            case .streamed(let status, let headers, let totalBytes):
+            case .streamed(let status, var headers, let totalBytes):
+                // A server that streams a body says how long it is.
+                if !headers.contains("Content-Length") { headers["Content-Length"] = String(totalBytes) }
                 plan = Plan(
                     status: status, headers: headers, source: .zeros(totalBytes), pacing: Pacing(chunkSize: 64 * 1024),
                     declaredLength: totalBytes)

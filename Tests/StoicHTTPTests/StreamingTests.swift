@@ -179,6 +179,23 @@ struct HTTPStreamingTests {
         }
     }
 
+    @Test(.failureMode("design/19", "a streamed failure has a body larger than the limit"))
+    func aFailureBodyLargerThanTheLimitIsTheStatusWithItsExcerpt() async throws {
+        try await withRig(.testing(attempts: 1)) { rig in
+            rig.transport.on(.get("/gone"), respond: [.streaming(Self.data(8_000), status: 404)])
+            let error = await #expect(throws: HTTPError.self) { try await rig.api.stream(.get("/gone"), maxBytes: 10) }
+            #expect(error?.statusCode == 404, "classified by its status, not by the limit meant for the file")
+            #expect(rig.events.count("http.response_too_large") == 0)
+            #expect(rig.transport.abortedCount == 1, "the rest of the body was abandoned unread")
+
+            // An accepted status is a wanted body, and is held to the limit.
+            rig.transport.on(.get("/range"), respond: [.streaming(Self.data(8_000), status: 416)])
+            await #expect(throws: HTTPError.responseTooLarge(limit: 10, attempts: 1)) {
+                try await rig.api.stream(.get("/range"), maxBytes: 10, accepting: [416])
+            }
+        }
+    }
+
     @Test(.failureMode("design/19", "a streamed body outlasts the attempt timeout"))
     func theAttemptTimeoutBoundsTheHeadAndNotTheBody() async throws {
         try await withRig(.testing(timeout: .seconds(10))) { rig in

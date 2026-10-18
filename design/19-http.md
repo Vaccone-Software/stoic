@@ -243,6 +243,7 @@ inside a simulation.
 | a call accepts a status outside 2xx, such as 416 | Returned as a response with its headers and body, not thrown |
 | a streamed body fails after its head | The body throws `HTTPError` (a lost connection is `.transport`) after the chunks that arrived; nothing is retried; the sequence has ended |
 | a streamed body is longer than its limit | `.responseTooLarge` thrown by the body after `maxBytes`, the connection cancelled; a declared length over the limit fails before the first byte |
+| a streamed failure has a body larger than the limit | `.status` with its excerpt: the limit is for the body that is wanted (a success, or a status the call accepts), so neither a declared length nor the bytes of a failure's body are held to it; only the excerpt is read |
 | a streamed body outlasts the attempt timeout | Not cut: the timeout bounds the wait for the head; a server that never answers is cut at it |
 | the caller's deadline passes while a body is read | The read throws `.rejected(deadline_exceeded)` and the transfer is cancelled |
 | the caller is cancelled while a body is read | The read throws `CancellationError` and the transfer is cancelled |
