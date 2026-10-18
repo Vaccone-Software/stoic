@@ -98,7 +98,7 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
     /// value only when ``actual`` is present.
     public var message: String {
         var text = baseMessage
-        if severity == .repaired, let repair = parameters["repair"]?.string {
+        if let repair = parameters["repair"]?.string {
             text += "; " + repair
         }
         return text

@@ -94,7 +94,7 @@ public struct SchemaGenerator<Value: Sendable>: Sendable {
         var found: [String] = []
         var seen: Set<String> = []
         Self.walk(schema.node, path: "$", seen: &seen) { node, path in
-            if case .transformed(let transform) = node, transform.examples.isEmpty {
+            if case .transformed(let transform) = node, transform.examples.isEmpty, !transform.isTransparent {
                 found.append("\(path) (\(transform.name))")
             }
         }
@@ -109,7 +109,9 @@ public struct SchemaGenerator<Value: Sendable>: Sendable {
         var found: [String] = []
         var seen: Set<String> = []
         Self.walk(schema.node, path: "$", seen: &seen) { node, path in
-            if case .transformed(let transform) = node, transform.examples.isEmpty, !transform.isAnnotated {
+            if case .transformed(let transform) = node, transform.examples.isEmpty, !transform.isAnnotated,
+                !transform.isTransparent
+            {
                 found.append("\(path) (\(transform.name))")
             }
         }

@@ -157,6 +157,17 @@ public struct TransformNode: Sendable {
     /// Codable leaf turns any JSON value into a type and has nothing on the
     /// wire to describe, so it is exported as `{}` and nothing more.
     public var isAnnotated: Bool
+    /// Whether the node changes how a valid value is read, not what it is:
+    /// it converts nothing, and a generator needs no ``examples`` for it
+    /// (a clamped number, a documented value). The suite does not ask such a
+    /// node for examples.
+    public var isTransparent = false
+    /// Whether a number outside the base's inclusive range bounds is moved
+    /// to the nearest bound with a warning, instead of refused (see
+    /// ``Schema/clampingToRange()``). A generator's mutation past a bound is
+    /// then expected to cause that warning, which a JSON Schema validator
+    /// does not tolerate, so the agreement check skips it.
+    public var clampsToRange = false
 
     /// A value the base accepts and the conversion refuses.
     public struct Counterexample: Sendable, Hashable {

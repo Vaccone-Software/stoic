@@ -251,6 +251,7 @@ schema and throws one `DecodingError` listing every issue.
 | an enumeration with an unknown case meets a value it does not know | Read as that case; an `unknown_case` warning naming the value and the case, with the nearest known spelling; the document is still accepted |
 | a tagged union with an unknown case meets a tag it does not know | The object is read as that case; an `unknown_case` warning at the discriminator naming the tag and the case, with the nearest known tag; the payload is handed over unread (kept, if the case holds it, and written back as it came); the document is still accepted |
 | an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
+| a number outside a clamped range is read    | `clampingToRange()`: the nearest inclusive bound is the value, and an `out_of_range` *warning* (`repair`: "clamped to 4000") says so, in every mode; an exclusive bound, `.multipleOf` and the rest still refuse; a non-number is still `type_mismatch` |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
@@ -1172,6 +1173,46 @@ the order it was built.
   the standard library, and StoicJSON stays Foundation-free entirely. (The
   files import `FoundationEssentials` where it exists, for a later Linux
   port.)
+
+## As built: files people edit
+
+The additions that let a typed schema stand in for a hand-written reader of a
+configuration file, which repairs, forgives and renames where a wire model
+would refuse. Each is opt-in per schema and changes nothing for one that does
+not ask.
+
+### Clamping
+
+- **`clampingToRange()`** on a `Double` or integer schema. A number outside a
+  `.range` is read as the nearest bound, with an `out_of_range` *warning* at
+  the number whose `repair` parameter says what it became, so
+  `.double(.range(200...4000)).clampingToRange()` reads `99999` as `4000` and
+  the message is "99999 is out of range, expected a number between 200 and
+  4000; clamped to 4000". (`Issue.message` now ends with the `repair`
+  parameter whenever there is one, whatever the severity; before, only a
+  `repaired` issue had one.) Without it a range can only refuse, or, under
+  `.lenient`, repair to the field's default.
+- **A warning, not a `repaired` issue, and in every mode.** `repaired` means
+  the default stood in for a value the schema refused, and a settings store
+  carries such a value back into the file so that an older build never
+  destroys what a newer one wrote; a clamped number is a value the schema
+  decided on, written back as the number it became. Clamping is declared by
+  the schema, so `.strict` does it too: a wire format that wants 99999
+  refused does not ask.
+- **Only an inclusive bound has a nearest value.** The value is moved into
+  every inclusive bound of every `.range` of the schema, in turn. An exclusive
+  bound (`.greaterThan(0)`) and every other constraint are checked after, and
+  still refuse. The digits sent decide, as for every number: `1e30` is above
+  4000, and a number too wide for an `Int` is clamped, not wrapped. A schema
+  with no inclusive bound traps where it is declared.
+- **Representation.** A `.transformed` node over the number, `isTransparent`
+  (it converts nothing, so the suite asks for no `examples`) and
+  `clampsToRange`, with the keyword `x-stoic-clamp` in the export. The export
+  keeps `minimum` and `maximum`, which a validator enforces, so an editor
+  flags 99999 while the decoder accepts it with a warning. The mutator
+  expects that warning, and no error, for a number a bound moves (and for one
+  that would have been `precision_loss`, because the clamp comes first), and
+  marks the mutation tolerated so the agreement check skips it.
 
 ## Non-goals
 

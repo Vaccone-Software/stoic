@@ -98,7 +98,7 @@ struct ValueMaker {
             if !transform.examples.isEmpty {
                 return pick(transform.examples)
             }
-            usedUnexemplifiedTransform = true
+            if !transform.isTransparent { usedUnexemplifiedTransform = true }
             return try make(transform.base, depth: depth, path: path)
 
         case .union(let union):

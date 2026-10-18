@@ -128,6 +128,24 @@ struct Mutator {
             if transform.readsNumberDigits { inner.doubleLimits = false }
             if transform.dropsInvalidElements, case .array(let element, let constraints) = transform.base {
                 collectArray(element, constraints, value, path, inner, &out, lossy: true)
+            } else if transform.clampsToRange {
+                let ranges = transform.base.constraints.compactMap { constraint -> NumberRange? in
+                    if case .range(let range) = constraint.kind { range } else { nil }
+                }
+                var found: [Mutation] = []
+                collect(transform.base, value, path, inner, &found)
+                for var mutation in found {
+                    // A number a bound moves is not refused: it is clamped, with
+                    // a warning. Whatever else it breaks (the width of a
+                    // `Double`, say) is not reached, because the clamp comes first.
+                    if case .number(let number)? = mutation.document.value(at: path),
+                        ClampedNumber(number, in: ranges) != nil
+                    {
+                        mutation.expected = [ExpectedIssue(path: path, code: .outOfRange, severity: .warning)]
+                        mutation.isTolerated = true
+                    }
+                    out.append(mutation)
+                }
             } else {
                 collect(transform.base, value, path, inner, &out)
             }
