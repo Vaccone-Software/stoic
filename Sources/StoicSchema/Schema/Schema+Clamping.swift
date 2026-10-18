@@ -37,7 +37,7 @@ extension Schema where Value: FixedWidthInteger {
     /// This integer schema, repairing a value outside its `.range` to the
     /// nearest bound instead of refusing it.
     ///
-    /// See ``Schema/clampingToRange()`` for `Double`: the behaviour is the
+    /// See `clampingToRange()` on a `Double` schema: the behaviour is the
     /// same, decided on the digits sent, so a number too large for the
     /// integer type, which is `out_of_range` and never wrapped, is clamped
     /// when the schema has a bound to clamp it to.

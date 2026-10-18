@@ -165,7 +165,7 @@ public struct TransformNode: Sendable {
     public var isTransparent = false
     /// Whether a number outside the base's inclusive range bounds is moved
     /// to the nearest bound with a warning, instead of refused (see
-    /// ``Schema/clampingToRange()``). A generator's mutation past a bound is
+    /// `clampingToRange()`). A generator's mutation past a bound is
     /// then expected to cause that warning, which a JSON Schema validator
     /// does not tolerate, so the agreement check skips it.
     public var clampsToRange = false
