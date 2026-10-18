@@ -206,9 +206,33 @@ struct HandEditedTests {
             return
         }
         #expect(issues.first?.source?.start.line == 1, "even for bytes that are not text, there is a place: \(issues)")
+        #expect(settings.fileProblem?.isNotUTF8 == true, "typed, not parameters[\"parseCode\"]")
+        #expect(settings.fileProblem?.parseCode == .invalidUTF8)
         #expect(throws: SettingsStore<LodePrefs>.UpdateError.self) { try settings.update { $0.speed = 900 } }
         #expect(disk.contents(of: Self.path) == latin1)
         try Self.expectNothingBesideTheFile(disk)
+    }
+
+    @Test(.failureMode("design/18", "the hand-edited file is not UTF-8"))
+    func otherProblemsAreNotSaidToBeNotUTF8() throws {
+        let disk = try Self.disk()
+        try Self.place(Self.garbage, on: disk)
+        let broken = try Self.open(disk)
+        #expect(broken.fileProblem != nil)
+        #expect(broken.fileProblem?.isNotUTF8 == false)
+        #expect(broken.fileProblem?.parseCode == .unexpectedCharacter)
+
+        let shaped = try SettingsStore.open(
+            at: "/d/shape.json", schema: Schema.jsonObject(), format: .handEdited, fileSystem: disk)
+        try Self.place("[1, 2]", on: disk, at: "/d/shape.json")
+        try shaped.reload()
+        #expect(shaped.fileProblem?.isNotUTF8 == false)
+        #expect(shaped.fileProblem?.parseCode == nil, "the text parsed; its shape is what is wrong")
+
+        disk.inject(EACCES, on: .read, count: 100)
+        let unreadable = try Self.open(disk)
+        #expect(unreadable.fileProblem?.isNotUTF8 == false)
+        #expect(unreadable.fileProblem?.parseCode == nil)
     }
 
     @Test(.failureMode("design/18", "the hand-edited file cannot be read"))

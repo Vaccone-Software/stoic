@@ -211,6 +211,21 @@ public enum SettingsFileProblem: Sendable, Equatable, CustomStringConvertible {
         firstIssue?.source?.start
     }
 
+    /// Whether the file is not text: its bytes are not well-formed UTF-8
+    /// (``location`` is the first bad byte). What an app shows differently:
+    /// "this file is not a text file" is not "this file has a typo".
+    public var isNotUTF8: Bool {
+        parseCode == .invalidUTF8
+    }
+
+    /// The parser's code for why the text could not be read (`.invalidUTF8`,
+    /// `.commentNotAllowed`, `.duplicateKey`, `.unexpectedCharacter`, …), when
+    /// that is the reason; `nil` when the text parsed and the schema refused
+    /// its shape, and for ``unreadable(_:)``.
+    public var parseCode: JSONParseError.Code? {
+        firstIssue?.parseCode
+    }
+
     private var firstIssue: Issue? {
         guard case .unparsable(let issues) = self else { return nil }
         return issues.first(where: { $0.severity == .error }) ?? issues.first
