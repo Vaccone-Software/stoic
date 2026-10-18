@@ -164,7 +164,7 @@ struct JSONSchemaExporter {
 
     private mutating func export(_ object: ObjectNode, location: String) -> JSONObject {
         var out = JSONObject()
-        out["type"] = "object"
+        out["type"] = object.readsNullAsEmpty ? .array(["object", "null"]) : "object"
         out["title"] = .string(object.name)
         if let doc = object.doc { out["description"] = .string(doc) }
         var properties = JSONObject()

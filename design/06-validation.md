@@ -253,6 +253,7 @@ schema and throws one `DecodingError` listing every issue.
 | an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
 | a number outside a clamped range is read    | `clampingToRange()`: the nearest inclusive bound is the value, and an `out_of_range` *warning* (`repair`: "clamped to 4000") says so, in every mode; an exclusive bound, `.multipleOf` and the rest still refuse; a non-number is still `type_mismatch` |
 | an entry of a lossy dictionary is invalid    | Dropped, with a `dropped_entry` warning at the entry's own path carrying its `key` and the first reason; the rest are kept, and the entry's own errors are not reported (`Schema.dictionary` still fails the whole table) |
+| a section that may be null is null          | `readingNullAsEmpty()`: read as `{}`, every field its default, no issue, in every mode; nothing remembers the null, so a sparse write omits the section. Without it, `null` is a `type_mismatch` |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
@@ -1248,6 +1249,26 @@ not ask.
   `x-stoic-transform`, so decoding, generation and every constraint are the
   schema's own. `valueDoc:` on `dictionary(of:)` (an overload) and
   `lossyDictionary(of:)` is `documented` on the value schema.
+
+### An object read from `null`
+
+- **`readingNullAsEmpty()`** on an object schema (either form). `null` is read
+  as `{}`: every field takes its default, silently, in every mode. Without
+  it `null` is a `type_mismatch`, and under `.lenient` a repair to the default,
+  which a settings store would then carry back into the file as a value to
+  preserve. It is for a section of a file people edit that is left as
+  `"scroll": null` once what was inside is deleted.
+- **The null is not a value.** Nothing in the Swift value remembers it, so a
+  write is sparse: the section is omitted when it equals its default, and the
+  store does not carry the `null` back (it is not an object whose unknown keys
+  could be carried). A form (b) object, whose fields may have no default,
+  reports their `missing_key` errors as for `{}`.
+- **Only the object reads it**: a `null` for a field inside is as strict as it
+  was, and a section that did not ask still refuses `null`.
+- **Representation.** `ObjectNode.readsNullAsEmpty`. The export admits `null`
+  for the object (`"type": ["object", "null"]`), the mutator does not offer
+  `null` as a violation of it, and the library's own validator reads a list
+  of types.
 
 ## Non-goals
 

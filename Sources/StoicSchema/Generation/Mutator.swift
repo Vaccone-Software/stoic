@@ -175,6 +175,7 @@ struct Mutator {
         switch node {
         case .optional(_, let nullable): nullable
         case .json: true
+        case .object(let object): object.readsNullAsEmpty
         case .transformed(let transform): acceptsNull(transform.base)
         case .lazy(_, let resolve): acceptsNull(resolve())
         default: false

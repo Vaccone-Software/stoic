@@ -502,6 +502,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | the app holds the lock for life and the file is hand-edited | Its updates use that hold and take no second lock (which would conflict with it) |
 | a hand-edited file is replaced by a rename    | `reload()` (or the watch) publishes the new value; observers are told |
 | the store's own write is reported by the watcher | The reload finds the file as the store left it: nothing published or reported |
+| a section of a hand-edited file is `null` | Read as an empty section if its schema says `readingNullAsEmpty()` (every field its default, no issue), else a `type_mismatch` like any wrong kind (repaired under `.lenient`); never written back: the next update omits a section that equals its default |
 | several changes arrive in a burst             | One reload, once the file has been quiet for `debounce` (the last change restarts the wait) |
 | the hand-edited file is edited while the app runs | The watch reloads it after `debounce`: a create, a write in place and a save by rename are all seen; a half-saved file is a `fileProblem` until the next save |
 | the hand-edited file does not exist yet       | `watch` works (the directory is watched); the file is picked up when it is created |

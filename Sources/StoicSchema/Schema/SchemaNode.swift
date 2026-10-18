@@ -304,6 +304,10 @@ public struct ObjectNode: Sendable {
     /// versioned. A document's version lives in the reserved
     /// ``Versioning/key``, which is not a field.
     public var versioning: Versioning?
+    /// Whether JSON `null` is read as an empty object, silently (see
+    /// ``Schema/readingNullAsEmpty()``): every field takes its default, and no
+    /// issue is raised. The export then admits `null` for the object.
+    public var readsNullAsEmpty = false
 
     public init(
         name: String, doc: String? = nil, fields: [FieldNode], unknownKeys: UnknownKeyPolicy,

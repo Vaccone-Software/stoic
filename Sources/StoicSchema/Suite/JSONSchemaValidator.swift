@@ -45,6 +45,10 @@ public struct JSONSchemaValidator: Sendable {
             guard branches.filter({ accepts(instance, against: $0) }).count == 1 else { return false }
         }
         if let type = schema["type"]?.string, !matches(type: type, instance) { return false }
+        // A list of types (an object that may also be `null`) admits an instance any of them admits.
+        if let types = schema["type"]?.array, !types.contains(where: { $0.string.map { matches(type: $0, instance) } ?? false }) {
+            return false
+        }
         if let allowed = schema["enum"]?.array, !allowed.contains(instance) { return false }
         if let constant = schema["const"], constant != instance { return false }
 
