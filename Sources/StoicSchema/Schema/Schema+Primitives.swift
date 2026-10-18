@@ -211,6 +211,35 @@ extension Schema where Value == JSONValue {
     }
 }
 
+extension Schema where Value == JSONValue {
+    /// Any JSON object, passed through untouched: for a document whose
+    /// top level is a table the app reads by key (a configuration of
+    /// sections) and whose members it does not declare.
+    ///
+    /// ``json(_:)`` takes any value, so a file that holds `[1, 2]` or `5`
+    /// would load as a good value and fail on the app's first lookup. This
+    /// refuses it where the person can see it: `type_mismatch`, "expected an
+    /// object, found an array", with the position of the value. It is exported
+    /// as `{"type": "object"}`, and generated as an object, which a
+    /// ``json(_:)`` carrying a custom check could not be: the node *is* an
+    /// object of any values.
+    ///
+    /// Constraints are about the entries: `.count(1...)`.
+    public static func jsonObject(_ constraints: Constraint...) -> Schema<JSONValue> {
+        Schema<JSONValue>(
+            node: .dictionary(value: .json(constraints: []), constraints: constraints),
+            decoder: { json, state in
+                guard case .object = json else {
+                    state.typeMismatch(expected: "an object", found: json)
+                    return nil
+                }
+                guard state.apply(constraints, to: json) else { return nil }
+                return json
+            },
+            encoder: { value, _ in value })
+    }
+}
+
 // MARK: - Enumerations
 
 extension Schema where Value: RawRepresentable & CaseIterable, Value.RawValue == String {

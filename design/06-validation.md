@@ -271,7 +271,9 @@ schema and throws one `DecodingError` listing every issue.
 | a dotted address has a free key with dots in it | The shape decides: a free key takes the fewest segments that leave a remainder the shape reads (`web.routes.github.com` is `routes` / `github.com`; `web.links.my.site.url` is `links` / `my.site` / `url`), else all of them |
 | a dotted address names what the shape does not describe | Read as plain keys from there, one per segment, and still a path: saying the key is unknown is the validator's work |
 | a dotted address has an empty segment | `nil`: no key can be addressed by it. The empty address is the root |
-| a comment is met with `allowComments` off | `comment_not_allowed` at the `/` that begins it (line and column); trailing commas and the rest of the dialect are unaffected, and a `/` inside a string is not a comment |
+| a comment is met with `allowComments` off | `comment_not_allowed` at the `/` that begins it (line and column), saying "comments are not allowed in this file" and naming no option, so an app may show it as it is; trailing commas and the rest of the dialect are unaffected, and a `/` inside a string is not a comment |
+| the text repeats a key and the options accept it | A `repeated_key` warning at each repeat after the first (its key's line and column; `firstLine`, `firstColumn` and `kept` in the parameters), from every decode of a document that remembers one; an app may add a `note` to the parameters and the message ends with it. The decode succeeds: the warning says which of two values the value is |
+| a schema that wants any object meets another kind of value | `Schema.jsonObject()` is `type_mismatch`, "expected an object, found an array" (or a number, a string, null, a boolean), at the position of the value, and no value; `Schema.json()` would have admitted it and failed the app at its first lookup. It exports as `{"type": "object"}` and generates objects |
 
 ## Testing
 
@@ -662,6 +664,15 @@ schema) and changes them by address.
   index, a recursive schema is read as far as the address goes, and a tagged
   union is the object of its discriminator and every case's fields (the first
   case's where two share a key).
+- **Repeated keys can be accepted, and are then reported.** The default is to
+  refuse them (`.reject`: RFC 8259 says only that names "SHOULD be unique",
+  and parsers disagree about which wins). A reader of a file a person edits may
+  choose `.lastWins` (or `.firstWins`); `JSONDocument.repeatedKeys` then lists
+  each repeat after the first (at most 1,000), and a schema decode reports each
+  as a `repeated_key` warning, so a value that is one of two is never silently
+  so. `Issue.parseCode` is the parser's code of a `parse_error` issue
+  (`.invalidUTF8`, `.duplicateKey`, `.commentNotAllowed`), typed, where a reader
+  would otherwise dig it out of `parameters`.
 - **Comments can be refused.** `JSONParseOptions.allowComments` is on by
   default; with the `.jsonc` dialect and `allowComments` off, a comment is
   `comment_not_allowed` at its `/`, and trailing commas stay allowed. A store

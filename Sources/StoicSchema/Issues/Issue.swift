@@ -129,6 +129,13 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let key = parameters["key"]?.string ?? lastKey
             let other = parameters["other"]?.string ?? "another spelling"
             return "`\(key)` repeats `\(other)`, which names the same field"
+        case .repeatedKey:
+            let key = parameters["key"]?.string ?? lastKey
+            let line = parameters["firstLine"]?.number?.lexeme ?? "?"
+            let column = parameters["firstColumn"]?.number?.lexeme ?? "?"
+            let which = parameters["kept"]?.string ?? "last"
+            let note = parameters["note"]?.string.map { "; " + $0 } ?? ""
+            return "`\(key)` is set more than once (first at line \(line), column \(column)); the \(which) one is used\(note)"
         case .outOfRange:
             return "\(value) is out of range, expected \(want)"
         case .tooShort, .tooLong:
@@ -202,6 +209,16 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
         }
     }
 
+    /// The parser's code, for an issue that says the text could not be
+    /// parsed (``IssueCode/parseError``): `.invalidUTF8`, `.commentNotAllowed`,
+    /// `.duplicateKey`, and so on. Compare it with the static members of
+    /// ``JSONParseError/Code``, rather than reading `parameters["parseCode"]`.
+    /// `nil` for any other issue.
+    public var parseCode: JSONParseError.Code? {
+        guard code == .parseError, let raw = parameters["parseCode"]?.string else { return nil }
+        return JSONParseError.Code(rawValue: raw)
+    }
+
     private var lastKey: String {
         if case .key(let key)? = path.components.last { return key }
         return "?"
@@ -230,6 +247,21 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             line += " (did you mean \(list)?)"
         }
         return line
+    }
+}
+
+extension Issue {
+    /// The warning for a repeat the parser resolved.
+    init(repeating repeated: JSONRepeatedKey) {
+        self.init(
+            severity: .warning, path: repeated.path, code: .repeatedKey,
+            parameters: [
+                "key": .string(repeated.key),
+                "firstLine": .number(JSONNumber(repeated.first.line)),
+                "firstColumn": .number(JSONNumber(repeated.first.column)),
+                "kept": .string(repeated.kept == .first ? "first" : "last"),
+            ],
+            source: repeated.repeated)
     }
 }
 

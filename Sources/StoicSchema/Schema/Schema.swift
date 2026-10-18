@@ -121,7 +121,14 @@ public struct Schema<Value: Sendable>: Sendable {
         // trust the count over the value if the two ever disagree.
         // Text is reported in reading order, whatever order the schema
         // declares its fields in.
-        let issues = state.resolvedIssues().inReadingOrder()
+        var resolved = state.resolvedIssues()
+        // A document that accepted a repeated key (`.lastWins`) says so: the
+        // value is one of two, and the person who wrote the text is told which.
+        if let document {
+            let room = max(0, options.maxIssues - resolved.count)
+            resolved += document.repeatedKeys.prefix(room).map { Issue(repeating: $0) }
+        }
+        let issues = resolved.inReadingOrder()
         guard state.errorCount == 0 else { return Decoded(value: nil, issues: issues) }
         return Decoded(value: value, issues: issues)
     }
