@@ -32,6 +32,8 @@ struct CommentsTests {
         #expect(issue.source?.start.column == 17, "at the slash that begins the comment")
         #expect(issue.description.hasPrefix("3:17 "))
         #expect(issue.description.contains("comment"), "\(issue)")
+        #expect(!issue.message.contains("allowComments"), "an option's name is for the developer, not for what an app shows: \(issue.message)")
+        #expect(issue.message.hasSuffix("comments are not allowed in this file; remove it"), "\(issue.message)")
         #expect(HandEditedTests.text(disk) == Self.withComment, "the file is exactly what the person wrote")
         try HandEditedTests.expectNothingBesideTheFile(disk)
         #expect(events.events(named: "settings.unparsed").first?["line"]?.description == "3")

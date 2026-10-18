@@ -7,6 +7,28 @@ public import StoicStore
 ///
 ///     var options = SettingsStore<Prefs>.Options()
 ///     options.handEdited.fileHeader = ["$schema": "prefs-schema.json"]
+///
+/// ## The dialect of the file
+///
+/// What the store reads is JSON as people write it by hand, and this is the one
+/// place that says exactly what that is (``parseOptions`` is the same thing as
+/// code, for a tool that must read the file as the app does):
+///
+/// | In the file                          | The store                                                                                   |
+/// | ------------------------------------ | ------------------------------------------------------------------------------------------- |
+/// | `//` and `/* */` comments            | reads them as whitespace and drops them at the next write; or, with ``comments`` `.refused`, makes one a problem at its line and column |
+/// | a trailing comma (`[1, 2,]`)         | accepts one after the last element or member; always, and the next write has none           |
+/// | a UTF-8 byte order mark              | skips it; always, and the next write has none                                               |
+/// | a key said twice in one object       | with ``duplicateKeys`` `.lastWins`: uses the last, in the first one's place, and reports a warning `repeated_key` at each repeat (`SettingsStore/issues`); the next write has only that one. With `.refused`: a problem at the repeat |
+/// | anything else outside RFC 8259       | a problem at its line and column (single quotes, unquoted keys, `NaN`, a leading `+`, …)    |
+/// | bytes that are not UTF-8             | a problem at the first bad byte (``SettingsFileProblem/isNotUTF8``)                         |
+/// | a top level that is not an object    | a problem when the schema says so (`Schema.jsonObject()`, or any object schema)             |
+/// | more than 8 MiB, 64 levels, 100,000 elements in one array or members in one object, or a string of more than 1 MiB | a problem, whatever the person meant (``JSONParseOptions``) |
+///
+/// Nothing in this table is ever written back on load: the person's file is
+/// changed only by a write the app asks for, which writes the value in the
+/// canonical dialect and so drops comments, trailing commas, the byte order
+/// mark and any repeated key together (``Layout``).
 public struct HandEditedOptions: Sendable, Hashable {
     /// What the store writes at the top of the file, before anything else, and
     /// ignores when it reads one. See ``SettingsFileHeader``.
@@ -18,6 +40,10 @@ public struct HandEditedOptions: Sendable, Hashable {
     /// Whether the file may hold comments. ``Comments/allowed`` by default.
     public var comments: Comments
 
+    /// What a key said twice in one object means. ``DuplicateKeys/lastWins`` by
+    /// default, with a warning issue.
+    public var duplicateKeys: DuplicateKeys
+
     /// How long an update that waits (``SettingsStore/coordinatedUpdate(lockTimeout:_:)``,
     /// or ``SettingsStore/blockingUpdate(waitingUpTo:_:)`` without an argument)
     /// gives another process that is writing the file (a command-line tool
@@ -28,12 +54,51 @@ public struct HandEditedOptions: Sendable, Hashable {
 
     public init(
         fileHeader: SettingsFileHeader = [:], layout: Layout = .canonical, comments: Comments = .allowed,
-        lockTimeout: Duration = .seconds(2)
+        duplicateKeys: DuplicateKeys = .lastWins, lockTimeout: Duration = .seconds(2)
     ) {
         self.fileHeader = fileHeader
         self.layout = layout
         self.comments = comments
+        self.duplicateKeys = duplicateKeys
         self.lockTimeout = lockTimeout
+    }
+
+    /// The options the store parses its file with: the dialect in the table
+    /// above, as code. A command-line tool that reads the app's file with
+    /// ``StoicJSON/JSONDocument`` should use these, so that both mean the same
+    /// by it.
+    public var parseOptions: JSONParseOptions {
+        var options = JSONParseOptions.jsonc
+        options.allowComments = comments == .allowed
+        options.duplicateKeys = duplicateKeys == .lastWins ? .lastWins : .reject
+        return options
+    }
+
+    /// What a key said twice in one object means.
+    ///
+    /// RFC 8259 says only that names "SHOULD be unique", and parsers disagree
+    /// about which wins; that is why the strict parser refuses them, for data
+    /// that crosses a trust boundary. A file a person edits is not that: it is
+    /// theirs, the likely cause is a line added below one they forgot, the
+    /// later one is the one they meant, and the readers that came before (every
+    /// `JSONSerialization`, `JSON.parse`, and most editors' tooling) take it.
+    /// An app that moves to the store from one of them must not turn a file
+    /// that worked into a refusal.
+    public enum DuplicateKeys: Sendable, Hashable {
+        /// The last occurrence is the value, in the first one's place, and the
+        /// store says so: a `repeated_key` warning in ``SettingsStore/issues`` at
+        /// each repeat, with the line and column of both, and an event
+        /// (`settings.repeated_keys`). Never silent. The file is not changed on
+        /// load; the next update writes it with only the last, and the warning
+        /// says so. The default.
+        case lastWins
+
+        /// A repeat is a problem with the file, at the repeat's line and column,
+        /// like any text the store cannot read: the last good value stays,
+        /// ``SettingsStore/update(_:)`` throws ``SettingsStore/UpdateError/fileUnusable(_:)``,
+        /// and the file is never touched. For an app whose people would rather
+        /// be told than have a line they wrote ignored.
+        case refused
     }
 
     /// What a comment in the file means. A write never keeps one: the store

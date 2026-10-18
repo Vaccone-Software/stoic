@@ -129,6 +129,7 @@ public enum EventCatalog {
         Entry(name: "settings.reload_failed", level: .warning, meaning: "A reload the file watcher started failed (an app-owned file whose read failed); the value is as it was."),
         Entry(name: "settings.reloaded", level: .info, meaning: "A reload found a hand-edited settings file changed (by a person or another process) and published what it holds."),
         Entry(name: "settings.repaired", level: .warning, meaning: "Invalid settings fields fell back to their defaults; reports how many."),
+        Entry(name: "settings.repeated_keys", level: .warning, meaning: "A hand-edited settings file says a key more than once; the last is used, and the file is left as it is until the next update, which writes only that one. Reports how many repeats and which occurrence is used. Each is a repeated_key issue with both places."),
         Entry(name: "settings.replaced", level: .warning, meaning: "A hand-edited settings file that could not be read was replaced, on the app's asking, after the person's bytes were copied and the copy checked. Reports where the copy is."),
         Entry(name: "settings.reset", level: .error, meaning: "No settings file was usable; the defaults were used and the files quarantined."),
         Entry(name: "settings.save_failed", level: .error, meaning: "Settings could not be written, and the value and the file are as they were; or they were written but could not be made durable, and the new value is published (the error says which)."),

@@ -43,7 +43,7 @@ extension SettingsStore {
                 read: .bytes(bytes))
         }
         let decoded = schema.decode(document, options: options)
-        let issues = decoded.issues
+        let issues = annotatingRepeats(decoded.issues)
         // A newer document is intact, not unusable: read what can be read, and
         // leave the file alone, as an app-owned store does.
         if let newer = issues.first(where: { $0.code == .versionTooNew }) {
@@ -61,6 +61,18 @@ extension SettingsStore {
             repaired: RepairedField.found(
                 in: issues, document: document.value, repaired: schema.encode(value, style: .init(.full, includeSecrets: true))),
             read: .bytes(bytes))
+    }
+
+    /// `issues`, with what a repeated key's warning owes the person who reads
+    /// it: that the file is as it was, and what the next update does to it.
+    /// Said here, not by the schema, which does not know it is a file's.
+    static func annotatingRepeats(_ issues: [Issue]) -> [Issue] {
+        issues.map { issue in
+            guard issue.code == .repeatedKey else { return issue }
+            var noted = issue
+            noted.parameters["note"] = .string("the file is not changed until the next update, which writes only that one")
+            return noted
+        }
     }
 
     /// The state a reading of a hand-edited file leads to: what the file
@@ -92,6 +104,12 @@ extension SettingsStore {
     static func reportHandEdited(_ loaded: Loaded, kept: Bool, path: String) {
         guard let problem = loaded.problem else {
             report(loaded, path: path)
+            let repeats = loaded.issues.filter { $0.code == .repeatedKey }.count
+            if repeats > 0 {
+                Ambient.record(Event("settings.repeated_keys", level: .warning, label: path, fields: [
+                    .init("keys", .int(repeats)), .init("used", .string("last"), privacy: .public),
+                ]))
+            }
             return
         }
         var fields: [Event.Field] = [

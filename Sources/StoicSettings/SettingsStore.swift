@@ -45,6 +45,10 @@ internal import Synchronization
 ///   update. Loading keeps the last good value (the defaults, the first time)
 ///   and reports a ``SettingsFileProblem`` with the line and column; ``update(_:)``
 ///   throws ``UpdateError/fileUnusable(_:)`` and writes nothing.
+/// - **The dialect is one table** (``HandEditedOptions``): comments, trailing
+///   commas, a byte order mark and a key said twice are accepted (the last one
+///   used, with a warning issue; comments and repeats may be refused instead),
+///   and the next write has none of them.
 /// - **Issues point into the text.** Each `Issue` carries the
 ///   `Issue.source` range of the key or value in the file.
 /// - **Writes are sparse and byte-stable**, with an optional header
@@ -335,7 +339,9 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
         self.unknownKeys = unknownKeys
         self.editing = handEdited
         var decodeOptions = format == .handEdited ? DecodeOptions.lenient : DecodeOptions(mode: .lenient)
-        decodeOptions.parse.allowComments = handEdited.comments == .allowed
+        // The dialect of a file a person edits is one thing, written in one
+        // place (``HandEditedOptions``); an app-owned file is strict JSON.
+        if format == .handEdited { decodeOptions.parse = handEdited.parseOptions }
         self.decodeOptions = decodeOptions
         // A hand-edited file has one generation and no envelope: the person's
         // own text, replaced by a single rename. A previous generation would

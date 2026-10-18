@@ -44,6 +44,7 @@ var options = SettingsStore<Prefs>.Options(handEdited: HandEditedOptions(
     fileHeader: ["$schema": "prefs-schema.json"],   // written first, ignored on read
     layout: .canonical,                             // sparse, byte-stable (the default); .canonical(order:) gives some keys' order
     comments: .allowed,                             // .refused: a comment is a parse problem (the default drops it at the next write)
+    duplicateKeys: .lastWins,                       // a key said twice: the last is used, with a warning (.refused: a problem)
     lockTimeout: .seconds(2)))                      // how long coordinatedUpdate waits
 let settings = try SettingsStore.open(at: path, schema: Prefs.schema, format: .handEdited, options: options)
 
@@ -209,11 +210,38 @@ there is no envelope to check) and is read by plain `read`.
 - **Update.** An update of an unusable file throws `.fileUnusable(problem)` and
   writes nothing. It reads the file first (below), so a fix made a moment ago
   counts.
+- **The dialect is written in one place:** `HandEditedOptions`' documentation is
+  the table of what the file may contain (comments, trailing commas, a byte order
+  mark, repeated keys, the parser's limits), and `HandEditedOptions.parseOptions`
+  is the same table as the `JSONParseOptions` the store reads with, so a tool
+  that reads the app's file does so by the same rules. Comments, trailing commas
+  and a byte order mark are accepted (comments may be refused); a repeated key is
+  accepted with a warning (it may be refused); everything else outside RFC 8259
+  is a problem at its line and column. Nothing in it is written back on load, and
+  the next update writes the canonical dialect, which has none of the four.
+- **A repeated key** (`"speed": 700` and, further down, `"speed": 900`) is read as
+  `duplicateKeys` says. The default is `.lastWins`, **with a warning, never
+  silent**, because an app that moved to the store from `JSONSerialization` or
+  `JSON.parse` (which take the last) must not turn a file that worked into a
+  refusal, and a person's first reading of a repeat is "the later line is the
+  one I meant"; but a value that is silently one of two is how the same file
+  comes to mean two things, so each repeat is a `repeated_key` warning in
+  `issues`, at the repeat's line and column, carrying the first's (`firstLine`,
+  `firstColumn`) and saying the last is used and that the file is not changed
+  until the next update, which writes only that one. It is also
+  `settings.repeated_keys`, once for the load. A repeat inside a nested object, and
+  each further occurrence, is a warning of its own; a repeat of a header key is
+  not (the header is ignored on read). `duplicateKeys: .refused` makes a repeat
+  a problem like any text the store cannot read (`parseCode` is `.duplicateKey`,
+  the message names both places): the last good value stays, `update` throws
+  `.fileUnusable`, and the file is never touched.
 - **Comments** are read as whitespace, and an update drops them: the store
   reads the file into a value and writes the value. An app whose people keep
   notes in the file would rather refuse than lose them: `comments: .refused`
   makes a comment a problem like any other text the store cannot read, at the
-  comment's line and column (the `/` that begins it). Trailing commas stay
+  comment's line and column (the `/` that begins it; the text is "comments are
+  not allowed in this file; remove it", which names no option, so an app may show
+  it as it is). Trailing commas stay
   allowed. A file with a comment then behaves as an unparsable one in every
   respect: the last good value stays, `update` throws `.fileUnusable`, and the
   file is never rewritten without it. A `/` inside a string is not a comment.
@@ -394,6 +422,9 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | the hand-edited file is not JSON on the first load | Opens with the defaults (`.defaults(.unusable)`); `fileProblem` `.unparsable` with the line and column; the file is untouched, nothing is quarantined; `settings.unparsed` |
 | the hand-edited file is not JSON on a reload  | The last good value stays, `source` as it was; `fileProblem` and `issues` say where; a repeat of the same bytes says nothing more; the next reload that finds it fixed clears it |
 | an update meets a hand-edited file that cannot be read | `.fileUnusable(problem)`; nothing written, the file byte for byte as it was; `settings.update_refused`. The update's own read counts: a file broken since the last reload is found |
+| a hand-edited file says a key more than once  | The last value is used, in the first's place; a `repeated_key` warning at each repeat (line and column, the first's place in the parameters, the note that the next update writes only the last); `settings.repeated_keys`; the file is not changed on load, and the next update writes it without the repeat, so the warning is gone |
+| a hand-edited file says a key more than once and repeats are refused | `.unparsable` at the repeat's line and column naming both places (`parseCode` `.duplicateKey`): the last good value (the defaults, the first time), `update` throws `.fileUnusable`, the file is never rewritten; removing the repeat clears the problem at the next reload |
+| a hand-edited file's top level is not what the schema reads | `.unparsable` with the schema's issue at the position of the value (`type_mismatch`, "expected an object, found an array" for `Schema.jsonObject()`): the defaults or the last good value, the file left as it is |
 | a hand-edited file holds a comment and comments are refused | `.unparsable` at the comment's line and column, as for any text that cannot be read: the last good value (the defaults, the first time), `update` throws `.fileUnusable`, the file is never rewritten without its comment; removing it clears the problem at the next reload |
 | the hand-edited file is not UTF-8             | As not JSON: `.unparsable`, with the position of the first bad byte; left alone. `fileProblem.isNotUTF8` says so (and `parseCode` is the parser's code for any text problem), so an app need not read `Issue.parameters` |
 | the hand-edited file cannot be read           | `.unreadable(StoreError)`, not a throw from `open` or `reload`: the defaults or the last good value; tried again at every reload |
@@ -433,7 +464,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 `settings.save_failed`; for a hand-edited file `settings.unparsed` (reason, the
 line and column of the first problem, which value is kept), `settings.reloaded`
 (source, issue count), `settings.update_refused` (reason), `settings.busy` (how
-long it waited), `settings.reload_failed`, `settings.lock_release_failed`, `settings.change_dropped` (a reader of the changes fell
+long it waited), `settings.repeated_keys` (how many repeats of a key the file has, and that the last is used), `settings.reload_failed`, `settings.lock_release_failed`, `settings.change_dropped` (a reader of the changes fell
 behind), and, on the app's asking, `settings.materialized` and `settings.replaced`
 (where the copy is).
 None carries a setting's value: issues are counted and positioned, never quoted.
