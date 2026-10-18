@@ -256,6 +256,26 @@ struct BundleTests {
         }
     }
 
+    @Test(.failureMode("design/23", "a bundle file is half fetched by an earlier program and the bundle adopts it"))
+    func aBundleFileLeftHalfFetchedByAnEarlierProgramIsResumedNotRefetched() async throws {
+        let temp = try TempDirectory()
+        try await withDiskHarness { h in
+            let model = Model()
+            let destination = temp.file("model")
+            let staging = temp.file(".model.partial")
+            try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true)
+            try put(staging + "/weights.bin", Data(model.weights[..<4_000]))
+            model.serve(h.transport)
+            var files = try model.bundle(to: destination).files
+            files[2] = files[2].adoptingUnrecordedPartial()
+            let result = try await h.downloader.download(DownloadBundle(files, to: destination, fileMode: 0o644))
+            #expect(read(destination + "/weights.bin") == model.weights)
+            #expect(result.files[2].resumedFrom == 4_000)
+            #expect(h.transport.requests.last?.headers["Range"] == "bytes=4000-")
+            #expect(h.events.count("download.adopted") == 1)
+        }
+    }
+
     @Test func aFailedBundleLeavesTheOldDirectoryUntouched() async throws {
         let temp = try TempDirectory()
         try await withDiskHarness { h in

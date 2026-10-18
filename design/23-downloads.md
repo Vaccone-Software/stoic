@@ -85,6 +85,9 @@ public struct DownloadPolicy: Sendable {      // schedule, verificationAttempts,
     public static var standard: DownloadPolicy
 }
 public struct DownloadBundle: Sendable { /* File(path, request, expectedSize, digest), destination, stagingPath, keepsPartialOnCancel, fileMode */ }
+public struct PartialAdoption: Sendable, Equatable { /* path, validator: PartialValidator? */ }
+public enum PartialValidator: Sendable, Equatable { case etag(String), lastModified(String) }
+// Download.adoptingUnrecordedPartial(at:validator:), DownloadBundle.File.adoptingUnrecordedPartial(validator:)
 public struct DownloadProgress: Sendable { /* phase, fileIndex, fileCount, fileBytes, fileTotalBytes, bytesDone, totalBytes, fraction */ }
 public struct DownloadResult: Sendable { /* path, bytes, verifiedDigest, resumedFrom, requests, isDurable */ }
 public enum DownloadError: Error, Sendable, Retryable { /* http, retriesExhausted, digestMismatch, sizeMismatch, byteLimitExceeded,
@@ -221,6 +224,25 @@ earlier version) is removed. A file that fails its digest fails the bundle with
 nothing placed and leaves the other files for the next run. Space is checked once
 for the whole. Progress carries the file in progress and the bytes of the whole.
 
+**Adopting a partial file Stoic did not write.** A partial file is resumed only with
+its record, and one without is deleted: the right default, since nothing says what
+it is. A program that fetched files before Stoic did (an earlier build, a file the
+user copied in) knows more, and says so with `Download.adoptingUnrecordedPartial(at:validator:)`
+(for a bundle file, `File.adoptingUnrecordedPartial(validator:)`, which means the file
+at its own name in the staging directory). The caller's word is that the bytes are
+the first bytes of the file this download names. The downloader needs something to
+check that word by (a digest, or a validator for `If-Range`; otherwise the file is
+left alone, `download.adoption_declined`), makes the bytes durable because the
+record is about to vouch for them, writes the record (`synced` = all of them),
+and only then renames the file to the partial path: a crash between leaves the
+file where it was and a record the next run removes. Then it resumes as for any
+partial file (`download.adopted`, `download.resumed`). The word is believed, not
+trusted: the digest, hashed over the adopted bytes and the rest, still decides, and
+a file that fails it is fetched again from nothing. A partial file of the
+downloader's own, with a record, is always the one resumed; the adopted file is
+then not touched. An empty file, one larger than the expected size or the byte
+limit, is declined, not deleted. The adopted file takes `fileMode`.
+
 **Progress.** `DownloadProgress` (phase `waiting`, `downloading`, `verifying`,
 `placing`; the file index and count; bytes of the file and of the whole, and their
 totals when known; for a single download the whole's total is the file's, so without
@@ -251,6 +273,7 @@ A URL's query reaches disk only as a hash.
 | the digest does not match                                                 | The partial file and record are deleted and the file is fetched again from zero; a second mismatch is `.digestMismatch(…, attempts: 2)` and the destination is untouched  |
 | the body is longer than the byte limit                                    | `.byteLimitExceeded`, the connection cancelled, the partial file deleted; a declared length over the limit fails before the first byte; not retried                       |
 | the server answers 404                                                    | `.http(.status(404))` at once: not retried, nothing waited for (so for 401, 403, 410 and every 4xx but 408 and 429)                                                       |
+| an error response has a body larger than the byte limit                   | `.http(.status)` as for any error: the limit is for the file, so a `404` page larger than a small file's pinned size is a `404`, not `.byteLimitExceeded`; its body is read only as far as the client's excerpt |
 | the server answers 429 or 503                                             | Retried on the schedule, waiting the server's `Retry-After` if that is longer (capped); the client itself does not retry                                                  |
 | bytes arrive between failures                                             | The schedule starts over: 503, 503, a cut that delivered bytes, 503 wait 10 s, 20 s, 10 s, 20 s                                                                           |
 | the schedule has a bound and it is spent                                  | `.retriesExhausted(attempts:last:)`; the partial file stays                                                                                                               |
@@ -262,6 +285,11 @@ A URL's query reaches disk only as a hash.
 | the disk fills part-way                                                   | `.store(.diskFull)` at the write that failed, not waited out; what was written is kept                                                                                    |
 | a run is stopped by an error that is not about the file                   | A 403 after 4,000 bytes keeps them; the next run resumes from 4,000                                                                                                       |
 | the partial file has no record                                            | Discarded, restarted (`record_missing`)                                                                                                                                   |
+| a partial file nobody recorded is adopted                                 | Given a record on the caller's word and resumed from its end (`download.adopted`, `download.resumed`); the digest still decides, and the file takes `fileMode` |
+| an adopted partial file is not a prefix of the file                       | It fails the digest like any spliced prefix: deleted, fetched again from zero; never a wrong file at the destination |
+| an adopted partial file has nothing to resume it by                       | No digest and no validator: left alone, not deleted (`download.adoption_declined`: `nothing_to_resume_by`); the file is fetched whole; so for an empty file or one larger than expected |
+| a partial file is offered for adoption and the downloader has one of its own | The downloader's own is resumed from its record; the offered file is not touched |
+| a bundle file is half fetched by an earlier program and the bundle adopts it | Adopted before the staging sweep would remove it, then resumed by range; the other files are as for any bundle |
 | the resume record is torn or garbage                                      | A checksum failure is quarantined by `AtomicFile` and the file restarted (`record_invalid`); a record that is intact but is not one is `record_invalid` too               |
 | the partial file belongs to another download                              | Restarted (`different_download`): another URL, size or digest at the same path                                                                                            |
 | the partial file is larger than the expected size                         | Discarded (`larger_than_expected`)                                                                                                                                        |
@@ -275,15 +303,16 @@ A URL's query reaches disk only as a hash.
 | the process dies in a download that was cut and resumed                   | The same, across checkpoints and resumes                                                                                                                                  |
 | the process dies while the next run is resuming                           | The same: a crash of the recovery run is recoverable too                                                                                                                  |
 | the directory sync after the rename fails                                 | The file is in place and treated as placed: `isDurable == false`, `download.durability_unknown`, no error                                                                 |
-| an error response has a body larger than the byte limit                   | `.http(.status)` as for any error: the limit is for the file, so a `404` page larger than a small file's pinned size is a `404`, not `.byteLimitExceeded`; its body is read only as far as the client's excerpt |
 | a bundle is downloaded                                                    | Each file fetched and verified in staging; the directory swapped over the destination; the staging directory is gone; `isDurable`; progress names the file and the whole  |
 | a bundle has one file whole, one part-way and one missing                 | The whole one is verified and not fetched (`requests == 0`), the partial one resumes by range, the missing one is fetched                                                 |
 | a staged file does not check                                              | Removed and fetched again (`staged_file_failed_verification`; for a size, `staged_file_wrong_size`; with nothing to check it by, `staged_file_unverifiable`)              |
 | the staging directory holds files that are not the bundle's               | Removed (`stale_staging_files`)                                                                                                                                           |
 | the bundle's destination already exists                                   | Swapped out whole and the old directory removed; a bundle that fails leaves the old directory as it was                                                                   |
+| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`), and the old directory, which `replaceItem` leaves at the staging path then, is removed; if that fails, `download.cleanup_failed` |
 | a file of a bundle does not check                                         | The bundle fails with `.digestMismatch`; nothing is placed; the files that were right stay for the next run                                                               |
 | a bundle is cancelled                                                     | `CancellationError`; the staging directory stays (or is removed, with `keepsPartialOnCancel: false`); nothing is placed                                                   |
 | progress is reported                                                      | At most once per interval for a phase on the ambient clock, every change of phase, bytes that only grow                                                                   |
+| a single download has no expected size and the server says its length | `totalBytes` equals `fileTotalBytes` from the response's `Content-Length` (or `Content-Range`), so `fraction` is known; before the head it is `nil` |
 | a download runs as a long operation                                       | One attempt of the operation; the client inside makes one request each and defers to it; the operation retries nothing                                                    |
 | a long operation has no attempt timeout                                   | A transfer whose chunks are a minute apart is not cut by a client attempt timeout of a second                                                                             |
 | a download is admitted under its backend's capacity                       | It holds a slot while it runs; with capacity 1 a second waits and asks the server for nothing                                                                             |
@@ -301,19 +330,18 @@ A URL's query reaches disk only as a hash.
 `transport_-1005` or `short_body`, `bytes`), `download.verified` (info),
 `download.verification_failed` (warning: algorithm, attempt, expected and actual
 digest), `download.placed` (info: `bytes`, `durable`; for a bundle also `files`),
-`download.file_reused` (info), `download.durability_unknown` (warning: what),
+`download.file_reused` (info), `download.adopted` (info: `bytes`, `validator`),
+`download.adoption_declined` (notice: `reason`), `download.durability_unknown` (warning: what),
 `download.cancelled` (info: `bytes`, `kept`), `download.failed` (warning: `kind`
 public, the error text private, `bytes`, `kept`), `download.cleanup_failed`
 (warning). All are in `EventCatalog`. File events carry `request` (method, host and
 path), never the query.
 
 ## As built
-| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`), and the old directory, which `replaceItem` leaves at the staging path then, is removed; if that fails, `download.cleanup_failed` |
 
 `StoicDownloads` depends on `Stoic`, `StoicHTTP`, `StoicStore` and swift-crypto's
 `Crypto` (digests; on Apple platforms it is CryptoKit's own implementation). It is
 Foundation-free apart from what `StoicHTTP`'s public types bring (`URL`, `URLError`).
-| a single download has no expected size and the server says its length | `totalBytes` equals `fileTotalBytes` from the response's `Content-Length` (or `Content-Range`), so `fraction` is known; before the head it is `nil` |
 
 - **Behind the `Crypto` trait**, with `StoicSealed` (design/24). swift-crypto is a
   dependency that is not Stoic's own, and Stoic's rule is that nobody fetches a

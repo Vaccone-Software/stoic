@@ -41,6 +41,25 @@ public struct DownloadBundle: Sendable {
         public var digest: ContentDigest?
         public var byteLimit: Int?
 
+        /// Whether a file at this one's own name in the staging directory, short
+        /// of the expected size, is a partial file the caller vouches for (see
+        /// ``Download/adoptingUnrecordedPartial(at:validator:)``, which this is
+        /// for a bundle): resumed instead of removed. Without it, anything at
+        /// the name that is not whole and verified is removed.
+        public var adoptsUnrecordedPartial = false
+
+        /// The validator for an adopted file, as for ``Download/adoptingUnrecordedPartial(at:validator:)``.
+        public var adoptedValidator: PartialValidator?
+
+        /// This file, adopting an unrecorded partial file in the staging
+        /// directory if there is one.
+        public func adoptingUnrecordedPartial(validator: PartialValidator? = nil) -> File {
+            var adopting = self
+            adopting.adoptsUnrecordedPartial = true
+            adopting.adoptedValidator = validator
+            return adopting
+        }
+
         public init(_ path: String, _ request: HTTPRequest, expectedSize: Int? = nil, digest: ContentDigest? = nil, byteLimit: Int? = nil) {
             precondition(!path.isEmpty && !path.hasPrefix("/") && !path.hasSuffix("/"), "a bundle file's path is relative: \(path)")
             precondition(

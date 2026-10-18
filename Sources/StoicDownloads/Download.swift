@@ -134,7 +134,55 @@ public struct Download: Sendable {
             requiredFreeBytes: requiredFreeBytes)
     }
 
+    /// A partial file that something other than Stoic wrote, to be resumed
+    /// if there is no partial file of the downloader's own; see
+    /// ``adoptingUnrecordedPartial(at:validator:)``.
+    public var adoption: PartialAdoption?
+
+    /// This download, resuming a partial file that Stoic did not write: an
+    /// earlier program's half-fetched file, or one a user copied in.
+    ///
+    /// A partial file is resumed only with a record of which download it
+    /// belongs to and how much of it is durable, and one without is deleted.
+    /// This is the caller's *assurance* in place of the record: the file at
+    /// `path` holds the first bytes of the file this download names (its
+    /// request, ``expectedSize`` and ``digest``). The downloader makes those
+    /// bytes durable, writes the record, moves the file to ``partialPath``
+    /// and resumes by `Range`. The assurance is believed, not trusted: the
+    /// digest, computed over the adopted bytes and the rest, still decides at
+    /// the end, and a file that fails it is fetched again from nothing.
+    ///
+    /// - It needs something to resume by: a ``digest`` on the download, or a
+    ///   `validator`, which goes in `If-Range`, so that a server whose file
+    ///   has changed answers the whole file. Without either the file is left
+    ///   alone and `download.adoption_declined` says why.
+    /// - It is for an *unrecorded* partial file only. If the downloader has a
+    ///   partial file of its own with a record, that one is resumed and `path`
+    ///   is not touched; `path` may be the ``partialPath`` itself, a partial
+    ///   file with no record.
+    /// - A file that is empty, larger than ``expectedSize`` or ``byteLimit``
+    ///   is declined, not deleted.
+    /// - Its permission bits become ``fileMode``.
+    ///
+    /// - Parameters:
+    ///   - path: The existing file.
+    ///   - validator: The server's validator for the version the bytes came
+    ///     from, if the caller kept it.
+    public func adoptingUnrecordedPartial(at path: String, validator: PartialValidator? = nil) -> Download {
+        var adopted = self
+        adopted.adoption = PartialAdoption(path: path, validator: validator)
+        return adopted
+    }
+
     /// The sidecar that says what the partial file holds.
     var resumeRecordPath: String { partialPath + ".resume" }
+
+    /// Which download a partial file belongs to: what was asked for, and
+    /// what it must turn out to be. A hash, so a URL's query (a token, a signed
+    /// signature) is never written to disk in the clear.
+    var resumeIdentity: String {
+        let described = "\(request.target)|\(expectedSize.map(String.init) ?? "-")|\(digest?.description ?? "-")"
+        return ContentDigest(algorithm: .sha256, of: Array(described.utf8)).hex
+    }
 }
 #endif

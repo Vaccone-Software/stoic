@@ -128,6 +128,8 @@ struct FileTransfer {
     // MARK: Resuming
 
     /// Reads what an earlier run left and decides how much of it to trust.
+    /// A partial file the caller vouches for (``Download/adoption``) is first
+    /// given the record Stoic would have written, so that it is read like any.
     ///
     /// The partial file is kept only if its record is whole and is this
     /// download's, it is not larger than the file or the limit, and there is
@@ -136,6 +138,7 @@ struct FileTransfer {
     /// durable, and its bytes are hashed once to bring the digest up to the
     /// offset the request will resume from.
     private func resume(_ state: inout State) async throws(Stop) {
+        try Adoption.adopt(download, disk: disk, label: label)
         let partial = download.partialPath
         guard try disk.exists(partial) else {
             try disk.removeIfPresent(download.resumeRecordPath)
@@ -209,13 +212,7 @@ struct FileTransfer {
         ]))
     }
 
-    /// Which download a partial file belongs to: what was asked for, and
-    /// what it must turn out to be. A hash, so a URL's query (a token, a signed
-    /// signature) is never written to disk in the clear.
-    private var identity: String {
-        let described = "\(download.request.target)|\(download.expectedSize.map(String.init) ?? "-")|\(download.digest?.description ?? "-")"
-        return ContentDigest(algorithm: .sha256, of: Array(described.utf8)).hex
-    }
+    private var identity: String { download.resumeIdentity }
 
     // MARK: Space
 

@@ -31,13 +31,18 @@ struct BundleTransfer {
                 progress.beginFile(index: index, of: bundle.files.count, bytesBefore: bytesBefore, totalBytes: total)
                 let target = Paths.join(bundle.stagingPath, file.path)
                 if file.path.contains("/") { try disk.createDirectory(Paths.directory(of: target)) }
+                let download = Download(
+                    file.request, to: target, expectedSize: file.expectedSize, digest: file.digest, byteLimit: file.byteLimit,
+                    keepsPartialOnCancel: bundle.keepsPartialOnCancel, fileMode: bundle.fileMode)
+                if file.adoptsUnrecordedPartial {
+                    // Before `reuse`, which removes what is at the file's own name and is not whole.
+                    try Adoption.adopt(
+                        download.adoptingUnrecordedPartial(at: target, validator: file.adoptedValidator), disk: disk, label: label)
+                }
                 let result: DownloadResult
                 if let reused = try await reuse(file, at: target) {
                     result = reused
                 } else {
-                    let download = Download(
-                        file.request, to: target, expectedSize: file.expectedSize, digest: file.digest, byteLimit: file.byteLimit,
-                        keepsPartialOnCancel: bundle.keepsPartialOnCancel, fileMode: bundle.fileMode)
                     result = try await FileTransfer(download, client: client, disk: disk, policy: policy, label: label, progress: progress).run()
                 }
                 results.append(result)
@@ -205,16 +210,16 @@ struct BundleTransfer {
             record(Event("download.durability_unknown", level: .warning, label: label, fields: [
                 .init("what", .string("bundle"), privacy: .public),
             ]))
-        }
-        return durable
-    }
-
-    private func removeStagingQuietly() {
             // The swap happened, so what the staging path holds now is the old directory (nothing, if
             // there was none): it is not this download's to keep, and the next run would only sweep
             // it as strays. `AtomicFile` leaves it for us exactly because it did not finish its own
             // cleanup.
             removeStagingQuietly()
+        }
+        return durable
+    }
+
+    private func removeStagingQuietly() {
         do throws(Stop) {
             try disk.removeIfPresent(bundle.stagingPath)
         } catch {

@@ -31,6 +31,8 @@ public enum EventCatalog {
         Entry(name: "channel.dropped", level: .debug, meaning: "A channel's overflow policy discarded an element."),
         Entry(name: "deadline.expired", level: .notice, meaning: "A deadline passed before its operation finished; reports the budget, the overrun and how the operation ended."),
         Entry(name: "debounce.dropped", level: .debug, meaning: "A debounced call did not run: a newer call replaced it, or it fell inside a burst that lets none run."),
+        Entry(name: "download.adopted", level: .info, meaning: "A partial file that Stoic did not write was given a resume record on the caller's word and is resumed from; reports the bytes and whether a validator came with it. The digest still decides at the end."),
+        Entry(name: "download.adoption_declined", level: .notice, meaning: "A partial file the caller offered to adopt was left alone (empty, too large, or nothing to resume it by: no digest and no validator); reports why."),
         Entry(name: "download.cancelled", level: .info, meaning: "A download was cancelled: it is not a failure; reports the bytes held and whether the partial file was kept."),
         Entry(name: "download.cleanup_failed", level: .warning, meaning: "A download could not make its partial file durable, delete it, or remove a leftover while stopping; the error that stopped it is the one reported."),
         Entry(name: "download.durability_unknown", level: .warning, meaning: "A file or directory was placed, or a resume record written, but the directory sync that makes it survive a power loss failed: it is treated as placed. Reports what."),
