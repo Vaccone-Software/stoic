@@ -308,6 +308,9 @@ public struct ObjectNode: Sendable {
     /// ``Schema/readingNullAsEmpty()``): every field takes its default, and no
     /// issue is raised. The export then admits `null` for the object.
     public var readsNullAsEmpty = false
+    /// The tidying every read does to this object before it is decoded, and
+    /// the keys it retires, if declared (see ``Schema/normalizing(_:)``).
+    public var normalization: Normalization?
 
     public init(
         name: String, doc: String? = nil, fields: [FieldNode], unknownKeys: UnknownKeyPolicy,

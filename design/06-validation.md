@@ -254,6 +254,7 @@ schema and throws one `DecodingError` listing every issue.
 | a number outside a clamped range is read    | `clampingToRange()`: the nearest inclusive bound is the value, and an `out_of_range` *warning* (`repair`: "clamped to 4000") says so, in every mode; an exclusive bound, `.multipleOf` and the rest still refuse; a non-number is still `type_mismatch` |
 | an entry of a lossy dictionary is invalid    | Dropped, with a `dropped_entry` warning at the entry's own path carrying its `key` and the first reason; the rest are kept, and the entry's own errors are not reported (`Schema.dictionary` still fails the whole table) |
 | a section that may be null is null          | `readingNullAsEmpty()`: read as `{}`, every field its default, no issue, in every mode; nothing remembers the null, so a sparse write omits the section. Without it, `null` is a `type_mismatch` |
+| a document is read that a schema's normalization rewrites | `normalizing(_:)`: the raw JSON is tidied before it is decoded, on every read, silently (an old key becomes the new, the new winning if both are there; an old enumeration spelling the new; a custom edit); `retired` paths vanish with no `unknown_key`; an operation that fails is `normalization_failed`. Issues point at the text, not the whole object |
 | a Codable leaf's value is refused by JSONDecoder | One `invalid_value` issue at the field, with the decoder's reason and the coding path inside it (no reason inside a secret); nothing below it is reported |
 | SchemaSuite meets a Codable leaf that has no examples | A warning naming the leaf and how to fix it (`examples:`, `@Codable(examples:)`); the cases that need a value of it are skipped, and if every case was skipped the suite fails with that reason instead of passing having checked nothing |
 | a required field's key is missing            | `missing_key` naming the key, beside every other issue; no value (never a zero in its place) |
@@ -1269,6 +1270,66 @@ not ask.
   for the object (`"type": ["object", "null"]`), the mutator does not offer
   `null` as a violation of it, and the library's own validator reads a list
   of types.
+
+### Normalization and retired keys
+
+The versioned `Migration` is for a format that counts its changes. A file a
+person has edited for years often has no version and never will, and its old
+reader forgave each past spelling by hand on every read. `normalizing(_:)`
+is that, declared.
+
+- **`Schema.normalizing(_:retired:)`** on an object schema (or
+  `normalizing(_ normalization:)` with a `Normalization`). Operations are a
+  closed set over the raw `JSONValue`: `rename`, `move`, `delete`,
+  `setIfAbsent`, `mapEnum` and `custom(id:description:apply:)`, paths dotted
+  from the object. It runs in that object's decode before anything else (before
+  the version is read, before a key is looked up), **on every read**, and
+  raises no issue: the file may be as it has always been, and the value is the
+  same under the old spelling as under the new.
+- **The target that exists wins.** A `rename` or `move` onto a key that is
+  taken drops the old key and keeps the value that is there (a migration
+  refuses with `migration_failed`; here the newer writer's key is the one that
+  counts). That, a `mapEnum` that is not a chain (a spelling both mapped and
+  the image of another traps where it is written), and `setIfAbsent` make the
+  declarative operations **idempotent by construction**: the result of a
+  normalization normalizes to itself, which a normalization on every read must
+  be. A `custom` operation is the author's to keep idempotent, and
+  `Schema.normalized(_:)` (or `Normalization.applying(to:)`) is the one
+  expression a test needs: `normalized(normalized(x)) == normalized(x)`. A
+  custom operation that throws `MigrationFailure` is one `normalization_failed`
+  error at the object.
+- **Retired keys.** `retired: ["old-flag", "observations.legacy"]` are paths
+  removed after the operations, so they are not unknown keys (no warning, and
+  not under `.reject` either), and are not in the document a write carries: a
+  settings store puts back the keys a schema does not declare from the
+  document it read, and it reads `Schema.normalized(_:)` of the file, so a key
+  that was renamed or retired is not written back in its old place. (Were it
+  written back beside the new name, resetting the new key to its default would
+  revive the old one on the next read.) A retired path may not be a declared
+  field or alias; this traps where it is declared.
+- **Positions.** The decoder looks an issue's text up by the path of the node
+  in the *input*. Normalization does not disturb the paths of nodes it leaves
+  alone, so an issue about one points at it in the file exactly (the "positions
+  are coarse" rule of a migration does not apply: that rewrites the whole
+  object and cannot say what moved). A value a `rename` or `move` relocated is
+  found where the text wrote it (an issue at `$.searcher` points at the
+  `"hyper":` line); a value an operation created has no text and points at the
+  nearest object that has; and a custom operation's moves are not followed (an
+  issue about a node it rearranged points at the text where that path was in
+  the file). The moves of declarative operations are recorded as
+  `Relocation`s in the decode and undone, latest first, when a position is
+  looked up.
+- **One normalization per object**, written in one call, since the order the
+  operations run in is the order they are written. It is `ObjectNode.normalization`.
+  A nested object declares its own and runs it on its own part. `normalized(_:)`
+  finds objects through fields, optionals, arrays, dictionaries and transparent
+  wrappers (not a union's payloads) and leaves one whose normalization fails
+  as it was.
+- **The suite** does not hold a schema to documents its normalization
+  rewrites: such a mutation is no longer a violation of the current format
+  (the normalization may be what forgives it, and the export, which describes
+  the current format, rightly rejects it), so mutations and accumulations the
+  normalization changes are skipped.
 
 ## Non-goals
 

@@ -290,7 +290,8 @@ value out of range, a repaired field, an element of an array) in the file, so
 the app can print `lodestar.json:12:5: …`; `Issue.description` begins with
 `line:column`, the shape editors and terminals link. Positions in a document
 that was *migrated* are coarse (design/06): the issue points at the whole
-migrated object, not at a line that may now mean something else.
+migrated object, not at a line that may now mean something else. A document
+that was only *normalized* keeps exact positions (design/06).
 
 **Writes are sparse, canonical and carry a header.** Only what differs from the
 defaults is written (a value equal to its default is left out, and so is a
@@ -443,6 +444,15 @@ an alias) is read from the old spelling, with a `migrated` or `deprecated_key`
 issue, and nothing is written back on load; the next update writes the new
 name only.
 
+**Renamed and retired keys are read through and never put back.** A schema with
+a `normalizing(_:retired:)` (design/06) forgives the file's past spellings on
+every read, with no version and no issue. The store carries, on a write, the keys
+the schema does not declare from the document it read, and that document is the
+*normalized* one: so a key renamed to a field is written as that field (when it
+differs from the default) and nowhere else, and a retired key is dropped by the
+first write. Positions stay the text's: an issue about a renamed value points at
+the old key's line.
+
 **A history of edits** (undo, per change) is `JSONChange` (design/06): the app
 keeps the changes between the document before and after each update, undoes one
 by applying its `inverted`, and an undo of a setting changed again since is a
@@ -503,6 +513,7 @@ by applying its `inverted`, and an undo of a setting changed again since is a
 | a hand-edited file is replaced by a rename    | `reload()` (or the watch) publishes the new value; observers are told |
 | the store's own write is reported by the watcher | The reload finds the file as the store left it: nothing published or reported |
 | a section of a hand-edited file is `null` | Read as an empty section if its schema says `readingNullAsEmpty()` (every field its default, no issue), else a `type_mismatch` like any wrong kind (repaired under `.lenient`); never written back: the next update omits a section that equals its default |
+| a hand-edited file holds a key its schema renamed or retired | Read through the schema's normalization (design/06): the old key's value is the new field's, the new key winning if both are there, with no issue; a retired key is no unknown key. The file is not changed on load, and a write carries the *normalized* document's unknown keys, so neither is put back (an old key beside the new one would revive when the new is reset to its default) |
 | several changes arrive in a burst             | One reload, once the file has been quiet for `debounce` (the last change restarts the wait) |
 | the hand-edited file is edited while the app runs | The watch reloads it after `debounce`: a create, a write in place and a save by rename are all seen; a half-saved file is a `fileProblem` until the next save |
 | the hand-edited file does not exist yet       | `watch` works (the directory is watched); the file is picked up when it is created |

@@ -206,6 +206,8 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
             let from = parameters["from"]?.number?.lexeme ?? "?"
             let to = parameters["to"]?.number?.lexeme ?? "?"
             return "migrating from version \(from) to \(to) failed: \(parameters["message"]?.string ?? "unknown reason")"
+        case .normalizationFailed:
+            return "normalizing the document failed: \(parameters["message"]?.string ?? "unknown reason")"
         case .parseError:
             return "invalid JSON: \(parameters["message"]?.string ?? "malformed input")"
         default:

@@ -40,6 +40,12 @@ struct DecodeState {
     /// instead of at a place that may now mean something else.
     var migratedRegion: JSONPath?
 
+    /// Values a normalization moved, oldest first, each with the input path
+    /// of the object it ran on. A moved value is found in the text where it
+    /// was written, not where the normalization put it: an issue about
+    /// `$.searcher` points at the `hyper` the file says.
+    var relocations: [(base: JSONPath, move: Relocation)] = []
+
     /// Above zero while inside a secret field.
     var secretDepth = 0
 
@@ -182,13 +188,27 @@ struct DecodeState {
     private func offsets(at path: JSONPath, target: Target) -> Range<Int>? {
         guard let document else { return nil }
         if let region = migratedRegion { return document.offsets(of: region) }
-        var current = path
+        var current = original(of: path)
         if target == .key, let range = document.keyOffsets(of: current) { return range }
         while true {
             if let range = document.offsets(of: current) { return range }
             guard let parent = current.parent else { return nil }
             current = parent
         }
+    }
+
+    /// `path` as the text has it: each normalization that ran, latest first,
+    /// has its moves undone, so a path in the normalized document leads to
+    /// the place its value was written.
+    private func original(of path: JSONPath) -> JSONPath {
+        var current = path
+        for (base, move) in relocations.reversed() {
+            let target = base.components + move.to.map { JSONPath.Component.key($0) }
+            guard current.components.starts(with: target) else { continue }
+            let rest = current.components.dropFirst(target.count)
+            current = JSONPath(base.components + move.from.map { .key($0) } + rest)
+        }
+        return current
     }
 
     // MARK: Type mismatches

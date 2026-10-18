@@ -56,10 +56,14 @@ extension SettingsStore {
                 value: defaults, issues: issues, source: .defaults(.unusable), document: nil, problem: .unparsable(issues),
                 read: .bytes(bytes))
         }
+        // What a write carries is the document as the schema read it: with its
+        // normalization applied, so a key it renamed or retired is not put back
+        // where it was.
+        let normalized = schema.normalized(document.value)
         return Loaded(
-            value: value, issues: issues, source: .file, document: document.value,
+            value: value, issues: issues, source: .file, document: normalized,
             repaired: RepairedField.found(
-                in: issues, document: document.value, repaired: schema.encode(value, style: .init(.full, includeSecrets: true))),
+                in: issues, document: normalized, repaired: schema.encode(value, style: .init(.full, includeSecrets: true))),
             read: .bytes(bytes))
     }
 

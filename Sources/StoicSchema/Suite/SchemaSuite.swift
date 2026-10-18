@@ -32,6 +32,11 @@ internal import StoicJSON
 /// - **migrations.** A versioned schema's history passes
 ///   ``Schema/migrationChainCheck(cases:seed:)``.
 ///
+/// A schema that normalizes (``Schema/normalizing(_:)``) forgives spellings
+/// the exported JSON Schema does not admit, so a mutation that its
+/// normalization rewrites is left out of the mutation, accumulation and
+/// agreement checks: it is no longer a violation of the current format.
+///
 /// It returns a report and does not assert, so it needs no test library: use
 /// ``report(seed:cases:)`` to inspect the findings, or ``run(seed:cases:)``
 /// to throw if any check failed (a thrown error fails a Swift Testing or
@@ -48,6 +53,7 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
     /// How many findings of each check the report keeps (the tally counts all).
     public var findingsPerCheck = 5
     private let equate: (@Sendable (Value, Value) -> Bool)?
+    private let hasNormalization: Bool
 
     /// A suite for `schema`. Values are compared by their encodings; give
     /// `equating` to compare them as Swift values too.
@@ -59,6 +65,12 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
         self.schema = schema
         self.configuration = configuration
         self.equate = equate
+        var found = false
+        var seen: Set<String> = []
+        SchemaGenerator<Value>.walk(schema.node, path: "$", seen: &seen) { node, _ in
+            if case .object(let object) = node, object.normalization != nil { found = true }
+        }
+        hasNormalization = found
     }
 
     /// Runs the suite and throws every finding if a check failed.
@@ -237,6 +249,7 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
         var all = generator.mutations(of: sample.document, seed: random.next())
         all.shuffle(using: &random)
         for mutation in all.prefix(mutationsPerCase) {
+            if isRewrittenByNormalization(mutation.document) { continue }
             let result = schema.decode(mutation.document)
             recorder.run(.mutations)
             let expectedErrors = mutation.expected.filter { $0.severity == .error }.map { "\($0.path) \($0.code)" }.sorted()
@@ -280,6 +293,15 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
         }
     }
 
+    /// Whether the schema's normalization changes `document`, which then is not
+    /// in the format the schema describes (an old spelling it forgives): the
+    /// violation a mutation made may be one the normalization repairs, and the
+    /// exported JSON Schema, which describes the current format only, would
+    /// disagree. Such a mutation proves nothing about the decoder, so it is left out.
+    private func isRewrittenByNormalization(_ document: JSONValue) -> Bool {
+        hasNormalization && schema.normalized(document) != document
+    }
+
     private func checkAccumulation(
         _ sample: Sample<Value>,
         generator: SchemaGenerator<Value>,
@@ -289,6 +311,7 @@ public struct SchemaSuite<Value: Sendable>: Sendable {
     ) {
         for count in 2...4 {
             guard let combined = generator.mutation(of: sample.document, combining: count, using: &random) else { continue }
+            if isRewrittenByNormalization(combined.document) { continue }
             recorder.run(.accumulation)
             let result = schema.decode(combined.document)
             let expected = combined.expected.filter { $0.severity == .error }.map { "\($0.path) \($0.code)" }.sorted()

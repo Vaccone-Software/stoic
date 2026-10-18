@@ -1094,7 +1094,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
             if let newer = decoded.issues.first(where: { $0.code == .versionTooNew }) {
                 return Loaded(value: value, issues: decoded.issues, source: .newerFormat(version: newer.foundVersion), document: nil)
             }
-            let document = try? JSONParser(options: options.parse).parseValue(contents.bytes)
+            let document = (try? JSONParser(options: options.parse).parseValue(contents.bytes)).map(schema.normalized)
             return Loaded(
                 value: value, issues: decoded.issues,
                 source: contents.source == .current ? .file : .previousGeneration, document: document,
@@ -1118,7 +1118,7 @@ public final class SettingsStore<Value: Sendable & Equatable>: Sendable, Observa
               !raw.starts(with: Array("STAF".utf8)) else { return nil }
         let decoded = schema.decodeReporting(raw, options: options)
         guard let value = decoded.value, !decoded.issues.contains(where: { $0.code == .versionTooNew }) else { return nil }
-        let document = try? JSONParser(options: options.parse).parseValue(raw)
+        let document = (try? JSONParser(options: options.parse).parseValue(raw)).map(schema.normalized)
         return Loaded(value: value, issues: decoded.issues, source: .file, document: document, legacyBytes: raw)
     }
 

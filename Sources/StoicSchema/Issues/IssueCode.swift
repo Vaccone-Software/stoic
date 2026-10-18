@@ -118,6 +118,10 @@ public struct IssueCode: RawRepresentable, Hashable, Sendable, CustomStringConve
     /// A migration step could not be applied to this document.
     public static let migrationFailed = IssueCode(rawValue: "migration_failed")
 
+    /// A custom operation of a schema's normalization could not be applied to
+    /// this document. The reason is in the `message` parameter.
+    public static let normalizationFailed = IssueCode(rawValue: "normalization_failed")
+
     // MARK: Input and declarations
 
     /// The input is not well-formed JSON. The parser's own code, message and

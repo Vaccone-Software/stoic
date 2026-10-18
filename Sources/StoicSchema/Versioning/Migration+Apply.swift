@@ -108,7 +108,7 @@ enum PathEdit {
     /// parent path, creating objects on the way if `create`. Returns whether
     /// it found the object.
     @discardableResult
-    private static func withParent(
+    static func withParent(
         of keys: ArraySlice<String>,
         in object: inout JSONObject,
         create: Bool,
