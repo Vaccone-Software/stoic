@@ -34,8 +34,9 @@ struct BundleTransfer {
                 let download = Download(
                     file.request, to: target, expectedSize: file.expectedSize, digest: file.digest, byteLimit: file.byteLimit,
                     keepsPartialOnCancel: bundle.keepsPartialOnCancel, fileMode: bundle.fileMode)
-                if file.adoptsUnrecordedPartial {
-                    // Before `reuse`, which removes what is at the file's own name and is not whole.
+                if file.adoptsUnrecordedPartial, try disk.size(ofFileAt: target) != file.expectedSize {
+                    // Before `reuse`, which removes what is at the file's own name and is not whole;
+                    // a file that is the expected size is `reuse`'s to verify.
                     try Adoption.adopt(
                         download.adoptingUnrecordedPartial(at: target, validator: file.adoptedValidator), disk: disk, label: label)
                 }

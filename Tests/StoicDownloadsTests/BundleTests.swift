@@ -276,6 +276,24 @@ struct BundleTests {
         }
     }
 
+    @Test func aWholeFileOfAnAdoptingBundleFileIsVerifiedAndReusedNotAdopted() async throws {
+        let temp = try TempDirectory()
+        try await withDiskHarness { h in
+            let model = Model()
+            let destination = temp.file("model")
+            let staging = temp.file(".model.partial")
+            try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true)
+            try put(staging + "/config.json", Data(model.config))
+            model.serve(h.transport)
+            var files = try model.bundle(to: destination).files
+            files[0] = files[0].adoptingUnrecordedPartial()
+            let result = try await h.downloader.download(DownloadBundle(files, to: destination, fileMode: 0o644))
+            #expect(result.files[0].requests == 0)
+            #expect(h.events.count("download.file_reused") == 1)
+            #expect(h.events.count("download.adopted") == 0, "a file that is the expected size is `reuse`'s to verify")
+        }
+    }
+
     @Test func aFailedBundleLeavesTheOldDirectoryUntouched() async throws {
         let temp = try TempDirectory()
         try await withDiskHarness { h in
