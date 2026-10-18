@@ -23,7 +23,7 @@ public import StoicStore
 /// | anything else outside RFC 8259       | a problem at its line and column (single quotes, unquoted keys, `NaN`, a leading `+`, …)    |
 /// | bytes that are not UTF-8             | a problem at the first bad byte (``SettingsFileProblem/isNotUTF8``)                         |
 /// | a top level that is not an object    | a problem when the schema says so (`Schema.jsonObject()`, or any object schema)             |
-/// | more than 8 MiB, 64 levels, 100,000 elements in one array or members in one object, or a string of more than 1 MiB | a problem, whatever the person meant (``JSONParseOptions``) |
+/// | more than 8 MiB, 64 levels, 100,000 elements in one array or members in one object, or a string of more than 1 MiB | a problem, whatever the person meant (`JSONParseOptions`) |
 ///
 /// Nothing in this table is ever written back on load: the person's file is
 /// changed only by a write the app asks for, which writes the value in the
@@ -65,7 +65,7 @@ public struct HandEditedOptions: Sendable, Hashable {
 
     /// The options the store parses its file with: the dialect in the table
     /// above, as code. A command-line tool that reads the app's file with
-    /// ``StoicJSON/JSONDocument`` should use these, so that both mean the same
+    /// `JSONDocument` should use these, so that both mean the same
     /// by it.
     public var parseOptions: JSONParseOptions {
         var options = JSONParseOptions.jsonc

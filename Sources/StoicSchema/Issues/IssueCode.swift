@@ -34,7 +34,7 @@ public struct IssueCode: RawRepresentable, Hashable, Sendable, CustomStringConve
     /// `scroll_speed`). Which one wins would be a guess, so neither does.
     public static let duplicateKey = IssueCode(rawValue: "duplicate_key")
     /// The text said a key more than once, and the parse options accepted
-    /// that (``JSONParseOptions/DuplicateKeys/lastWins``): a warning at the
+    /// that (`JSONParseOptions.DuplicateKeys.lastWins`): a warning at the
     /// repeat, with `key`, where it was `firstLine` and `firstColumn`, and
     /// `kept` (`first` or `last`). A reader may add a `note` to the
     /// parameters, which the message ends with. Never an error: the value

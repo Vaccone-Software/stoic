@@ -212,7 +212,7 @@ public struct Issue: Sendable, Hashable, CustomStringConvertible {
     /// The parser's code, for an issue that says the text could not be
     /// parsed (``IssueCode/parseError``): `.invalidUTF8`, `.commentNotAllowed`,
     /// `.duplicateKey`, and so on. Compare it with the static members of
-    /// ``JSONParseError/Code``, rather than reading `parameters["parseCode"]`.
+    /// `JSONParseError.Code`, rather than reading `parameters["parseCode"]`.
     /// `nil` for any other issue.
     public var parseCode: JSONParseError.Code? {
         guard code == .parseError, let raw = parameters["parseCode"]?.string else { return nil }
