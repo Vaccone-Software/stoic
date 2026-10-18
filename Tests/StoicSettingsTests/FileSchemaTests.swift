@@ -41,6 +41,35 @@ struct RenamedPrefs: Sendable, Equatable {
     .normalizing(.rename("hyper", to: "searcher"), retired: ["old-flag"])
 }
 
+/// Sections declared in an order that is not alphabetical, nested two deep.
+struct Ordered: Sendable, Equatable {
+    struct Web: Sendable, Equatable {
+        struct Routes: Sendable, Equatable {
+            var zone = 1
+            var base = 2
+            static let schema = Schema.object(Routes.self, default: Routes()) {
+                Field("zone", \.zone, .int(), doc: "Zone.")
+                Field("base", \.base, .int(), doc: "Base.")
+            }
+        }
+        var timeout = 30
+        var routes = Routes()
+        static let schema = Schema.object(Web.self, default: Web()) {
+            Field("timeout", \.timeout, .int(), doc: "Timeout.")
+            Field("routes", \.routes, Routes.schema, doc: "Routes.")
+        }
+    }
+    var zeta = 0
+    var web = Web()
+    var alpha = 0
+
+    static let schema = Schema.object(Ordered.self, default: Ordered()) {
+        Field("zeta", \.zeta, .int(), doc: "Zeta.")
+        Field("web", \.web, Web.schema, doc: "Web.")
+        Field("alpha", \.alpha, .int(), doc: "Alpha.")
+    }
+}
+
 @Suite("Settings store: a schema over a file people edit")
 struct FileSchemaTests {
     static let path = "/d/prefs.json"
@@ -133,5 +162,61 @@ struct FileSchemaTests {
         let file = try JSONValue(parsing: try #require(HandEditedTests.text(disk, at: Self.path)))
         #expect(validator.accepts(file))
         #expect(!JSONSchemaValidator(FilePrefs.schema.jsonSchema(options: JSONSchemaOptions(closesObjects: true))).accepts(file))
+    }
+
+    static func openOrdered(_ disk: some FileSystem, layout: HandEditedOptions.Layout = .canonical) throws -> SettingsStore<Ordered> {
+        try SettingsStore.open(
+            at: path, schema: Ordered.schema, format: .handEdited, fileSystem: disk,
+            options: .init(handEdited: HandEditedOptions(fileHeader: ["$schema": "s.json"], layout: layout)))
+    }
+
+    @Test(.failureMode("design/18", "a hand-edited file is written with an order the app gave"))
+    func aValueEqualToItsDefaultWritesOnlyTheHeaderAndNestedObjectsFollowDeclarationOrder() throws {
+        let disk = try HandEditedTests.disk()
+        let settings = try Self.openOrdered(disk)
+        try settings.update { $0.alpha = 1 }
+        try settings.update { $0.alpha = 0 }
+        #expect(HandEditedTests.text(disk, at: Self.path) == "{\n  \"$schema\": \"s.json\"\n}\n")
+
+        try settings.update {
+            $0.alpha = 9
+            $0.zeta = 8
+            $0.web.routes.base = 7
+            $0.web.routes.zone = 6
+            $0.web.timeout = 5
+        }
+        // Declaration order at every depth, not alphabetical: zeta, web (timeout, routes (zone, base)), alpha.
+        #expect(HandEditedTests.text(disk, at: Self.path) == """
+        {
+          "$schema": "s.json",
+          "zeta": 8,
+          "web": {
+            "timeout": 5,
+            "routes": {
+              "zone": 6,
+              "base": 7
+            }
+          },
+          "alpha": 9
+        }
+
+        """)
+        // A section that goes back to its defaults is omitted whole, and an app-given order still leaves the rest in declaration order.
+        let ordered = try Self.openOrdered(disk, layout: .canonical(order: KeyOrder(root: ["alpha"], nested: [["web"]: ["routes"]])))
+        try ordered.update { $0.zeta = 0 }
+        #expect(HandEditedTests.text(disk, at: Self.path) == """
+        {
+          "$schema": "s.json",
+          "alpha": 9,
+          "web": {
+            "routes": {
+              "zone": 6,
+              "base": 7
+            },
+            "timeout": 5
+          }
+        }
+
+        """)
     }
 }
