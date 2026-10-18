@@ -185,6 +185,19 @@ public struct Normalization: Sendable, Hashable {
     }
 }
 
+extension Normalization {
+    /// ``applying(to:)``, or `nil` if an operation fails.
+    func normalizedOrNil(_ document: JSONValue) -> JSONValue? {
+        var result = document
+        do throws(MigrationFailure) {
+            _ = try apply(to: &result)
+        } catch {
+            return nil
+        }
+        return result
+    }
+}
+
 /// A value the normalization moved: the keys it was at, and the keys it is at.
 /// What lets an issue about the moved value point at the text where it was.
 struct Relocation: Sendable, Hashable {
@@ -224,7 +237,7 @@ extension Normalization.Operation {
         switch kind {
         case .rename(let path, let name):
             let keys = PathEdit.split(path)
-            guard PathEdit.renameKeepingExisting(path, to: name, in: &root) else { return nil }
+            guard try PathEdit.renameKeepingExisting(path, to: name, in: &root) else { return nil }
             return Relocation(from: keys, to: Array(keys.dropLast()) + [name])
         case .move(let from, let to):
             let source = PathEdit.split(from)
@@ -258,23 +271,35 @@ extension PathEdit {
     /// Renames a key without moving it, unless `name` is taken: then the key
     /// that is there stays and the old one is dropped. Returns whether the
     /// value took the new name.
-    static func renameKeepingExisting(_ path: String, to name: String, in object: inout JSONObject) -> Bool {
+    static func renameKeepingExisting(
+        _ path: String, to name: String, in object: inout JSONObject
+    ) throws(MigrationFailure) -> Bool {
         let keys = split(path)
+        guard let last = keys.last else { return false }
+        let parentKeys = Array(keys.dropLast())
+        var parent: JSONObject
+        if parentKeys.isEmpty {
+            parent = object
+        } else if case .object(let found)? = value(at: parentKeys[...], in: object) {
+            parent = found
+        } else {
+            return false
+        }
+        guard parent[last] != nil, ExactKey(last) != ExactKey(name) else { return false }
         var renamed = false
-        // The only failure `withParent` has is a path through a non-object, which does not
-        // happen without `create`.
-        // stoic:allow(discarded-try): without `create`, nothing is created, so nothing can fail
-        _ = try? withParent(of: keys[...], in: &object, create: false) { (parent: inout JSONObject, key: String) throws(MigrationFailure) in
-            guard parent[key] != nil, ExactKey(key) != ExactKey(name) else { return }
-            guard parent[name] == nil else {
-                parent[key] = nil
-                return
-            }
+        if parent[name] != nil {
+            parent[last] = nil
+        } else {
             parent = JSONObject(
                 parent.map { member in
-                    ExactKey(member.key) == ExactKey(key) ? JSONObject.Member(key: name, value: member.value) : member
+                    ExactKey(member.key) == ExactKey(last) ? JSONObject.Member(key: name, value: member.value) : member
                 })
             renamed = true
+        }
+        if parentKeys.isEmpty {
+            object = parent
+        } else {
+            try set(.object(parent), at: parentKeys[...], in: &object, replacing: true)
         }
         return renamed
     }
@@ -290,11 +315,7 @@ extension SchemaNode {
         switch self {
         case .object(let object):
             guard case .object = value else { return value }
-            var result = value
-            if let normalization = object.normalization {
-                var attempt = value
-                if (try? normalization.apply(to: &attempt)) != nil { result = attempt }
-            }
+            let result = object.normalization?.normalizedOrNil(value) ?? value
             guard case .object(var members) = result else { return result }
             for field in object.fields {
                 for key in [field.key] + field.aliases {
