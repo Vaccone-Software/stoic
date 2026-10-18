@@ -13,16 +13,22 @@ final class FaultingFileSystem: FileSystem {
         var renamedTarget = false
     }
 
-    let base: SimulatedFileSystem
+    let base: any FileSystem
     /// A rename onto this path fails with `renameError`.
     let renameTarget: String?
     let renameError: Int32
     /// Once a rename onto this path has happened, every directory sync fails with `EIO`.
     let syncFailsAfterRenameTo: String?
+    /// Once two paths have been exchanged, every directory sync fails with `EIO`: the swap of a bundle.
+    let syncFailsAfterExchange: Bool
     private let state = Mutex(State())
 
-    init(_ base: SimulatedFileSystem, renameTarget: String? = nil, renameError: Int32 = EACCES, syncFailsAfterRenameTo: String? = nil) {
+    init(
+        _ base: any FileSystem, renameTarget: String? = nil, renameError: Int32 = EACCES, syncFailsAfterRenameTo: String? = nil,
+        syncFailsAfterExchange: Bool = false
+    ) {
         self.base = base
+        self.syncFailsAfterExchange = syncFailsAfterExchange
         self.renameTarget = renameTarget
         self.renameError = renameError
         self.syncFailsAfterRenameTo = syncFailsAfterRenameTo
@@ -55,7 +61,10 @@ final class FaultingFileSystem: FileSystem {
     func permissions(of path: String) throws(StoreError) -> UInt16? { try base.permissions(of: path) }
     func setPermissions(_ file: OpenFile, to permissions: UInt16) throws(StoreError) { try base.setPermissions(file, to: permissions) }
     func readLink(_ path: String) throws(StoreError) -> String? { try base.readLink(path) }
-    func exchange(_ first: String, _ second: String) throws(StoreError) { try base.exchange(first, second) }
+    func exchange(_ first: String, _ second: String) throws(StoreError) {
+        try base.exchange(first, second)
+        if syncFailsAfterExchange { state.withLock { $0.renamedTarget = true } }
+    }
     func removeTree(_ path: String) throws(StoreError) { try base.removeTree(path) }
     func tryLock(_ file: OpenFile) throws(StoreError) -> Bool { try base.tryLock(file) }
     func unlock(_ file: OpenFile) throws(StoreError) { try base.unlock(file) }

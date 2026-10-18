@@ -195,7 +195,9 @@ struct BundleTransfer {
     /// Swaps the staging directory over the destination (`AtomicFile.replaceItem`):
     /// the old directory, if there is one, is the staging path's afterwards and
     /// is removed. A failure of the sync after the swap leaves the new
-    /// directory in place; it is reported, not thrown, as for a single file.
+    /// directory in place; it is reported, not thrown, as for a single file,
+    /// and the old directory, which `AtomicFile` leaves at the staging path
+    /// when it cannot say the swap is durable, is removed.
     private func place() throws(Stop) -> Bool {
         progress.report(.placing, fileBytes: 0, fileTotal: nil)
         let durable = try disk.replaceItem(at: bundle.destination, withItemAt: bundle.stagingPath)
@@ -208,6 +210,11 @@ struct BundleTransfer {
     }
 
     private func removeStagingQuietly() {
+            // The swap happened, so what the staging path holds now is the old directory (nothing, if
+            // there was none): it is not this download's to keep, and the next run would only sweep
+            // it as strays. `AtomicFile` leaves it for us exactly because it did not finish its own
+            // cleanup.
+            removeStagingQuietly()
         do throws(Stop) {
             try disk.removeIfPresent(bundle.stagingPath)
         } catch {

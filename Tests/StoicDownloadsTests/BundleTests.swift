@@ -34,9 +34,9 @@ final class DiskHarness: Sendable {
     let transport = ScriptedTransport()
     let downloader: Downloader
 
-    init(policy: DownloadPolicy = .testing(), operation: Backend.Operation? = nil) {
+    init(policy: DownloadPolicy = .testing(), operation: Backend.Operation? = nil, fileSystem: any FileSystem = PosixFileSystem()) {
         let client = HTTPClient(base: modelsBase, policy: .forDownloadTests, transport: transport)
-        downloader = Downloader(client: client, fileSystem: PosixFileSystem(), policy: policy, label: "bundle", operation: operation)
+        downloader = Downloader(client: client, fileSystem: fileSystem, policy: policy, label: "bundle", operation: operation)
     }
 
     func start(_ bundle: DownloadBundle, progress: (@Sendable (DownloadProgress) -> Void)? = nil) -> Task<DownloadBundleResult, any Error> {
@@ -52,9 +52,10 @@ final class DiskHarness: Sendable {
 }
 
 func withDiskHarness<R>(
-    policy: DownloadPolicy = .testing(), operation: Backend.Operation? = nil, _ body: (DiskHarness) async throws -> R
+    policy: DownloadPolicy = .testing(), operation: Backend.Operation? = nil, fileSystem: any FileSystem = PosixFileSystem(),
+    _ body: (DiskHarness) async throws -> R
 ) async throws -> R {
-    let harness = DiskHarness(policy: policy, operation: operation)
+    let harness = DiskHarness(policy: policy, operation: operation, fileSystem: fileSystem)
     return try await withTestAmbient(clock: harness.clock, seed: 5, events: harness.events) { () async throws -> R in
         try await body(harness)
     }
@@ -234,6 +235,24 @@ struct BundleTests {
             #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"], "the old files are not in the new directory")
             #expect(names(in: temp.path) == ["model"], "and the old directory is gone, not left at the staging path")
             #expect(read(destination + "/weights.bin") == model.weights)
+        }
+    }
+
+    @Test(.failureMode("design/23", "the directory sync after a bundle's swap fails"))
+    func aFailedSyncAfterTheSwapStillRemovesTheOldDirectoryFromTheStagingPath() async throws {
+        let temp = try TempDirectory()
+        try await withDiskHarness(fileSystem: FaultingFileSystem(PosixFileSystem(), syncFailsAfterExchange: true)) { h in
+            let model = Model()
+            let destination = temp.file("model")
+            try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: true)
+            try put(destination + "/old.bin", Data([9]))
+            model.serve(h.transport)
+            let result = try await h.downloader.download(try model.bundle(to: destination))
+            #expect(!result.isDurable)
+            #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"], "the new directory is in place")
+            #expect(names(in: temp.path) == ["model"], "and the old one is not left at the staging path")
+            #expect(h.events.events(named: "download.durability_unknown").contains { $0.text("what") == "bundle" })
+            #expect(h.events.count("download.cleanup_failed") == 0)
         }
     }
 

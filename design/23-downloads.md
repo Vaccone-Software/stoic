@@ -308,6 +308,7 @@ public, the error text private, `bytes`, `kept`), `download.cleanup_failed`
 path), never the query.
 
 ## As built
+| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`), and the old directory, which `replaceItem` leaves at the staging path then, is removed; if that fails, `download.cleanup_failed` |
 
 `StoicDownloads` depends on `Stoic`, `StoicHTTP`, `StoicStore` and swift-crypto's
 `Crypto` (digests; on Apple platforms it is CryptoKit's own implementation). It is
