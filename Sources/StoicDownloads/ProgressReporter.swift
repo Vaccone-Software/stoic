@@ -44,6 +44,11 @@ final class ProgressReporter: Sendable {
 
     /// Offers a report. It is made if the phase changed since the last one,
     /// or `interval` has passed since it.
+    ///
+    /// The total of everything is what the caller pinned, or, when the whole
+    /// is one file, the file's own total as the server reported it
+    /// (`Content-Length`), so a single download without an expected size
+    /// still has a `fraction` once its head has arrived.
     func report(_ phase: DownloadProgress.Phase, fileBytes: Int, fileTotal: Int?) {
         guard let callback else { return }
         let now = Ambient.current.clock.now
@@ -53,7 +58,8 @@ final class ProgressReporter: Sendable {
             state.lastReport = now
             return DownloadProgress(
                 phase: phase, fileIndex: state.fileIndex, fileCount: state.fileCount, fileBytes: fileBytes,
-                fileTotalBytes: fileTotal, bytesDone: state.bytesBefore + fileBytes, totalBytes: state.totalBytes)
+                fileTotalBytes: fileTotal, bytesDone: state.bytesBefore + fileBytes,
+                totalBytes: state.totalBytes ?? (state.fileCount == 1 ? fileTotal.map { state.bytesBefore + $0 } : nil))
         }
         if let progress { callback(progress) }
     }

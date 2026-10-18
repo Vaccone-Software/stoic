@@ -223,7 +223,9 @@ for the whole. Progress carries the file in progress and the bytes of the whole.
 
 **Progress.** `DownloadProgress` (phase `waiting`, `downloading`, `verifying`,
 `placing`; the file index and count; bytes of the file and of the whole, and their
-totals when known) is passed to a `@Sendable` callback, at most once per
+totals when known; for a single download the whole's total is the file's, so without
+an expected size `totalBytes` and `fraction` appear when the response's `Content-Length`
+does) is passed to a `@Sendable` callback, at most once per
 `progressInterval` (0.5 s) for a phase and at every change of phase. Throttling reads
 the ambient clock when a report is offered and starts no timer: it costs nothing
 when nobody is listening, runs the same on a `TestClock`, and leaves nothing running
@@ -310,6 +312,7 @@ path), never the query.
 `StoicDownloads` depends on `Stoic`, `StoicHTTP`, `StoicStore` and swift-crypto's
 `Crypto` (digests; on Apple platforms it is CryptoKit's own implementation). It is
 Foundation-free apart from what `StoicHTTP`'s public types bring (`URL`, `URLError`).
+| a single download has no expected size and the server says its length | `totalBytes` equals `fileTotalBytes` from the response's `Content-Length` (or `Content-Range`), so `fraction` is known; before the head it is `nil` |
 
 - **Behind the `Crypto` trait**, with `StoicSealed` (design/24). swift-crypto is a
   dependency that is not Stoic's own, and Stoic's rule is that nobody fetches a

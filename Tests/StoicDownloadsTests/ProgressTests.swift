@@ -56,6 +56,24 @@ struct ProgressTests {
         }
     }
 
+    @Test(.failureMode("design/23", "a single download has no expected size and the server says its length"))
+    func aSingleDownloadWithoutAnExpectedSizeTakesItsTotalFromTheServer() async throws {
+        try await withHarness(policy: .testing(progressInterval: .zero)) { h in
+            let data = fileBytes(10_000)
+            h.transport.on(.get("/model.bin"), respond: [.serving(Resource(data, etag: "\"v1\""), chunkSize: 500)])
+            let reports = Reports()
+            _ = try await h.downloader.download(try download(data, expectedSize: false), progress: reports.callback(on: h.clock))
+            let all = reports.all.map(\.progress)
+            #expect(all.first?.phase == .waiting)
+            #expect(all.first?.totalBytes == nil, "before the head, nothing says how long it is")
+            let known = all.filter { $0.fileTotalBytes != nil }
+            #expect(known.count > 2)
+            #expect(known.allSatisfy { $0.totalBytes == 10_000 && $0.fileTotalBytes == 10_000 })
+            #expect(all.last?.fraction == 1)
+            #expect(all.filter { $0.phase == .downloading }.compactMap(\.fraction).count == all.filter { $0.phase == .downloading }.count)
+        }
+    }
+
     @Test func aHugeIntervalStillReportsEveryChangeOfPhase() async throws {
         try await withHarness(policy: .testing(progressInterval: .seconds(3600))) { h in
             let data = fileBytes(10_000)
