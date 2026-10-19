@@ -298,7 +298,9 @@ files outside a run (another target's) are not reported as stale. The hash is
 FNV-1a, not Swift's `Hasher`, which is seeded per process and would make a
 baseline unreadable tomorrow.
 
-**The escape budget.** A `stoic:allow` comment with a reason is the
+### The escape budget
+
+A `stoic:allow` comment with a reason is the
 cheapest way past any rule, and an agent that has learned a rule's message
 learns that first. A reason requirement alone does not stop it: a
 reason-shaped sentence costs nothing to write. So escapes are counted. Every
