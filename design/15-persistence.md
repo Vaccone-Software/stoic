@@ -122,7 +122,9 @@ type, `StoreError`.
   syncing a directory does not sync file data.
 - A `fullSync` that fails drops the file's pending writes, as Linux does after
   a writeback error: readers still see them, and no later `fullSync` makes them
-  durable. (This is why a failed sync poisons a journal and is never retried.)
+  durable. (This is why a failed sync poisons a journal and is never retried.
+  The journal truncates those bytes back to the last synced end before
+  poisoning, so a reopen cannot commit a record the sync dropped.)
 - A crash keeps the durable state plus **any subset** of the pending
   operations (per file, applied in order; zero-filled where a later write
   survives without an earlier one), each write **torn at any byte**, each
@@ -382,6 +384,13 @@ the log (records an interrupted compaction had folded in are among them, since
 the sequence they were covered to is gone), `OpenReport.lostSnapshot` says so,
 and the tombstone is removed.
 
+**A failed sync is not committed.** `append`'s `fullSync` drops the write
+(readers can still see it; no later sync makes it durable). `append` truncates
+back to the last synced end and poisons the journal. Reopen reads a prefix of
+what was synced: the record whose sync failed is not there, and a later append
+cannot leave a hole of zeros where it was. Replay after a crash stays a prefix
+of what was synced.
+
 | What happens if…                                           | Behaviour                                                                                           |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `append` has returned, then power is lost                  | The record is replayed                                                                              |
@@ -393,7 +402,7 @@ and the tombstone is removed.
 | a crash falls inside `compact`                             | Old snapshot + full log, or new snapshot + stale log (skipped, then truncated), or new + empty     |
 | the snapshot fails its checksum                            | Quarantined, after a tombstone records the loss; `open` throws `.corrupt` (the records it replaced are gone, so starting empty would hide data loss), and so does every later `open` until one passes `lostSnapshot: .acceptLoss`, which replays what the log still holds and reports `OpenReport.lostSnapshot` |
 | `append`'s write fails (`ENOSPC`)                          | Rolled back by truncating to the last end; the journal stays usable                                |
-| `append`'s `fullSync` fails                                | The journal is poisoned: every call throws `.poisoned` until it is reopened, which re-reads the file |
+| `append`'s `fullSync` fails                                | Rolled back to the last synced end, then poisoned: every call throws `.poisoned` until it is reopened. Reopen reads a prefix of what was synced; the record whose sync failed is not committed, and a later append cannot leave a hole where it was |
 | a record exceeds `maxRecordSize`                           | `.invalidArgument`; nothing written                                                                |
 | a second process reads the log while another appends       | `Journal.readOnlyReplay` returns one consistent state, a prefix of what was appended, and changes nothing on disk: the writer's next append lands where it should |
 | a reader finds a torn tail                                 | It is ignored and reported (`droppedBytes`), never cut: it may be an append still in flight        |

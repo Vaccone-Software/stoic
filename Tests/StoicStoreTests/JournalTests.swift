@@ -549,8 +549,52 @@ struct JournalFailureTests {
         #expect(throws: StoreError.self) { try journal.replay() }
         try journal.close()
         journal = try Journal.open(at: "/d/j", fileSystem: disk)   // settles what is really there
-        #expect(try journal.replay().records.map { text($0.bytes) }.first == "a")
+        #expect(try journal.replay().records.map { text($0.bytes) } == ["a"])
         try journal.append(bytes("d"))
+    }
+
+    /// The record whose sync failed must not come back as committed. Reopen,
+    /// append a later record, and crash: replay is a prefix of what was synced,
+    /// with no zero-filled hole and without the failed record.
+    @Test(.failureMode("design/15", "append's fullSync fails"))
+    func aFailedFullSyncNeverComesBackAndALaterAppendLeavesAPrefix() throws {
+        let disk = try disk()
+        var journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        try journal.append(bytes("a"))
+        disk.inject(5, on: .fullSync)   // EIO
+        let error = #expect(throws: StoreError.self) { try journal.append(bytes("b")) }
+        #expect(error?.kind == .ioFailure)
+        let poisoned = #expect(throws: StoreError.self) { try journal.replay() }
+        #expect(poisoned?.kind == .poisoned)
+        try journal.close()
+
+        journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        let reported = try journal.replay().records.map { text($0.bytes) }
+        #expect(reported == ["a"])
+        #expect(journal.openReport.corruption.isEmpty)
+        #expect(journal.openReport.droppedBytes == 0)
+
+        // Power loss with nothing further appended keeps the prefix reopen reported.
+        let lost = disk.fork()
+        lost.crash()
+        let afterLoss = try Journal.open(at: "/d/j", fileSystem: lost)
+        #expect(try afterLoss.replay().records.map { text($0.bytes) } == reported)
+        #expect(afterLoss.openReport.corruption.isEmpty)
+        try afterLoss.close()
+
+        try journal.append(bytes("d"))
+        try journal.close()
+        disk.crash()
+
+        journal = try Journal.open(at: "/d/j", fileSystem: disk)
+        let replay = try journal.replay()
+        let found = replay.records.map { text($0.bytes) }
+        let synced = ["a", "d"]
+        #expect(found == Array(synced.prefix(found.count)) && !found.contains("b"))
+        #expect(found == synced)
+        #expect(replay.records.map(\.sequence) == [1, 2])
+        #expect(journal.openReport.corruption.isEmpty)
+        #expect(journal.openReport.droppedBytes == 0)
     }
 
     @Test func aFailureWhileTruncatingTheLogAfterTheSnapshotLeavesAConsistentState() throws {
