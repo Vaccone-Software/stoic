@@ -81,10 +81,13 @@ are counted afresh from it.
 
 **Backoff.** Each child waits on the supervisor's schedule before
 restarting (jittered exponential by default, capped at 30 s); a child that
-ran for `resetAfter` without stopping starts its backoff over. A schedule
-that ends means restarting should stop: the supervisor escalates. The
-schedule's elapsed time (`upTo(elapsed:)`) counts from the first failure of
-the current streak, and starts over with the backoff.
+ran for `resetAfter` without stopping starts its backoff over. A struggling
+device stretches each delay by `SystemConditions.backoffFactor` (up to eight
+times), and the schedule's cap is the last word: a schedule capped at 30 s
+never waits longer than that, whatever the device, while an uncapped delay
+stretches. A schedule that ends means restarting should stop: the supervisor
+escalates. The schedule's elapsed time (`upTo(elapsed:)`) counts from the
+first failure of the current streak, and starts over with the backoff.
 
 **Heartbeats.** A child with a `HeartbeatPolicy` calls `beat()` while it
 makes progress. Silence for `misses` consecutive intervals (three by
@@ -129,6 +132,7 @@ finishes.
 | the supervisor's task is cancelled                   | Children stopped newest first; `CancellationError`                                |
 | a child ignores cancellation on shutdown             | Abandoned after `shutdownTimeout`; reported                                       |
 | a child ran long and then failed                     | Its backoff starts over                                                           |
+| the device is hot, saving power or short of memory   | Restart delays stretch with its backoff factor, never past the schedule's cap     |
 
 ## Events
 
@@ -146,8 +150,9 @@ Each row above, on the virtual clock: restart after backoff, transient and
 temporary completion, escalation, both multi-child strategies, a silent child
 detected and a beating one left alone, a suspension of many intervals (a
 clock that jumps, as a frozen process sees it) that hangs nothing while a
-check a little late still counts, cancellation order and causes, and
-abandonment. 300 repetitions are clean.
+check a little late still counts, cancellation order and causes,
+abandonment, and a capped backoff that device pressure does not stretch past
+its cap. 300 repetitions are clean.
 
 ## Planned
 

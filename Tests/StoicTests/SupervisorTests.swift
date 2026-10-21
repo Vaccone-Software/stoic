@@ -254,6 +254,68 @@ struct SupervisorTests {
         #expect(events.names.contains("supervisor.child_abandoned"))
         stuck.open()
     }
+
+    /// Device pressure multiplies a restart delay, and the schedule's cap is
+    /// the last word. Eight times thirty seconds would be four minutes; a
+    /// schedule capped at thirty seconds waits thirty. An uncapped one-second
+    /// delay, and one capped far above the stretch, wait eight.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "the device is hot, saving power or short of memory"))
+    func aStrugglingDeviceStretchesRestartDelaysWithoutPassingTheCap() async {
+        let struggling = SystemConditions(memoryPressure: .critical, thermal: .critical, lowPowerMode: true)
+        #expect(struggling.backoffFactor == 8)
+
+        let atTheCap = await restartWait(backoff: .fixed(.seconds(30)).capped(at: .seconds(30)), conditions: struggling)
+        #expect(atTheCap == .seconds(30), "eight times 30 s, held at the cap rather than 240 s")
+
+        let underTheCap = await restartWait(backoff: .fixed(.seconds(1)).capped(at: .seconds(30)), conditions: struggling)
+        #expect(underTheCap == .seconds(8), "the stretch still applies while the result is under the cap")
+
+        let uncapped = await restartWait(backoff: .fixed(.seconds(1)), conditions: struggling)
+        #expect(uncapped == .seconds(8), "an uncapped delay stretches with the device")
+    }
+
+    /// How long the supervisor actually sleeps before restarting one child
+    /// that fails once, under `conditions`: the restart timer's deadline, which
+    /// is also the delay `supervisor.child_restarting` records.
+    private func restartWait(backoff: Schedule, conditions: SystemConditions) async -> Duration? {
+        let clock = TestClock()
+        let script = Script()
+        let events = RecordingInstrumentation()
+        let supervisor = Supervisor(
+            label: "pressure",
+            intensity: .init(maxRestarts: 4, within: .seconds(60)),
+            backoff: backoff
+        ) {
+            Child("worker") { _ in
+                if script.started("worker") == 1 { throw Crash() }
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+        let run = Task {
+            try await withTestAmbient(clock: clock, events: events) {
+                try await withAmbient({ $0.conditions = FixedConditions(conditions) }) {
+                    try await supervisor.run()
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 1)
+        let waiting = clock.pendingDeadlines.first.map { clock.now.duration(to: $0) }
+        let recorded: Duration?
+        if case .duration(let delay) = events.events(named: "supervisor.child_restarting").first?["delay"] {
+            recorded = delay
+        } else {
+            recorded = nil
+            Issue.record("supervisor.child_restarting did not record a delay")
+        }
+        #expect(waiting == recorded, "the sleep and the reported delay are the same wait")
+        if let waiting {
+            await clock.advance(by: waiting)
+            #expect(await eventually { script.count("worker") == 2 }, "the child restarts when that wait elapses")
+        }
+        run.cancel()
+        _ = try? await run.value
+        return waiting
+    }
 }
 
 @Suite("Supervisor: review fixes")

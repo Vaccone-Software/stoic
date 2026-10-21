@@ -32,7 +32,9 @@ internal import Synchronization
 /// what restarts processes (launchd, the OS relaunching an app).
 ///
 /// **Backoff.** Each child waits on `backoff` before restarting; a child that
-/// ran for `resetAfter` without stopping starts its backoff over.
+/// ran for `resetAfter` without stopping starts its backoff over. A struggling
+/// device stretches each wait, and a capped schedule never waits longer than
+/// its cap.
 ///
 /// **Heartbeats.** A child given a ``HeartbeatPolicy`` must call
 /// `heartbeat.beat()` at least every `interval`. After `misses` consecutive
