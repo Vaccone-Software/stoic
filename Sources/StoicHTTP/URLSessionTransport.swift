@@ -25,9 +25,12 @@ internal import Synchronization
 /// - **A byte limit enforced while reading.** The body is collected from the
 ///   task's delegate callbacks, not from `data(for:)`, which would buffer a
 ///   2 GB response before anyone could object. A declared `Content-Length`
-///   over the limit is refused before the first byte, and a body that grows
-///   past it cancels the task at once; the excess is never kept. (Bytes are
-///   counted after the system has undone `Content-Encoding`, so a
+///   over the limit is refused before the first byte when a body will be
+///   transferred. A response to `HEAD`, and a `204` or `304`, name the size
+///   a `GET` would have sent and carry no body, so that length is not a
+///   refusal; bytes that arrive anyway are still counted. A body that grows
+///   past the limit cancels the task at once; the excess is never kept.
+///   (Bytes are counted after the system has undone `Content-Encoding`, so a
 ///   compression bomb is stopped too.)
 /// - **Cancellation.** Cancelling the calling task cancels the data task, and
 ///   the call ends with `CancellationError`, not with `URLError.cancelled`.
@@ -95,13 +98,16 @@ public final class URLSessionTransport: HTTPTransport {
 
     /// The head as soon as it arrives, and the body as a stream with
     /// backpressure; see the class's notes. A declared `Content-Length` over
-    /// the limit is refused before the first byte, a body that passes the
-    /// limit ends the stream with ``HTTPTransportError/responseTooLarge(limit:)``
-    /// having cancelled the task, and the data task is cancelled when the
-    /// stream is cancelled or dropped, or when the task reading it is.
+    /// the limit is refused before the first byte when a body will be
+    /// transferred (a `HEAD`, `204` or `304` is not refused for the length it
+    /// declares). A body that passes the limit ends the stream with
+    /// ``HTTPTransportError/responseTooLarge(limit:)`` having cancelled the
+    /// task, and the data task is cancelled when the stream is cancelled or
+    /// dropped, or when the task reading it is.
     public func stream(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPStreamedResponse {
         let urlRequest = try Self.urlRequest(for: request)
-        let transfer = StreamTransfer(limit: maxResponseBytes, bufferLimit: streamBufferBytes, statistics: transfers.streams)
+        let transfer = StreamTransfer(
+            limit: maxResponseBytes, bufferLimit: streamBufferBytes, statistics: transfers.streams, method: request.method)
         let task = session.dataTask(with: urlRequest)
         transfer.attach(task)
         transfers.register(transfer, for: task)
@@ -130,7 +136,7 @@ public final class URLSessionTransport: HTTPTransport {
     public func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse {
         let urlRequest = try Self.urlRequest(for: request)
 
-        let transfer = Transfer(limit: maxResponseBytes)
+        let transfer = Transfer(limit: maxResponseBytes, method: request.method)
         let task = session.dataTask(with: urlRequest)
         transfers.register(transfer, for: task)
         do {
@@ -214,10 +220,13 @@ final class Transfer: TransferSink {
     }
 
     private let limit: Int
+    /// The request's method: a `HEAD` transfers no body, whatever the status.
+    private let method: HTTPMethod
     private let state: Mutex<State>
 
-    init(limit: Int) {
+    init(limit: Int, method: HTTPMethod) {
         self.limit = limit
+        self.method = method
         state = Mutex(State(body: ByteBudget(limit: limit)))
     }
 
@@ -225,11 +234,18 @@ final class Transfer: TransferSink {
         state.withLock { $0.continuation = continuation }
     }
 
-    /// Keeps the response's head. Returns `false` if the length it declares
-    /// is already over the limit: that settles it before a byte moves.
+    /// Keeps the response's head. Returns `false` when a body will be
+    /// transferred and the length it declares is already over the limit,
+    /// which settles the call before a byte moves. A `HEAD`, `204` or `304`
+    /// declares the size a `GET` would have sent and transfers nothing, so
+    /// that length is not a refusal; bytes that arrive are still counted.
     func receive(_ response: URLResponse) -> Bool {
         state.withLock { state -> Bool in
-            state.response = response as? HTTPURLResponse
+            let http = response as? HTTPURLResponse
+            state.response = http
+            if let http, !ResponseBody.willBeTransferred(method: method, status: http.statusCode) {
+                return true
+            }
             return state.body.declare(length: response.expectedContentLength)
         }
     }
@@ -275,8 +291,10 @@ struct ByteBudget: Sendable {
         self.limit = limit
     }
 
-    /// Notes the length a server declared (negative when unknown). Returns
-    /// `false` if it already exceeds the limit.
+    /// Notes the length a server declared for a body that will be transferred
+    /// (negative when unknown). Returns `false` if it already exceeds the
+    /// limit. The caller skips this when no body follows: a `HEAD`, `204` or
+    /// `304` declares a size that will not arrive.
     mutating func declare(length: Int64) -> Bool {
         if length > Int64(limit) { exceeded = true }
         return !exceeded
