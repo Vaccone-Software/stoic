@@ -4,8 +4,9 @@ internal import Synchronization
 /// a primitive's rare paths common (FoundationDB's `BUGGIFY`).
 ///
 /// Stoic's primitives pass named fault points where timing decides which
-/// path runs — a semaphore waiter between arriving and queueing, a channel
-/// hand-off, a finalizer starting, superseded work about to deliver. In
+/// path runs — a semaphore or admission waiter between arriving and
+/// queueing, a channel hand-off, a finalizer starting, superseded work
+/// about to deliver. In
 /// production nothing is installed and a fault point costs one relaxed
 /// atomic load. Under a simulation, an installed policy may stall the task
 /// there for a few scheduling turns or a stretch of virtual time, so the
