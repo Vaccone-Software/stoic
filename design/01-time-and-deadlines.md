@@ -110,6 +110,14 @@ scope under an expiring deadline that the user had cancelled, and every
 policy inside it answered `.cancelled` instead of `.deadlineExceeded`. A
 test fails on any `record(.userRequested)` in Stoic's sources.
 
+A refusal of background time throws `CancellationError` without cancelling
+the caller — cancellation is irrevocable, and the caller has to keep
+running to tell a refused assertion from a flush that finished. The cause
+is recorded as `.systemExpiring`, and `CancellationCause.current` reports
+it to the caller handling the error, then drops it so a later task cannot
+observe it. The work does not run (design/08). A task that is already
+cancelled keeps its own cause.
+
 **Already passed.** If the deadline has passed before `withDeadline` is
 entered, the operation is still run, already cancelled, so cancellation-aware
 code exits immediately and cleanup inside it still happens. This matches

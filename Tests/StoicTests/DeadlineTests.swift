@@ -445,6 +445,50 @@ struct ExpiringWorkTests {
         #expect(!ran.value)
     }
 
+    /// `beginBackgroundTask` returning `.invalid` is this gate with `granted`
+    /// false. UIKit is not linked into the macOS or Linux test runs; the
+    /// shell in `BackgroundWork` passes `identifier != .invalid` through here.
+    @Test(.failureMode("design/08", "the system refuses a background assertion"))
+    func aRefusedBackgroundGrantDoesNotRunTheWork() async {
+        defer { RefusalSignal.clearCurrentTask() }
+        let ran = SendableBox(false)
+        let expiring = ExpiringWork()
+        do {
+            _ = try await expiring.runIfGranted(false, label: "background.flush") {
+                ran.mutate { $0 = true }
+                return 1
+            }
+            Issue.record("a refusal must throw")
+        } catch is CancellationError {
+            #expect(CancellationCause.current == .systemExpiring)
+        } catch {
+            Issue.record("expected CancellationError, got \(error)")
+        }
+        #expect(!ran.value)
+        #expect(!Task.isCancelled)
+    }
+
+    @Test func aGrantedRunStillRunsTheWork() async throws {
+        let value = try await ExpiringWork().runIfGranted(true) { 7 }
+        #expect(value == 7)
+    }
+
+    @Test func aRefusalOfAnAlreadyCancelledTaskKeepsThatCause() async throws {
+        let task = Task { () -> CancellationCause? in
+            while !Task.isCancelled { await Task.yield() }
+            do {
+                try ExpiringWork().refuseSystemTime()
+            } catch is CancellationError {
+                return CancellationCause.current
+            } catch {
+                return nil
+            }
+        }
+        task.cancel()
+        let cause = await task.value
+        #expect(cause == .userRequested)
+    }
+
     @Test func runsDoNotShareACause() async throws {
         // One run cancelled by its caller must not make a later run's
         // unrelated cancellation read differently, nor the reverse.
