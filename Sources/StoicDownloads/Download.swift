@@ -45,7 +45,8 @@ public struct Download: Sendable {
     public var expectedSize: Int?
 
     /// What the file's bytes must hash to. Without one the file is placed
-    /// unverified (its size is still checked), and a partial file with no
+    /// unverified (its size is still checked, including the length the server
+    /// declared), and a partial file with no
     /// validator to resume it by is not resumed: the digest is what makes
     /// resuming safe when the server cannot say the file is unchanged.
     public var digest: ContentDigest?
