@@ -179,6 +179,94 @@ struct HTTPStreamingTests {
         }
     }
 
+    // Row: a HEAD, 204 or 304 declares a length over the limit.
+    @Test(.failureMode("design/19", "a `HEAD`, `204` or `304` declares a length over the limit"))
+    func aDeclaredLengthIsRefusedOnlyWhenABodyWillBeTransferred() async throws {
+        try await withRig(.testing(attempts: 3, maxResponseBytes: 1_000)) { rig in
+            func headers(_ tag: String) -> HTTPHeaders { ["Content-Length": "20000000", "ETag": tag] }
+
+            rig.transport.on(.head("/model"), respond: [.streaming([], headers: headers("\"model\""))])
+            let head = try await rig.api.send(.head("/model"))
+            #expect(head.status == 200)
+            #expect(head.headers["Content-Length"] == "20000000")
+            #expect(head.headers["ETag"] == "\"model\"")
+            #expect(head.body.isEmpty)
+            #expect(rig.transport.requests(to: .head("/model")).count == 1, "a HEAD is an answer, so it is not retried")
+
+            rig.transport.on(.get("/empty"), respond: [.streaming([], status: 204, headers: headers("\"gone\""))])
+            let empty = try await rig.api.send(.get("/empty"))
+            #expect(empty.status == 204)
+            #expect(empty.headers["ETag"] == "\"gone\"")
+            #expect(empty.body.isEmpty)
+
+            rig.transport.on(
+                HTTPRequest(method: .post, target: .path("/created")),
+                respond: [.streaming([], status: 204, headers: headers("\"made\""))])
+            let created = try await rig.api.send(.post("/created", body: [], contentType: "text/plain"))
+            #expect(created.status == 204)
+            #expect(created.body.isEmpty)
+
+            rig.transport.on(.get("/cached"), respond: [.streaming([], status: 304, headers: headers("\"cached\""))])
+            let notModified = try #require(await #expect(throws: HTTPError.self) { try await rig.api.send(.get("/cached")) })
+            #expect(notModified == .status(304, excerpt: "", retryAfter: nil, attempts: 1))
+
+            rig.transport.on(.head("/missing"), respond: [.streaming([], status: 404, headers: headers("\"absent\""))])
+            let missing = try #require(await #expect(throws: HTTPError.self) { try await rig.api.send(.head("/missing")) })
+            #expect(missing.statusCode == 404)
+
+            rig.transport.on(.head("/model-stream"), respond: [
+                .streaming([], headers: headers("\"model\"").merging(["Accept-Ranges": "bytes"])),
+            ])
+            let streamedHead = try await rig.api.stream(.head("/model-stream"), maxBytes: 1_000)
+            #expect(streamedHead.status == 200)
+            #expect(streamedHead.headers["Content-Length"] == "20000000")
+            #expect(streamedHead.headers["Accept-Ranges"] == "bytes")
+            #expect(try await Self.read(streamedHead.body).bytes.isEmpty)
+
+            rig.transport.on(.get("/empty-stream"), respond: [.status(204, headers: headers("\"gone\""))])
+            let streamedEmpty = try await rig.api.stream(.get("/empty-stream"), maxBytes: 1_000)
+            #expect(streamedEmpty.status == 204)
+            #expect(try await Self.read(streamedEmpty.body).bytes.isEmpty)
+
+            rig.transport.on(.get("/cached-stream"), respond: [.status(304, headers: headers("\"cached\""))])
+            let streamedCached = try await rig.api.stream(.get("/cached-stream"), maxBytes: 1_000, accepting: [304])
+            #expect(streamedCached.status == 304)
+            #expect(streamedCached.headers["ETag"] == "\"cached\"")
+            #expect(try await Self.read(streamedCached.body).bytes.isEmpty)
+
+            // A GET whose declared length is the size of a body is still refused before that body.
+            rig.transport.on(.get("/big"), respond: [.streaming([], headers: ["Content-Length": "20000000"])])
+            await #expect(throws: HTTPError.responseTooLarge(limit: 1_000, attempts: 1)) {
+                try await rig.api.stream(.get("/big"), maxBytes: 1_000)
+            }
+            await #expect(throws: HTTPError.responseTooLarge(limit: 1_000, attempts: 1)) {
+                try await rig.api.send(.get("/big"))
+            }
+
+            // Bytes that do arrive are still held to the limit. The refusal is the
+            // body's, after the head, because the declared length was not one.
+            let tooLarge = rig.events.count("http.response_too_large")
+            rig.transport.on(.head("/fat"), respond: [
+                .streaming(Self.data(5_000), headers: ["Content-Length": "20000000"], chunkSize: 1_000),
+            ])
+            let fat = try await rig.api.stream(.head("/fat"), maxBytes: 1_000)
+            #expect(fat.headers["Content-Length"] == "20000000")
+            let failure = try #require(await Self.failure(of: fat.body))
+            #expect(failure.delivered == 1_000)
+            #expect(failure.error as? HTTPError == .responseTooLarge(limit: 1_000, attempts: 1))
+            #expect(rig.events.count("http.response_too_large") == tooLarge + 1)
+
+            let aborted = rig.transport.abortedCount
+            rig.transport.on(.head("/fat-send"), respond: [
+                .streaming(Self.data(5_000), headers: ["Content-Length": "20000000"], chunkSize: 1_000),
+            ])
+            let sent = try #require(await #expect(throws: HTTPError.self) { try await rig.api.send(.head("/fat-send")) })
+            #expect(sent == .responseTooLarge(limit: 1_000, attempts: 1))
+            #expect(rig.transport.abortedCount == aborted + 1, "the transport stopped reading at the limit")
+            #expect(rig.transport.inFlightCount == 0)
+        }
+    }
+
     @Test(.failureMode("design/19", "a streamed failure has a body larger than the limit"))
     func aFailureBodyLargerThanTheLimitIsTheStatusWithItsExcerpt() async throws {
         try await withRig(.testing(attempts: 1)) { rig in
@@ -403,8 +491,8 @@ struct HTTPStreamingTests {
 struct ScriptedStreamingTests {
     typealias Step = ScriptedTransport.Step
 
-    static func request(_ path: String, headers: HTTPHeaders = [:]) -> HTTPRequest {
-        HTTPRequest(method: .get, target: .url(URL(string: "https://files.example.com\(path)")!), headers: headers)
+    static func request(_ path: String, method: HTTPMethod = .get, headers: HTTPHeaders = [:]) -> HTTPRequest {
+        HTTPRequest(method: method, target: .url(URL(string: "https://files.example.com\(path)")!), headers: headers)
     }
 
     static let file = HTTPStreamingTests.data(1_000)
@@ -561,5 +649,48 @@ struct ScriptedStreamingTests {
         let result = try #require(await HTTPStreamingTests.failure(of: response.body))
         #expect(result.delivered == 450)
         #expect(result.error as? HTTPTransportError == .responseTooLarge(limit: 450))
+    }
+
+    @Test func aDeclaredLengthIsNotARefusalWhenNoBodyWillBeTransferred() async throws {
+        let transport = ScriptedTransport()
+        let headers: HTTPHeaders = ["Content-Length": "20000000", "ETag": "\"m\""]
+        transport.on(.head("/model"), respond: [.streaming([], headers: headers)])
+        transport.on(.get("/empty"), respond: [.streaming([], status: 204, headers: headers)])
+        transport.on(.get("/cached"), respond: [.streaming([], status: 304, headers: headers)])
+
+        let head = try await transport.send(Self.request("/model", method: .head), maxResponseBytes: 1_000)
+        #expect(head.status == 200)
+        #expect(head.headers["Content-Length"] == "20000000")
+        #expect(head.headers["ETag"] == "\"m\"")
+        #expect(head.body.isEmpty)
+
+        let empty = try await transport.stream(Self.request("/empty"), maxResponseBytes: 1_000)
+        #expect(empty.status == 204)
+        #expect(try await HTTPStreamingTests.read(empty.body).bytes.isEmpty)
+
+        let cached = try await transport.stream(Self.request("/cached"), maxResponseBytes: 1_000)
+        #expect(cached.status == 304)
+        #expect(cached.headers["ETag"] == "\"m\"")
+        #expect(try await HTTPStreamingTests.read(cached.body).bytes.isEmpty)
+
+        // A GET still refuses the declared length before the head comes back.
+        transport.on(.get("/model"), respond: [.streaming([], headers: headers)])
+        await #expect(throws: HTTPTransportError.responseTooLarge(limit: 1_000)) {
+            try await transport.stream(Self.request("/model"), maxResponseBytes: 1_000)
+        }
+
+        // Bytes that arrive on a HEAD are held to the limit after the head.
+        transport.on(.head("/fat"), respond: [
+            .streaming(HTTPStreamingTests.data(5_000), headers: ["Content-Length": "20000000"], chunkSize: 1_000),
+        ])
+        let aborted = transport.abortedCount
+        let fat = try await transport.stream(Self.request("/fat", method: .head), maxResponseBytes: 1_000)
+        #expect(fat.headers["Content-Length"] == "20000000")
+        let failure = try #require(await HTTPStreamingTests.failure(of: fat.body))
+        #expect(failure.delivered == 1_000)
+        #expect(failure.error as? HTTPTransportError == .responseTooLarge(limit: 1_000))
+        fat.body.cancel()
+        #expect(transport.abortedCount == aborted + 1, "the transport stopped reading at the limit")
+        #expect(transport.inFlightCount == 0)
     }
 }

@@ -54,6 +54,25 @@ enum BodyMode: Sendable {
     case streamed(limit: Int, accepted: Set<Int>)
 }
 
+/// Whether a response will transfer a body, which is the only length a byte
+/// limit may refuse before the first byte.
+///
+/// RFC 9110: a response to `HEAD` never includes content, and neither does
+/// `204` (No Content) or `304` (Not Modified). The `Content-Length` on those
+/// responses is the size a `GET` of the same resource would have sent — what
+/// a caller sends `HEAD` to learn — so treating it as a body over the limit
+/// discards the headers that were the point of the request. A body that
+/// arrives anyway is still counted by whoever reads the bytes.
+enum ResponseBody {
+    static func willBeTransferred(method: HTTPMethod, status: Int) -> Bool {
+        if method == .head { return false }
+        switch status {
+        case 204, 304: return false
+        default: return true
+        }
+    }
+}
+
 /// What one attempt brought back: the response, whose body is empty when it
 /// is streamed, and the body still to be read in that case.
 struct Received: Sendable {

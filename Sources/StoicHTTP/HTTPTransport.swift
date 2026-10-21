@@ -18,7 +18,10 @@ public protocol HTTPTransport: Sendable {
     ///   - maxResponseBytes: The most body bytes to read. A transport
     ///     that sees more stops reading, abandons the connection and throws
     ///     ``HTTPTransportError/responseTooLarge(limit:)`` — it does not buffer
-    ///     the excess first.
+    ///     the excess first. A declared length over the limit is refused
+    ///     before the first byte when a body will be transferred; a response
+    ///     to `HEAD`, and a `204` or `304`, are not refused for the length
+    ///     they declare.
     /// - Throws: `URLError` for a network failure (the client classifies it
     ///   by code), ``HTTPTransportError``, or `CancellationError`.
     func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse
@@ -34,9 +37,12 @@ public protocol HTTPTransport: Sendable {
     ///   - request: The request to send.
     ///   - maxResponseBytes: The most body bytes the stream may deliver. A
     ///     transport refuses a body whose declared length is over it before the
-    ///     first byte (this call throws ``HTTPTransportError/responseTooLarge(limit:)``),
-    ///     and ends a stream that passes it with the same error, having
-    ///     abandoned the connection; it does not read the excess first.
+    ///     first byte, when a body will be transferred (this call throws
+    ///     ``HTTPTransportError/responseTooLarge(limit:)``). A response to
+    ///     `HEAD`, and a `204` or `304`, declare the size a `GET` would have
+    ///     sent and are not refused for it. A stream that passes the limit
+    ///     ends with the same error, having abandoned the connection; it does
+    ///     not read the excess first.
     /// - Returns: The head, and the body. Cancelling the body's task, calling
     ///   ``HTTPBodyStream/cancel()`` or dropping it ends the exchange.
     /// - Throws: As ``send(_:maxResponseBytes:)``, for what happens before the
