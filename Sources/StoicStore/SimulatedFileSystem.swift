@@ -29,9 +29,13 @@ internal import Synchronization
 /// A directory made by ``createDirectory(_:)`` is a name in its parent like
 /// any other, pending until the parent is synced, which `createDirectory`
 /// does before it returns; a crash inside it can lose the directory and
-/// everything in it. A failed ``fullSync(_:)`` drops the file's pending
-/// writes, as Linux does after a writeback error: readers still see them, and
-/// no later sync makes them durable. Paths are `/`-separated strings.
+/// everything in it. Renaming or exchanging a directory moves the whole tree
+/// as one directory operation, so a crash keeps every name in it where it was
+/// or moves every name. ``removeTree(_:)`` unlinks each entry on its own, and
+/// a crash can keep any of those deletions without the others — and without a
+/// swap that has not been synced. A failed ``fullSync(_:)`` drops the file's
+/// pending writes, as Linux does after a writeback error: readers still see
+/// them, and no later sync makes them durable. Paths are `/`-separated strings.
 public final class SimulatedFileSystem: FileSystem {
     let state: Mutex<State>
     private let watchers = Mutex(Watchers())
@@ -324,6 +328,14 @@ public final class SimulatedFileSystem: FileSystem {
         try changing { (state) throws(StoreError) in try state.remove(path) }
     }
 
+    /// Removes a file, a symbolic link, or a directory and everything in it.
+    /// Each entry is its own pending directory operation: a crash can keep a
+    /// deletion inside a tree while dropping a swap that put the tree there,
+    /// which is why a swap is synced before anything is deleted.
+    public func removeTree(_ path: String) throws(StoreError) {
+        try changing { (state) throws(StoreError) in try state.removeTree(path) }
+    }
+
     public func list(directory: String) throws(StoreError) -> [String] {
         try state.withLock { (state) throws(StoreError) in try state.list(directory) }
     }
@@ -437,19 +449,29 @@ extension SimulatedFileSystem {
         case exchange(first: String, second: String, firstInode: Int, secondInode: Int)
         case remove(path: String)
         case makeDirectory(path: String)
+        /// A directory and everything under it, moved as one entry in the parent.
+        case renameTree(from: String, to: String)
+        /// Two directory trees, swapped as one entry in each parent.
+        case exchangeTrees(first: String, second: String)
+        /// `rmdir` of an empty directory. The entries inside were their own operations.
+        case removeDirectory(path: String)
 
         var directories: [String] {
             switch self {
-            case .create(let path, _), .remove(let path), .makeDirectory(let path): [StorePath.directory(of: path)]
-            case .rename(let from, let to, _): [StorePath.directory(of: from), StorePath.directory(of: to)]
-            case .exchange(let first, let second, _, _): [StorePath.directory(of: first), StorePath.directory(of: second)]
+            case .create(let path, _), .remove(let path), .makeDirectory(let path), .removeDirectory(let path):
+                [StorePath.directory(of: path)]
+            case .rename(let from, let to, _), .renameTree(let from, let to):
+                [StorePath.directory(of: from), StorePath.directory(of: to)]
+            case .exchange(let first, let second, _, _), .exchangeTrees(let first, let second):
+                [StorePath.directory(of: first), StorePath.directory(of: second)]
             }
         }
 
         /// Applies this operation to a name table. A rename is bound to its
         /// inode, not to the name it came from: the entry for the new name
         /// appears whether or not the entry for the old name ever became
-        /// durable, which is the harsher of the two readings.
+        /// durable, which is the harsher of the two readings. A tree moves
+        /// the same way: every name under it follows, or none do.
         func apply(to names: inout [String: Int]) {
             switch self {
             case .create(let path, let inode): names[path] = inode
@@ -461,13 +483,25 @@ extension SimulatedFileSystem {
                 names[first] = secondInode
                 names[second] = firstInode
             case .remove(let path): names[path] = nil
-            case .makeDirectory: break
+            case .makeDirectory, .removeDirectory: break
+            case .renameTree(let from, let to):
+                names = TreePath.rewriting(names) { TreePath.moved($0, from: from, to: to) }
+            case .exchangeTrees(let first, let second):
+                names = TreePath.rewriting(names) { TreePath.swapped($0, first, second) }
             }
         }
 
         /// Applies this operation to a set of directories.
         func apply(to directories: inout Set<String>) {
-            if case .makeDirectory(let path) = self { directories.insert(path) }
+            switch self {
+            case .makeDirectory(let path): directories.insert(path)
+            case .removeDirectory(let path): directories.remove(path)
+            case .renameTree(let from, let to):
+                directories = Set(directories.map { TreePath.moved($0, from: from, to: to) })
+            case .exchangeTrees(let first, let second):
+                directories = Set(directories.map { TreePath.swapped($0, first, second) })
+            case .create, .rename, .exchange, .remove: break
+            }
         }
     }
 
@@ -735,6 +769,10 @@ extension SimulatedFileSystem {
         mutating func rename(from source: String, to destination: String) throws(StoreError) {
             try checkFault(.rename, path: source)
             guard parentExists(destination) else { throw StoreError(errno: ENOENT_, operation: "rename", path: destination) }
+            if directories.contains(source) {
+                try renameTree(from: source, to: destination)
+                return
+            }
             if live[source] == nil, let link = links[source] {
                 // A rename moves the link itself, never what it points to.
                 links[source] = nil
@@ -743,6 +781,9 @@ extension SimulatedFileSystem {
                 return
             }
             guard let ino = live[source] else { throw StoreError(errno: ENOENT_, operation: "rename", path: source) }
+            if directories.contains(destination) {
+                throw StoreError(errno: EISDIR_, operation: "rename", path: destination)
+            }
             // Renaming over a symbolic link replaces the link, not its target.
             links[destination] = nil
             live[source] = nil
@@ -752,9 +793,35 @@ extension SimulatedFileSystem {
             record(.rename(from: source, to: destination))
         }
 
+        /// Moves a directory and every name under it. One directory operation:
+        /// a crash keeps the whole tree at `source` or the whole tree at
+        /// `destination`.
+        mutating func renameTree(from source: String, to destination: String) throws(StoreError) {
+            if TreePath.overlap(source, destination) {
+                throw StoreError(errno: EINVAL_, operation: "rename", path: destination)
+            }
+            if live[destination] != nil || links[destination] != nil {
+                throw StoreError(errno: ENOTDIR_, operation: "rename", path: destination)
+            }
+            if directories.contains(destination), !childNames(of: destination).isEmpty {
+                throw StoreError(errno: ENOTEMPTY_, operation: "rename", path: destination)
+            }
+            rewritePaths { TreePath.moved($0, from: source, to: destination) }
+            pendingDirOps.append(.renameTree(from: source, to: destination))
+            record(.rename(from: source, to: destination))
+        }
+
         mutating func exchange(_ first: String, _ second: String) throws(StoreError) {
             try checkFault(.exchange, path: first)
-            // Only files are modelled, so only files can be swapped.
+            let firstDirectory = directories.contains(first)
+            let secondDirectory = directories.contains(second)
+            if firstDirectory || secondDirectory {
+                guard firstDirectory && secondDirectory else {
+                    throw StoreError(errno: ENOTDIR_, operation: "renamex_np", path: firstDirectory ? second : first)
+                }
+                try exchangeTrees(first, second)
+                return
+            }
             guard let firstInode = live[first], let secondInode = live[second] else {
                 throw StoreError(errno: ENOENT_, operation: "renamex_np", path: live[first] == nil ? first : second)
             }
@@ -766,16 +833,80 @@ extension SimulatedFileSystem {
             record(.exchange(first, second))
         }
 
+        /// Swaps two directory trees in one step. One directory operation, so
+        /// a crash keeps each tree at the name it had or at the name the swap
+        /// gave it, never half of either.
+        mutating func exchangeTrees(_ first: String, _ second: String) throws(StoreError) {
+            if TreePath.overlap(first, second) {
+                throw StoreError(errno: EINVAL_, operation: "renamex_np", path: first)
+            }
+            rewritePaths { TreePath.swapped($0, first, second) }
+            pendingDirOps.append(.exchangeTrees(first: first, second: second))
+            record(.exchange(first, second))
+        }
+
         mutating func remove(_ path: String) throws(StoreError) {
             try checkFault(.remove, path: path)
             if live[path] == nil, links[path] != nil {
                 links[path] = nil
                 return
             }
+            // `unlink` refuses a directory. Emptying one is `removeTree`.
+            if directories.contains(path) {
+                throw StoreError(errno: EISDIR_, operation: "unlink", path: path)
+            }
             guard live[path] != nil else { throw StoreError(errno: ENOENT_, operation: "unlink", path: path) }
             live[path] = nil
             pendingDirOps.append(.remove(path: path))
             record(.remove(path: path))
+        }
+
+        /// A file or a link is one removal. A directory is emptied entry by
+        /// entry, then removed: each of those is pending on its own, so a
+        /// crash can keep the removal of the directory while dropping a swap
+        /// that has not been synced, and lose whatever tree that name still
+        /// holds on the durable disk.
+        mutating func removeTree(_ path: String) throws(StoreError) {
+            if links[path] != nil || live[path] != nil {
+                try remove(path)
+                return
+            }
+            guard directories.contains(path) else { throw StoreError(errno: ENOENT_, operation: "unlink", path: path) }
+            for name in childNames(of: path) {
+                try removeTree(StorePath.join(path, name))
+            }
+            directories.remove(path)
+            pendingDirOps.append(.removeDirectory(path: path))
+            record(.remove(path: path))
+        }
+
+        /// The names directly inside `directory`: files, links and directories.
+        func childNames(of directory: String) -> [String] {
+            var names: Set<String> = []
+            for path in live.keys where StorePath.directory(of: path) == directory { names.insert(StorePath.name(of: path)) }
+            for path in links.keys where StorePath.directory(of: path) == directory { names.insert(StorePath.name(of: path)) }
+            for path in directories where StorePath.directory(of: path) == directory { names.insert(StorePath.name(of: path)) }
+            return names.sorted()
+        }
+
+        /// Rewrites every live path. Moves replace a name they land on. The
+        /// files that moved are noted for the watchers.
+        mutating func rewritePaths(_ transform: (String) -> String) {
+            let moved = live.keys.filter { transform($0) != $0 }
+            touched.append(contentsOf: moved)
+            directories = Set(directories.map(transform))
+            var newLive: [String: Int] = [:]
+            var displaced: [String: Int] = [:]
+            for (path, inode) in live {
+                let newPath = transform(path)
+                if newPath == path { displaced[path] = inode } else { newLive[newPath] = inode }
+                if newPath != path { inodes[inode]!.name = newPath }
+            }
+            for (path, inode) in displaced where newLive[path] == nil { newLive[path] = inode }
+            live = newLive
+            var newLinks: [String: String] = [:]
+            for (path, target) in links { newLinks[transform(path)] = target }
+            links = newLinks
         }
 
         mutating func list(_ directory: String) throws(StoreError) -> [String] {
@@ -799,3 +930,44 @@ private let EEXIST_ = EEXIST
 private let EBADF_ = EBADF
 private let ENOSPC_ = ENOSPC
 private let ELOOP_ = ELOOP
+private let ENOTEMPTY_ = ENOTEMPTY
+private let ENOTDIR_ = ENOTDIR
+private let EISDIR_ = EISDIR
+private let EINVAL_ = EINVAL
+
+/// Path arithmetic for a directory tree: a name is inside a tree when it is
+/// the root or a path under it, and nowhere else (`/d/a` is not inside `/d/ab`).
+private enum TreePath {
+    static func contains(_ path: String, _ root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
+    }
+
+    static func overlap(_ first: String, _ second: String) -> Bool {
+        contains(first, second) || contains(second, first)
+    }
+
+    static func moved(_ path: String, from root: String, to newRoot: String) -> String {
+        if path == root { return newRoot }
+        guard path.hasPrefix(root + "/") else { return path }
+        return newRoot + path.dropFirst(root.count)
+    }
+
+    static func swapped(_ path: String, _ first: String, _ second: String) -> String {
+        if contains(path, first) { return moved(path, from: first, to: second) }
+        if contains(path, second) { return moved(path, from: second, to: first) }
+        return path
+    }
+
+    /// Rewrites every path. A path that moves replaces one that stayed, the
+    /// way a rename onto a name replaces what was there.
+    static func rewriting<V>(_ map: [String: V], _ transform: (String) -> String) -> [String: V] {
+        var kept: [String: V] = [:]
+        var moved: [(String, V)] = []
+        for (path, value) in map {
+            let newPath = transform(path)
+            if newPath == path { kept[path] = value } else { moved.append((newPath, value)) }
+        }
+        for (path, value) in moved { kept[path] = value }
+        return kept
+    }
+}

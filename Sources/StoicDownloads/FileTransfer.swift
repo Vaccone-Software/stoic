@@ -540,7 +540,11 @@ struct FileTransfer {
     /// the rename leaves the file in place and every reader seeing it; that is
     /// reported (`download.durability_unknown`, `isDurable`), not thrown,
     /// because failing a download whose file is where it should be would only
-    /// make the caller do it again.
+    /// make the caller do it again. The resume record stays in that case.
+    /// The rename is not durable yet, and removing the record is another
+    /// directory operation a crash can keep while dropping the rename: the
+    /// partial file would still be there, the record would not, and the next
+    /// run would delete the only copy (`record_missing`).
     private func place(_ state: inout State) throws(Stop) -> Bool {
         report(.placing, state)
         let file = try openPartial(&state)
@@ -548,19 +552,20 @@ struct FileTransfer {
         state.file = nil
         try disk.close(file)
         try disk.rename(from: download.partialPath, to: download.destination)
-        var durable = true
+        let durable: Bool
         do throws(Stop) {
             try disk.syncDirectory(Paths.directory(of: download.destination))
             if Paths.directory(of: download.partialPath) != Paths.directory(of: download.destination) {
                 try disk.syncDirectory(Paths.directory(of: download.partialPath))
             }
+            durable = true
+            removeLeftover(download.resumeRecordPath)
         } catch {
             durable = false
             record(Event("download.durability_unknown", level: .warning, label: label, fields: fields + [
                 .init("what", .string("file"), privacy: .public),
             ]))
         }
-        removeLeftover(download.resumeRecordPath)
         record(Event("download.placed", level: .info, label: label, fields: fields + [
             .init("bytes", .int(state.offset)),
             .init("durable", .bool(durable)),

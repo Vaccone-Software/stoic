@@ -106,7 +106,7 @@ for every 16 KiB chunk would be a million of them for 20 GB), and written to the
 partial file; every `checkpointBytes` (64 MiB) the file is `fullSync`ed and
 _then_ its record says so. (5) When the body is whole, the digest is compared:
 never a second pass. (6) The verified file is `fullSync`ed, renamed over the
-destination, the directory synced, and the record removed. A file at the
+destination, the directory synced, and only then the record removed. A file at the
 destination is therefore always whole and verified, or the old one.
 
 **What a response means.** `206` whose `Content-Range` starts at the offset
@@ -206,16 +206,24 @@ is in place and every reader sees it, so the download is **placed**:
 `DownloadResult.isDurable` is `false`, `download.durability_unknown` says so, and
 nothing is thrown, because failing a download whose file is where it should be
 would only make the caller do it again. (Lodestar's `acceptingUnknownDurability`
-is this policy, written once.) A failed _rename_ or earlier step is `.store`, with
-the verified partial file kept: the next run verifies it and places it without
-asking the server for anything.
+is this policy, written once.) The resume record is removed only after that sync
+returns. Leaving it is what makes a crash that drops the rename recoverable: the
+partial file and the record are both still there, and the next run places them.
+Deleting the record first can keep the deletion and lose the rename, and the next
+run then discards the partial file (`record_missing`). A failed _rename_ or earlier
+step is `.store`, with the verified partial file kept: the next run verifies it
+and places it without asking the server for anything.
 
 **Bundles.** `DownloadBundle` is files that are one thing. They are fetched one
 after another into `.<name>.partial/` beside the destination, each as a
 `Download` of its own (resumable, verified), and placed with one
 `AtomicFile.replaceItem` (on Apple platforms, a swap of the two directories in
-a single step, then the old one removed): the destination is the old directory
-complete or the new one complete. A run starts by finding out what is there: a
+a single step, then the old one removed once the swap is durable): the destination
+is the old directory complete or the new one complete. If the directory sync after
+the swap fails, the download is placed (`isDurable == false`) and the staging path
+is left as the swap left it. A crash can still hold the new tree there, and
+removing the staging path before the swap is durable can keep that deletion and
+lose the swap. A run starts by finding out what is there: a
 file whole at its own name, at its expected size, with a digest that checks, is
 verified and not fetched (`requests == 0`; a file with no expected size or no digest
 is refetched, since nothing says it is the right one); a `<name>.partial` resumes;
@@ -302,13 +310,13 @@ A URL's query reaches disk only as a hash.
 | the process dies at any step of placing                                   | The same: `fullSync`, rename and directory sync are each a crash point, and the verified partial file is placed by the next run                                           |
 | the process dies in a download that was cut and resumed                   | The same, across checkpoints and resumes                                                                                                                                  |
 | the process dies while the next run is resuming                           | The same: a crash of the recovery run is recoverable too                                                                                                                  |
-| the directory sync after the rename fails                                 | The file is in place and treated as placed: `isDurable == false`, `download.durability_unknown`, no error                                                                 |
+| the directory sync after the rename fails                                 | The file is in place and treated as placed: `isDurable == false`, `download.durability_unknown`, no error; the resume record stays, so a crash that drops the rename still has the partial and the next run places it |
 | a bundle is downloaded                                                    | Each file fetched and verified in staging; the directory swapped over the destination; the staging directory is gone; `isDurable`; progress names the file and the whole  |
 | a bundle has one file whole, one part-way and one missing                 | The whole one is verified and not fetched (`requests == 0`), the partial one resumes by range, the missing one is fetched                                                 |
 | a staged file does not check                                              | Removed and fetched again (`staged_file_failed_verification`; for a size, `staged_file_wrong_size`; with nothing to check it by, `staged_file_unverifiable`)              |
 | the staging directory holds files that are not the bundle's               | Removed (`stale_staging_files`)                                                                                                                                           |
 | the bundle's destination already exists                                   | Swapped out whole and the old directory removed; a bundle that fails leaves the old directory as it was                                                                   |
-| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`), and the old directory, which `replaceItem` leaves at the staging path then, is removed; if that fails, `download.cleanup_failed` |
+| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`); the staging path is left as `replaceItem` left it, so a crash that undoes the swap still has a whole tree and the next run places it |
 | a file of a bundle does not check                                         | The bundle fails with `.digestMismatch`; nothing is placed; the files that were right stay for the next run                                                               |
 | a bundle is cancelled                                                     | `CancellationError`; the staging directory stays (or is removed, with `keepsPartialOnCancel: false`); nothing is placed                                                   |
 | progress is reported                                                      | At most once per interval for a phase on the ambient clock, every change of phase, bytes that only grow                                                                   |
