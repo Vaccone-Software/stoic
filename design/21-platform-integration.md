@@ -12,7 +12,8 @@ device, a radio or a Keychain.
 - **`NWPathMonitor`.** Reports every flicker of every interface; the
   common bug is reacting to each one.
 - **Apple's BackgroundTasks guidance.** Schedule the next request first;
-  set the expiration handler before the work; call `setTaskCompleted` once.
+  set the expiration handler before the launch handler returns; call
+  `setTaskCompleted` once.
 - **Keychain Services.** `kSecClassGenericPassword`, accessibility classes,
   and `OSStatus` values whose messages can quote the item they refuse.
 
@@ -58,18 +59,23 @@ of its `deadline` and `Deadline.current`; with neither, only cancellation
 ends it. It throws `ReachabilityError`: `.deadlineExceeded(lastPath:)`,
 `.cancelled`, or `.monitorEnded`.
 
-**Background jobs.** `BackgroundJob.run(_:)` is what the launch handler does:
+**Background jobs.** `register`'s launch handler sets the expiration handler,
+and the guard that completes the task exactly once, before it returns. The
+system may expire the task the moment that handler returns, and it kills the
+app if `setTaskCompleted` was never called. Setting them later, inside the
+unstructured task that runs the work, misses an expiry that arrives in that
+gap. Calling `run(_:)` directly, as a test does, sets the same handler at its
+start. The run then:
 
-1. submit the next request (`interval` from now) before anything else; a
+1. submits the next request (`interval` from now) before anything else; a
    failure is reported, never fatal;
-2. set the expiration handler before the work starts;
-3. run the work as `ExpiringWork`: under a `Deadline` of `budget` if given
+2. runs the work as `ExpiringWork`: under a `Deadline` of `budget` if given
    (cause `.deadline`), and cancelled with cause `.systemExpiring` when the
    system expires the task. The design asked for `.deadline` on expiry;
    `.systemExpiring` is the cause Stoic already defines for exactly this
    (design/01), so cleanup can tell the system took the time from a budget
    running out;
-4. complete the task exactly once. Expiry completes it at once with
+3. completes the task exactly once. Expiry completes it at once with
    `success: false`, without waiting for the work to unwind; otherwise the
    work's end does, `true` if it returned.
 
@@ -126,6 +132,7 @@ an error. design/24 builds its key custody on exactly this.
 | the system expires the task                                     | Work cancelled with cause `.systemExpiring`; task completed at once, once, `false`        |
 | the work ends after the system expired the task                 | No second completion                                                                      |
 | the system expires the task before the work starts              | The work never runs; task completed once with `success: false`                            |
+| the system expires the task before the launch handler returns   | Handler and completion guard already installed; task completed once with `success: false`; the work never runs |
 | the budget runs out before the system expires the task          | Work cancelled with cause `.deadline`; task completed once with `success: false`          |
 | the next request cannot be submitted                            | The work still runs; the report carries the error                                         |
 | the identifier is registered twice                              | The second `register` throws `.alreadyRegistered`; the first stays                        |
