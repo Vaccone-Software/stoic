@@ -34,7 +34,7 @@ extension SchemaNode {
             var fields: [String: JSONPath.Shape] = [union.discriminator: .value]
             for entry in union.cases {
                 if entry.isFlat {
-                    guard case .object(let payload) = entry.node else { continue }
+                    guard let payload = entry.node.objectUnderTransparentWrappers else { continue }
                     for field in payload.fields where fields[field.key] == nil { fields[field.key] = field.node.pathShape }
                 } else if fields[union.valueKey] == nil {
                     fields[union.valueKey] = entry.node.pathShape

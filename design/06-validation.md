@@ -417,8 +417,11 @@ the order it was built:
   discriminator (`{"type": "circle", "radius": 5}`), which is how wire
   formats look and what `oneOf` + `const` validates. Any other payload is
   written under a value key (`{"type": "label", "value": "Hello"}`). A
-  `lazy` payload counts as not an object, since looking inside would
-  recurse while the schema is built.
+  transparent wrapper is not another kind of payload: `documented(_:)` (and
+  any transform that converts nothing) is looked through, so wrapping an
+  object does not move its fields under the value key. A `lazy` payload
+  counts as not an object, since looking inside would recurse while the
+  schema is built.
 - **Decoding** reads the discriminator first, because until it is known
   nothing else can be: not an object is `type_mismatch`; absent is
   `missing_key` at `$.type`; a non-string is `type_mismatch` there; an
@@ -1258,8 +1261,9 @@ not ask.
   which a field's own `doc:` cannot reach. It is a transparent
   `.transformed` node carrying the keyword `description` and no
   `x-stoic-transform`, so decoding, generation and every constraint are the
-  schema's own. `valueDoc:` on `dictionary(of:)` (an overload) and
-  `lossyDictionary(of:)` is `documented` on the value schema.
+  schema's own, and a union still writes an object payload flat. `valueDoc:`
+  on `dictionary(of:)` (an overload) and `lossyDictionary(of:)` is
+  `documented` on the value schema.
 
 ### A `json` field that carries a schema
 

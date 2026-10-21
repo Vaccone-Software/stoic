@@ -42,9 +42,10 @@ extension Schema {
     /// and members it holds, none if it kept none.
     ///
     /// **A payload that is not an object** is written under `valueKey`:
-    /// `{"type": "label", "value": "Hello"}`. (A `lazy` payload counts as
-    /// not an object, because looking inside it while the schema is being
-    /// built would recurse.)
+    /// `{"type": "label", "value": "Hello"}`. A transparent wrapper around
+    /// an object is still that object. (A `lazy` payload counts as not an
+    /// object, because looking inside it while the schema is being built
+    /// would recurse.)
     ///
     /// A tag declared twice, a discriminator that a flat payload also
     /// declares as a field, or a value key equal to the discriminator is a
@@ -80,7 +81,7 @@ extension Schema {
             precondition(
                 byTag.updateValue(index, forKey: ExactKey(entry.tag)) == nil,
                 "\(name): the tag \"\(entry.tag)\" is declared twice")
-            if entry.isFlat, case .object(let payload) = entry.node {
+            if let payload = entry.node.objectUnderTransparentWrappers {
                 let spellings = payload.fields.flatMap { [$0.key] + $0.aliases }
                 precondition(
                     !spellings.contains(where: { ExactKey($0) == ExactKey(discriminator) }),

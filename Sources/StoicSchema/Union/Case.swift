@@ -45,7 +45,10 @@ public struct Case<Root: Sendable>: Sendable {
     /// formats are written and how editors and JSON Schema validators
     /// expect them. Any other payload (a number, a string, an array) has no
     /// fields to sit among, so it is written under the union's value key,
-    /// `{"type": "label", "value": "Hello"}`.
+    /// `{"type": "label", "value": "Hello"}`. A transparent wrapper
+    /// (``Schema/documented(_:)``, and any transform that converts nothing)
+    /// is not a different payload: the case stays flat, so documenting an
+    /// object does not move its fields under the value key.
     ///
     /// - Parameters:
     ///   - tag: The discriminator's value for this case.
@@ -61,12 +64,13 @@ public struct Case<Root: Sendable>: Sendable {
         doc: String? = nil,
         extract: @escaping @Sendable (Root) -> Payload?
     ) {
-        var flat = false
-        if case .object = schema.node { flat = true }
         self.tag = tag
         self.doc = doc
         node = schema.node
-        isFlat = flat
+        // Look through wrappers that do not convert the value. Stopping at
+        // `.object` alone would treat `documented()` as a keyed payload and
+        // change the wire format.
+        isFlat = schema.node.objectUnderTransparentWrappers != nil
         decode = { json, state in
             guard let payload = schema.decoder(json, &state) else { return nil }
             return make(payload)
@@ -91,6 +95,26 @@ public struct Case<Root: Sendable>: Sendable {
         matches: @escaping @Sendable (Root) -> Bool
     ) {
         self.init(tag, Schema<Empty>.empty, { _ in value }, doc: doc, extract: { matches($0) ? Empty() : nil })
+    }
+}
+
+extension SchemaNode {
+    /// The object this node writes, seen through wrappers that do not convert
+    /// the value (`documented(_:)`, and any other transparent transform).
+    ///
+    /// A union decides flat or keyed from this. The wrapper is not a different
+    /// payload, so an object under it is still written beside the discriminator.
+    /// A transform that converts the value is not seen through, and neither is
+    /// `lazy`: opening one while the union is being built would recurse.
+    var objectUnderTransparentWrappers: ObjectNode? {
+        switch self {
+        case .object(let object):
+            return object
+        case .transformed(let transform) where transform.isTransparent:
+            return transform.base.objectUnderTransparentWrappers
+        default:
+            return nil
+        }
     }
 }
 
