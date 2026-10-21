@@ -140,4 +140,131 @@ struct RangeClampingSchemaTests {
         }
         #expect(past.contains { $0.isTolerated })
     }
+
+    @Test(.failureMode("design/06", "a non-integer falls outside a clamped integer range"))
+    func aNonIntegerIsRefusedOnEitherSideOfAClampedIntegerRange() {
+        let steps = Schema<Int>.int(.range(0...10)).clampingToRange()
+        for options in [DecodeOptions.strict, .lenient] {
+            let inside = steps.decodeReporting("5.5", options: options)
+            let outside = steps.decodeReporting("10.9", options: options)
+            #expect(inside.value == nil)
+            #expect(outside.value == nil)
+            #expect(inside.errors.map(\.code) == [.typeMismatch])
+            #expect(outside.errors.map(\.code) == [.typeMismatch])
+            #expect(inside.issues[0].message == "expected an integer, found number 5.5")
+            #expect(outside.issues[0].message == "expected an integer, found number 10.9")
+            #expect(outside.issues[0].suggestions.isEmpty)
+        }
+
+        // The same split for a whole number written with a fraction. Strict
+        // refuses both; the bound is not substituted for 6.0.
+        let narrow = Schema<Int>.int(.range(0...5)).clampingToRange()
+        let four = narrow.decodeReporting("4.0")
+        let six = narrow.decodeReporting("6.0")
+        #expect(four.value == nil)
+        #expect(six.value == nil)
+        #expect(four.errors.map(\.code) == [.typeMismatch])
+        #expect(six.errors.map(\.code) == [.typeMismatch])
+        #expect(four.issues[0].suggestions == ["4"])
+        #expect(six.issues[0].suggestions == ["6"])
+        #expect(narrow.decodeReporting("1e2").value == nil)
+        #expect(narrow.decodeReporting("1e2").issues[0].suggestions == ["100"])
+
+        // Lenient accepts the spelling, so a value outside the range is
+        // clamped, and the spelling warning an in-range 4.0 gets is kept.
+        let lenientInside = narrow.decodeReporting("4.0", options: .lenient)
+        #expect(lenientInside.value == 4)
+        #expect(lenientInside.issues.map { "\($0.severity) \($0.code)" } == ["warning type_mismatch"])
+        #expect(lenientInside.issues[0].actual == "4.0")
+        let lenientOutside = narrow.decodeReporting("6.0", options: .lenient)
+        #expect(lenientOutside.value == 5)
+        #expect(lenientOutside.issues.map { "\($0.severity) \($0.code)" } == [
+            "warning type_mismatch", "warning out_of_range",
+        ])
+        #expect(lenientOutside.issues[0].actual == "6.0")
+        #expect(lenientOutside.issues[1].parameters["clampedTo"]?.number?.lexeme == "5")
+        let exponent = narrow.decodeReporting("1e2", options: .lenient)
+        #expect(exponent.value == 5)
+        #expect(exponent.issues.map(\.code) == [.typeMismatch, .outOfRange])
+
+        // Too wide for the type is still clamped when the spelling is one
+        // the mode accepts, and not when strict refuses the spelling.
+        #expect(steps.decodeReporting("1e30").value == nil)
+        #expect(steps.decodeReporting("1e30").errors.map(\.code) == [.typeMismatch])
+        let wide = steps.decodeReporting("1e30", options: .lenient)
+        #expect(wide.value == 10)
+        #expect(wide.issues.map { "\($0.severity) \($0.code)" } == ["warning out_of_range"])
+
+        // documented() keeps the integer decoder and wraps the node. The
+        // spelling check has to see through that wrapper.
+        let documented = Schema<Int>.int(.range(0...10)).documented("How many.").clampingToRange()
+        #expect(documented.decodeReporting("10.9").errors.map(\.code) == [.typeMismatch])
+        #expect(documented.decodeReporting("5.5").errors.map(\.code) == [.typeMismatch])
+        #expect(documented.decodeReporting("11").value == 10)
+
+        // A fraction of a Double is a number the schema accepts.
+        let fraction = Schema<Double>.double(.range(0...1)).clampingToRange()
+        #expect(fraction.decodeReporting("0.5").value == 0.5)
+        #expect(fraction.decodeReporting("0.5").issues.isEmpty)
+        let past = fraction.decodeReporting("1.9")
+        #expect(past.value == 1)
+        #expect(past.warnings.map(\.code) == [.outOfRange])
+    }
+
+    @Test func aNonIntegerInASettingsFieldIsRefusedInsideAndOutsideTheRange() {
+        let inside = Feel.schema.decodeReporting(#"{"steps": 5.5}"#)
+        let outside = Feel.schema.decodeReporting(#"{"steps": 10.9}"#)
+        #expect(inside.value == nil)
+        #expect(outside.value == nil)
+        #expect(inside.errors.map { "\($0.path) \($0.code)" } == ["$.steps type_mismatch"])
+        #expect(outside.errors.map { "\($0.path) \($0.code)" } == ["$.steps type_mismatch"])
+
+        // Lenient settings repair a refused field to its default. 10.9 must
+        // not become 10 while 5.5 becomes the default.
+        let lenientInside = Feel.schema.decodeReporting(#"{"steps": 5.5}"#, options: .lenient)
+        let lenientOutside = Feel.schema.decodeReporting(#"{"steps": 10.9}"#, options: .lenient)
+        #expect(lenientInside.value?.steps == 5)
+        #expect(lenientOutside.value?.steps == 5)
+        #expect(lenientInside.repairs.map { "\($0.path) \($0.code)" } == ["$.steps type_mismatch"])
+        #expect(lenientOutside.repairs.map { "\($0.path) \($0.code)" } == ["$.steps type_mismatch"])
+
+        // An integer past the bound is still the bound, not the default.
+        let clamped = Feel.schema.decodeReporting(#"{"steps": 40}"#, options: .lenient)
+        #expect(clamped.value?.steps == 10)
+        #expect(clamped.warnings.map(\.code) == [.outOfRange])
+    }
+
+    @Test func aNarrowIntegerClampsOnlyASpellingItAccepts() {
+        let byte = Schema<UInt8>.integer(UInt8.self, [.range(0...10)]).clampingToRange()
+        #expect(byte.decodeReporting("11.5").value == nil)
+        #expect(byte.decodeReporting("11.5", options: .lenient).errors.map(\.code) == [.typeMismatch])
+        #expect(byte.decodeReporting("11.0").errors.map(\.code) == [.typeMismatch])
+
+        let eleven = byte.decodeReporting("11.0", options: .lenient)
+        #expect(eleven.value == 10)
+        #expect(eleven.issues.map(\.code) == [.typeMismatch, .outOfRange])
+
+        // 300 does not fit a UInt8, so there is no spelling warning: the
+        // width refusal is what the bound replaces.
+        let threeHundred = byte.decodeReporting("300.0", options: .lenient)
+        #expect(threeHundred.value == 10)
+        #expect(threeHundred.issues.map { "\($0.severity) \($0.code)" } == ["warning out_of_range"])
+        #expect(byte.decodeReporting("300").value == 10)
+    }
+
+    @Test func aFractionPastAnIntegerBoundStaysATypeMismatchForTheGenerator() throws {
+        let schema = Schema<Int>.int(.range(5...10)).clampingToRange()
+        let sample = try schema.generator.sample(seed: 1)
+        let mutations = schema.generator.mutations(of: sample.document, seed: 1)
+        let fraction = try #require(mutations.first { $0.kind == .wrongType })
+        #expect(fraction.expected.allSatisfy { $0.code == .typeMismatch && $0.severity == .error })
+        #expect(!fraction.isTolerated)
+        let decoded = schema.decode(fraction.document)
+        #expect(decoded.value == nil)
+        #expect(decoded.errors.map(\.code) == [.typeMismatch])
+
+        let above = try #require(mutations.first { $0.kind == .aboveUpperBound })
+        #expect(above.isTolerated)
+        #expect(above.expected.allSatisfy { $0.code == .outOfRange && $0.severity == .warning })
+    }
 }
