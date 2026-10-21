@@ -292,6 +292,71 @@ struct RetryTests {
         if case .bool(true) = failed.first?["timed_out"] {} else { Issue.record("expected timed_out=true") }
     }
 
+    @Test(.failureMode("design/02", "a nested retry's attempt times out"))
+    func aNestedAttemptTimeoutIsRetriedByTheOuterRetry() async throws {
+        let outer = SendableBox(0)
+        let inner = SendableBox(0)
+        let run = try await simulated { context in
+            do {
+                try await retry(.fixed(.seconds(1)).attempts(5), budget: .unlimited) { _ in
+                    outer.mutate { $0 += 1 }
+                    try await retry(.fixed(.seconds(1)).attempts(3), attemptTimeout: .seconds(1), budget: .unlimited) { _ in
+                        inner.mutate { $0 += 1 }
+                        try await Ambient.sleep(for: .seconds(60))
+                    }
+                }
+            } catch is CancellationError {
+                // Five attempts, each cut by the inner timer. The last error is that cancellation.
+            }
+            return context.events
+        }
+        #expect(outer.value == 5)
+        #expect(inner.value == 5, "one inner attempt per outer attempt")
+        #expect(run.value.events(named: "retry.nested").count == 5)
+        let failed = run.value.events(named: "retry.attempt_failed")
+        #expect(failed.count == 4, "the fifth attempt exhausts the outer schedule")
+        #expect(failed.allSatisfy { $0.flag("timed_out") == true })
+        #expect(run.value.events(named: "retry.permanent").isEmpty)
+    }
+
+    @Test(.failureMode("design/02", "a nested retry's attempt times out"))
+    func cancellingTheCallerDuringANestedAttemptTimeoutStops() async {
+        let clock = TestClock()
+        let outer = SendableBox(0)
+        let inner = SendableBox(0)
+        let task = Task {
+            try await withTestAmbient(clock: clock) {
+                try await retry(.fixed(.seconds(1)).attempts(5), budget: .unlimited) { _ in
+                    outer.mutate { $0 += 1 }
+                    try await retry(.fixed(.seconds(1)).attempts(3), attemptTimeout: .seconds(1), budget: .unlimited) { _ in
+                        inner.mutate { $0 += 1 }
+                        try await Ambient.sleep(for: .seconds(60))
+                    }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the hung attempt and its timer
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(outer.value == 1)
+        #expect(inner.value == 1)
+    }
+
+    @Test func aNestedCancellationThatIsNotATimeoutStopsTheOuterRetry() async {
+        let outer = SendableBox(0)
+        await #expect(throws: CancellationError.self) {
+            try await withTestAmbient(clock: ImmediateClock()) {
+                try await retry(.fixed(.seconds(1)).attempts(5), budget: .unlimited) { _ in
+                    outer.mutate { $0 += 1 }
+                    try await retry(.fixed(.seconds(1)).attempts(3), budget: .unlimited) { _ in
+                        throw CancellationError()
+                    }
+                }
+            }
+        }
+        #expect(outer.value == 1)
+    }
+
     @Test @MainActor func theInlineFormRunsOnTheCallersActor() async throws {
         final class Counter { var value = 0 }
         let counter = Counter()
