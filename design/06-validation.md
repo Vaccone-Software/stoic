@@ -255,6 +255,7 @@ schema and throws one `DecodingError` listing every issue.
 | a tagged union with an unknown case meets a tag it does not know | The object is read as that case; an `unknown_case` warning at the discriminator naming the tag and the case, with the nearest known tag; the payload is handed over unread (kept, if the case holds it, and written back as it came); the document is still accepted |
 | an element of a lossy array is invalid       | Dropped, with a `dropped_element` warning carrying its input index and the first reason; the rest are kept, and the element's own errors are not reported |
 | a number outside a clamped range is read    | `clampingToRange()`: the nearest inclusive bound is the value, and an `out_of_range` *warning* (`repair`: "clamped to 4000") says so, in every mode; an exclusive bound, `.multipleOf` and the rest still refuse; a non-number is still `type_mismatch` |
+| a non-integer falls outside a clamped integer range | `type_mismatch`, the same as one inside the range; the bound is not substituted. Under `.strict` a whole number not spelt as an integer (`4.0`, `6.0`) is refused the same way. Clamping applies only to a value the integer schema would have accepted apart from the range (an integer spelling, including one too wide for the type, or under `.lenient` a whole number, which keeps its spelling warning when it fits). A `Double` still clamps a fraction |
 | an entry of a lossy dictionary is invalid    | Dropped, with a `dropped_entry` warning at the entry's own path carrying its `key` and the first reason; the rest are kept, and the entry's own errors are not reported (`Schema.dictionary` still fails the whole table) |
 | a section that may be null is null          | `readingNullAsEmpty()`: read as `{}`, every field its default, no issue, in every mode; nothing remembers the null, so a sparse write omits the section. Without it, `null` is a `type_mismatch` |
 | a document is read that a schema's normalization rewrites | `normalizing(_:)`: the raw JSON is tidied before it is decoded, on every read, silently (an old key becomes the new, the new winning if both are there; an old enumeration spelling the new; a custom edit); `retired` paths vanish with no `unknown_key`; an operation that fails is `normalization_failed`. Issues point at the text, not the whole object |
@@ -1214,7 +1215,14 @@ not ask.
   bound (`.greaterThan(0)`) and every other constraint are checked after, and
   still refuse. The digits sent decide, as for every number: `1e30` is above
   4000, and a number too wide for an `Int` is clamped, not wrapped. A schema
-  with no inclusive bound traps where it is declared.
+  with no inclusive bound traps where it is declared. An integer schema
+  clamps only a value it would have accepted apart from the range. A
+  fraction is `type_mismatch` on either side of the bound, in every mode
+  (`5.5` and `10.9` alike). Under `.strict` a whole number not spelt as an
+  integer (`4.0`, `6.0`, `1e2`) is the same. Under `.lenient` that spelling
+  is accepted, so a value outside the range is clamped, and when the number
+  fits the integer type the spelling warning is kept. A `Double` still
+  clamps a fraction.
 - **Representation.** A `.transformed` node over the number, `isTransparent`
   (it converts nothing, so the suite asks for no `examples`) and
   `clampsToRange`, with the keyword `x-stoic-clamp` in the export. The export
@@ -1222,7 +1230,9 @@ not ask.
   flags 99999 while the decoder accepts it with a warning. The mutator
   expects that warning, and no error, for a number a bound moves (and for one
   that would have been `precision_loss`, because the clamp comes first), and
-  marks the mutation tolerated so the agreement check skips it.
+  marks the mutation tolerated so the agreement check skips it. A non-integer
+  spelling on an integer schema is not such a number: it stays
+  `type_mismatch`.
 
 ### Lossy dictionaries and documented values
 
