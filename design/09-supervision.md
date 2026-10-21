@@ -69,7 +69,12 @@ system restarting the process, and is configured there (launchd's
 already pending for the children it covers, and a child never runs two
 instances: so a second failure during a group's backoff cannot start members
 out of order or twice. A child that finished for good (a transient that
-returned, a temporary) stays finished when its group restarts.
+returned, a temporary) stays finished when its group restarts. A run
+abandoned after its shutdown timeout is still that instance. It keeps the
+slot, and the restart — its own, or a sibling's under `oneForAll` or
+`restForOne` — waits until the run returns. The backoff still counts from
+the decision. The new run starts once that delay has elapsed and the
+abandoned run has returned.
 
 **Children own their time.** A child runs without the deadline of whoever
 called `run()`: it lives as long as the supervisor keeps it. Restart delays
@@ -110,7 +115,9 @@ stretch the wait nor accumulate.
 `supervisorStopped` (`childHung` when it is stopped as hung, so its cleanup
 can tell the two apart) and given its `shutdownTimeout`; one that does not stop
 is abandoned and reported (`supervisor.child_abandoned`) so shutdown always
-finishes.
+finishes. Abandonment does not free the slot (see Overlapping restarts).
+The supervisor's own shutdown still returns at the timeout; only a restart
+waits for the run.
 
 ## Failure modes
 
@@ -128,6 +135,7 @@ finishes.
 | a child is cancelled by something else               | A failure, restarted; `child_exited` says `cancelled_from_outside`                |
 | the supervisor's task is cancelled                   | Children stopped newest first; `CancellationError`                                |
 | a child ignores cancellation on shutdown             | Abandoned after `shutdownTimeout`; reported                                       |
+| a child ignores cancellation and is restarted        | One instance stays live until that run returns; the restart waits for it         |
 | a child ran long and then failed                     | Its backoff starts over                                                           |
 
 ## Events
@@ -147,7 +155,8 @@ temporary completion, escalation, both multi-child strategies, a silent child
 detected and a beating one left alone, a suspension of many intervals (a
 clock that jumps, as a frozen process sees it) that hangs nothing while a
 check a little late still counts, cancellation order and causes, and
-abandonment. 300 repetitions are clean.
+abandonment, including a restart that waits for an abandoned run. 300
+repetitions are clean.
 
 ## Planned
 

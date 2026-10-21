@@ -1,19 +1,30 @@
 /// One run of a supervisor: a single loop that owns all of its state.
 ///
-/// Children, their monitors and their restart timers report to the loop
-/// through one stream, and only the loop decides, so no decision races
-/// another. A signal from a child generation that has since been stopped or
-/// replaced is stale and ignored.
+/// Children, their monitors, their restart timers and the watch on an
+/// abandoned run report to the loop through one stream, and only the loop
+/// decides, so no decision races another. A signal from a child generation
+/// that has since been stopped or replaced is stale and ignored.
 struct SupervisorRun {
     private enum Signal: Sendable {
         case exited(index: Int, generation: UInt64, error: (any Error)?)
         case restartDue(index: Int, generation: UInt64)
         case hung(index: Int, generation: UInt64)
+        /// An abandoned run has returned. `id` is the slot's `drainID` from
+        /// the moment it was abandoned, so a late notice cannot clear a
+        /// newer run.
+        case drained(index: Int, id: UInt64)
     }
 
     private struct Slot {
         var generation: UInt64 = 0
         var task: Task<Void, Never>?
+        /// `task` ignored its cancellation and is still inside `child.run`
+        /// after the shutdown timeout. The slot stays occupied so a restart
+        /// cannot start a second instance.
+        var draining = false
+        /// Bumped each time a run is abandoned. A drain notice carries the
+        /// value from its own abandonment.
+        var drainID: UInt64 = 0
         var cause: CancellationCauseBox?
         var monitor: Task<Void, Never>?
         var startedAt: AnyClock.Instant?
@@ -23,6 +34,9 @@ struct SupervisorRun {
         var streakStart: AnyClock.Instant?
         var restartTimer: Task<Void, Never>?
         var pendingRestart: [Int] = []
+        /// While `draining`, the child whose restart timer gates our next
+        /// start. Nil when no restart is waiting on this run.
+        var restartWith: Int?
         var finished = false
     }
 
@@ -42,7 +56,7 @@ struct SupervisorRun {
     }
 
     func execute() async throws {
-        // stoic:allow(unbounded-stream): each child generation yields at most an exit, a hang and a restart notice, and this loop drains them as they arrive
+        // stoic:allow(unbounded-stream): each child generation yields at most an exit, a hang, a drain and a restart notice, and this loop drains them as they arrive
         let (signals, sink) = AsyncStream<Signal>.makeStream()
         var slots = supervisor.children.indices.map { _ in
             Slot(stepper: supervisor.backoff.makeStepper(random: ambient.random.generator()))
@@ -65,7 +79,7 @@ struct SupervisorRun {
                 slots[index].task = nil
                 slots[index].monitor = nil
                 if let escalation = await handleStop(index, error: error, slots: &slots, restarts: &restarts, sink: sink) {
-                    await stopAll(&slots)
+                    await stopAll(&slots, sink: sink)
                     finish(.escalated(child: supervisor.children[index].label), level: .error, child: index, error: error)
                     throw escalation
                 }
@@ -76,28 +90,64 @@ struct SupervisorRun {
                 let group = slots[index].pendingRestart
                 slots[index].pendingRestart = []
                 for member in group {
+                    // Put on the list before it was abandoned (a newer stop), or
+                    // still draining from this decision. The backoff has
+                    // elapsed; the start waits for the run. A restart a
+                    // newer decision already recorded is left as it is.
+                    if slots[member].draining {
+                        if slots[member].restartWith == nil {
+                            slots[member].restartWith = index
+                        }
+                        continue
+                    }
                     start(member, in: &slots, sink: sink)
                 }
 
             case .hung(let index, let generation):
-                guard slots[index].generation == generation, slots[index].task != nil else { continue }
+                guard slots[index].generation == generation, slots[index].task != nil, !slots[index].draining else { continue }
                 let label = supervisor.children[index].label
                 supervisor.publish(.hung(child: label))
                 record("supervisor.child_hung", .error, child: index)
-                await stop(index, in: &slots, cause: .childHung)
+                await stop(index, in: &slots, sink: sink, cause: .childHung)
                 if let escalation = await handleStop(index, error: Hung(child: label), slots: &slots, restarts: &restarts, sink: sink) {
-                    await stopAll(&slots)
+                    await stopAll(&slots, sink: sink)
                     finish(.escalated(child: label), level: .error, child: index, error: Hung(child: label))
                     throw escalation
                 }
+
+            case .drained(let index, let id):
+                guard slots[index].draining, slots[index].drainID == id else { continue }
+                slots[index].task = nil
+                slots[index].draining = false
+                // No restart was waiting: the child is not restarted, or the
+                // supervisor has already moved on from the decision that was.
+                guard let owner = slots[index].restartWith else { continue }
+                slots[index].restartWith = nil
+                // The backoff is the timer. It is still asleep: join the
+                // group and start with it. It has already fired: the wait is
+                // over, so start now that the slot is free.
+                if slots[owner].restartTimer != nil {
+                    if !slots[owner].pendingRestart.contains(index) {
+                        slots[owner].pendingRestart.append(index)
+                        slots[owner].pendingRestart.sort()
+                    }
+                } else {
+                    start(index, in: &slots, sink: sink)
+                }
             }
-            if slots.allSatisfy({ $0.finished && $0.task == nil && $0.restartTimer == nil }) {
+            // A draining run still occupies `task`, but a child that will not
+            // be restarted has already been abandoned: `run()` must not wait
+            // for it. A restart that is waiting (a timer, or `restartWith`)
+            // keeps the supervisor up.
+            if slots.allSatisfy({
+                $0.finished && $0.restartTimer == nil && $0.restartWith == nil && ($0.task == nil || $0.draining)
+            }) {
                 finish(.stopped, level: .info, child: nil, error: nil)
                 return
             }
         }
         // The stream ends only when this task is cancelled.
-        await stopAll(&slots)
+        await stopAll(&slots, sink: sink)
         finish(.stopped, level: .info, child: nil, error: nil)
         throw CancellationError()
     }
@@ -149,8 +199,12 @@ struct SupervisorRun {
         }
         // A sibling that finished for good (a transient child that returned,
         // a temporary one) stays finished: restarting the group does not
-        // resurrect it.
-        affected.removeAll { $0 != index && slots[$0].finished && slots[$0].task == nil && slots[$0].restartTimer == nil }
+        // resurrect it. One abandoned while it finished is still inside
+        // `run`, but it is done — the slot stays occupied and is not restarted.
+        affected.removeAll { member in
+            member != index && slots[member].finished && slots[member].restartTimer == nil
+                && (slots[member].task == nil || slots[member].draining)
+        }
         // This decision supersedes any restart already pending for a member:
         // otherwise an older timer would start members out of order, and a
         // newer one would start them a second time.
@@ -159,9 +213,16 @@ struct SupervisorRun {
             slots[member].restartTimer = nil
             slots[member].pendingRestart = []
         }
-        // Stop the siblings that restart with it, newest first.
+        for slot in slots.indices {
+            if let owner = slots[slot].restartWith, affected.contains(owner) || affected.contains(slot) {
+                slots[slot].restartWith = nil
+            }
+        }
+        // Stop the siblings that restart with it, newest first. One already
+        // abandoned still holds the slot; `stop` does not wait out its
+        // timeout again.
         for member in affected.reversed() where member != index && slots[member].task != nil {
-            await stop(member, in: &slots)
+            await stop(member, in: &slots, sink: sink)
         }
         for member in affected { slots[member].finished = false }
 
@@ -184,7 +245,14 @@ struct SupervisorRun {
         supervisor.publish(.restarting(child: child.label, after: delay))
         record("supervisor.child_restarting", .info, child: index, extra: [.init("delay", .duration(delay))])
 
-        slots[index].pendingRestart = affected
+        // A child still inside an abandoned run is left out of the group.
+        // It joins when that run returns — after this delay, if the delay
+        // has not already elapsed. The others do not wait for it.
+        let ready = affected.filter { !slots[$0].draining }
+        for member in affected where slots[member].draining {
+            slots[member].restartWith = index
+        }
+        slots[index].pendingRestart = ready
         let generation = slots[index].generation
         let clock = clock
         slots[index].restartTimer = Task.stoic {
@@ -201,8 +269,11 @@ struct SupervisorRun {
     // MARK: Children
 
     private func start(_ index: Int, in slots: inout [Slot], sink: AsyncStream<Signal>.Continuation) {
-        // Never two instances of one child: a running child is left alone.
-        guard slots[index].task == nil else { return }
+        // Never two instances of one child. A running child is left alone,
+        // including one abandoned after its shutdown timeout whose run has
+        // not returned: that task is still in the slot.
+        guard slots[index].task == nil, !slots[index].draining else { return }
+        slots[index].restartWith = nil
         let child = supervisor.children[index]
         slots[index].generation += 1
         let generation = slots[index].generation
@@ -280,14 +351,21 @@ struct SupervisorRun {
 
     /// Stops a running child: newer signals from it become stale, it is
     /// cancelled with `cause`, and it gets its shutdown timeout before being
-    /// abandoned.
-    private func stop(_ index: Int, in slots: inout [Slot], cause: CancellationCause = .supervisorStopped) async {
+    /// abandoned. The abandoned run keeps the slot until it returns.
+    private func stop(
+        _ index: Int,
+        in slots: inout [Slot],
+        sink: AsyncStream<Signal>.Continuation,
+        cause: CancellationCause = .supervisorStopped
+    ) async {
         guard let task = slots[index].task else { return }
+        // Already abandoned. This run is still the one instance of the child,
+        // and waiting out the timeout again would only delay shutdown.
+        if slots[index].draining { return }
         slots[index].generation += 1
         slots[index].monitor?.cancel()
         slots[index].monitor = nil
         slots[index].cause?.record(cause)
-        slots[index].task = nil
         task.cancel()
         let timeout = supervisor.children[index].shutdownTimeout
         let clock = clock
@@ -296,17 +374,31 @@ struct SupervisorRun {
         }
         if case .timedOut = outcome {
             record("supervisor.child_abandoned", .error, child: index, extra: [.init("timeout", .duration(timeout))])
+            // The exit signal carries the generation just invalidated, so the
+            // loop will not count it as a new failure. Keep the task: `start`
+            // will not put a second instance beside this run. The watcher
+            // reports when the run actually returns.
+            slots[index].draining = true
+            slots[index].drainID += 1
+            let id = slots[index].drainID
+            Task.stoic {
+                await task.value
+                sink.yield(.drained(index: index, id: id))
+            }
+        } else {
+            slots[index].task = nil
         }
     }
 
-    private func stopAll(_ slots: inout [Slot]) async {
+    private func stopAll(_ slots: inout [Slot], sink: AsyncStream<Signal>.Continuation) async {
         for index in slots.indices {
             slots[index].restartTimer?.cancel()
             slots[index].restartTimer = nil
             slots[index].pendingRestart = []
+            slots[index].restartWith = nil
         }
         for index in slots.indices.reversed() {
-            await stop(index, in: &slots)
+            await stop(index, in: &slots, sink: sink)
         }
     }
 

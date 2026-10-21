@@ -45,7 +45,9 @@ internal import Synchronization
 ///
 /// **Stopping.** Children stop newest first. Each is cancelled
 /// (``CancellationCause/supervisorStopped``) and given `shutdownTimeout`;
-/// one that does not stop by then is abandoned and reported.
+/// one that does not stop by then is abandoned and reported. That run keeps
+/// the slot: a restart waits until it returns, so the child never runs
+/// twice. Shutting the supervisor down still finishes at the timeout.
 public final class Supervisor: Sendable {
     /// Which children restart when one stops.
     public enum Strategy: Sendable, Hashable {

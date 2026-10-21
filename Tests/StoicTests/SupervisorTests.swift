@@ -254,6 +254,136 @@ struct SupervisorTests {
         #expect(events.names.contains("supervisor.child_abandoned"))
         stuck.open()
     }
+
+    /// A hung child that never checks cancellation used to be restarted while
+    /// the abandoned run was still inside `child.run`: two writers, or two
+    /// deliveries, for one slot. The restart waits until that run returns.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "a child ignores cancellation and is restarted"))
+    func anAbandonedChildIsNotRestartedUntilItReturns() async throws {
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let census = LiveCensus()
+        let release = AsyncGate()
+        let started = AsyncGate()
+        let supervisor = Supervisor(
+            label: "test",
+            intensity: .init(maxRestarts: 10, within: .seconds(60)),
+            backoff: .fixed(.seconds(5))
+        ) {
+            Child("worker", heartbeat: .init(interval: .seconds(5), misses: 2, grace: .seconds(10)), shutdownTimeout: .seconds(3)) { _ in
+                let run = census.enter()
+                defer { census.leave() }
+                if run == 1 {
+                    started.open()
+                    await release.wait() // ignores cancellation: a blocked framework call
+                } else {
+                    try await Task.sleep(for: .seconds(3600))
+                }
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock, events: events) { try await supervisor.run() } }
+        await started.wait()
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(10)) // grace
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(5)) // first miss
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(5)) // second miss: hung
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(3)) // shutdown timeout: abandoned
+        #expect(await eventually { events.names.contains("supervisor.child_abandoned") })
+        #expect(events.names.contains("supervisor.child_hung"))
+        #expect(census.runs == 1)
+        #expect(census.live == 1)
+        // The backoff elapses. The abandoned run is still the only instance.
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(5))
+        #expect(await holdsThroughout(for: .milliseconds(500)) { census.runs == 1 && census.live == 1 && census.peak == 1 })
+
+        release.open()
+        #expect(await eventually { census.runs == 2 })
+        #expect(census.peak == 1, "two instances were live at once")
+        #expect(census.live == 1)
+        run.cancel()
+        _ = try? await run.value
+    }
+
+    /// `oneForAll` and `restForOne` stop siblings through the same `stop`.
+    /// A sibling that ignores cancellation must keep the slot too.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "a child ignores cancellation and is restarted"))
+    func anAbandonedSiblingIsNotRestartedUntilItReturns() async throws {
+        for strategy in [Supervisor.Strategy.oneForAll, .restForOne] {
+            let clock = TestClock()
+            let events = RecordingInstrumentation()
+            let blocker = LiveCensus()
+            let crashes = SendableBox(0)
+            let release = AsyncGate()
+            let started = AsyncGate()
+            let supervisor = Supervisor(
+                label: "group",
+                strategy: strategy,
+                intensity: .init(maxRestarts: 10, within: .seconds(60)),
+                backoff: .fixed(.seconds(4))
+            ) {
+                Child("crash") { _ in
+                    let run = crashes.mutate { $0 += 1; return $0 }
+                    if run == 1 { throw Crash() }
+                    try await Task.sleep(for: .seconds(3600))
+                }
+                Child("blocker", shutdownTimeout: .seconds(2)) { _ in
+                    let run = blocker.enter()
+                    defer { blocker.leave() }
+                    if run == 1 {
+                        started.open()
+                        await release.wait()
+                    } else {
+                        try await Task.sleep(for: .seconds(3600))
+                    }
+                }
+            }
+            let run = Task { try await withTestAmbient(clock: clock, events: events) { try await supervisor.run() } }
+            await started.wait()
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(2)) // blocker abandoned
+            #expect(await eventually { events.names.contains("supervisor.child_abandoned") }, "\(strategy)")
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(4)) // group restart is due
+            // The child that stopped cleanly restarts. The abandoned sibling does not.
+            #expect(await eventually { crashes.value == 2 }, "\(strategy)")
+            #expect(blocker.runs == 1, "\(strategy)")
+            #expect(blocker.live == 1, "\(strategy)")
+            #expect(await holdsThroughout(for: .milliseconds(200)) { blocker.runs == 1 && blocker.live == 1 && blocker.peak == 1 }, "\(strategy)")
+
+            release.open()
+            #expect(await eventually { blocker.runs == 2 }, "\(strategy)")
+            #expect(blocker.peak == 1, "\(strategy): two instances were live at once")
+            #expect(blocker.live == 1, "\(strategy)")
+            run.cancel()
+            _ = try? await run.value
+        }
+    }
+}
+
+/// Live instances of one child, so a test can see a slot run twice at once.
+private struct LiveCensus: Sendable {
+    private let state = SendableBox((live: 0, peak: 0, runs: 0))
+
+    func enter() -> Int {
+        state.mutate { state in
+            state.runs += 1
+            state.live += 1
+            state.peak = max(state.peak, state.live)
+            return state.runs
+        }
+    }
+
+    func leave() {
+        state.mutate { $0.live -= 1 }
+    }
+
+    var live: Int { state.value.live }
+    var peak: Int { state.value.peak }
+    var runs: Int { state.value.runs }
 }
 
 @Suite("Supervisor: review fixes")
