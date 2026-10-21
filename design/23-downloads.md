@@ -118,8 +118,14 @@ discarded and _this_ body is the file from byte 0, with no second request. `416`
 if the partial file is the whole file (the expected size, or the `Content-Range:
 bytes */N` the server sent, equals the offset) it goes to verification;
 otherwise it is discarded and the file starts again. A body that ends without an
-error before the declared or expected length is a cut like any other. A server
-that says the file is a different size from the one the download was pinned to is
+error before the declared or expected length is a cut like any other. A body
+longer than the length that response declared is not that file: a `200` whose
+body passes its `Content-Length`, or a `206` whose body passes the span of its
+`Content-Range` (`end - start + 1`), is `.badResponse`, the connection
+cancelled, and those bytes are not written or placed. What was already inside
+the declared length stays in the partial file; this run does not resume from
+past it, so the extra bytes cannot be spliced in. A server that says the file
+is a different size from the one the download was pinned to is
 `.sizeMismatch`, before a byte is fetched; one that sends more than the byte
 limit is `.byteLimitExceeded`, the connection cancelled and the partial file
 deleted.
@@ -265,6 +271,8 @@ A URL's query reaches disk only as a hash.
 | a file is downloaded whole                                                | Verified while it streamed, `fullSync`ed, renamed over the destination, the directory synced; no partial file or record remains; `download.placed`                        |
 | the connection is cut part-way                                            | Retried after the schedule's first step, with `Range: bytes=N-` and the validator in `If-Range`; the file is exact; `download.retry`                                      |
 | a body ends short without an error                                        | A cut like any other: resumed from where it ended (`short_body`)                                                                                                          |
+| a `200`'s body is longer than its `Content-Length`                        | `.badResponse`, the connection cancelled; the extra bytes are not written or placed; not retried                                                                           |
+| a `206`'s body is longer than its `Content-Range`                         | `.badResponse`; nothing is written past the range; the download does not resume from beyond it or place the spliced file                                                   |
 | the server ignores Range and answers 200                                  | The partial file is discarded and this body is the file from byte 0; `download.restarted` (`range_ignored`)                                                               |
 | the server's file changed since the partial file was begun                | `If-Range` fails and the server sends it whole: restarted (`validator_changed`); a `206` for a validator that is not the one held, or for another range, is restarted too |
 | the server answers 416 and the partial file is the whole file             | It goes to verification and placement; nothing is thrown away                                                                                                             |
