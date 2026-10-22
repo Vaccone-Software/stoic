@@ -23,8 +23,8 @@ public struct CancellationCause: Hashable, Sendable, CustomStringConvertible {
     public static let superseded = CancellationCause(rawValue: "superseded")
     /// A sibling failed, and the group it belonged to stopped.
     public static let siblingFailed = CancellationCause(rawValue: "sibling_failed")
-    /// The system is ending the time it granted, or will not grant it: a
-    /// background task expired or was refused, or the app is being suspended.
+    /// The system is ending the time it granted: a background task expired,
+    /// or the app is being suspended.
     public static let systemExpiring = CancellationCause(rawValue: "system_expiring")
     /// The scope that owned it ended.
     public static let scopeEnded = CancellationCause(rawValue: "scope_ended")
@@ -33,102 +33,16 @@ public struct CancellationCause: Hashable, Sendable, CustomStringConvertible {
 
     public var description: String { rawValue }
 
-    /// Why the current task was cancelled, or `nil` if it was not — except
-    /// a refusal of background time, which is reported here without the
-    /// task being cancelled.
+    /// Why the current task was cancelled, or `nil` if it was not.
     ///
     /// Stoic records a cause before every cancellation it initiates, in the
     /// task it cancels; nested Stoic scopes consult their enclosing scopes in
     /// turn. Cancellation that no Stoic scope initiated — a caller cancelling
     /// its task, a view disappearing — reads as ``userRequested``, the same
     /// default SE-0526 gives `CancellationError.Reason`.
-    ///
-    /// A host that was refused background time throws `CancellationError`
-    /// and does not cancel the caller: cancellation is irrevocable, and the
-    /// caller has to keep running to tell the refusal from a flush that
-    /// finished. The cause (``systemExpiring``) is recorded for that caller
-    /// and reported here while they handle the error, then dropped, so a
-    /// later task cannot observe it. A task that is already cancelled keeps
-    /// the cause it already had.
     public static var current: CancellationCause? {
-        if Task.isCancelled {
-            // A real cancellation wins over a refusal recorded for this task.
-            RefusalSignal.clearCurrentTask()
-            return CancellationCauseBox.current?.resolvedCause ?? .userRequested
-        }
-        return RefusalSignal.current
-    }
-}
-
-/// A `.systemExpiring` cause thrown at the caller without cancelling them.
-///
-/// The caller's task must stay alive — cancelling it would stick — so the
-/// cause cannot live only in the box of a child that has already ended.
-/// It is recorded in its own box and held, keyed by the task, until the
-/// handler has had the turn it was thrown on, or the task is cancelled.
-enum RefusalSignal {
-    private struct Entry {
-        let nonce: UInt64
-        let box: CancellationCauseBox
-    }
-
-    private static let signals = Mutex<[Int: Entry]>([:])
-    private static let nonces = Atomic<UInt64>(0)
-    /// How many tasks currently hold a refusal. ``CancellationCause/current``
-    /// loads this and returns immediately when it is zero, which is the
-    /// common path.
-    private static let armed = Atomic<Int>(0)
-
-    /// The refusal recorded for the current task, if it still holds one.
-    static var current: CancellationCause? {
-        guard armed.load(ordering: .acquiring) != 0, let id = taskIdentity else { return nil }
-        return signals.withLock { $0[id]?.box.cause }
-    }
-
-    /// Records `.systemExpiring` for the current task and drops it on the
-    /// next turn, after the caller's handler has read it, so a dead task's
-    /// hash cannot be read as a refusal by a task that reused it.
-    static func arm() {
-        guard let id = taskIdentity else { return }
-        let box = CancellationCauseBox(parent: CancellationCauseBox.current)
-        box.record(.systemExpiring)
-        let nonce = nonces.wrappingAdd(1, ordering: .relaxed).newValue
-        let inserted = signals.withLock { map -> Bool in
-            let isNew = map[id] == nil
-            map[id] = Entry(nonce: nonce, box: box)
-            return isNew
-        }
-        if inserted { _ = armed.wrappingAdd(1, ordering: .acquiringAndReleasing) }
-        // Yields once before removing, so the caller's synchronous handler
-        // observes the cause first. Runs on the ambient executor when a
-        // simulation set one; otherwise it is an ordinary task that only
-        // yields.
-        Task.stoic {
-            await Task.yield()
-            let removed = signals.withLock { map -> Bool in
-                guard map[id]?.nonce == nonce else { return false }
-                map[id] = nil
-                return true
-            }
-            if removed { _ = armed.wrappingSubtract(1, ordering: .acquiringAndReleasing) }
-        }
-    }
-
-    /// Drops whatever refusal the current task holds.
-    static func clearCurrentTask() {
-        guard armed.load(ordering: .acquiring) != 0, let id = taskIdentity else { return }
-        let removed = signals.withLock { $0.removeValue(forKey: id) != nil }
-        if removed { _ = armed.wrappingSubtract(1, ordering: .acquiringAndReleasing) }
-    }
-
-    /// The identity of the current task, or `nil` outside one.
-    private static var taskIdentity: Int? {
-        // Unsafe, justified: the task is hashed and nothing else; it is not
-        // retained, resumed or used past the closure. The hash is unique
-        // among tasks alive at once. The entry is removed on the task's next
-        // turn, or when the task is cancelled, so a hash reused later does
-        // not still name this refusal.
-        unsafe withUnsafeCurrentTask { task in unsafe task?.hashValue }
+        guard Task.isCancelled else { return nil }
+        return CancellationCauseBox.current?.resolvedCause ?? .userRequested
     }
 }
 

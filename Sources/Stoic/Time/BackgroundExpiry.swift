@@ -91,28 +91,25 @@ public final class ExpiringWork: Sendable {
     /// Runs `work` only when the host granted time.
     ///
     /// A refusal — UIKit's `beginBackgroundTask` returning `.invalid` — must
-    /// not run `work`. There is no assertion keeping the process awake, and
+    /// not run `work`. Nothing is keeping the process awake, and
     /// `backgroundTimeRemaining` of 0 is not a deadline either, so a flush
-    /// would be suspended or killed mid-write and look like it finished.
-    /// Throws `CancellationError` with cause ``CancellationCause/systemExpiring``
-    /// instead, which ``CancellationCause/current`` reports to the caller.
-    /// A caller that is already cancelled is not relabelled: that
-    /// cancellation stands.
+    /// would be suspended or killed mid-write and look as if it finished.
+    /// Throws ``BackgroundTimeRefused`` instead, without running anything:
+    /// not a cancellation, so the caller's task is untouched and nothing
+    /// reads it as one.
+    ///
+    /// - Parameter granted: Whether the host granted time. When `false`,
+    ///   `limit` is ignored.
+    /// - Throws: ``BackgroundTimeRefused`` when `granted` is `false`;
+    ///   otherwise what ``run(within:label:_:)`` throws.
     package func runIfGranted<R: Sendable>(
         _ granted: Bool,
         within limit: Duration? = nil,
         label: String? = nil,
         _ work: @escaping @Sendable () async throws -> R
     ) async throws -> R {
-        guard granted else { try refuseSystemTime() }
+        guard granted else { throw BackgroundTimeRefused(label: label) }
         return try await run(within: limit, label: label, work)
-    }
-
-    /// The host granted no time. Does not run anything.
-    package func refuseSystemTime() throws -> Never {
-        if Task.isCancelled { throw CancellationError() }
-        RefusalSignal.arm()
-        throw CancellationError()
     }
 
     /// Takes the time back: every running piece of work is cancelled with
@@ -139,4 +136,33 @@ public final class ExpiringWork: Sendable {
         guard seconds.isFinite, seconds > 0, seconds <= 3600 else { return nil }
         return .milliseconds(Int64((seconds * 1000).rounded(.down)))
     }
+}
+
+/// The host would not grant background time, so the work did not run.
+///
+/// Thrown by `BackgroundWork.run(named:_:)` when UIKit's
+/// `beginBackgroundTask` returns `.invalid`. It is not a cancellation:
+/// the caller was not cancelled and nothing was cut short, so
+/// ``CancellationCause`` has nothing to say about it and a handler can tell
+/// "never started" from "stopped because time ran out" by type.
+///
+/// Not a ``Defect``: a refusal is the system's answer, not a bug, and it
+/// happens in correct apps (too many assertions, the app already
+/// suspending). It is a ``Retryable`` that says ``RetryDecision/stop``, so a
+/// `retry` around the call does not ask the system again at once; an app
+/// that wants a later attempt schedules one (a `BGTask`) instead of looping.
+public struct BackgroundTimeRefused: Error, Hashable, Sendable, CustomStringConvertible, Retryable {
+    /// The label of the work that did not run, if one was given.
+    public let label: String?
+
+    public init(label: String? = nil) {
+        self.label = label
+    }
+
+    public var description: String {
+        if let label { return "Background time was refused; \(label) did not run" }
+        return "Background time was refused; the work did not run"
+    }
+
+    public var retryDecision: RetryDecision { .stop }
 }

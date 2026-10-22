@@ -450,7 +450,6 @@ struct ExpiringWorkTests {
     /// shell in `BackgroundWork` passes `identifier != .invalid` through here.
     @Test(.failureMode("design/08", "the system refuses a background assertion"))
     func aRefusedBackgroundGrantDoesNotRunTheWork() async {
-        defer { RefusalSignal.clearCurrentTask() }
         let ran = SendableBox(false)
         let expiring = ExpiringWork()
         do {
@@ -459,13 +458,13 @@ struct ExpiringWorkTests {
                 return 1
             }
             Issue.record("a refusal must throw")
-        } catch is CancellationError {
-            #expect(CancellationCause.current == .systemExpiring)
+        } catch let refused as BackgroundTimeRefused {
+            #expect(refused.label == "background.flush")
         } catch {
-            Issue.record("expected CancellationError, got \(error)")
+            Issue.record("expected BackgroundTimeRefused, got \(error)")
         }
         #expect(!ran.value)
-        #expect(!Task.isCancelled)
+        #expect(!expiring.isExpired)
     }
 
     @Test func aGrantedRunStillRunsTheWork() async throws {
@@ -473,20 +472,31 @@ struct ExpiringWorkTests {
         #expect(value == 7)
     }
 
-    @Test func aRefusalOfAnAlreadyCancelledTaskKeepsThatCause() async throws {
-        let task = Task { () -> CancellationCause? in
-            while !Task.isCancelled { await Task.yield() }
-            do {
-                try ExpiringWork().refuseSystemTime()
-            } catch is CancellationError {
-                return CancellationCause.current
-            } catch {
-                return nil
+    @Test func aRefusalIsNotACancellation() async {
+        // The caller is not cancelled, nothing reads the error as a
+        // cancellation, and a caller that is cancelled still gets its own
+        // cancellation from work that did run.
+        let error = await #expect(throws: BackgroundTimeRefused.self) {
+            try await ExpiringWork().runIfGranted(false) { 1 }
+        }
+        #expect(error?.isCancellation == false)
+        #expect(!Task.isCancelled)
+        #expect(CancellationCause.current == nil)
+        #expect(!(error is any Defect))
+    }
+
+    @Test func aRefusalIsNotRetried() async {
+        let attempts = SendableBox(0)
+        let error = await #expect(throws: BackgroundTimeRefused.self) {
+            try await withTestAmbient(clock: ImmediateClock()) {
+                try await retry(.fixed(.seconds(1)).attempts(5)) { _ async throws -> Int in
+                    attempts.mutate { $0 += 1 }
+                    return try await ExpiringWork().runIfGranted(false) { 1 }
+                }
             }
         }
-        task.cancel()
-        let cause = await task.value
-        #expect(cause == .userRequested)
+        #expect(error != nil)
+        #expect(attempts.value == 1)
     }
 
     @Test func runsDoNotShareACause() async throws {

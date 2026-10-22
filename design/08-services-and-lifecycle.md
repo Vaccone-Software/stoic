@@ -101,8 +101,8 @@ Built: `GracefulTermination` (AppKit) and `BackgroundWork.run(named:)`
 it is tested on every platform: the work runs under a deadline of the time
 granted, is cancelled by expiry (cause `systemExpiring`), by that deadline
 and by its caller, and each run has its own cause. Expiry is final. A
-refusal is the same cause and does not run the work. Four rules came from
-review:
+refusal of time is a different thing, `BackgroundTimeRefused`, and does not
+run the work. Four rules came from review:
 
 - UIKit reports `backgroundTimeRemaining` as `Double.greatestFiniteMagnitude`
   in the foreground. It is finite, and converting it to a duration traps, so
@@ -115,8 +115,12 @@ review:
 - `beginBackgroundTask` returns `.invalid` when the system will not grant
   time. The work does not run — nothing is keeping the process awake, and
   a remaining time of 0 is not a deadline — and the call throws
-  `CancellationError` with cause `.systemExpiring`, so the caller can tell
-  a refusal from a flush that finished. The caller's task is not cancelled.
+  `BackgroundTimeRefused`. It is not a `CancellationError`: nothing was
+  cancelled, the caller's task is untouched, and no cause is invented for
+  a task that is not cancelled (`CancellationCause.current` is unchanged;
+  design/01). It is not a `Defect` (the system's answer is not a bug) and
+  its `retryDecision` is `.stop`, so a `retry` around the call does not
+  ask again at once; a later attempt is the app's to schedule.
 
 ## Failure modes
 
@@ -132,7 +136,7 @@ review:
 | the body throws                              | Every service stopped (Exit `.failure`); the error passes through |
 | a stop hangs                                 | Abandoned after its timeout; the rest still stop                  |
 | the app's task is cancelled                  | Every service stopped, shielded                                   |
-| the system refuses a background assertion    | The work does not run; throws `CancellationError` with cause `.systemExpiring` |
+| the system refuses a background assertion    | The work does not run; throws `BackgroundTimeRefused`            |
 
 ## Events
 

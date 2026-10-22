@@ -18,9 +18,9 @@ internal import UIKit
 /// - does not run `work` when the system refuses the assertion
 ///   (`beginBackgroundTask` returns `.invalid`): there is nothing to keep
 ///   the process awake, and no deadline when `backgroundTimeRemaining` is
-///   0. The call throws `CancellationError` with cause
-///   `CancellationCause.systemExpiring`, so the caller can tell a refusal
-///   from a flush that finished;
+///   0. The call throws `BackgroundTimeRefused`, which is not a
+///   cancellation, so the caller can tell a refusal from a flush that
+///   finished or one that ran out of time;
 /// - runs `work` under a `Deadline` set from `backgroundTimeRemaining`, so
 ///   every retry, wait and timeout inside it already knows how long it has;
 /// - cancels `work` with `CancellationCause.systemExpiring` when the
@@ -34,8 +34,9 @@ internal import UIKit
 @MainActor
 public enum BackgroundWork {
     /// Runs `work` as background work. Throws `CancellationError` (cause
-    /// `systemExpiring`) if the system's time ran out, or if it refused to
-    /// grant any — in which case `work` does not run.
+    /// `systemExpiring`) if the system's time ran out, and
+    /// `BackgroundTimeRefused` if it would not grant any, in which case
+    /// `work` does not run.
     public static func run<R: Sendable>(
         named name: String,
         _ work: @escaping @Sendable () async throws -> R
