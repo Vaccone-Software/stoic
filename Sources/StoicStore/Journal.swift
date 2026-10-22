@@ -52,12 +52,17 @@ internal import Synchronization
 /// ## Failures
 ///
 /// A failed write is rolled back by truncating to the last good end. A failed
-/// `fullSync` leaves the outcome unknown (the kernel may have dropped the
-/// pages), and a later successful sync would prove nothing, so the journal is
-/// *poisoned*: every call throws `.poisoned` until it is reopened, which
-/// re-reads the file and settles the question. A record whose append threw may
-/// therefore still be there after recovery; callers that cannot tolerate
-/// duplicates deduplicate by content (the ``Outbox`` does, by key).
+/// `fullSync` drops the unsynced pages, as Linux does after a writeback
+/// error: readers can still see them, and no later sync makes them durable.
+/// The journal truncates back to the last synced end, then is *poisoned*:
+/// every call throws `.poisoned` until it is reopened, because retrying the
+/// sync on this file can report success without the data being on disk.
+/// Reopen reads what was synced. The record whose sync failed is not
+/// committed, and a later append cannot leave a hole where it was, so replay
+/// after a crash is a prefix of what was synced. A crash during the write,
+/// before `fullSync` returns, can still leave a torn tail; `open` cuts it.
+/// Callers that cannot tolerate a record that survived such a crash
+/// deduplicate by content (the ``Outbox`` does, by key).
 ///
 /// ## Contract
 ///
@@ -692,7 +697,17 @@ public final class Journal: Sendable {
         do throws(StoreError) {
             try fileSystem.fullSync(file)
         } catch {
-            state.poison = StoreError(kind: .poisoned, operation: "append", path: path, detail: "fullSync failed (\(error)); reopen to learn what survived")
+            // The failed sync dropped this write from durability, but readers
+            // can still see it. Cut it back before poisoning, or reopen would
+            // commit bytes no later sync can make durable, and the next append
+            // could zero-fill a hole where they were.
+            rollBack(file, to: state.end, state: &state)
+            if state.poison == nil {
+                state.poison = StoreError(
+                    kind: .poisoned, operation: "append", path: path,
+                    detail: "fullSync failed (\(error)); the record was not committed; reopen"
+                )
+            }
             throw error
         }
         state.end += bytes.count
@@ -700,7 +715,7 @@ public final class Journal: Sendable {
         return sequences
     }
 
-    /// Undoes a failed write. If even that fails, the journal's end is unknown.
+    /// Cuts the file back to `end`. If even that fails, the journal's end is unknown.
     private func rollBack(_ file: OpenFile, to end: Int, state: inout State) {
         do throws(StoreError) {
             try fileSystem.truncate(file, to: end)

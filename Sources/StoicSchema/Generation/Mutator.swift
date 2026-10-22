@@ -140,8 +140,12 @@ struct Mutator {
                     // A number a bound moves is not refused: it is clamped, with
                     // a warning. Whatever else it breaks (the width of a
                     // `Double`, say) is not reached, because the clamp comes first.
+                    // The suite decodes strictly. An integer schema clamps only
+                    // an integer spelling, so a fraction stays `type_mismatch`
+                    // on either side of the bound.
                     if case .number(let number)? = mutation.document.value(at: path),
-                        ClampedNumber(number, in: ranges) != nil
+                        ClampedNumber(number, in: ranges) != nil,
+                        integerType(underlying: transform.base) == nil || number.isInteger
                     {
                         mutation.expected = [ExpectedIssue(path: path, code: .outOfRange, severity: .warning)]
                         mutation.isTolerated = true

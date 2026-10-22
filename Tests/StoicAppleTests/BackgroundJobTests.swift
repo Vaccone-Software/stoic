@@ -166,6 +166,29 @@ struct BackgroundJobTests {
         #expect(scheduler.registeredIdentifiers == [Self.id])
     }
 
+    @Test(.failureMode("design/21", "the system expires the task before the launch handler returns"))
+    func theExpirationHandlerIsInstalledBeforeLaunchReturns() async throws {
+        // `SystemBackgroundTaskScheduler` is compiled out on macOS, and
+        // wherever BackgroundTasks is absent. `launch` is the synchronous
+        // hand-off the scheduler makes, so this runs on every platform.
+        let scheduler = FakeBackgroundScheduler()
+        let ran = SendableBox(false)
+        let (reports, continuation) = AsyncStream.makeStream(of: BackgroundRunReport.self)
+        let job = BackgroundJob(
+            identifier: Self.id, every: .seconds(60), scheduler: scheduler, now: { Self.epoch },
+            onReport: { continuation.yield($0) }
+        ) { ran.mutate { $0 = true } }
+        try job.register()
+        let task = try #require(scheduler.launch(Self.id, expiringImmediately: true))
+        #expect(task.expirationHandlerInstalledBeforeLaunchReturned)
+        #expect(task.completionsBeforeLaunchReturned == [false])
+        let report = await reports.first { _ in true }
+        #expect(!ran.value)
+        #expect(task.completions == [false])
+        #expect(report?.expired == true)
+        #expect(report?.reportedSuccess == false)
+    }
+
     @Test func theLaunchHandlerRunsTheJob() async throws {
         let scheduler = FakeBackgroundScheduler()
         let (reports, continuation) = AsyncStream.makeStream(of: BackgroundRunReport.self)

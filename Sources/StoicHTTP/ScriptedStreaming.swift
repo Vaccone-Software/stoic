@@ -95,8 +95,8 @@ extension ScriptedTransport {
         var headers: HTTPHeaders
         var source: BodySource
         var pacing: Pacing
-        /// The length the server declared, which a transport that honours a
-        /// limit refuses before the first byte.
+        /// The length the server declared. A transport refuses it before the
+        /// first byte when a body will be transferred.
         var declaredLength: Int
     }
 

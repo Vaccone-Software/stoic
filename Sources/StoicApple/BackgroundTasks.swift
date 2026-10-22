@@ -108,19 +108,22 @@ public struct BackgroundRunReport: Sendable {
 ///     // and once, when the app first goes to the background:
 ///     try await sync.schedule()
 ///
-/// When the system launches the task, the job:
+/// When the system launches the task, the launch handler sets the expiration
+/// handler and the guard that completes the task exactly once, and it does
+/// so before it returns. The system may take the time back the moment that
+/// handler returns, and it kills the app if `setTaskCompleted` has not been
+/// called; installing them from the unstructured task that runs the work
+/// misses an expiry that arrives before that task has started. Then the job:
 ///
 /// 1. submits the next request first, `every` from now. Apple's advice, and
 ///    the only safe order: once the work is over the process may be
 ///    suspended before a later submit runs. A submit that fails is reported,
 ///    never allowed to stop the work;
-/// 2. sets the expiration handler before the work starts, so no expiry is
-///    missed;
-/// 3. runs the work as `ExpiringWork`: under a `Deadline` of `budget` if
+/// 2. runs the work as `ExpiringWork`: under a `Deadline` of `budget` if
 ///    one is given (cause `CancellationCause.deadline`), cancelled with
 ///    cause `CancellationCause.systemExpiring` the moment the system
 ///    expires the task;
-/// 4. on expiry, completes the task at once with `success: false` without
+/// 3. on expiry, completes the task at once with `success: false` without
 ///    waiting for the work to unwind (the system gives a moment, not a
 ///    grace period); otherwise completes it when the work ends, `true` if it
 ///    returned, `false` if it threw or was cut short. Whichever comes first
@@ -207,7 +210,12 @@ public final class BackgroundJob: Sendable {
         }
         guard first else { throw .alreadyRegistered }
         let accepted = scheduler.register(identifier: identifier) { [self] task in
-            Task { await run(task) }
+            // The system may expire the task the instant this closure returns,
+            // and the unstructured task below may not have started by then.
+            // The handler and the guard have to be in place first, or an
+            // expiry in that gap never calls `setTaskCompleted`.
+            let armed = arm(task)
+            Task { await run(armed) }
         }
         if !accepted {
             registered.withLock { $0 = false }
@@ -223,17 +231,39 @@ public final class BackgroundJob: Sendable {
                 earliestBeginDate: now().addingTimeInterval(interval.seconds)))
     }
 
-    /// What the launch handler does with the system's `task`: the steps in
-    /// the type's description. Public so a test can run it and read the report.
+    /// Runs the job against `task` and returns its report. Public so a test
+    /// can drive one run without the scheduler. Installs the expiration
+    /// handler before anything that can suspend. The launch handler does
+    /// that installation itself, before it returns, and then runs the work.
     @discardableResult
     public func run(_ task: any BackgroundTaskHandle) async -> BackgroundRunReport {
+        await run(arm(task))
+    }
+
+    /// The expiration handler and the once-only completion, installed together.
+    private struct ArmedTask: Sendable {
+        let expiring: ExpiringWork
+        let completion: Completion
+    }
+
+    /// Sets the expiration handler and the guard that completes `task` once.
+    ///
+    /// Synchronous on purpose. `BGTaskScheduler` can expire the task the
+    /// moment the launch handler returns, and it kills the app if
+    /// `setTaskCompleted` has not been called.
+    private func arm(_ task: any BackgroundTaskHandle) -> ArmedTask {
         let expiring = ExpiringWork()
         let completion = Completion(task)
-        // Before anything that can suspend, so an expiry cannot be missed.
         task.setExpirationHandler {
             expiring.expire()
             completion.complete(success: false, expired: true)
         }
+        return ArmedTask(expiring: expiring, completion: completion)
+    }
+
+    /// The work of a launch, once `arm` has run. It does not install the
+    /// handler: the caller already has, before it could suspend.
+    private func run(_ armed: ArmedTask) async -> BackgroundRunReport {
         let reschedule: Result<Void, BackgroundTaskError>
         do throws(BackgroundTaskError) {
             try await schedule()
@@ -243,15 +273,15 @@ public final class BackgroundJob: Sendable {
         }
         let result: Result<Void, any Error>
         do {
-            try await expiring.run(within: budget, label: "background.\(identifier)", work)
+            try await armed.expiring.run(within: budget, label: "background.\(identifier)", work)
             result = .success(())
         } catch {
             result = .failure(error)
         }
         let succeeded: Bool
         if case .success = result { succeeded = true } else { succeeded = false }
-        completion.complete(success: succeeded, expired: false)
-        let outcome = completion.outcome
+        armed.completion.complete(success: succeeded, expired: false)
+        let outcome = armed.completion.outcome
         let report = BackgroundRunReport(
             work: result, expired: outcome.expired, reportedSuccess: outcome.success ?? succeeded, reschedule: reschedule)
         onReport?(report)

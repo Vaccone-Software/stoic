@@ -321,8 +321,14 @@ public final class ScriptedTransport: HTTPTransport {
                 try await Self.suspendUntilCancelled()
                 throw CancellationError()
             }
-            // A declared length over the limit is refused before the first byte.
-            if plan.declaredLength > maxResponseBytes { throw TooLarge() }
+            // A declared length over the limit is refused before the first byte
+            // when it is the size of a body that will be transferred. A HEAD, a
+            // 204 and a 304 name a size and send no body; bytes that do arrive
+            // are still held to the limit as they are read.
+            if ResponseBody.willBeTransferred(method: request.method, status: plan.status),
+                plan.declaredLength > maxResponseBytes {
+                throw TooLarge()
+            }
             handedOver = true
             let body = ScriptedBody(plan, limit: maxResponseBytes) { [self] aborted in
                 state.withLock { state in

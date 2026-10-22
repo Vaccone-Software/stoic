@@ -14,6 +14,7 @@ import Testing
 final class StubProtocol: URLProtocol {
     struct Seen: Sendable {
         var url: URL
+        var method: String
         var headers: [String: String]
         var body: [UInt8]
     }
@@ -51,7 +52,7 @@ final class StubProtocol: URLProtocol {
         }
         let headers = request.allHTTPHeaderFields ?? [:]
         Self.book.withLock {
-            $0.seen.append(Seen(url: url, headers: headers, body: body))
+            $0.seen.append(Seen(url: url, method: request.httpMethod ?? "GET", headers: headers, body: body))
             $0.started.insert(url.path)
         }
 
@@ -76,6 +77,22 @@ final class StubProtocol: URLProtocol {
         case "/declared":
             respond(200, ["Content-Length": "5000000"])
             client?.urlProtocol(self, didLoad: Data(repeating: 1, count: 65_536))   // URLSession hands over the response once the first chunk arrives
+        case "/representation":
+            // The size a GET would send. A HEAD reads this and no body.
+            respond(200, ["Content-Length": "20000000", "ETag": "\"model\"", "Accept-Ranges": "bytes"])
+            client?.urlProtocolDidFinishLoading(self)
+        case "/no-content":
+            respond(204, ["Content-Length": "20000000", "ETag": "\"gone\""])
+            client?.urlProtocolDidFinishLoading(self)
+        case "/not-modified":
+            respond(304, ["Content-Length": "20000000", "ETag": "\"cached\""])
+            client?.urlProtocolDidFinishLoading(self)
+        case "/head-bytes":
+            // A HEAD whose server sends a body anyway. The declared length is
+            // not a refusal; the bytes are.
+            respond(200, ["Content-Length": "20000000"])
+            client?.urlProtocol(self, didLoad: Data(repeating: 9, count: 4_000))
+            client?.urlProtocolDidFinishLoading(self)
         case "/hang":
             break
         case "/chunks":
@@ -165,6 +182,41 @@ struct URLSessionTransportTests {
             try await transport.send(Self.request("/big"), maxResponseBytes: 100_000)
         }
         await eventually("the data task was never cancelled") { StubProtocol.hasStopped("/big") }
+    }
+
+    @Test func aHeadAndEmptyStatusesAreNotRefusedForTheLengthTheyDeclare() async throws {
+        let transport = Self.transport()
+        let head = try await transport.send(Self.request("/representation", method: .head), maxResponseBytes: 1_000)
+        #expect(head.status == 200)
+        #expect(head.headers["Content-Length"] == "20000000")
+        #expect(head.headers["ETag"] == "\"model\"")
+        #expect(head.body.isEmpty)
+        #expect(StubProtocol.seen.last?.method == "HEAD")
+
+        let empty = try await transport.send(Self.request("/no-content"), maxResponseBytes: 1_000)
+        #expect(empty.status == 204)
+        #expect(empty.headers["ETag"] == "\"gone\"")
+        #expect(empty.body.isEmpty)
+
+        let cached = try await transport.send(Self.request("/not-modified"), maxResponseBytes: 1_000)
+        #expect(cached.status == 304)
+        #expect(cached.headers["ETag"] == "\"cached\"")
+        #expect(cached.body.isEmpty)
+
+        // The same declaration on a GET, which will transfer a body, is still a refusal.
+        await #expect(throws: HTTPTransportError.responseTooLarge(limit: 1_000)) {
+            try await transport.send(Self.request("/representation"), maxResponseBytes: 1_000)
+        }
+    }
+
+    @Test func bytesThatArriveOnAHeadAreStillHeldToTheLimit() async throws {
+        let transport = Self.transport()
+        // The stub finishes the load inside `startLoading`, so `stopLoading` is
+        // not a signal here: the delegate has already been given the bytes, and
+        // the transfer refuses once they pass the limit.
+        await #expect(throws: HTTPTransportError.responseTooLarge(limit: 1_000)) {
+            try await transport.send(Self.request("/head-bytes", method: .head), maxResponseBytes: 1_000)
+        }
     }
 
     @Test func aDeclaredLengthOverTheLimitIsRefusedBeforeAnyByteMoves() async throws {
@@ -260,6 +312,39 @@ struct ByteBudgetTests {
         let after = budget.append([9])
         #expect(!after, "once exceeded, always exceeded")
         #expect(budget.bytes == [1, 2, 3, 4])
+    }
+
+    @Test(arguments: [(method: HTTPMethod.head, status: 200), (method: .get, status: 204), (method: .get, status: 304)])
+    func aDeclaredLengthIsNotARefusalWhenNoBodyWillBeTransferred(method: HTTPMethod, status: Int) async throws {
+        let transfer = Transfer(limit: 50, method: method)
+        let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, any Error>) in
+            transfer.begin(continuation)
+            let head = HTTPURLResponse(
+                url: URL(string: "https://example.com/f")!, statusCode: status, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Length": "20000000", "ETag": "\"model\""])!
+            #expect(transfer.receive(head))
+            transfer.complete(error: nil)
+        }
+        #expect(response.status == status)
+        #expect(response.headers["Content-Length"] == "20000000")
+        #expect(response.headers["ETag"] == "\"model\"")
+        #expect(response.body.isEmpty)
+    }
+
+    @Test func bytesThatArriveOnAHeadAreStillCountedByTheBudget() async throws {
+        let transfer = Transfer(limit: 50, method: .head)
+        await #expect(throws: HTTPTransportError.responseTooLarge(limit: 50)) {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, any Error>) in
+                transfer.begin(continuation)
+                let head = HTTPURLResponse(
+                    url: URL(string: "https://example.com/f")!, statusCode: 200, httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Length": "20000000"])!
+                #expect(transfer.receive(head))
+                #expect(transfer.receive(Data(repeating: 1, count: 40)))
+                #expect(!transfer.receive(Data(repeating: 2, count: 20)))
+                transfer.complete(error: URLError(.cancelled))
+            }
+        }
     }
 
     @Test func aDeclaredLengthIsCheckedAgainstTheLimit() {

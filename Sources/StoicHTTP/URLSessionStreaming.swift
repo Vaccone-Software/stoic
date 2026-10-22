@@ -87,12 +87,15 @@ final class StreamTransfer: TransferSink {
     private let limit: Int
     private let bufferLimit: Int
     private let statistics: StreamStatistics
+    /// The request's method: a `HEAD` transfers no body, whatever the status.
+    private let method: HTTPMethod
     private let state = Mutex(State())
 
-    init(limit: Int, bufferLimit: Int, statistics: StreamStatistics) {
+    init(limit: Int, bufferLimit: Int, statistics: StreamStatistics, method: HTTPMethod) {
         self.limit = limit
         self.bufferLimit = bufferLimit
         self.statistics = statistics
+        self.method = method
     }
 
     func attach(_ task: URLSessionDataTask) {
@@ -124,7 +127,11 @@ final class StreamTransfer: TransferSink {
                 state.ending = .failed(failure)
                 return (continuation, .refused(failure))
             }
-            if response.expectedContentLength > Int64(limit) {
+            // A HEAD, 204 or 304 transfers no body. Content-Length is the size
+            // a GET would have sent, not bytes about to arrive. Bytes that do
+            // arrive are still counted in `receive(_: Data)`.
+            let declaresABody = ResponseBody.willBeTransferred(method: method, status: http.statusCode)
+            if declaresABody, response.expectedContentLength > Int64(limit) {
                 let failure = HTTPTransportError.responseTooLarge(limit: limit)
                 state.ending = .failed(failure)
                 return (continuation, .refused(failure))

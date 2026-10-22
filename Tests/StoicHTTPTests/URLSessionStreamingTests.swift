@@ -263,6 +263,62 @@ extension URLSessionTransportTests {
         await eventually { StubProtocol.hasStopped("/declared") }
     }
 
+    @Test func aHeadAndEmptyStatusesStreamTheirHeadersWhenTheDeclaredLengthExceedsTheLimit() async throws {
+        let transport = Self.streamingTransport()
+        let head = try await transport.stream(Self.request("/representation", method: .head), maxResponseBytes: 1_000)
+        #expect(head.status == 200)
+        #expect(head.headers["Content-Length"] == "20000000")
+        #expect(head.headers["ETag"] == "\"model\"")
+        var headBytes = 0
+        for try await chunk in head.body { headBytes += chunk.count }
+        #expect(headBytes == 0)
+
+        let empty = try await transport.stream(Self.request("/no-content"), maxResponseBytes: 1_000)
+        #expect(empty.status == 204)
+        #expect(empty.headers["ETag"] == "\"gone\"")
+        var emptyBytes = 0
+        for try await chunk in empty.body { emptyBytes += chunk.count }
+        #expect(emptyBytes == 0)
+
+        let cached = try await transport.stream(Self.request("/not-modified"), maxResponseBytes: 1_000)
+        #expect(cached.status == 304)
+        #expect(cached.headers["ETag"] == "\"cached\"")
+
+        let fat = try await transport.stream(Self.request("/head-bytes", method: .head), maxResponseBytes: 1_000)
+        var delivered = 0
+        do {
+            for try await chunk in fat.body { delivered += chunk.count }
+            Issue.record("the body ended without failing")
+        } catch {
+            #expect(error as? HTTPTransportError == .responseTooLarge(limit: 1_000))
+        }
+        #expect(delivered <= 1_000)
+    }
+
+    @Test func theClientDoesNotRefuseAHeadForTheLengthItDeclares() async throws {
+        let api = HTTPClient(
+            base: URL(string: "https://api.example.com")!, policy: .testing(attempts: 1, maxResponseBytes: 1_000),
+            transport: Self.streamingTransport())
+        let response = try await api.stream(.head("/representation"), maxBytes: 1_000)
+        #expect(response.status == 200)
+        #expect(response.headers["Content-Length"] == "20000000")
+        #expect(response.headers["Accept-Ranges"] == "bytes")
+        var total = 0
+        for try await chunk in response.body { total += chunk.count }
+        #expect(total == 0)
+
+        let empty = try await api.stream(.get("/no-content"), maxBytes: 1_000)
+        #expect(empty.status == 204)
+        let cached = try await api.stream(.get("/not-modified"), maxBytes: 1_000, accepting: [304])
+        #expect(cached.status == 304)
+        #expect(cached.headers["ETag"] == "\"cached\"")
+
+        let refused = await #expect(throws: HTTPError.self) {
+            try await api.stream(.get("/representation"), maxBytes: 1_000)
+        }
+        #expect(refused == .responseTooLarge(limit: 1_000, attempts: 1))
+    }
+
     @Test func aNetworkFailureBeforeTheHeadIsTheURLError() async {
         let transport = Self.streamingTransport()
         let error = await #expect(throws: URLError.self) {
@@ -290,6 +346,52 @@ extension URLSessionTransportTests {
         #if canImport(Darwin)
         #expect(StubProtocol.seen.first?.headers["X-From-Configuration"] == "yes", "the session is the configuration's")
         #endif
+    }
+
+    @Test func aRealHeadAndEmptyStatusesAreNotRefusedForTheLengthTheyDeclare() async throws {
+        let server = try LoopbackServer { connection in
+            let fields = ["Content-Length": "20000000", "ETag": "\"model\""]
+            switch (connection.method, connection.path) {
+            case ("HEAD", "/model"):
+                _ = connection.writeHead(200, fields)
+            case (_, "/empty"):
+                _ = connection.writeHead(204, fields)
+            case (_, "/cached"):
+                _ = connection.writeHead(304, fields)
+            default:
+                _ = connection.writeHead(404)
+            }
+        }
+        defer { server.stop() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 5
+        let transport = URLSessionTransport(configuration: configuration)
+
+        func call(_ method: HTTPMethod, _ path: String) -> HTTPRequest {
+            HTTPRequest(method: method, target: .url(server.url(path)))
+        }
+
+        let head = try await transport.send(call(.head, "/model"), maxResponseBytes: 1_000)
+        #expect(head.status == 200)
+        #expect(head.headers["Content-Length"] == "20000000")
+        #expect(head.headers["ETag"] == "\"model\"")
+        #expect(head.body.isEmpty)
+
+        let streamed = try await transport.stream(call(.head, "/model"), maxResponseBytes: 1_000)
+        #expect(streamed.status == 200)
+        #expect(streamed.headers["ETag"] == "\"model\"")
+        var streamedBytes = 0
+        for try await chunk in streamed.body { streamedBytes += chunk.count }
+        #expect(streamedBytes == 0)
+
+        let empty = try await transport.send(call(.get, "/empty"), maxResponseBytes: 1_000)
+        #expect(empty.status == 204)
+        #expect(empty.body.isEmpty)
+
+        let cached = try await transport.send(call(.get, "/cached"), maxResponseBytes: 1_000)
+        #expect(cached.status == 304)
+        #expect(cached.body.isEmpty)
+        #expect(cached.headers["ETag"] == "\"model\"")
     }
 
     @Test func theClientStreamsOverTheRealTransport() async throws {
