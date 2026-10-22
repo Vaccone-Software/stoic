@@ -106,8 +106,8 @@ for every 16 KiB chunk would be a million of them for 20 GB), and written to the
 partial file; every `checkpointBytes` (64 MiB) the file is `fullSync`ed and
 _then_ its record says so. (5) When the body is whole, the digest is compared:
 never a second pass. (6) The verified file is `fullSync`ed, renamed over the
-destination, the directory synced, and only then the record removed. A file at the
-destination is therefore always whole and verified, or the old one.
+destination, the directory synced, and only then the record removed. A file at
+the destination is therefore always whole and verified, or the old one.
 
 **What a response means.** `206` whose `Content-Range` starts at the offset
 asked: append. `206` starting anywhere else, or whose validator is not the one held
@@ -213,16 +213,17 @@ is in place and every reader sees it, so the download is **placed**:
 nothing is thrown, because failing a download whose file is where it should be
 would only make the caller do it again. (Lodestar's `acceptingUnknownDurability`
 is this policy, written once.) For a standalone download the resume record is
-removed only after that sync returns. Leaving it is what makes a crash that drops the rename recoverable: the
-partial file and the record are both still there, and the next run places them.
-Deleting the record first can keep the deletion and lose the rename, and the next
-run then discards the partial file (`record_missing`). A failed _rename_ or earlier
-step is `.store`, with the verified partial file kept: the next run verifies it
-and places it without asking the server for anything. The ordering applies to a
-standalone download. A file of a bundle has its record removed as before, whether
-or not the sync succeeded, because the bundle's swap is its own durability step and
-a record left in the staging directory would be swapped into the destination
-beside the bundle's files.
+removed only after that sync returns. Leaving it is what makes a crash that
+drops the rename recoverable: the partial file and the record are both still
+there, and the next run places them. Deleting the record first can keep the
+deletion and lose the rename, and the next run then discards the partial file
+(`record_missing`). A failed _rename_ or earlier step is `.store`, with the
+verified partial file kept: the next run verifies it and places it without
+asking the server for anything. The ordering applies to a standalone download.
+A bundle file's record is removed as before, whether or not the sync succeeded,
+since one left in the staging directory would be swapped into the destination
+beside the bundle's files; making a bundle's staged files durable before their
+records go is a separate concern.
 
 **Bundles.** `DownloadBundle` is files that are one thing. They are fetched one
 after another into `.<name>.partial/` beside the destination, each as a
@@ -280,7 +281,7 @@ A URL's query reaches disk only as a hash.
 
 | What happens if…                                                          | Behaviour                                                                                                                                                                 |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a file is downloaded whole                                                | Verified while it streamed, `fullSync`ed, renamed over the destination, the directory synced; no partial file or record remains; `download.placed`                        |
+| a file is downloaded whole                                                | Verified while it streamed, `fullSync`ed, renamed over the destination, the directory synced; when durable, no partial file or record remains; `download.placed`          |
 | the connection is cut part-way                                            | Retried after the schedule's first step, with `Range: bytes=N-` and the validator in `If-Range`; the file is exact; `download.retry`                                      |
 | a body ends short without an error                                        | A cut like any other: resumed from where it ended (`short_body`)                                                                                                          |
 | a `200`'s body is longer than its `Content-Length`                        | `.badResponse`, the connection cancelled; the extra bytes are not written or placed; not retried                                                                           |
