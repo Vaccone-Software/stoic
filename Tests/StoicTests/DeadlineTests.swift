@@ -445,6 +445,60 @@ struct ExpiringWorkTests {
         #expect(!ran.value)
     }
 
+    /// `beginBackgroundTask` returning `.invalid` is this gate with `granted`
+    /// false. UIKit is not linked into the macOS or Linux test runs; the
+    /// shell in `BackgroundWork` passes `identifier != .invalid` through here.
+    @Test(.failureMode("design/08", "the system refuses a background assertion"))
+    func aRefusedBackgroundGrantDoesNotRunTheWork() async {
+        let ran = SendableBox(false)
+        let expiring = ExpiringWork()
+        do {
+            _ = try await expiring.runIfGranted(false, label: "background.flush") {
+                ran.mutate { $0 = true }
+                return 1
+            }
+            Issue.record("a refusal must throw")
+        } catch let refused as BackgroundTimeRefused {
+            #expect(refused.label == "background.flush")
+        } catch {
+            Issue.record("expected BackgroundTimeRefused, got \(error)")
+        }
+        #expect(!ran.value)
+        #expect(!expiring.isExpired)
+    }
+
+    @Test func aGrantedRunStillRunsTheWork() async throws {
+        let value = try await ExpiringWork().runIfGranted(true) { 7 }
+        #expect(value == 7)
+    }
+
+    @Test func aRefusalIsNotACancellation() async {
+        // The caller is not cancelled, nothing reads the error as a
+        // cancellation, and a caller that is cancelled still gets its own
+        // cancellation from work that did run.
+        let error = await #expect(throws: BackgroundTimeRefused.self) {
+            try await ExpiringWork().runIfGranted(false) { 1 }
+        }
+        #expect(error?.isCancellation == false)
+        #expect(!Task.isCancelled)
+        #expect(CancellationCause.current == nil)
+        #expect(!(error is any Defect))
+    }
+
+    @Test func aRefusalIsNotRetried() async {
+        let attempts = SendableBox(0)
+        let error = await #expect(throws: BackgroundTimeRefused.self) {
+            try await withTestAmbient(clock: ImmediateClock()) {
+                try await retry(.fixed(.seconds(1)).attempts(5)) { _ async throws -> Int in
+                    attempts.mutate { $0 += 1 }
+                    return try await ExpiringWork().runIfGranted(false) { 1 }
+                }
+            }
+        }
+        #expect(error != nil)
+        #expect(attempts.value == 1)
+    }
+
     @Test func runsDoNotShareACause() async throws {
         // One run cancelled by its caller must not make a later run's
         // unrelated cancellation read differently, nor the reverse.
