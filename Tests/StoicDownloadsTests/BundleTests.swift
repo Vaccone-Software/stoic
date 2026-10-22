@@ -239,7 +239,7 @@ struct BundleTests {
     }
 
     @Test(.failureMode("design/23", "the directory sync after a bundle's swap fails"))
-    func aFailedSyncAfterTheSwapLeavesTheStagingPathForTheNextRun() async throws {
+    func aFailedSyncAfterTheSwapStillRemovesTheOldDirectoryFromTheStagingPath() async throws {
         let temp = try TempDirectory()
         try await withDiskHarness(fileSystem: FaultingFileSystem(PosixFileSystem(), syncFailsAfterExchange: true)) { h in
             let model = Model()
@@ -250,7 +250,7 @@ struct BundleTests {
             let result = try await h.downloader.download(try model.bundle(to: destination))
             #expect(!result.isDurable)
             #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"], "the new directory is in place")
-            #expect(names(in: temp.file(".model.partial")) == ["old.bin"], "the tree the swap left at the staging path stays")
+            #expect(names(in: temp.path) == ["model"], "and the old one is not left at the staging path")
             #expect(h.events.events(named: "download.durability_unknown").contains { $0.text("what") == "bundle" })
             #expect(h.events.count("download.cleanup_failed") == 0)
         }

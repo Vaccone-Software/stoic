@@ -75,21 +75,4 @@ func recover(_ disk: SimulatedFileSystem, data: [UInt8], request: Download, poli
     let client = HTTPClient(base: modelsBase, transport: transport)
     return try await Downloader(client: client, fileSystem: disk, policy: policy, label: "recovery").download(request)
 }
-
-/// A downloader of the same two-file bundle, over `disk`, as an app does after a restart.
-func recoverBundle(
-    _ disk: SimulatedFileSystem, config: [UInt8], weights: [UInt8], to destination: String, policy: DownloadPolicy = .testing()
-) async throws -> DownloadBundleResult {
-    let transport = ScriptedTransport()
-    transport.on(.get("/config.json"), respond: [.serving(Resource(config, etag: "\"c\""))])
-    transport.on(.get("/weights.bin"), respond: [.serving(Resource(weights, etag: "\"w\""))])
-    let bundle = DownloadBundle(
-        [
-            DownloadBundle.File("config.json", HTTPRequest.get("/config.json"), expectedSize: config.count, digest: try sha256(config)),
-            DownloadBundle.File("weights.bin", HTTPRequest.get("/weights.bin"), expectedSize: weights.count, digest: try sha256(weights)),
-        ],
-        to: destination)
-    let client = HTTPClient(base: modelsBase, transport: transport)
-    return try await Downloader(client: client, fileSystem: disk, policy: policy, label: "recovery").download(bundle)
-}
 #endif

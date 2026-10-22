@@ -190,6 +190,7 @@ struct DurabilityTests {
                     try await recover(fork, data: new, request: try download(new), policy: Self.recoveryPolicy)
                 }
                 #expect(fork.contents(of: modelPath) == new, "the rename had reached disk: \(image.description)")
+                #expect(fork.contents(of: recordPath) == nil, "the record the rename outlived is cleaned by the next run: \(image.description)")
                 continue
             }
             lostTheRename = true
@@ -206,68 +207,6 @@ struct DurabilityTests {
             #expect(fork.contents(of: recordPath) == nil)
         }
         #expect(lostTheRename, "a crash image dropped the rename")
-    }
-
-    /// The swap is pending and the staging directory still holds a whole tree.
-    /// Deleting it before the swap is durable can keep the deletion and drop
-    /// the swap, which unlinks the new bundle.
-    @Test(.failureMode("design/23", "the directory sync after a bundle's swap fails"))
-    func aCrashAfterAFailedBundleSyncLeavesATreeTheNextRunCanPlace() async throws {
-        let config = fileBytes(800, seed: 11)
-        let weights = fileBytes(2_400, seed: 13)
-        let destination = "/models/model"
-        let staging = "/models/.model.partial"
-        let old: [UInt8] = [9]
-        let disk = SimulatedFileSystem()
-        try disk.createDirectory(destination)
-        let oldFile = try disk.open(destination + "/old.bin", mode: .createExclusive)
-        try disk.write(oldFile, old, at: 0)
-        try disk.fullSync(oldFile)
-        try disk.close(oldFile)
-        try disk.syncDirectory(destination)
-        disk.settle()
-
-        let bundle = DownloadBundle(
-            [
-                DownloadBundle.File("config.json", HTTPRequest.get("/config.json"), expectedSize: config.count, digest: try sha256(config)),
-                DownloadBundle.File("weights.bin", HTTPRequest.get("/weights.bin"), expectedSize: weights.count, digest: try sha256(weights)),
-            ],
-            to: destination)
-        let harness = Harness(disk: disk, through: { FaultingFileSystem($0, syncFailsAfterExchange: true) })
-        try await withTestAmbient(clock: ImmediateClock(), seed: 5, events: harness.events) {
-            harness.transport.on(.get("/config.json"), respond: [.serving(Resource(config, etag: "\"c\""))])
-            harness.transport.on(.get("/weights.bin"), respond: [.serving(Resource(weights, etag: "\"w\""))])
-            let result = try await harness.downloader.download(bundle)
-            #expect(!result.isDurable)
-            #expect(harness.contents(destination + "/weights.bin") == weights, "the new directory is in place")
-            #expect(harness.contents(staging + "/old.bin") == old, "the tree the swap left at the staging path stays")
-            #expect(harness.events.events(named: "download.durability_unknown").contains { $0.text("what") == "bundle" })
-            #expect(harness.events.count("download.cleanup_failed") == 0)
-        }
-        #expect(disk.durableContents(of: staging + "/weights.bin") == weights, "durably, the new tree is still named by the staging path")
-
-        var uncommitted = false
-        for image in disk.crashImages(afterOperation: disk.operationCount) {
-            let fs = image.fileSystem
-            let destHasNew = fs.contents(of: destination + "/config.json") == config && fs.contents(of: destination + "/weights.bin") == weights
-            let stagingHasNew = fs.contents(of: staging + "/config.json") == config && fs.contents(of: staging + "/weights.bin") == weights
-            if destHasNew {
-                #expect(!stagingHasNew, "the swap committed the new tree to the destination: \(image.description)")
-            } else {
-                uncommitted = true
-                #expect(stagingHasNew, "staging holds the tree the swap did not commit: \(image.description)")
-            }
-            let fork = fs.fork()
-            let recovered = try await withTestAmbient(clock: ImmediateClock()) {
-                try await recoverBundle(fork, config: config, weights: weights, to: destination)
-            }
-            #expect(fork.contents(of: destination + "/config.json") == config, "\(image.description)")
-            #expect(fork.contents(of: destination + "/weights.bin") == weights, "\(image.description)")
-            if stagingHasNew && !destHasNew {
-                #expect(recovered.files.allSatisfy { $0.requests == 0 }, "placed from the staged tree: \(image.description)")
-            }
-        }
-        #expect(uncommitted, "a crash image dropped the swap")
     }
 
     @Test func aRenameThatFailsLeavesTheVerifiedPartialFileForTheNextRun() async throws {

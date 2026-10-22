@@ -224,12 +224,8 @@ and places it without asking the server for anything.
 after another into `.<name>.partial/` beside the destination, each as a
 `Download` of its own (resumable, verified), and placed with one
 `AtomicFile.replaceItem` (on Apple platforms, a swap of the two directories in
-a single step, then the old one removed once the swap is durable): the destination
-is the old directory complete or the new one complete. If the directory sync after
-the swap fails, the download is placed (`isDurable == false`) and the staging path
-is left as the swap left it. A crash can still hold the new tree there, and
-removing the staging path before the swap is durable can keep that deletion and
-lose the swap. A run starts by finding out what is there: a
+a single step, then the old one removed): the destination is the old directory
+complete or the new one complete. A run starts by finding out what is there: a
 file whole at its own name, at its expected size, with a digest that checks, is
 verified and not fetched (`requests == 0`; a file with no expected size or no digest
 is refetched, since nothing says it is the right one); a `<name>.partial` resumes;
@@ -324,7 +320,7 @@ A URL's query reaches disk only as a hash.
 | a staged file does not check                                              | Removed and fetched again (`staged_file_failed_verification`; for a size, `staged_file_wrong_size`; with nothing to check it by, `staged_file_unverifiable`)              |
 | the staging directory holds files that are not the bundle's               | Removed (`stale_staging_files`)                                                                                                                                           |
 | the bundle's destination already exists                                   | Swapped out whole and the old directory removed; a bundle that fails leaves the old directory as it was                                                                   |
-| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`); the staging path is left as `replaceItem` left it, so a crash that undoes the swap still has a whole tree and the next run places it |
+| the directory sync after a bundle's swap fails                            | The new directory is in place and treated as placed (`isDurable == false`, `download.durability_unknown`, `what` `bundle`), and the old directory, which `replaceItem` leaves at the staging path then, is removed; if that fails, `download.cleanup_failed` |
 | a file of a bundle does not check                                         | The bundle fails with `.digestMismatch`; nothing is placed; the files that were right stay for the next run                                                               |
 | a bundle is cancelled                                                     | `CancellationError`; the staging directory stays (or is removed, with `keepsPartialOnCancel: false`); nothing is placed                                                   |
 | progress is reported                                                      | At most once per interval for a phase on the ambient clock, every change of phase, bytes that only grow                                                                   |

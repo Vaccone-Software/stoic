@@ -54,7 +54,6 @@ final class FaultingFileSystem: FileSystem {
     func fullSync(_ file: OpenFile) throws(StoreError) { try base.fullSync(file) }
     func close(_ file: OpenFile) throws(StoreError) { try base.close(file) }
     func remove(_ path: String) throws(StoreError) { try base.remove(path) }
-    func removeTree(_ path: String) throws(StoreError) { try base.removeTree(path) }
     func list(directory: String) throws(StoreError) -> [String] { try base.list(directory: directory) }
     func exists(_ path: String) throws(StoreError) -> Bool { try base.exists(path) }
     func freeSpace(at directory: String) throws(StoreError) -> UInt64 { try base.freeSpace(at: directory) }
@@ -66,6 +65,7 @@ final class FaultingFileSystem: FileSystem {
         try base.exchange(first, second)
         if syncFailsAfterExchange { state.withLock { $0.renamedTarget = true } }
     }
+    func removeTree(_ path: String) throws(StoreError) { try base.removeTree(path) }
     func tryLock(_ file: OpenFile) throws(StoreError) -> Bool { try base.tryLock(file) }
     func unlock(_ file: OpenFile) throws(StoreError) { try base.unlock(file) }
 }
