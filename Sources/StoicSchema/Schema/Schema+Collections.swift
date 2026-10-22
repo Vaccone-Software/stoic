@@ -269,7 +269,9 @@ extension Schema {
     ///     .dictionary(of: Schema.bool.documented("true to never record clips from this app"))
     ///
     /// Decoding, encoding, generation and the constraints are the schema's
-    /// own. A `description` the schema already carries is replaced.
+    /// own. A `description` the schema already carries is replaced. An
+    /// object wrapped this way is still an object to a union, so the case
+    /// stays flat.
     public func documented(_ doc: String) -> Schema<Value> {
         var transform = TransformNode(
             base: node, name: "documented value", description: node.expectation,

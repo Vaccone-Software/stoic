@@ -253,8 +253,11 @@ struct JSONSchemaExporter {
         for entry in union.cases {
             var branch: JSONObject
             let tag = JSONValue.object(["type": "string", "const": .string(entry.tag)])
-            if entry.isFlat, case .object(let payload) = entry.node {
-                branch = export(payload, location: location)
+            if entry.isFlat, entry.node.objectUnderTransparentWrappers != nil {
+                // The payload node, not only the object under it: a transparent
+                // wrapper's keywords (the description from `documented()`) belong
+                // on this branch, beside the discriminator.
+                branch = export(entry.node, location: location)
                 var properties = JSONObject()
                 properties[union.discriminator] = tag
                 for member in branch["properties"]?.object ?? JSONObject() { properties[member.key] = member.value }

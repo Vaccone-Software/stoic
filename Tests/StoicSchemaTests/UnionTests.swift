@@ -263,4 +263,71 @@ struct UnionEncodingTests {
         #expect(validator.accepts(json(#"{"op": "sum", "value": [{"op": "number", "value": 1}]}"#)))
         #expect(!validator.accepts(json(#"{"op": "sum", "value": []}"#)))
     }
+
+    /// `documented()` (and a second transparent wrapper around it) must not
+    /// move an object case under `value`. A documented string stays keyed.
+    @Test func aDocumentedObjectPayloadStaysFlat() {
+        enum Item: Sendable, Equatable {
+            case circle(Circle)
+            case label(String)
+        }
+        func union(_ circle: Schema<Circle>, _ label: Schema<String>) -> Schema<Item> {
+            .union {
+                Case("circle", circle, Item.circle) { if case .circle(let value) = $0 { value } else { nil } }
+                Case("label", label, Item.label) { if case .label(let value) = $0 { value } else { nil } }
+            }
+        }
+        let plain = union(Circle.schema, .string(.length(1...40)))
+        let documented = union(
+            Circle.schema.documented("A circle"),
+            Schema<String>.string(.length(1...40)).documented("The words").documented("Still words"))
+        let wrappedAgain = union(Circle.schema.documented("A circle").documented("Still a circle"), .string(.length(1...40)))
+
+        let circle = Item.circle(Circle(radius: 5, filled: true))
+        let bare = Item.circle(Circle())
+        let label = Item.label("Hello")
+        for schema in [documented, wrappedAgain] {
+            for style in [EncodeStyle.full, .sparse] {
+                for value in [circle, bare, label] {
+                    let written = schema.encode(value, style: style).encodedString(style: .compact)
+                    #expect(written == plain.encode(value, style: style).encodedString(style: .compact), "\(value) \(style)")
+                    #expect(schema.decodeReporting(written).value == value, "\(value) \(style)")
+                    #expect(plain.decodeReporting(written).value == value, "\(value) \(style)")
+                }
+            }
+        }
+
+        let flat = #"{"type":"circle","radius":5}"#
+        #expect(documented.decodeReporting(flat).value == .circle(Circle(radius: 5)))
+        #expect(documented.decodeReporting(flat).issues.isEmpty)
+        #expect(documented.decodeReporting(#"{"type":"circle","value":{"radius":5}}"#).value == nil)
+        #expect(documented.decodeReporting(#"{"type":"label","value":"Hello"}"#).value == .label("Hello"))
+        #expect(documented.decodeReporting(#"{"type":"label"}"#).issues.map(\.code) == [.missingKey])
+
+        guard case .union(let node) = documented.node else { return fail("node") }
+        #expect(node.cases.map(\.isFlat) == [true, false])
+
+        let branches = documented.jsonSchema().object?["oneOf"]?.array ?? []
+        let circleBranch = branches.first?.object
+        #expect(circleBranch?["description"] == "A circle")
+        #expect(circleBranch?["properties"]?.object?["radius"] != nil)
+        #expect(circleBranch?["properties"]?.object?["value"] == nil)
+        #expect(circleBranch?["required"] == ["type"])
+        #expect(circleBranch?["additionalProperties"] == false)
+        let labelBranch = branches.last?.object
+        #expect(labelBranch?["properties"]?.object?["value"]?.object?["description"] == "Still words")
+        #expect(labelBranch?["required"] == ["type", "value"])
+
+        guard case .fields(let fields) = documented.node.pathShape else { return fail("shape") }
+        #expect(fields["radius"] != nil)
+        #expect(fields["filled"] != nil)
+        #expect(fields["type"] != nil)
+        #expect(fields["value"] != nil)
+
+        let validator = JSONSchemaValidator(documented.jsonSchema())
+        for text in [flat, #"{"type":"circle","radius":5,"filled":true}"#, #"{"type":"label","value":"Hello"}"#] {
+            #expect(validator.accepts(json(text)) == (documented.decode(json(text)).value != nil), "\(text)")
+        }
+        #expect(!validator.accepts(json(#"{"type":"circle","value":{"radius":5}}"#)))
+    }
 }
