@@ -256,6 +256,46 @@ struct BundleTests {
         }
     }
 
+    @Test(.failureMode("design/23", "the directory sync after the rename fails"))
+    func aFileOfABundleWhoseDirectorySyncFailedLeavesNoResumeRecordInTheDirectory() async throws {
+        let temp = try TempDirectory()
+        let destination = temp.file("model")
+        // Once the config is renamed into the staging directory every directory sync fails, so each file
+        // is placed there with its resume record kept (it is not durable yet) and the swap is not durable.
+        let fileSystem = FaultingFileSystem(PosixFileSystem(), syncFailsAfterRenameTo: temp.file(".model.partial/config.json"))
+        try await withDiskHarness(fileSystem: fileSystem) { h in
+            let model = Model()
+            model.serve(h.transport)
+            let result = try await h.downloader.download(try model.bundle(to: destination))
+            #expect(!result.isDurable)
+            #expect(h.events.events(named: "download.durability_unknown").contains { $0.text("what") == "file" })
+            #expect(read(destination + "/config.json") == model.config)
+            #expect(read(destination + "/weights.bin") == model.weights)
+            #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"], "nothing but the bundle's files: no resume record")
+            #expect(names(in: destination + "/tokenizer") == ["tokens.json"])
+        }
+    }
+
+    @Test(.failureMode("design/23", "a bundle has one file whole, one part-way and one missing"))
+    func filesLeftWholeInStagingWithoutTheirRecordsAreVerifiedAndPlacedWithoutARequest() async throws {
+        // What a crash leaves when it keeps the removal of the records and drops the swap.
+        let temp = try TempDirectory()
+        try await withDiskHarness { h in
+            let model = Model()
+            let destination = temp.file("model")
+            let staging = temp.file(".model.partial")
+            try FileManager.default.createDirectory(atPath: staging + "/tokenizer", withIntermediateDirectories: true)
+            try put(staging + "/config.json", Data(model.config))
+            try put(staging + "/tokenizer/tokens.json", Data(model.tokenizer))
+            try put(staging + "/weights.bin", Data(model.weights))
+            let result = try await h.downloader.download(try model.bundle(to: destination))
+            #expect(result.files.map(\.requests) == [0, 0, 0])
+            #expect(result.isDurable)
+            #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"])
+            #expect(read(destination + "/weights.bin") == model.weights)
+        }
+    }
+
     @Test(.failureMode("design/23", "a bundle file is half fetched by an earlier program and the bundle adopts it"))
     func aBundleFileLeftHalfFetchedByAnEarlierProgramIsResumedNotRefetched() async throws {
         let temp = try TempDirectory()

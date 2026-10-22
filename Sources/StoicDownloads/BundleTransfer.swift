@@ -51,6 +51,7 @@ struct BundleTransfer {
             }
             // Everything is in; what is left is the swap, which is the whole of the bundle's progress.
             progress.beginFile(index: bundle.files.count - 1, of: bundle.files.count, bytesBefore: bytesBefore, totalBytes: total)
+            try removeResumeRecords()
             let durable = try place()
             record(Event("download.placed", level: .info, label: label, fields: [
                 .init("files", .int(results.count)),
@@ -121,6 +122,24 @@ struct BundleTransfer {
                 .init("reason", .string("stale_staging_files"), privacy: .public),
                 .init("removed", .int(removed)),
             ]))
+        }
+    }
+
+    /// Removes the resume record of every file, now that all of them are
+    /// whole, so that the swap carries the bundle's files and nothing else.
+    ///
+    /// A file's record is kept when the directory sync after its rename
+    /// failed (`FileTransfer`), and one can be left by a run that stopped
+    /// there; `removeStrays` lets the names through, since a record belongs
+    /// to a file still being fetched. Removing them before the swap, and not
+    /// after, is deliberate: afterwards they would be in the destination, and
+    /// the swap's own durability is a separate step. A crash that keeps these
+    /// removals and drops the swap leaves whole files in the staging
+    /// directory, and the next run checks them by size and digest
+    /// (`reuse`), as it does any file left whole.
+    private func removeResumeRecords() throws(Stop) {
+        for file in bundle.files {
+            try disk.removeIfPresent(Paths.join(bundle.stagingPath, file.path) + ".partial.resume")
         }
     }
 
