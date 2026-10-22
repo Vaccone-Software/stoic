@@ -525,8 +525,12 @@ so:
   borrows the enclosing slot, one nested call at a time (a nested call that
   overlaps another takes its own slot, bounded by the deadline:
   `operation.nested_admission`, debug), passes no breaker of its own, and
-  makes one attempt — the enclosing call is that backend's retry layer. Its
-  failure settles the enclosing attempt only when its own safety would have
+  makes one attempt — the enclosing call is that backend's retry layer. An
+  attempt cut by its own timer is a transient failure of that call, not a
+  cancellation: the inner call made one attempt, and the `CancellationError`
+  from the cancelled body is the timer, so `retryDecision` is `.retry`. The
+  caller's cancellation still stops. The inner failure settles the enclosing
+  attempt only when its own safety would have
   stopped it (an `.unknown` or `.executed` outcome on a `.notRepeatable`
   inner call; `.unknown` on a keyed inner call whose key Stoic made). On a
   `local` backend an inner write under an outer write is re-entrant on the
@@ -600,8 +604,12 @@ token refunded.
 `.unknown` on a `.keyed` or `.notRepeatable` operation (see Outcome).
 `OperationError` is `Retryable` for a layer that did not see the settled
 mark (an error carried across tasks): its `retryDecision` is `.stop` unless
-the outcome is `.notExecuted`, and then it is the rejection's or `last`'s
-own decision; its `neverReachedBackend` is `outcome == .notExecuted`. An
+the outcome is `.notExecuted` or the call deferred to an enclosing `perform`
+on the same backend. A deferred call that stopped because its own attempt
+timed out is `.retry` (the `CancellationError` is that timer, not the
+caller). Otherwise the decision is the rejection's or `last`'s. A
+cancellation in `last`, and a call the caller cancelled, are `.stop`.
+`neverReachedBackend` is `outcome == .notExecuted`. An
 operation that already retried is not retried again by whoever catches it.
 
 ## Isolation
@@ -649,6 +657,7 @@ to be `static let`s.
 | an enclosing attempt's timeout cuts a `.readOnly` `perform` off           | the attempt is not settled; the enclosing retry may try again                                              |
 | an enclosing attempt's timeout cuts a `.notRepeatable` `perform` off after it reached the backend | the attempt is settled; the enclosing retry does not repeat it                   |
 | `perform` runs inside a `perform` on the same backend                     | it borrows the slot, makes one attempt; the outer call retries                                             |
+| a same-backend inner perform's attempt times out                          | one attempt; the outer call retries it; the caller's cancellation still stops                              |
 | a `local` or `compute` operation hangs with no caller deadline            | the default deadline's timer ends it                                                                       |
 | an `OperationError` is caught by a retry that missed the settled mark     | it is not retried unless nothing was executed                                                              |
 | a plain `retry` runs inside `perform`'s operation                         | it makes one attempt                                                                                       |
@@ -733,7 +742,10 @@ it chose this.
 - **A same-backend inner call defers its classification.** Its
   `OperationError` is marked as made for the enclosing call, which looks
   through it to the inner failure, as if the inner layer were not there; any
-  other `OperationError` stands for itself unless nothing was executed.
+  other `OperationError` stands for itself unless nothing was executed. An
+  attempt the inner call's own timer cut off is not looked through: the
+  `CancellationError` underneath is that timer, and the error's own decision
+  is to retry it.
 - **The client asks the core, through a `package` function,** whether the
   task runs inside a live attempt of a `perform` (`PerformAttempt.isLive`:
   the attempt's context is live and carries a live perform frame). A task an

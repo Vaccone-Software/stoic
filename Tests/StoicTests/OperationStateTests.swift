@@ -101,6 +101,34 @@ struct OperationStateTests {
         #expect(error(.cancelled, .notExecuted).retryDecision == .stop)
     }
 
+    @Test func aDeferredAttemptTimeoutIsRetriedAndAPlainCancellationIsNot() {
+        let timedOut = OperationError(
+            stop: .failed(CancellationError()), outcome: .unknown, last: CancellationError(),
+            attempts: 1, safety: .readOnly, idempotencyKey: nil, defersToEnclosing: true, attemptTimedOut: true
+        )
+        #expect(timedOut.retryDecision == .retry)
+        let thrown = OperationError(
+            stop: .failed(CancellationError()), outcome: .unknown, last: CancellationError(),
+            attempts: 1, safety: .readOnly, idempotencyKey: nil, defersToEnclosing: true
+        )
+        #expect(thrown.retryDecision == .stop)
+        let caller = OperationError<CancellationError>(
+            stop: .cancelled, outcome: .unknown, last: nil,
+            attempts: 1, safety: .readOnly, idempotencyKey: nil, defersToEnclosing: true, attemptTimedOut: true
+        )
+        #expect(caller.retryDecision == .stop)
+        let broken = OperationError(
+            stop: .failed(Broken()), outcome: .unknown, last: Broken(),
+            attempts: 1, safety: .readOnly, idempotencyKey: nil, defersToEnclosing: true, attemptTimedOut: true
+        )
+        #expect(broken.retryDecision == .stop)
+        // Classifiers see that decision. Unwrapping to the body's
+        // `CancellationError` would make a transient-only classifier stop.
+        #expect(RetryClassifier<any Error>.transientOnly.decision(for: timedOut, attemptTimedOut: false) == .retry)
+        #expect(standardDecision(for: timedOut) == .retry)
+        #expect(RetryClassifier<any Error>.transientOnly.decision(for: thrown, attemptTimedOut: false) == .stop)
+    }
+
     @Test func aDefectInTheLastFailureIsADefectToAnEnclosingLayer() {
         let broken = OperationError<Broken>(
             stop: .failed(Broken()), outcome: .executed, last: Broken(), attempts: 1, safety: .readOnly, idempotencyKey: nil

@@ -79,9 +79,13 @@ public struct OperationError<Failure: Error>: Error, CustomStringConvertible {
     /// failure itself, as if this layer were not there.
     let defersToEnclosing: Bool
 
+    /// Whether that one attempt was cut by its own timer. The body's
+    /// `CancellationError` is the timer, and the enclosing call retries it.
+    let attemptTimedOut: Bool
+
     init(
         stop: Stop, outcome: Outcome, last: Failure?, attempts: Int, safety: RepeatSafety,
-        idempotencyKey: IdempotencyKey?, defersToEnclosing: Bool = false
+        idempotencyKey: IdempotencyKey?, defersToEnclosing: Bool = false, attemptTimedOut: Bool = false
     ) {
         self.stop = stop
         self.outcome = outcome
@@ -90,6 +94,7 @@ public struct OperationError<Failure: Error>: Error, CustomStringConvertible {
         self.safety = safety
         self.idempotencyKey = idempotencyKey
         self.defersToEnclosing = defersToEnclosing
+        self.attemptTimedOut = attemptTimedOut
     }
 
     /// Whether this is the caller's cancellation.
@@ -128,15 +133,20 @@ public struct OperationError<Failure: Error>: Error, CustomStringConvertible {
 }
 
 extension OperationError: Retryable {
-    /// `.stop` unless nothing reached the backend; then the rejection's, or
-    /// the last failure's, own decision. The operation already retried by
-    /// its policy; a layer that missed the settled mark must not multiply it.
+    /// `.stop` unless nothing reached the backend, or this call deferred to
+    /// an enclosing `perform` on the same backend. Then a deferred attempt
+    /// whose own timer fired is `.retry` — the `CancellationError` is that
+    /// timer, not the caller — and otherwise the decision is the rejection's
+    /// or the last failure's. The operation already retried by its policy; a
+    /// layer that missed the settled mark must not multiply it.
     public var retryDecision: RetryDecision {
         guard outcome == .notExecuted || defersToEnclosing else { return .stop }
         if let rejection { return decision(for: rejection) }
         if case .cancelled = stop { return .stop }
         guard let last else { return .stop }
-        if containsDefect(last) || containsCancellation(last) { return .stop }
+        if containsDefect(last) { return .stop }
+        if defersToEnclosing, attemptTimedOut { return .retry }
+        if containsCancellation(last) { return .stop }
         return standardDecision(for: last) ?? .retry
     }
 
@@ -153,6 +163,10 @@ protocol OperationErrorCarrying {
     var carriedIsCancellation: Bool { get }
     var carriedNothingExecuted: Bool { get }
     var carriedDefersToEnclosing: Bool { get }
+    /// The deferred attempt's own timer fired. Classifiers must see this
+    /// error's ``Retryable/retryDecision``, not the `CancellationError` the
+    /// timer made the body throw.
+    var carriedAttemptTimedOut: Bool { get }
 }
 
 extension OperationError: OperationErrorCarrying {
@@ -161,4 +175,5 @@ extension OperationError: OperationErrorCarrying {
     var carriedIsCancellation: Bool { isCancellation }
     var carriedNothingExecuted: Bool { outcome == .notExecuted }
     var carriedDefersToEnclosing: Bool { defersToEnclosing }
+    var carriedAttemptTimedOut: Bool { attemptTimedOut }
 }

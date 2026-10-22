@@ -223,6 +223,8 @@ private struct PerformCall {
         var reached: OperationError<Failure>.Outcome?
         /// Whether an enclosing deadline or attempt timeout cut the call off.
         var cutByEnclosing = false
+        /// Whether the attempt this call stopped on was cut by its own timer.
+        var attemptTimedOut = false
     }
 
     nonisolated(nonsending) func run<R, Failure: Error>(
@@ -347,8 +349,12 @@ private struct PerformCall {
                 pacer.report("retry.permanent", common)
                 throw finish(.failed, record)
             }
-            // Inside a call on the same backend: that call retries.
+            // Inside a call on the same backend: that call retries. An attempt
+            // cut by its own timer is a transient failure for it. The body
+            // threw `CancellationError` because the timer cancelled it, and
+            // the enclosing call must not treat that as the caller cancelling.
             if outer != nil {
+                record.attemptTimedOut = cut == .ownTimeout
                 pacer.report("retry.nested", common, level: .notice)
                 throw finish(.failed, record)
             }
@@ -629,7 +635,8 @@ private struct PerformCall {
         let madeKey = !identity.keyWasGiven
         let error = OperationError(
             stop: stop, outcome: outcome, last: record.last, attempts: record.attempts, safety: safety,
-            idempotencyKey: safety == .keyed ? identity.sentKey : nil, defersToEnclosing: outer != nil
+            idempotencyKey: safety == .keyed ? identity.sentKey : nil, defersToEnclosing: outer != nil,
+            attemptTimedOut: record.attemptTimedOut
         )
 
         // Settle the enclosing attempt, so whoever runs it does not repeat

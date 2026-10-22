@@ -50,7 +50,10 @@ extension Error {
     /// ``OperationError`` is looked through only when nothing reached the
     /// backend, or when it made one attempt for an enclosing `perform` on the
     /// same backend; otherwise it stands for itself, so its own decision
-    /// (stop: the operation already retried) is what a classifier sees. Everything
+    /// (stop: the operation already retried) is what a classifier sees. A
+    /// deferred attempt whose own timer fired also stands for itself: the
+    /// `CancellationError` underneath is that timer, and the decision is to
+    /// retry. Everything
     /// that classifies an error — a breaker's `recordWhen`, a `Retrying`
     /// stage's classifier, the standard retry classifier — looks at this, so
     /// a policy decides the same way alone, in a pipeline, or around code
@@ -69,6 +72,10 @@ extension Error {
             } else if let operation = current as? any OperationErrorCarrying,
                 operation.carriedNothingExecuted || operation.carriedDefersToEnclosing
             {
+                // A same-backend call's own attempt timer. The last error is
+                // the cancellation that timer produced; this error's own
+                // decision says to retry it. Unwrapping would lose that.
+                if operation.carriedAttemptTimedOut { return current }
                 if let rejection = operation.carriedRejection { return rejection }
                 guard let last = operation.carriedLast else { return current }
                 current = last
