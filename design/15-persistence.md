@@ -213,9 +213,14 @@ swap is reported (`store.replace_leftover`) and not thrown, since the
 replacement is complete and a retry would swap the old item back in; the caller
 clears the staged path at next launch. Both paths must share a volume, or it is
 `.invalidArgument` with errno `EXDEV` and a message that says so. The
-simulation models files only, so it can swap and crash-test file replacement;
-directory replacement is tested on the real file system. Apple platforms only
-for the swap: elsewhere it is `.unsupported` when the destination exists.
+simulation swaps and removes a directory tree as well as a file. A rename or
+exchange of a directory is one directory operation, so a crash keeps the whole
+tree where it was or the whole tree where the operation put it. `removeTree`
+unlinks each entry on its own, and a crash can keep those deletions without
+the swap, which is why the swap is synced before anything is deleted.
+Directory replacement is also tested on the real file system. Apple platforms
+only for the swap there: elsewhere `PosixFileSystem` throws `.unsupported`
+when the destination exists.
 
 Permissions: the temporary is created, then given the permission bits of the
 file it will replace (`fchmod`, before a byte is written), so a write never
