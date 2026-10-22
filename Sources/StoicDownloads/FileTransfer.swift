@@ -29,20 +29,6 @@ struct FileTransfer {
     /// When the resume record goes, once the file is in place.
     let recordRemoval: RecordRemoval
 
-    /// When the resume record is removed after the file is renamed over the
-    /// destination.
-    enum RecordRemoval {
-        /// Only once the directory sync has returned: a standalone download
-        /// has nothing else that makes the rename durable, so the record
-        /// stays while that is unknown.
-        case afterDurablePlacement
-        /// Always, whether or not the sync succeeded. A bundle's file is
-        /// placed in its staging directory, and the bundle's swap is its own
-        /// durability step; a record left there would be carried into the
-        /// destination beside the bundle's files.
-        case always
-    }
-
     init(
         _ download: Download, client: HTTPClient, disk: Disk, policy: DownloadPolicy, label: String, progress: ProgressReporter,
         recordRemoval: RecordRemoval = .afterDurablePlacement
@@ -55,6 +41,21 @@ struct FileTransfer {
         self.label = label
         self.progress = progress
         fields = [.init("request", .string(download.request.description), privacy: .public)]
+    }
+
+    /// When the resume record is removed after the file is renamed over the
+    /// destination.
+    enum RecordRemoval {
+        /// Only once the directory sync has returned: a standalone download
+        /// has nothing else that makes the rename durable, so the record
+        /// stays while that is unknown.
+        case afterDurablePlacement
+        /// Always, whether or not the sync succeeded, as before. A bundle's
+        /// file is placed in its staging directory, and a record left there
+        /// would be carried into the destination beside the bundle's files.
+        /// Making a bundle's staged files durable before their records go is
+        /// a separate concern.
+        case always
     }
 
     // MARK: State
@@ -593,7 +594,7 @@ struct FileTransfer {
     /// partial file would still be there, the record would not, and the next
     /// run would delete the only copy (`record_missing`). A file of a bundle
     /// is the exception (``RecordRemoval/always``): its record goes as before,
-    /// since the bundle's swap is its own durability step.
+    /// whether or not the sync succeeded.
     private func place(_ state: inout State) throws(Stop) -> Bool {
         report(.placing, state)
         let file = try openPartial(&state)
