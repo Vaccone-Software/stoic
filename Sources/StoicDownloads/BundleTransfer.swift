@@ -44,7 +44,9 @@ struct BundleTransfer {
                 if let reused = try await reuse(file, at: target) {
                     result = reused
                 } else {
-                    result = try await FileTransfer(download, client: client, disk: disk, policy: policy, label: label, progress: progress).run()
+                    result = try await FileTransfer(
+                        download, client: client, disk: disk, policy: policy, label: label, progress: progress, recordRemoval: .always
+                    ).run()
                 }
                 results.append(result)
                 bytesBefore += result.bytes

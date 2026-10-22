@@ -141,6 +141,7 @@ struct DurabilityTests {
             #expect(!result.isDurable, "the file is in place, and nobody can say it survives a power cut")
             #expect(h.contents(modelPath) == data, "treated as placed: every reader sees it")
             #expect(h.contents(partialPath) == nil)
+            #expect(h.contents(recordPath) != nil, "the record stays until the rename is durable")
             #expect(h.events.events(named: "download.durability_unknown").first?.text("what") == "file")
             #expect(h.events.events(named: "download.placed").first?.flag("durable") == false)
             #expect(h.events.count("download.failed") == 0)
@@ -158,6 +159,54 @@ struct DurabilityTests {
             #expect(result.isDurable)
             #expect(h.events.events(named: "download.durability_unknown").contains { $0.text("what") == "resume_record" })
         }
+    }
+
+    /// The rename is pending and the resume record is still there. A crash that
+    /// keeps a removal of the record and drops the rename used to delete the
+    /// only copy the next run could place.
+    @Test(.failureMode("design/23", "the directory sync after the rename fails"))
+    func aCrashAfterAFailedDirectorySyncKeepsTheResumeRecordAndThePartial() async throws {
+        let new = fileBytes(3_000)
+        let disk = SimulatedFileSystem()
+        try Self.setup(hadOldFile: true)(disk)
+        disk.settle()
+        let harness = Harness(disk: disk, through: { FaultingFileSystem($0, syncFailsAfterRenameTo: modelPath) })
+        try await withTestAmbient(clock: ImmediateClock(), seed: 11, events: harness.events) {
+            harness.transport.on(HTTPRequest.get("/model.bin"), respond: [.serving(Resource(new, etag: "\"v1\""))])
+            let result = try await harness.downloader.download(try download(new))
+            #expect(!result.isDurable)
+            #expect(harness.contents(modelPath) == new, "every reader sees the file")
+            #expect(harness.contents(partialPath) == nil)
+            #expect(harness.contents(recordPath) != nil, "the record stays until the rename is durable")
+            #expect(harness.events.events(named: "download.durability_unknown").first?.text("what") == "file")
+        }
+
+        var lostTheRename = false
+        for image in disk.crashImages(afterOperation: disk.operationCount) {
+            let fs = image.fileSystem
+            if fs.contents(of: modelPath) == new {
+                let fork = fs.fork()
+                _ = try await withTestAmbient(clock: ImmediateClock()) {
+                    try await recover(fork, data: new, request: try download(new), policy: Self.recoveryPolicy)
+                }
+                #expect(fork.contents(of: modelPath) == new, "the rename had reached disk: \(image.description)")
+                #expect(fork.contents(of: recordPath) == nil, "the record the rename outlived is cleaned by the next run: \(image.description)")
+                continue
+            }
+            lostTheRename = true
+            #expect(fs.contents(of: recordPath) != nil, "resume record still present: \(image.description)")
+            #expect(fs.contents(of: partialPath) == new, "the verified partial is still placeable: \(image.description)")
+            let fork = fs.fork()
+            let recovered = try await withTestAmbient(clock: ImmediateClock()) {
+                try await recover(fork, data: new, request: try download(new), policy: Self.recoveryPolicy)
+            }
+            #expect(recovered.resumedFrom == new.count, "the next run places what is on disk: \(image.description)")
+            #expect(recovered.requests == 0)
+            #expect(fork.contents(of: modelPath) == new)
+            #expect(fork.contents(of: partialPath) == nil)
+            #expect(fork.contents(of: recordPath) == nil)
+        }
+        #expect(lostTheRename, "a crash image dropped the rename")
     }
 
     @Test func aRenameThatFailsLeavesTheVerifiedPartialFileForTheNextRun() async throws {

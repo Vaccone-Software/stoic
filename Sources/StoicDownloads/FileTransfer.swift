@@ -26,10 +26,14 @@ struct FileTransfer {
     /// The fields every event about this file carries: the request's method,
     /// host and path. Never its query, which may hold a token.
     let fields: [Event.Field]
+    /// When the resume record goes, once the file is in place.
+    let recordRemoval: RecordRemoval
 
     init(
-        _ download: Download, client: HTTPClient, disk: Disk, policy: DownloadPolicy, label: String, progress: ProgressReporter
+        _ download: Download, client: HTTPClient, disk: Disk, policy: DownloadPolicy, label: String, progress: ProgressReporter,
+        recordRemoval: RecordRemoval = .afterDurablePlacement
     ) {
+        self.recordRemoval = recordRemoval
         self.download = download
         self.client = client
         self.disk = disk
@@ -37,6 +41,21 @@ struct FileTransfer {
         self.label = label
         self.progress = progress
         fields = [.init("request", .string(download.request.description), privacy: .public)]
+    }
+
+    /// When the resume record is removed after the file is renamed over the
+    /// destination.
+    enum RecordRemoval {
+        /// Only once the directory sync has returned: a standalone download
+        /// has nothing else that makes the rename durable, so the record
+        /// stays while that is unknown.
+        case afterDurablePlacement
+        /// Always, whether or not the sync succeeded, as before. A bundle's
+        /// file is placed in its staging directory, and a record left there
+        /// would be carried into the destination beside the bundle's files.
+        /// Making a bundle's staged files durable before their records go is
+        /// a separate concern.
+        case always
     }
 
     // MARK: State
@@ -569,7 +588,13 @@ struct FileTransfer {
     /// the rename leaves the file in place and every reader seeing it; that is
     /// reported (`download.durability_unknown`, `isDurable`), not thrown,
     /// because failing a download whose file is where it should be would only
-    /// make the caller do it again.
+    /// make the caller do it again. The resume record stays in that case.
+    /// The rename is not durable yet, and removing the record is another
+    /// directory operation a crash can keep while dropping the rename: the
+    /// partial file would still be there, the record would not, and the next
+    /// run would delete the only copy (`record_missing`). A file of a bundle
+    /// is the exception (``RecordRemoval/always``): its record goes as before,
+    /// whether or not the sync succeeded.
     private func place(_ state: inout State) throws(Stop) -> Bool {
         report(.placing, state)
         let file = try openPartial(&state)
@@ -577,19 +602,20 @@ struct FileTransfer {
         state.file = nil
         try disk.close(file)
         try disk.rename(from: download.partialPath, to: download.destination)
-        var durable = true
+        let durable: Bool
         do throws(Stop) {
             try disk.syncDirectory(Paths.directory(of: download.destination))
             if Paths.directory(of: download.partialPath) != Paths.directory(of: download.destination) {
                 try disk.syncDirectory(Paths.directory(of: download.partialPath))
             }
+            durable = true
         } catch {
             durable = false
             record(Event("download.durability_unknown", level: .warning, label: label, fields: fields + [
                 .init("what", .string("file"), privacy: .public),
             ]))
         }
-        removeLeftover(download.resumeRecordPath)
+        if durable || recordRemoval == .always { removeLeftover(download.resumeRecordPath) }
         record(Event("download.placed", level: .info, label: label, fields: fields + [
             .init("bytes", .int(state.offset)),
             .init("durable", .bool(durable)),

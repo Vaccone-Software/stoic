@@ -256,6 +256,28 @@ struct BundleTests {
         }
     }
 
+    /// A file of a bundle keeps no resume record after a failed directory sync, unlike a
+    /// standalone download: the bundle's swap is its own durability step, and a record left in
+    /// the staging directory would be swapped into the destination beside the bundle's files.
+    @Test func aFileOfABundleWhoseDirectorySyncFailedLeavesNoResumeRecordInTheDirectory() async throws {
+        let temp = try TempDirectory()
+        let destination = temp.file("model")
+        // Once the config is renamed into the staging directory every directory sync fails, so each
+        // file is placed there with a sync that failed, and the swap is not durable either.
+        let fileSystem = FaultingFileSystem(PosixFileSystem(), syncFailsAfterRenameTo: temp.file(".model.partial/config.json"))
+        try await withDiskHarness(fileSystem: fileSystem) { h in
+            let model = Model()
+            model.serve(h.transport)
+            let result = try await h.downloader.download(try model.bundle(to: destination))
+            #expect(!result.isDurable)
+            #expect(h.events.events(named: "download.durability_unknown").contains { $0.text("what") == "file" })
+            #expect(read(destination + "/config.json") == model.config)
+            #expect(read(destination + "/weights.bin") == model.weights)
+            #expect(names(in: destination) == ["config.json", "tokenizer", "weights.bin"], "nothing but the bundle's files: no resume record")
+            #expect(names(in: destination + "/tokenizer") == ["tokens.json"])
+        }
+    }
+
     @Test(.failureMode("design/23", "a bundle file is half fetched by an earlier program and the bundle adopts it"))
     func aBundleFileLeftHalfFetchedByAnEarlierProgramIsResumedNotRefetched() async throws {
         let temp = try TempDirectory()

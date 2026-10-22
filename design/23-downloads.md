@@ -106,8 +106,8 @@ for every 16 KiB chunk would be a million of them for 20 GB), and written to the
 partial file; every `checkpointBytes` (64 MiB) the file is `fullSync`ed and
 _then_ its record says so. (5) When the body is whole, the digest is compared:
 never a second pass. (6) The verified file is `fullSync`ed, renamed over the
-destination, the directory synced, and the record removed. A file at the
-destination is therefore always whole and verified, or the old one.
+destination, the directory synced, and only then the record removed. A file at
+the destination is therefore always whole and verified, or the old one.
 
 **What a response means.** `206` whose `Content-Range` starts at the offset
 asked: append. `206` starting anywhere else, or whose validator is not the one held
@@ -212,9 +212,18 @@ is in place and every reader sees it, so the download is **placed**:
 `DownloadResult.isDurable` is `false`, `download.durability_unknown` says so, and
 nothing is thrown, because failing a download whose file is where it should be
 would only make the caller do it again. (Lodestar's `acceptingUnknownDurability`
-is this policy, written once.) A failed _rename_ or earlier step is `.store`, with
-the verified partial file kept: the next run verifies it and places it without
-asking the server for anything.
+is this policy, written once.) For a standalone download the resume record is
+removed only after that sync returns. Leaving it is what makes a crash that
+drops the rename recoverable: the partial file and the record are both still
+there, and the next run places them. Deleting the record first can keep the
+deletion and lose the rename, and the next run then discards the partial file
+(`record_missing`). A failed _rename_ or earlier step is `.store`, with the
+verified partial file kept: the next run verifies it and places it without
+asking the server for anything. The ordering applies to a standalone download.
+A bundle file's record is removed as before, whether or not the sync succeeded,
+since one left in the staging directory would be swapped into the destination
+beside the bundle's files; making a bundle's staged files durable before their
+records go is a separate concern.
 
 **Bundles.** `DownloadBundle` is files that are one thing. They are fetched one
 after another into `.<name>.partial/` beside the destination, each as a
@@ -268,7 +277,7 @@ A URL's query reaches disk only as a hash.
 
 | What happens if…                                                          | Behaviour                                                                                                                                                                 |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a file is downloaded whole                                                | Verified while it streamed, `fullSync`ed, renamed over the destination, the directory synced; no partial file or record remains; `download.placed`                        |
+| a file is downloaded whole                                                | Verified while it streamed, `fullSync`ed, renamed over the destination, the directory synced; when durable, no partial file or record remains; `download.placed`          |
 | the connection is cut part-way                                            | Retried after the schedule's first step, with `Range: bytes=N-` and the validator in `If-Range`; the file is exact; `download.retry`                                      |
 | a body ends short without an error                                        | A cut like any other: resumed from where it ended (`short_body`)                                                                                                          |
 | a `200`'s body is longer than its `Content-Length`                        | `.badResponse`, the connection cancelled; the extra bytes are not written or placed; not retried                                                                           |
@@ -310,7 +319,7 @@ A URL's query reaches disk only as a hash.
 | the process dies at any step of placing                                   | The same: `fullSync`, rename and directory sync are each a crash point, and the verified partial file is placed by the next run                                           |
 | the process dies in a download that was cut and resumed                   | The same, across checkpoints and resumes                                                                                                                                  |
 | the process dies while the next run is resuming                           | The same: a crash of the recovery run is recoverable too                                                                                                                  |
-| the directory sync after the rename fails                                 | The file is in place and treated as placed: `isDurable == false`, `download.durability_unknown`, no error                                                                 |
+| the directory sync after the rename fails                                 | The file is in place and treated as placed: `isDurable == false`, `download.durability_unknown`, no error; the resume record stays, so a crash that drops the rename still has the partial and the next run places it |
 | a bundle is downloaded                                                    | Each file fetched and verified in staging; the directory swapped over the destination; the staging directory is gone; `isDurable`; progress names the file and the whole  |
 | a bundle has one file whole, one part-way and one missing                 | The whole one is verified and not fetched (`requests == 0`), the partial one resumes by range, the missing one is fetched                                                 |
 | a staged file does not check                                              | Removed and fetched again (`staged_file_failed_verification`; for a size, `staged_file_wrong_size`; with nothing to check it by, `staged_file_unverifiable`)              |
