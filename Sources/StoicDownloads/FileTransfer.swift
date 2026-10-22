@@ -341,6 +341,10 @@ struct FileTransfer {
                 return .restart
             }
             if let total = range.total { try note(total: total, state: &state, response: response) }
+            // The span is the body this answer may contain. `Content-Length` can
+            // be longer (a transport delivers what it says), and the file's total
+            // is further on: writing past the span splices those bytes in.
+            return try await consume(response.body, &state, declaredEnd: Self.exclusiveEnd(range.end), status: response.status)
 
         case 200:
             if state.offset > 0 {
@@ -351,13 +355,19 @@ struct FileTransfer {
                 try note(total: length, state: &state, response: response)
             }
             try begin(&state, response: response)
+            return try await consume(response.body, &state, declaredEnd: state.total, status: response.status)
 
         default:
             response.body.cancel()
             throw Stop(.badResponse(status: response.status, reason: "a success that is not the file"))
         }
+    }
 
-        return try await consume(response.body, &state)
+    /// `end + 1` for an inclusive range end, or nil when that offset does not
+    /// fit in `Int` (the range already covers every representable byte).
+    private static func exclusiveEnd(_ inclusive: Int) -> Int? {
+        let (end, overflow) = inclusive.addingReportingOverflow(1)
+        return overflow ? nil : end
     }
 
     /// Records the file's size as a response gave it, and refuses a file that
@@ -395,12 +405,24 @@ struct FileTransfer {
     }
 
     /// Reads the body to its end, hashing and writing as it comes.
-    private func consume(_ body: HTTPBodyStream, _ state: inout State) async throws(Stop) -> Outcome {
+    ///
+    /// `declaredEnd` is the file offset this response must not write past: the
+    /// `Content-Length` of a `200`, or one past the last byte of a `206`'s
+    /// `Content-Range`. Nil when the server declared neither. A body that ends
+    /// short of it is a cut; a body that runs past it is not the file the
+    /// headers named, and is not placed.
+    private func consume(_ body: HTTPBodyStream, _ state: inout State, declaredEnd: Int?, status: Int) async throws(Stop) -> Outcome {
         do {
             for try await chunk in body {
                 if Task.isCancelled { throw Stop.cancellation }
                 // Bytes past the limit are not kept, even to see how many there are.
                 if state.offset + chunk.count > download.byteLimit { throw Stop(.byteLimitExceeded(limit: download.byteLimit)) }
+                // A chunk past the declared end is not part of the file. Refusing
+                // the whole chunk keeps those bytes out of the partial file and
+                // the hash.
+                if let declaredEnd, Self.passes(declaredEnd, adding: chunk.count, at: state.offset) {
+                    throw Stop(.badResponse(status: status, reason: "the body is longer than the length the server declared"))
+                }
                 state.buffer.append(contentsOf: chunk)
                 state.hasher?.update(chunk)
                 state.offset += chunk.count
@@ -418,12 +440,19 @@ struct FileTransfer {
         try flush(&state)
         report(.downloading, state)
         // A body that ends without an error but before the end of the file is
-        // a cut like any other.
+        // a cut like any other. A body longer than declared never reaches here.
         if let total = state.total ?? download.expectedSize, state.offset < total {
             return .interrupted(Interruption(
                 last: .transport(.networkConnectionLost, attempts: state.requests), retryAfter: nil, reason: "short_body"))
         }
         return .complete
+    }
+
+    /// `true` when writing `count` bytes at `offset` would pass `end`
+    /// (exclusive). Compared by subtraction so a large offset cannot overflow.
+    private static func passes(_ end: Int, adding count: Int, at offset: Int) -> Bool {
+        if offset >= end { return count > 0 }
+        return count > end - offset
     }
 
     /// What a failed request or body means: worth asking again (an

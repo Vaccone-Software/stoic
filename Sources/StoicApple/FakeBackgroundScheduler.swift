@@ -1,3 +1,10 @@
+#if canImport(Darwin)
+internal import Darwin
+#elseif canImport(Glibc)
+internal import Glibc
+#elseif canImport(Musl)
+internal import Musl
+#endif
 internal import Synchronization
 
 /// A ``BackgroundTaskScheduling`` the test drives.
@@ -58,13 +65,32 @@ public final class FakeBackgroundScheduler: BackgroundTaskScheduling {
 
     /// Launches the task registered for `identifier`, as the system would,
     /// and returns it. `nil` if nothing is registered.
+    ///
+    /// The handler runs synchronously, on this call's thread. The task
+    /// records whether its expiration handler was installed before this
+    /// returns: that is when the system reads it.
     @discardableResult
     public func launch(_ identifier: String, expiringImmediately: Bool = false) -> FakeBackgroundTask? {
         guard let handler = state.withLock({ $0.handlers[identifier] }) else { return nil }
         let task = FakeBackgroundTask(identifier: identifier, expiringImmediately: expiringImmediately)
+        task.beginLaunch(on: currentThreadID())
         handler(task)
+        task.endLaunch()
         return task
     }
+}
+
+/// Identity of the calling thread. A handler installed from the unstructured
+/// task the job schedules runs on some other thread, so it cannot pass for
+/// one installed before `launch` returns.
+private func currentThreadID() -> UInt64 {
+    #if canImport(Darwin)
+    var id: UInt64 = 0
+    unsafe pthread_threadid_np(nil, &id)
+    return id
+    #else
+    UInt64(pthread_self())
+    #endif
 }
 
 /// A ``BackgroundTaskHandle`` that records what it is told.
@@ -72,11 +98,15 @@ public final class FakeBackgroundTask: BackgroundTaskHandle {
     private struct State {
         var expirationHandler: (@Sendable () -> Void)?
         var completions: [Bool] = []
+        var installedDuringLaunch = false
+        var completionsBeforeLaunchReturned: [Bool] = []
     }
 
     public let identifier: String
     private let expiresImmediately: Bool
     private let state = Mutex(State())
+    /// The thread inside `launch`, while that call is on the stack.
+    private let launchThread = Mutex<UInt64?>(nil)
 
     /// - Parameters:
     ///   - identifier: The task's identifier, as the system gave it.
@@ -95,8 +125,38 @@ public final class FakeBackgroundTask: BackgroundTaskHandle {
     /// Whether an expiration handler has been set.
     public var hasExpirationHandler: Bool { state.withLock { $0.expirationHandler != nil } }
 
+    /// Whether `setExpirationHandler` ran on the thread inside `launch`,
+    /// before that call returned. A handler installed afterwards, from the
+    /// unstructured task the job schedules, does not count: the system has
+    /// already looked.
+    public var expirationHandlerInstalledBeforeLaunchReturned: Bool {
+        state.withLock { $0.installedDuringLaunch }
+    }
+
+    /// Completions passed to `setTaskCompleted` before `launch` returned.
+    /// Empty when this task was not launched by the scheduler, or when
+    /// nothing completed during the launch handler.
+    public var completionsBeforeLaunchReturned: [Bool] {
+        state.withLock { $0.completionsBeforeLaunchReturned }
+    }
+
+    func beginLaunch(on thread: UInt64) {
+        launchThread.withLock { $0 = thread }
+    }
+
+    func endLaunch() {
+        state.withLock { state in
+            state.completionsBeforeLaunchReturned = state.completions
+        }
+        launchThread.withLock { $0 = nil }
+    }
+
     public func setExpirationHandler(_ handler: @escaping @Sendable () -> Void) {
-        state.withLock { $0.expirationHandler = handler }
+        let duringLaunch = launchThread.withLock { $0 == currentThreadID() }
+        state.withLock { state in
+            state.expirationHandler = handler
+            if duringLaunch { state.installedDuringLaunch = true }
+        }
         if expiresImmediately { handler() }
     }
 

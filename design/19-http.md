@@ -141,7 +141,12 @@ there is no unbounded queue), is `.rejected(rate_limited)` with the wait in
 
 **Responses are bounded.** At most `maxResponseBytes` (10 MB by default)
 are read; past that the request fails with `.responseTooLarge` and the
-connection is cancelled. Decoding goes through a schema (design/06): a body
+connection is cancelled. A declared `Content-Length` over the limit is
+refused before the first byte when it is the size of a body that will be
+transferred. A response to `HEAD`, and a `204` or `304`, carry no body
+(RFC 9110): that header is the size a `GET` would have sent, and refusing
+it would discard the headers the caller asked for. Bytes that arrive on
+those responses are still counted. Decoding goes through a schema (design/06): a body
 that does not match is `.decoding(ValidationFailure)` with every issue and
 its path, and is never retried — asking again will not change the
 server's mind.
@@ -164,8 +169,10 @@ and the breaker's verdict are the head's:** a transfer that runs for an hour
 must not hold one of the host's eight slots against its API calls, and a cut
 part-way through a body is not counted against the host. **The bound is the
 caller's** (`maxBytes`, not `maxResponseBytes`, which is made for API
-responses): a declared length over it fails before the first byte, and a body
-that passes it ends with `.responseTooLarge`, the connection cancelled.
+responses): a declared length over it fails before the first byte when a body
+will be transferred (a `HEAD`, `204` or `304` is not refused for the length it
+declares), and a body that passes it ends with `.responseTooLarge`, the
+connection cancelled.
 `retryOnResponse` and coalescing do not apply to a stream. A status outside 2xx
 that the caller will interpret itself (a `416`) is named in `accepting:` and
 comes back as a response.
@@ -210,6 +217,7 @@ inside a simulation.
 | one attempt hangs                             | Cut at the attempt timeout; retried if idempotent                          |
 | the caller's deadline passes mid-backoff      | No further attempt; `.rejected(deadline_exceeded)`                         |
 | the response is 2 GB                          | `.responseTooLarge` after `maxResponseBytes`; connection cancelled         |
+| a `HEAD`, `204` or `304` declares a length over the limit | The response is returned, headers included: no body is transferred, so the declared length is not a refusal; bytes that do arrive are still held to the limit |
 | the body does not match the schema            | `.decoding` with every issue; not retried                                  |
 | the body decodes with warnings or repairs     | The value; one `http.decoded_with_warnings` says what was decided          |
 | ten identical `GET`s at once                  | One request; ten results                                                   |
@@ -242,7 +250,7 @@ inside a simulation.
 | a streamed request is answered with a failure status | `.status` with an excerpt; the rest of the body is abandoned unread; retried if the status is |
 | a call accepts a status outside 2xx, such as 416 | Returned as a response with its headers and body, not thrown |
 | a streamed body fails after its head | The body throws `HTTPError` (a lost connection is `.transport`) after the chunks that arrived; nothing is retried; the sequence has ended |
-| a streamed body is longer than its limit | `.responseTooLarge` thrown by the body after `maxBytes`, the connection cancelled; a declared length over the limit fails before the first byte |
+| a streamed body is longer than its limit | `.responseTooLarge` thrown by the body after `maxBytes`, the connection cancelled; a declared length over the limit fails before the first byte when a body will be transferred |
 | a streamed failure has a body larger than the limit | `.status` with its excerpt: the limit is for the body that is wanted (a success, or a status the call accepts), so neither a declared length nor the bytes of a failure's body are held to it; only the excerpt is read |
 | a streamed body outlasts the attempt timeout | Not cut: the timeout bounds the wait for the head; a server that never answers is cut at it |
 | the caller's deadline passes while a body is read | The read throws `.rejected(deadline_exceeded)` and the transfer is cancelled |
@@ -298,7 +306,9 @@ credentials print as `<redacted>`), `HTTPTransport`, `URLSessionTransport`,
 the final headers. The limit is passed _to_ the transport because only the
 transport can stop reading: `URLSessionTransport` collects the body from the
 task's delegate callbacks, refuses a declared `Content-Length` over the limit
-before the first byte, and cancels the task at the first byte over (counted
+before the first byte when a body will be transferred (a `HEAD`, `204` or
+`304` is not refused for the length it declares; bytes that arrive are still
+counted), and cancels the task at the first byte over (counted
 after decompression, so a compression bomb is stopped too). The client
 checks the size again, for transports that do not. It follows no redirect: its
 delegate declines each one, so the 3xx is the response and the client applies

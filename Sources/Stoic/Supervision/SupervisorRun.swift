@@ -177,7 +177,12 @@ struct SupervisorRun {
         guard let scheduled = slots[index].stepper.next(elapsed: streakStart.duration(to: now)) else {
             return SupervisorEscalation(supervisor: supervisor.label, child: child.label, lastError: error)
         }
-        let delay = scheduled.saturatingMultiplied(by: ambient.conditions.current.backoffFactor)
+        // A struggling device stretches the wait. The schedule's cap is the
+        // last word, as it is for retry: a capped schedule never waits longer
+        // than its cap, however large the device's backoff factor.
+        let delay = scheduled.stretched(
+            by: ambient.conditions.current.backoffFactor,
+            cap: supervisor.backoff.node.delayCap)
         // The restart is due `delay` after this decision, not after the
         // timer's task first runs.
         let due = clock.now.advanced(by: delay)

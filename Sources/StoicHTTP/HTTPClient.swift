@@ -197,9 +197,12 @@ public final class HTTPClient: Sendable {
     /// - Parameters:
     ///   - request: The request to send.
     ///   - maxBytes: The most body bytes to read. A declared `Content-Length`
-    ///     over it fails before the first byte, and a body that passes it ends
-    ///     with ``HTTPError/responseTooLarge(limit:attempts:)``, with the
-    ///     connection cancelled.
+    ///     over it fails before the first byte when a body will be transferred.
+    ///     A `HEAD`, `204` or `304` declares the size a `GET` would have sent
+    ///     and is not refused for it; bytes that arrive are still counted. A
+    ///     body that passes the limit ends with
+    ///     ``HTTPError/responseTooLarge(limit:attempts:)``, with the connection
+    ///     cancelled.
     ///   - statuses: Statuses outside 2xx that are returned as responses, with
     ///     their bodies, instead of thrown: for a caller that interprets them
     ///     itself (`416`, "the range is not satisfiable", for one that resumes).
@@ -753,8 +756,9 @@ public final class HTTPClient: Sendable {
                 // The transport is given no limit, because the limit is for the body the caller
                 // asked for, not for whatever answers: a `404` page larger than a small file's
                 // limit is a `404`, not "too large". The limit is applied below, to a body that
-                // is wanted (the declared length here, the bytes as they are read by
-                // `GuardedBody`); a failure's body is only ever read as far as its excerpt.
+                // is wanted (the declared length here, when a body will be transferred, and the
+                // bytes as they are read by `GuardedBody`); a failure's body is only ever read
+                // as far as its excerpt.
                 let streamed = try await transport.stream(request, maxResponseBytes: .max)
                 var head = HTTPResponse(status: streamed.status, headers: streamed.headers)
                 if Redirects.isRedirect(head) {
@@ -762,7 +766,12 @@ public final class HTTPClient: Sendable {
                     return Received(response: head, stream: nil)
                 }
                 if streamed.isSuccess || accepted.contains(streamed.status) {
-                    if let declared = streamed.headers["Content-Length"].flatMap({ Int($0) }), declared > limit {
+                    // A HEAD, 204 or 304 names the size a GET would have sent and
+                    // transfers no body (RFC 9110). Refusing that length drops the
+                    // headers the caller asked for. Bytes that arrive are counted
+                    // by GuardedBody.
+                    if ResponseBody.willBeTransferred(method: request.method, status: streamed.status),
+                        let declared = streamed.headers["Content-Length"].flatMap({ Int($0) }), declared > limit {
                         streamed.body.cancel()
                         throw HTTPTransportError.responseTooLarge(limit: limit)
                     }

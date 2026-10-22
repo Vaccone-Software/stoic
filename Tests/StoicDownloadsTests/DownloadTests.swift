@@ -160,6 +160,70 @@ struct DownloadTests {
         }
     }
 
+    @Test(.failureMode("design/23", "a 200's body is longer than its Content-Length"))
+    func aBodyLongerThanItsContentLengthIsNotPlaced() async throws {
+        try await withHarness { h in
+            // Five bytes on the wire, four declared, and a limit well above both.
+            // The fifth shares no chunk with a byte the declaration allows.
+            let body: [UInt8] = [1, 2, 3, 4, 5]
+            h.transport.on(Self.route, respond: [.streaming(body, headers: ["Content-Length": "4"], chunkSize: 4)])
+            let task = h.start(try download(body, digest: false, expectedSize: false, byteLimit: 1_000))
+            let error = await failure(of: task)
+            guard case DownloadError.badResponse(let status, _)? = error else {
+                Issue.record("expected a body longer than declared, got \(String(describing: error))")
+                return
+            }
+            #expect(status == 200)
+            #expect(h.contents(modelPath) == nil, "a download never places more bytes than the server declared")
+            #expect(h.contents(partialPath) == [1, 2, 3, 4], "the byte past Content-Length is not kept")
+            #expect(h.transport.requestCount == 1, "not retried")
+            #expect(h.transport.abortedCount == 1, "the connection was cancelled")
+            #expect(h.events.count("download.placed") == 0)
+            #expect(h.events.events(named: "download.failed").first?.text("kind") == "bad_response")
+        }
+    }
+
+    @Test(.failureMode("design/23", "a 206's body is longer than its Content-Range"))
+    func aPartialBodyLongerThanItsRangeIsNotWrittenPastIt() async throws {
+        try await withHarness(policy: .testing(schedule: Schedule.immediate)) { h in
+            let data = fileBytes(1_000)
+            // The range is bytes 100-199 (100 bytes). The body is 150: the range,
+            // then 50 bytes that are not the file. Content-Length names the 150,
+            // which is what a transport delivers.
+            var body = Array(data[100..<200])
+            body.append(contentsOf: [UInt8](repeating: 0xA5, count: 50))
+            h.transport.on(Self.route, respond: [
+                .streaming(Array(data[..<100]), headers: ["Content-Length": "1000", "ETag": "\"v1\""], chunkSize: 50),
+                .streaming(
+                    body, status: 206,
+                    headers: ["Content-Range": "bytes 100-199/1000", "Content-Length": "150", "ETag": "\"v1\""],
+                    chunkSize: 40),
+                .serving(Resource(data, etag: "\"v1\"")),
+            ])
+            // No delay between attempts: a body that was accepted past its range
+            // would resume at once and place the splice, instead of waiting out a backoff.
+            let task = h.start(try download(data, digest: false, expectedSize: false))
+            let error = await failure(of: task)
+            guard case DownloadError.badResponse(let status, _)? = error else {
+                Issue.record("expected a range longer than declared, got \(String(describing: error))")
+                return
+            }
+            #expect(status == 206)
+            #expect(h.contents(modelPath) == nil, "the spliced file is not placed")
+            guard let partial = h.contents(partialPath) else {
+                Issue.record("the bytes inside the range were not kept")
+                return
+            }
+            #expect(partial.count <= 200, "a 206 never writes past its range")
+            #expect(partial.count >= 100)
+            #expect(partial == Array(data[..<partial.count]))
+            #expect(h.transport.requestCount == 2, "does not resume from past the range")
+            #expect(h.transport.requests[1].headers["Range"] == "bytes=100-")
+            #expect(h.events.count("download.placed") == 0)
+            #expect(h.events.count("download.retry") == 1, "only the short first body is resumed")
+        }
+    }
+
     // MARK: A server that does not keep to its word
 
     @Test(.failureMode("design/23", "the server ignores Range and answers 200"))
@@ -321,8 +385,10 @@ struct DownloadTests {
     func aBodyPastTheLimitEndsTheDownloadAndDeletesWhatArrived() async throws {
         try await withHarness { h in
             let data = fileBytes(10_000)
-            // The server promises 3,000 bytes and sends 10,000: only counting notices.
-            h.transport.on(Self.route, respond: [.streaming(data, headers: ["Content-Length": "3000"], chunkSize: 400)])
+            // Promised at the limit, and longer on the wire. A declared length
+            // shorter than the limit is a different failure (the body is not
+            // the length the server named); this one is the limit itself.
+            h.transport.on(Self.route, respond: [.streaming(data, headers: ["Content-Length": "5000"], chunkSize: 400)])
             let task = h.start(try download(data, digest: false, expectedSize: false, byteLimit: 5_000))
             guard case DownloadError.byteLimitExceeded(let limit)? = await failure(of: task) else {
                 Issue.record("expected the byte limit")

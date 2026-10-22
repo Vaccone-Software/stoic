@@ -20,6 +20,7 @@ import Glibc
 final class LoopbackServer: Sendable {
     /// One accepted connection, as the handler sees it.
     struct Connection: Sendable {
+        let method: String
         let path: String
         let headers: [String: String]
         fileprivate let descriptor: Int32
@@ -117,7 +118,8 @@ final class LoopbackServer: Sendable {
                 #endif
                 Thread {
                     if let request = Self.readRequest(client) {
-                        handler(Connection(path: request.path, headers: request.headers, descriptor: client, server: server))
+                        handler(Connection(
+                            method: request.method, path: request.path, headers: request.headers, descriptor: client, server: server))
                     }
                     close(client)
                 }.start()
@@ -135,7 +137,7 @@ final class LoopbackServer: Sendable {
         URL(string: "http://127.0.0.1:\(port)\(path)")!
     }
 
-    private static func readRequest(_ client: Int32) -> (path: String, headers: [String: String])? {
+    private static func readRequest(_ client: Int32) -> (method: String, path: String, headers: [String: String])? {
         var received: [UInt8] = []
         var byte: UInt8 = 0
         while received.count < 16_384 {
@@ -152,6 +154,6 @@ final class LoopbackServer: Sendable {
             guard let colon = line.firstIndex(of: ":") else { continue }
             headers[String(line[..<colon]).lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        return (String(first[1]), headers)
+        return (String(first[0]), String(first[1]), headers)
     }
 }

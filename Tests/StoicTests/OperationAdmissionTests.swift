@@ -115,6 +115,161 @@ struct OperationAdmissionTests {
         #expect(background.calls.map(\.at) == [.seconds(6)])
     }
 
+    /// Holds a waiter in the gap between deciding to wait and queueing.
+    private struct StallArrival: FaultPolicy {
+        func action(at site: String) -> FaultAction {
+            site == "admission.arriving" ? .delay(.seconds(1)) : .proceed
+        }
+    }
+
+    /// Acquires `rank` on `gate` while stalled in ``StallArrival``, then runs
+    /// `mark` and releases. Returns the rejection when the wait ends without a slot.
+    private func stalled(
+        _ gate: AdmissionGate, rank: Int, clock: TestClock, _ mark: @escaping @Sendable () -> Void
+    ) -> Task<Rejection?, Never> {
+        Task {
+            await withAmbient({ $0.clock = clock.erased; $0.faultPolicy = StallArrival() }) {
+                let rejection = await gate.acquire(rank: rank)
+                if rejection == nil {
+                    mark()
+                    gate.release(rank: rank)
+                }
+                return rejection
+            }
+        }
+    }
+
+    /// One slot, held until `open` opens.
+    private func holding(_ gate: AdmissionGate, rank: Int, until open: TestGate) -> Task<Void, Never> {
+        Task {
+            if await gate.acquire(rank: rank) == nil {
+                await open.wait()
+                gate.release(rank: rank)
+            }
+        }
+    }
+
+    @Test(.stoic(seed: 220), .timeLimit(.minutes(1)), .failureMode("design/22", "a slot frees while a waiter is on its way to the queue"))
+    func aFreedSlotIsKeptForAMoreUrgentWaiterStillOnItsWay() async {
+        let gate = AdmissionGate(label: "arriving", capacity: 1, caps: [1, 1, 1, 1], waiterLimit: 4)
+        let clock = TestClock()
+        let order = OrderLog()
+        let open = TestGate()
+        let holder = holding(gate, rank: Urgency.utility.rank, until: open)
+        #expect(await eventually { gate.held == [0, 1, 0, 0] })
+        // Already queued, so a release that only looks at the queues would
+        // hand it the slot while the interactive waiter is still arriving.
+        let background = Task {
+            if await gate.acquire(rank: Urgency.background.rank) == nil {
+                order.append("background")
+                gate.release(rank: Urgency.background.rank)
+            }
+        }
+        #expect(await eventually { gate.queued == [1, 0, 0, 0] })
+
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let interactive = stalled(gate, rank: Urgency.interactive.rank, clock: clock) { order.append("interactive") }
+        await clock.waitForSleepers(count: 1)
+        #expect(gate.queued[Urgency.interactive.rank] == 0)
+        #expect(gate.waiting[Urgency.interactive.rank] == 1)
+
+        open.open()
+        await holder.value
+        #expect(gate.held == [0, 0, 0, 0])
+        #expect(gate.queued == [1, 0, 0, 0])
+        #expect(order.values.isEmpty)
+
+        // A later background call finds the slot free. Queueing it must not
+        // hand that slot to either background waiter.
+        let late = Task {
+            if await gate.acquire(rank: Urgency.background.rank) == nil {
+                order.append("late")
+                gate.release(rank: Urgency.background.rank)
+            }
+        }
+        #expect(await eventually { gate.queued[Urgency.background.rank] == 2 || gate.held[Urgency.background.rank] == 1 })
+        #expect(gate.held == [0, 0, 0, 0])
+        #expect(gate.queued == [2, 0, 0, 0])
+        #expect(order.values.isEmpty)
+
+        await clock.advance(by: .seconds(1))
+        _ = await interactive.value
+        _ = await background.value
+        _ = await late.value
+        #expect(order.values == ["interactive", "background", "late"])
+        #expect(gate.isIdle)
+    }
+
+    @Test(.stoic(seed: 221), .timeLimit(.minutes(1)), .failureMode("design/22", "a slot frees while a waiter is on its way to the queue"))
+    func aLaterArrivalDoesNotTakeASlotKeptForAnEarlierWaiter() async {
+        let gate = AdmissionGate(label: "arriving-fifo", capacity: 1, caps: [1, 1, 1, 1], waiterLimit: 4)
+        let clock = TestClock()
+        let order = OrderLog()
+        let open = TestGate()
+        let holder = holding(gate, rank: Urgency.utility.rank, until: open)
+        #expect(await eventually { gate.held == [0, 1, 0, 0] })
+
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let first = stalled(gate, rank: Urgency.background.rank, clock: clock) { order.append("first") }
+        await clock.waitForSleepers(count: 1)
+        open.open()
+        await holder.value
+        #expect(gate.held == [0, 0, 0, 0])
+
+        let second = Task {
+            if await gate.acquire(rank: Urgency.background.rank) == nil {
+                order.append("second")
+                gate.release(rank: Urgency.background.rank)
+            }
+        }
+        #expect(await eventually { gate.queued[Urgency.background.rank] == 1 || gate.held[Urgency.background.rank] == 1 })
+        #expect(gate.held == [0, 0, 0, 0])
+        #expect(gate.queued == [1, 0, 0, 0])
+        #expect(order.values.isEmpty)
+
+        await clock.advance(by: .seconds(1))
+        _ = await first.value
+        _ = await second.value
+        #expect(order.values == ["first", "second"])
+        #expect(gate.isIdle)
+    }
+
+    @Test(.stoic(seed: 222), .timeLimit(.minutes(1)), .failureMode("design/22", "a waiter on its way to the queue is cancelled"))
+    func aWaiterThatLeavesOnItsWayLetsTheNextWaiterThrough() async {
+        let gate = AdmissionGate(label: "arriving-leave", capacity: 1, caps: [1, 1, 1, 1], waiterLimit: 4)
+        let clock = TestClock()
+        let order = OrderLog()
+        let open = TestGate()
+        let holder = holding(gate, rank: Urgency.utility.rank, until: open)
+        #expect(await eventually { gate.held == [0, 1, 0, 0] })
+        let background = Task {
+            if await gate.acquire(rank: Urgency.background.rank) == nil {
+                order.append("background")
+                gate.release(rank: Urgency.background.rank)
+            }
+        }
+        #expect(await eventually { gate.queued == [1, 0, 0, 0] })
+
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let interactive = stalled(gate, rank: Urgency.interactive.rank, clock: clock) { order.append("interactive") }
+        await clock.waitForSleepers(count: 1)
+        open.open()
+        await holder.value
+        // The slot is free, and kept for the interactive waiter. Cancelling
+        // them there must hand it to the background waiter at once.
+        #expect(gate.held == [0, 0, 0, 0])
+        #expect(order.values.isEmpty)
+        interactive.cancel()
+        #expect(await eventually { order.values == ["background"] })
+        #expect(await interactive.value?.reason == .cancelled)
+        await background.value
+        #expect(order.values == ["background"])
+        #expect(gate.isIdle)
+    }
+
     @Test(.failureMode("design/22", "two writes to a local backend run at once"))
     func aSecondWriteWaitsForTheLaneHoldingNoSlot() async throws {
         let backend = Backend.local("admission.writer-lane")   // capacity 4

@@ -240,8 +240,9 @@ them on.
 **Fault points (buggify).** Scheduling explores orderings; it cannot make a
 finalizer slow or a retry attempt late. So Stoic's primitives carry named
 fault points where timing decides the path — `semaphore.arriving`,
-`singleflight.arriving`, `channel.send`, `slot.deliver`, `scope.finalizer`,
-`statemachine.work`, `service.start`, `supervisor.child`, `retry.attempt`.
+`admission.arriving`, `singleflight.arriving`, `channel.send`,
+`slot.deliver`, `scope.finalizer`, `statemachine.work`, `service.start`,
+`supervisor.child`, `retry.attempt`.
 Under simulation (`faults: .standard`) each site is switched on for a
 quarter of runs, chosen by the seed, and fires a quarter of the times it is
 reached: a few yields, or up to a second of virtual time. `faultsFired`
