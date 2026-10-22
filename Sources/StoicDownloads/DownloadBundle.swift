@@ -9,9 +9,12 @@ public import StoicHTTP
 /// destination (`.<name>.partial/`), each resumable and verified as a single
 /// ``Download`` is, and only when every one is in, the whole directory is
 /// swapped over the destination in one step (`AtomicFile.replaceItem`), and the
-/// old directory, if there was one, is removed. At every instant the
-/// destination is the old directory complete or the new directory complete: a
-/// model is never half of itself.
+/// old directory, if there was one, is removed once that swap is durable. At
+/// every instant the destination is the old directory complete or the new
+/// directory complete: a model is never half of itself. If the directory sync
+/// after the swap fails, the download is placed with `isDurable == false` and
+/// the staging path is left as the swap left it, so a crash can still finish
+/// from that tree.
 ///
 /// ```swift
 /// let bundle = DownloadBundle(
