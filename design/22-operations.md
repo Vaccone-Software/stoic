@@ -358,7 +358,10 @@ down, at least one):
 So a person's explicit tap always has a slot that row loads and syncs
 together cannot take, and background work never holds the last half. A
 freed slot goes to the most urgent waiter whose cumulative cap allows it,
-first come first served within an urgency. Each urgency may have at most 4 × _c_ waiters;
+first come first served within an urgency. A waiter still on the way into
+the queue counts: the slot they would take stays free until they queue, so
+a less urgent waiter and a later arrival at the same urgency do not take it
+first. Each urgency may have at most 4 × _c_ waiters;
 past that the call is refused at once (`.rejected(.bulkheadFull)`). A wait
 lasts at most until the call's deadline, and is not an attempt. With
 capacity 1 (`compute`'s default) the rounding gives every urgency the one
@@ -633,6 +636,8 @@ to be `static let`s.
 | background work fills the backend                                         | it holds at most half the capacity                                                                         |
 | more than 4 × capacity calls of one urgency wait                          | the next is refused at once: `.bulkheadFull`                                                               |
 | a slot frees while an interactive and a background call wait              | the interactive call gets it                                                                               |
+| a slot frees while a waiter is on its way to the queue                    | the slot is kept for the most urgent waiter, first come first served within an urgency                     |
+| a waiter on its way to the queue is cancelled                             | it leaves without a slot; the waiter it held the line for is let through                                   |
 | two writes to a local backend run at once                                 | the second waits for the lane, holding no slot; reads are not held                                         |
 | the breaker is open and the call is interactive                           | it fails at once: `.rejected(.circuitOpen)`                                                                |
 | the breaker is open and the call is background                            | it waits the jittered `retryAfter`, at most three times, within the deadline, spending no attempt or token |

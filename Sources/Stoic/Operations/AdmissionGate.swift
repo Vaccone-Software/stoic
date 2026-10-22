@@ -16,8 +16,9 @@ internal import Synchronization
 /// writer at a time, the most urgent first.
 ///
 /// A newcomer never overtakes a waiter of its own urgency, nor one more
-/// urgent: the caps are cumulative, so whatever keeps a more urgent waiter
-/// out keeps a less urgent newcomer out too.
+/// urgent, including one still on the way into the queue. The caps are
+/// cumulative, so whatever keeps a more urgent waiter out keeps a less
+/// urgent newcomer out too.
 final class AdmissionGate: Sendable {
     let label: String
     let capacity: Int
@@ -56,18 +57,35 @@ final class AdmissionGate: Sendable {
             return true
         }
 
-        /// Hands slots to the most urgent waiters the caps admit.
+        /// Whether a waiter of rank `rank` or higher has not reached the queue.
+        func isArriving(atLeast rank: Int) -> Bool {
+            arriving.values.contains { $0 >= rank }
+        }
+
+        /// Hands slots to the most urgent queued waiters the caps admit.
+        ///
+        /// A waiter still on the way to the queue keeps their place, as a
+        /// semaphore waiter does. Granting stops there: the slot they would
+        /// take stays free until they queue, and nobody behind them (a less
+        /// urgent waiter, or a later arrival at their urgency) receives one.
         mutating func grant(caps: [Int]) -> [Waiter] {
             var granted: [Waiter] = []
             var progress = true
             while progress {
                 progress = false
-                for rank in stride(from: 3, through: 0, by: -1) where !queues[rank].isEmpty && admits(rank, caps: caps) {
-                    granted.append(queues[rank].removeFirst())
-                    held[rank] += 1
-                    waiting[rank] -= 1
-                    progress = true
-                    break
+                for rank in stride(from: 3, through: 0, by: -1) where admits(rank, caps: caps) {
+                    if let head = queues[rank].first {
+                        // An earlier arrival at this urgency has not queued.
+                        let earlierStillArriving = arriving.contains { id, arrived in arrived == rank && id < head.id }
+                        if earlierStillArriving { return granted }
+                        granted.append(queues[rank].removeFirst())
+                        held[rank] += 1
+                        waiting[rank] -= 1
+                        progress = true
+                        break
+                    }
+                    // The next waiter at this urgency has not queued.
+                    if arriving.values.contains(rank) { return granted }
                 }
             }
             return granted
@@ -94,9 +112,14 @@ final class AdmissionGate: Sendable {
         state.withLock { $0.held }
     }
 
-    /// Waiters right now, by rank.
+    /// Waiters right now, by rank. Includes those still on the way to the queue.
     var waiting: [Int] {
         state.withLock { $0.waiting }
+    }
+
+    /// Waiters that have reached the queue, by rank.
+    var queued: [Int] {
+        state.withLock { $0.queues.map(\.count) }
     }
 
     /// Takes a slot for a call at `rank`, waiting if the caps say so.
@@ -109,7 +132,9 @@ final class AdmissionGate: Sendable {
         }
         enum Admission { case granted, full, wait(UInt64) }
         let admission = state.withLock { state -> Admission in
-            if state.queues[rank].isEmpty, state.admits(rank, caps: caps) {
+            // A waiter of this urgency, or a more urgent one, still on its
+            // way to the queue is ahead of a newcomer, however briefly.
+            if state.queues[rank].isEmpty, !state.isArriving(atLeast: rank), state.admits(rank, caps: caps) {
                 state.held[rank] += 1
                 return .granted
             }
@@ -126,12 +151,20 @@ final class AdmissionGate: Sendable {
         case .wait(let ticket): id = ticket
         }
         defer {
-            // Whatever ended the wait, a waiter that never queued is gone.
-            state.withLock { state in
+            // Whatever ended the wait, this waiter is gone: forget it, and
+            // let through anyone whose slot it was holding.
+            let granted = state.withLock { state -> [Waiter] in
                 state.leftEarly.removeValue(forKey: id)
-                if state.arriving.removeValue(forKey: id) != nil { state.waiting[rank] -= 1 }
+                guard state.arriving.removeValue(forKey: id) != nil else { return [] }
+                state.waiting[rank] -= 1
+                return state.grant(caps: caps)
             }
+            for waiter in granted { waiter.continuation.resume(returning: nil) }
         }
+        // Between deciding to wait and queueing: where a cancellation or a
+        // deadline must find the waiter in `arriving`, and where a freed
+        // slot has to be kept for them.
+        await FaultPoint.hit("admission.arriving")
         let deadline = Deadline.current
         if let deadline, deadline.hasPassed {
             return Rejection(.deadlineExceeded, label: label)
@@ -172,38 +205,43 @@ final class AdmissionGate: Sendable {
     }
 
     private func enqueue(_ waiter: Waiter, rank: Int) {
-        let outcome = state.withLock { state -> Rejection?? in
-            state.arriving.removeValue(forKey: waiter.id)
+        let (rejection, granted) = state.withLock { state -> (Rejection?, [Waiter]) in
             if let rejection = state.leftEarly.removeValue(forKey: waiter.id) {
-                state.waiting[rank] -= 1
-                return .some(rejection)
+                // `leave` already took this waiter out of `arriving` and
+                // handed on the slot it was holding the line for.
+                return (rejection, [])
             }
-            // A slot may have freed while it was on its way.
-            if state.queues[rank].isEmpty, state.admits(rank, caps: caps) {
-                state.held[rank] += 1
-                state.waiting[rank] -= 1
-                return .some(nil)
-            }
-            state.queues[rank].append(waiter)
-            return .none
+            state.arriving.removeValue(forKey: waiter.id)
+            // Usually the newest id, so usually the end. One that took
+            // longer to get here than a later arrival goes ahead of it.
+            let index = state.queues[rank].lastIndex { $0.id < waiter.id }.map { $0 + 1 } ?? 0
+            state.queues[rank].insert(waiter, at: index)
+            return (nil, state.grant(caps: caps))
         }
-        if let outcome { waiter.continuation.resume(returning: outcome) }
+        if let rejection { waiter.continuation.resume(returning: rejection) }
+        for waiter in granted { waiter.continuation.resume(returning: nil) }
     }
 
     /// Takes waiter `id` out of the queue, if it is still waiting.
     private func leave(_ id: UInt64, because rejection: Rejection) {
-        let waiter = state.withLock { state -> Waiter? in
+        let (waiter, granted) = state.withLock { state -> (Waiter?, [Waiter]) in
             for rank in 0..<4 {
                 if let index = state.queues[rank].firstIndex(where: { $0.id == id }) {
                     state.waiting[rank] -= 1
-                    return state.queues[rank].remove(at: index)
+                    return (state.queues[rank].remove(at: index), [])
                 }
             }
-            // Not queued yet: it finds this on arrival and leaves.
-            if state.arriving[id] != nil { state.leftEarly[id] = rejection }
+            if let arrived = state.arriving.removeValue(forKey: id) {
+                // Not queued yet: it finds this on arrival and leaves, and
+                // the slot kept for it goes to whoever is next.
+                state.waiting[arrived] -= 1
+                state.leftEarly[id] = rejection
+                return (nil, state.grant(caps: caps))
+            }
             // Otherwise it was already granted a slot, or has gone.
-            return nil
+            return (nil, [])
         }
         waiter?.continuation.resume(returning: rejection)
+        for waiter in granted { waiter.continuation.resume(returning: nil) }
     }
 }
