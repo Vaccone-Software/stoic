@@ -53,7 +53,9 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
         var receivers: [Receiver] = []
         var finished = false
         var nextID: UInt64 = 0
-        var arriving: [UInt64: Rejection?] = [:]
+        // Senders with an id that have not waited for space yet, and those of
+        // them whose cancellation or deadline came first.
+        var arrivals = Arrivals<Void, Rejection>()
         var dropped = 0
 
         var count: Int { buffer.count - head }
@@ -141,7 +143,7 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
             case .suspend:
                 let id = state.nextID
                 state.nextID += 1
-                state.arriving[id] = .some(nil)
+                state.arrivals.begin(id)
                 return .wait(id)
             }
         }
@@ -196,8 +198,7 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Rejection?, Never>) in
                     var receiver: CheckedContinuation<Element?, Never>?
                     let early = state.withLock { state -> Rejection?? in
-                        let early = state.arriving.removeValue(forKey: id) ?? nil
-                        if let early { return .some(early) }
+                        if let early = state.arrivals.arrive(id) { return .some(early) }
                         // Space may have opened between the first check and now.
                         if !state.receivers.isEmpty {
                             receiver = state.receivers.removeFirst().continuation
@@ -229,10 +230,8 @@ public final class Channel<Element: Sendable>: Sendable, AsyncSequence {
 
     private func leaveSenders(_ id: UInt64, because rejection: Rejection) {
         let sender = state.withLock { state -> Sender? in
-            if let arriving = state.arriving[id] {
-                if arriving == nil { state.arriving[id] = .some(rejection) }
-                return nil
-            }
+            // Not waiting yet: it will find this on arrival.
+            if state.arrivals.leave(id, because: rejection) != nil { return nil }
             guard let index = state.senders.firstIndex(where: { $0.id == id }) else { return nil }
             return state.senders.remove(at: index)
         }
