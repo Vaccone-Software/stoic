@@ -6,6 +6,25 @@ import Testing
 
 struct WorkFailed: Error {}
 
+/// A task the system expires the moment the job completes it: the time taken
+/// back just after the job said the task was over.
+final class ExpiringOnCompletion: BackgroundTaskHandle {
+    let identifier = BackgroundJobTests.id
+    private let handler = SendableBox<(@Sendable () -> Void)?>(nil)
+    private let completed = SendableBox<[Bool]>([])
+
+    var completions: [Bool] { completed.value }
+
+    func setExpirationHandler(_ handler: @escaping @Sendable () -> Void) {
+        self.handler.mutate { $0 = handler }
+    }
+
+    func setTaskCompleted(success: Bool) {
+        completed.mutate { $0.append(success) }
+        handler.value?()
+    }
+}
+
 @Suite("Background jobs")
 struct BackgroundJobTests {
     static let id = "com.example.sync"
@@ -92,6 +111,38 @@ struct BackgroundJobTests {
         #expect(task.completions == [false])
         #expect(report.expired && !report.reportedSuccess)
         if case .failure = report.work { Issue.record("the work returned, so its result is success") }
+    }
+
+    @Test func anExpiryThatFollowsTheCompletionIsRecordedAndCompletesNothingAgain() async {
+        let scheduler = FakeBackgroundScheduler()
+        let task = ExpiringOnCompletion()
+        let report = await Self.job(scheduler) {}.run(task)
+        #expect(task.completions == [true])
+        #expect(report.expired)
+        #expect(report.reportedSuccess, "the system was told of the work's end, which came first")
+    }
+
+    @Test func aFailureThatFollowsAnExpiryReportsWhatTheSystemWasTold() async {
+        let scheduler = FakeBackgroundScheduler()
+        let started = Gate()
+        let release = Gate()
+        let job = Self.job(scheduler) {
+            started.open()
+            await release.wait()
+            throw WorkFailed()
+        }
+        let task = FakeBackgroundTask(identifier: Self.id)
+        let run = Task { await job.run(task) }
+        await started.wait()
+        task.expire()
+        release.open()
+        let report = await run.value
+        #expect(task.completions == [false])
+        #expect(report.expired && !report.reportedSuccess)
+        guard case .failure(let error) = report.work, error is WorkFailed else {
+            Issue.record("expected the work's error in the report")
+            return
+        }
     }
 
     @Test(.failureMode("design/21", "the system expires the task before the work starts"))
