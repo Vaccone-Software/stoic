@@ -420,4 +420,85 @@ struct ExactDecimalTests {
         #expect(ExactDecimal(number("1." + String(repeating: "0", count: 60) + "1")) == nil)
         #expect(ExactDecimal(number("12345678901234567890123456789012345678")) != nil)
     }
+
+    /// The sign, coefficient and exponent of a lexeme, worked out by hand from
+    /// the definition (value = coefficient × 10^exponent, trailing zeros moved
+    /// into the exponent), or `nil` for one that is declined.
+    private struct Case {
+        var lexeme: String
+        var parts: (negative: Bool, coefficient: UInt128, exponent: Int)?
+
+        init(_ lexeme: String, negative: Bool = false, _ coefficient: UInt128, exponent: Int) {
+            self.lexeme = lexeme
+            parts = (negative, coefficient, exponent)
+        }
+
+        init(declined lexeme: String) {
+            self.lexeme = lexeme
+        }
+    }
+
+    private static let cases: [Case] = [
+        // Zero is one value, however it is spelled, and never negative.
+        Case("0", 0, exponent: 0),
+        Case("-0", 0, exponent: 0),
+        Case("0.0", 0, exponent: 0),
+        Case("-0.000e5", 0, exponent: 0),
+        Case("0e999999", 0, exponent: 0),
+        // Whole numbers, and the trailing zeros that go into the exponent.
+        Case("1", 1, exponent: 0),
+        Case("-1", negative: true, 1, exponent: 0),
+        Case("10", 1, exponent: 1),
+        Case("100e-2", 1, exponent: 0),
+        Case("9007199254740993", 9_007_199_254_740_993, exponent: 0),
+        // A fraction, and the zeros before its first digit.
+        Case("1.5", 15, exponent: -1),
+        Case("0.001", 1, exponent: -3),
+        Case("0.5e-2", 5, exponent: -3),
+        Case("-1.50e+0", negative: true, 15, exponent: -1),
+        // Exponents, with and without a sign, in either case.
+        Case("1e5", 1, exponent: 5),
+        Case("1E5", 1, exponent: 5),
+        Case("1E+5", 1, exponent: 5),
+        Case("1e-5", 1, exponent: -5),
+        Case("1e+0", 1, exponent: 0),
+        Case("1e-0", 1, exponent: 0),
+        Case("123.456e2", 123456, exponent: -1),
+        Case("-0.0125E-3", negative: true, 125, exponent: -7),
+        // Six exponent digits are read, leading zeros included; a seventh declines the number, zero or not.
+        Case("1e000005", 1, exponent: 5),
+        Case("1e-000005", 1, exponent: -5),
+        Case("0e000000", 0, exponent: 0),
+        Case(declined: "1e0000005"),
+        Case(declined: "1e-0000005"),
+        Case(declined: "0e1000000"),
+        Case(declined: "0.1e0000000"),
+        Case(declined: "0e99999999999999999999"),
+        // At most thirty-eight significant digits, however the number is laid out.
+        Case("12345678901234567890123456789012345678", 12_345_678_901_234_567_890_123_456_789_012_345_678, exponent: 0),
+        Case("99999999999999999999999999999999999999", 99_999_999_999_999_999_999_999_999_999_999_999_999, exponent: 0),
+        Case(declined: "123456789012345678901234567890123456789"),
+        Case("1" + String(repeating: "0", count: 60), 1, exponent: 60),
+        Case("0." + String(repeating: "0", count: 50) + "1", 1, exponent: -51),
+        Case(declined: "1." + String(repeating: "0", count: 60) + "1"),
+        Case("-0." + String(repeating: "0", count: 300), 0, exponent: 0),
+    ]
+
+    @Test func eachLexemeIsReadAsItsSignCoefficientAndExponentOrDeclined() {
+        for expected in Self.cases {
+            let name = expected.lexeme.count > 40 ? "\(expected.lexeme.prefix(20))… (\(expected.lexeme.count) bytes)" : expected.lexeme
+            let decimal = ExactDecimal(number(expected.lexeme))
+            guard let parts = expected.parts else {
+                #expect(decimal == nil, "\(name) is declined")
+                continue
+            }
+            guard let decimal else {
+                Issue.record("\(name) is declined")
+                continue
+            }
+            #expect(decimal.isNegative == parts.negative, "\(name): sign")
+            #expect(decimal.coefficient == parts.coefficient, "\(name): coefficient")
+            #expect(decimal.exponent == parts.exponent, "\(name): exponent")
+        }
+    }
 }

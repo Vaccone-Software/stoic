@@ -183,6 +183,59 @@ struct FlightRecorderTests {
         recorder.record(Self.event(2))   // ignored, and does not trap
     }
 
+    @Test func aFailedSyncStopsTheRecorderToo() throws {
+        let disk = try Self.disk()
+        let recorder = try Self.open(disk)
+        disk.inject(EIO, on: .fullSync)
+        recorder.flush()
+        guard case .stopped(let error) = recorder.status else {
+            Issue.record("expected the recorder to stop")
+            return
+        }
+        #expect(error.kind != .diskFull)
+        let before = disk.operationCount
+        recorder.record(Self.event(1))
+        recorder.flush()
+        #expect(disk.operationCount == before, "stopped: neither a write nor a sync follows")
+    }
+
+    @Test func aStoppedRecorderWritesNothingMore() throws {
+        let disk = try Self.disk()
+        let recorder = try Self.open(disk)
+        disk.inject(ENOSPC, on: .write)
+        recorder.record(Self.event(1))
+        let before = disk.operationCount
+        recorder.record(Self.event(2))
+        recorder.markCleanExit()
+        recorder.flush()
+        #expect(disk.operationCount == before, "nothing is written or synced once the recorder has stopped")
+    }
+
+    @Test func theDescriptorClosesWhenTheRecorderGoesAway() throws {
+        let disk = try Self.disk()
+        do {
+            let recorder = try Self.open(disk)
+            recorder.record(Self.event(1))
+            #expect(disk.state.withLock { $0.descriptors.count } == 1)
+        }
+        #expect(disk.state.withLock { $0.descriptors.isEmpty }, "the file is closed only when the recorder is released")
+    }
+
+    @Test func aStoppedRecorderStillClosesItsDescriptorWhenItGoesAway() throws {
+        let disk = try Self.disk()
+        do {
+            let recorder = try Self.open(disk)
+            disk.inject(ENOSPC, on: .write)
+            recorder.record(Self.event(1))
+            guard case .stopped = recorder.status else {
+                Issue.record("expected the recorder to stop")
+                return
+            }
+            #expect(disk.state.withLock { $0.descriptors.count } == 1, "stopping does not close the file")
+        }
+        #expect(disk.state.withLock { $0.descriptors.isEmpty })
+    }
+
     @Test func aProcessCrashLosesNothingWritten() throws {
         // A process crash keeps the page cache: every completed write is
         // there for the next launch, synced or not.

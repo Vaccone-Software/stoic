@@ -217,6 +217,48 @@ struct PosixFileWatchTests {
         controlWatch.cancel()
     }
 
+    @Test(.failureMode("design/15", "the watch is cancelled or dropped"), .timeLimit(.minutes(1)))
+    func aWatchCancelledWhileItsFileExistsSaysNothingMore() async throws {
+        let dir = try TempDirectory()
+        let path = dir.file("prefs.json")
+        let file = AtomicFile(fileSystem: fs, options: .init(envelope: false))
+        try file.write(bytes("one"), to: path)
+        let cancelled = Calls()
+        let control = Calls()
+        let watch = try fs.watchFile(at: path, handler: cancelled.handler)
+        let controlWatch = try fs.watchFile(at: path, handler: control.handler)
+        watch.cancel()
+        // A write in place and a replacement are what the file's own watch
+        // and the directory's would each have reported; the control hears
+        // both, so both have happened.
+        try await expectCall(control, "written in place") {
+            let open = try fs.open(path, mode: .readWrite)
+            try fs.write(open, bytes("ONE"), at: 0)
+            try fs.close(open)
+        }
+        try await expectCall(control, "replaced by a rename") { try file.write(bytes("two"), to: path) }
+        try await expectCall(control, "removed") { try fs.remove(path) }
+        #expect(cancelled.value == 0)
+        controlWatch.cancel()
+    }
+
+    @Test(.failureMode("design/15", "the watch is cancelled or dropped"), .timeLimit(.minutes(1)))
+    func aDroppedWatchSaysNothingMore() async throws {
+        let dir = try TempDirectory()
+        let path = dir.file("prefs.json")
+        let file = AtomicFile(fileSystem: fs, options: .init(envelope: false))
+        try file.write(bytes("one"), to: path)
+        let dropped = Calls()
+        let control = Calls()
+        var watch: FileWatch? = try fs.watchFile(at: path, handler: dropped.handler)
+        let controlWatch = try fs.watchFile(at: path, handler: control.handler)
+        watch = nil
+        try await expectCall(control, "replaced by a rename") { try file.write(bytes("two"), to: path) }
+        #expect(dropped.value == 0)
+        controlWatch.cancel()
+        _ = watch
+    }
+
     @Test(.failureMode("design/15", "the directory does not exist"))
     func aMissingDirectoryIsNotFound() throws {
         let dir = try TempDirectory()

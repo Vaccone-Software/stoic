@@ -130,20 +130,30 @@ public final class Keyring: Sendable {
     public let name: String
     private let custody: any KeyCustody
 
-    private struct State {
-        /// The keys, the current one first.
-        var keys: [SealingKey]
-        var destroyed = false
+    private enum State {
+        /// The key that seals now, and the older ones still needed to open
+        /// what was sealed before: a ring always has a current key.
+        case holding(current: SealingKey, older: [SealingKey])
+        case destroyed
+
+        /// The state of a keyring holding `keys`, the current one first.
+        ///
+        /// - Throws: ``KeyringError/corrupt`` for no keys. A ring has none,
+        ///   and `RingFormat.decode` refuses one before it gets here.
+        init(keys: [SealingKey]) throws(KeyringError) {
+            guard let current = keys.first else { throw .corrupt }
+            self = .holding(current: current, older: Array(keys.dropFirst()))
+        }
     }
 
     private let state: Mutex<State>
     /// Held for every change, and across the custody calls it makes.
     private let changes = Mutex<Void>(())
 
-    private init(name: String, custody: any KeyCustody, keys: [SealingKey]) {
+    private init(name: String, custody: any KeyCustody, state: State) {
         self.name = name
         self.custody = custody
-        self.state = Mutex(State(keys: keys))
+        self.state = Mutex(state)
     }
 
     // MARK: Opening
@@ -159,13 +169,14 @@ public final class Keyring: Sendable {
     public static func open(name: String, custody: any KeyCustody, ifMissing: IfMissing) throws(KeyringError) -> Opening {
         let stored = try Self.load(name: name, custody: custody)
         if let stored {
-            return Opening(keyring: Keyring(name: name, custody: custody, keys: try RingFormat.decode(stored)), created: false)
+            let ring = try State(keys: RingFormat.decode(stored))
+            return Opening(keyring: Keyring(name: name, custody: custody, state: ring), created: false)
         }
         guard ifMissing == .create else { throw .missing }
-        let ring = [SealingKey.generate()]
-        try Self.persist(ring, name: name, custody: custody)
+        let first = SealingKey.generate()
+        try Self.persist([first], name: name, custody: custody)
         SealedEvents.record(Event("sealed.keyring_created", level: .notice, fields: [.init("name", .string(name))]))
-        return Opening(keyring: Keyring(name: name, custody: custody, keys: ring), created: true)
+        return Opening(keyring: Keyring(name: name, custody: custody, state: .holding(current: first, older: [])), created: true)
     }
 
     // MARK: Reading
@@ -176,8 +187,8 @@ public final class Keyring: Sendable {
     public var current: SealingKey {
         get throws(KeyringError) {
             try state.withLock { (state) throws(KeyringError) -> SealingKey in
-                guard !state.destroyed, let first = state.keys.first else { throw .destroyed }
-                return first
+                guard case .holding(let current, _) = state else { throw .destroyed }
+                return current
             }
         }
     }
@@ -185,12 +196,21 @@ public final class Keyring: Sendable {
     /// The key named `id`, current or old; `nil` if the ring holds no such key
     /// (it was retired, or the ring was destroyed).
     public func key(id: KeyID) -> SealingKey? {
-        state.withLock { state in state.destroyed ? nil : state.keys.first { $0.id == id } }
+        state.withLock { state in
+            guard case .holding(let current, let older) = state else { return nil }
+            return current.id == id ? current : older.first { $0.id == id }
+        }
     }
 
     /// The identifiers of the keys held, the current one first.
     public var keyIDs: [KeyID] {
-        state.withLock { state in state.destroyed ? [] : state.keys.map(\.id) }
+        state.withLock { state in
+            guard case .holding(let current, let older) = state else { return [] }
+            var ids = [current.id]
+            ids.reserveCapacity(older.count + 1)
+            for key in older { ids.append(key.id) }
+            return ids
+        }
     }
 
     // MARK: Changing
@@ -206,13 +226,13 @@ public final class Keyring: Sendable {
     @discardableResult
     public func rotate() throws(KeyringError) -> SealingKey {
         let rotated = try changes.withLock { (_) throws(KeyringError) -> SealingKey in
-            let held = try live()
+            let (current, older) = try live()
+            let held = [current] + older
             guard held.count < Self.maximumKeys else { throw .tooManyKeys }
             var fresh = SealingKey.generate()
             while held.contains(where: { $0.id == fresh.id }) { fresh = SealingKey.generate() }
-            let ring = [fresh] + held
-            try Self.persist(ring, name: name, custody: custody)
-            state.withLock { $0.keys = ring }
+            try Self.persist([fresh] + held, name: name, custody: custody)
+            state.withLock { $0 = .holding(current: fresh, older: held) }
             return fresh
         }
         SealedEvents.record(Event("sealed.key_rotated", level: .notice, fields: [
@@ -242,13 +262,13 @@ public final class Keyring: Sendable {
     public func retire(ids: [KeyID]) throws(KeyringError) -> Int {
         let wanted = Set(ids)
         let retired = try changes.withLock { (_) throws(KeyringError) -> Int in
-            let held = try live()
-            if let first = held.first, wanted.contains(first.id) { throw .cannotRetireCurrent }
-            let ring = held.filter { !wanted.contains($0.id) }
-            guard ring.count < held.count else { return 0 }
-            try Self.persist(ring, name: name, custody: custody)
-            state.withLock { $0.keys = ring }
-            return held.count - ring.count
+            let (current, older) = try live()
+            if wanted.contains(current.id) { throw .cannotRetireCurrent }
+            let kept = older.filter { !wanted.contains($0.id) }
+            guard kept.count < older.count else { return 0 }
+            try Self.persist([current] + kept, name: name, custody: custody)
+            state.withLock { $0 = .holding(current: current, older: kept) }
+            return older.count - kept.count
         }
         if retired > 0 {
             SealedEvents.record(Event("sealed.keys_retired", level: .notice, fields: [
@@ -269,7 +289,7 @@ public final class Keyring: Sendable {
             } catch {
                 throw .custody(error)
             }
-            state.withLock { $0.keys = []; $0.destroyed = true }
+            state.withLock { $0 = .destroyed }
         }
         SealedEvents.record(Event("sealed.keyring_destroyed", level: .notice, fields: [.init("name", .string(name))]))
     }
@@ -295,18 +315,18 @@ public final class Keyring: Sendable {
     public func reload() throws(KeyringError) {
         try changes.withLock { (_) throws(KeyringError) in
             guard let stored = try Self.load(name: name, custody: custody) else { throw .missing }
-            let keys = try RingFormat.decode(stored)
-            state.withLock { $0.keys = keys; $0.destroyed = false }
+            let ring = try State(keys: RingFormat.decode(stored))
+            state.withLock { $0 = ring }
         }
     }
 
     // MARK: Internals
 
-    /// The keys held, or `.destroyed`.
-    private func live() throws(KeyringError) -> [SealingKey] {
-        try state.withLock { (state) throws(KeyringError) -> [SealingKey] in
-            guard !state.destroyed else { throw .destroyed }
-            return state.keys
+    /// The current key and the older ones, or `.destroyed`.
+    private func live() throws(KeyringError) -> (current: SealingKey, older: [SealingKey]) {
+        try state.withLock { (state) throws(KeyringError) -> (current: SealingKey, older: [SealingKey]) in
+            guard case .holding(let current, let older) = state else { throw .destroyed }
+            return (current, older)
         }
     }
 

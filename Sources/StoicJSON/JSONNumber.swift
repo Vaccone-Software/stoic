@@ -236,29 +236,22 @@ struct NumberParts: Hashable {
         var negative = false
         var digits: [UInt8] = []
         var integerDigits = 0
-        var inFraction = false
         var exponentValue = 0
         var exponentNegative = false
-        var inExponent = false
 
-        for byte in lexeme.utf8 {
-            switch byte {
-            case UInt8(ascii: "-"):
-                if inExponent { exponentNegative = true } else { negative = true }
-            case UInt8(ascii: "+"):
-                break
-            case UInt8(ascii: "."):
-                inFraction = true
-            case UInt8(ascii: "e"), UInt8(ascii: "E"):
-                inExponent = true
-            default:
-                let digit = Int(byte) - 0x30
-                if inExponent {
-                    exponentValue = min(exponentValue * 10 + digit, Self.exponentCap)
-                } else {
-                    digits.append(UInt8(truncatingIfNeeded: digit))
-                    if !inFraction { integerDigits += 1 }
-                }
+        for element in NumberLexemeScanner(lexeme) {
+            switch element {
+            case .minus(in: .exponent):
+                exponentNegative = true
+            case .minus:
+                negative = true
+            case .digit(let digit, in: .integer):
+                digits.append(digit)
+                integerDigits += 1
+            case .digit(let digit, in: .fraction):
+                digits.append(digit)
+            case .digit(let digit, in: .exponent):
+                exponentValue = min(exponentValue * 10 + Int(digit), Self.exponentCap)
             }
         }
 

@@ -333,6 +333,104 @@ struct KeyringTests {
         #expect(try ring.current.id == ids[0])
     }
 
+    // MARK: Where a keyring is in its life
+
+    @Test func aReloadThatFindsTheRingBringsADestroyedKeyringBack() throws {
+        let custody = InMemoryKeyCustody()
+        let ring = try open(custody, .create).keyring
+        let old = try ring.current
+        try ring.destroy()
+        #expect(throws: KeyringError.destroyed) { try ring.current }
+        // Another process makes a keyring of the same name again.
+        let successor = try open(custody, .create).keyring
+        try ring.reload()
+        #expect(ring.keyIDs == successor.keyIDs)
+        #expect(try ring.current.id == successor.keyIDs[0])
+        #expect(ring.key(id: successor.keyIDs[0]) != nil)
+        #expect(ring.key(id: old.id) == nil, "the keys it held are not the ring's now")
+        // It changes like any other, and can be destroyed again.
+        let fresh = try ring.rotate()
+        #expect(ring.keyIDs == [fresh.id] + successor.keyIDs)
+        try ring.destroy()
+        #expect(throws: KeyringError.destroyed) { try ring.current }
+    }
+
+    @Test func aReloadThatFindsNothingOrCannotReadLeavesADestroyedKeyringDestroyed() throws {
+        let custody = InMemoryKeyCustody()
+        let ring = try open(custody, .create).keyring
+        let old = try ring.current
+        try ring.destroy()
+        var future = Self.goodRing()
+        future[4] = 2
+        let failures: [(KeyringError, () -> Void)] = [
+            (.missing, {}),
+            (.custody(.unavailable(.locked)), { custody.failNext(with: .unavailable(.locked), on: .load) }),
+            (.corrupt, { custody.put(bytes("garbage"), name: Self.name) }),
+            (.unsupportedVersion(2), { custody.put(future, name: Self.name) }),
+        ]
+        for (expected, arrange) in failures {
+            arrange()
+            #expect(throws: expected) { try ring.reload() }
+            #expect(throws: KeyringError.destroyed) { try ring.current }
+            #expect(throws: KeyringError.destroyed) { try ring.rotate() }
+            #expect(throws: KeyringError.destroyed) { try ring.retire(id: old.id) }
+            #expect(ring.keyIDs.isEmpty && ring.key(id: old.id) == nil)
+        }
+    }
+
+    @Test func destroyingADestroyedKeyringLeavesItDestroyed() throws {
+        let custody = InMemoryKeyCustody()
+        let ring = try open(custody, .create).keyring
+        try ring.destroy()
+        try ring.destroy()
+        #expect(throws: KeyringError.destroyed) { try ring.current }
+        #expect(ring.keyIDs.isEmpty)
+    }
+
+    @Test func aFullRingRefusesARotationUntilAKeyIsRetired() throws {
+        let keys = (0..<Keyring.maximumKeys).map { _ in SealingKey.generate() }
+        let custody = InMemoryKeyCustody()
+        custody.put(RingFormat.encode(keys), name: Self.name)
+        let ring = try open(custody).keyring
+        let ids = keys.map(\.id)
+        #expect(ring.keyIDs == ids)
+        let stored = custody.contents(of: Self.name)
+        #expect(throws: KeyringError.tooManyKeys) { try ring.rotate() }
+        #expect(ring.keyIDs == ids && custody.contents(of: Self.name) == stored)
+        #expect(try ring.retire(id: ids[ids.count - 1]))
+        let fresh = try ring.rotate()
+        #expect(ring.keyIDs == [fresh.id] + ids.dropLast())
+    }
+
+    @Test func theKeysAreFoundAndRetiredWhereverTheyAreInTheRing() throws {
+        let custody = InMemoryKeyCustody()
+        let ring = try open(custody, .create).keyring
+        _ = try ring.rotate(); _ = try ring.rotate()
+        let ids = ring.keyIDs
+        #expect(ids.count == 3)
+        for id in ids { #expect(ring.key(id: id)?.id == id) }
+        #expect(ring.key(id: SealingKey.generate().id) == nil)
+
+        // The current key goes nowhere, whatever else is asked for with it.
+        let stored = custody.contents(of: Self.name)
+        #expect(throws: KeyringError.cannotRetireCurrent) { try ring.retire(ids: ids) }
+        #expect(throws: KeyringError.cannotRetireCurrent) { try ring.retire(ids: [ids[2], ids[0]]) }
+        #expect(ring.keyIDs == ids && custody.contents(of: Self.name) == stored)
+
+        // Retiring nothing the ring holds stores nothing.
+        let storesBefore = custody.calls.filter { $0.operation == .store }.count
+        #expect(try ring.retire(ids: []) == 0)
+        #expect(try ring.retire(ids: [SealingKey.generate().id]) == 0)
+        #expect(custody.calls.filter { $0.operation == .store }.count == storesBefore)
+
+        // A key between the current one and the oldest goes; the order of the rest stays.
+        #expect(try ring.retire(id: ids[1]))
+        #expect(ring.keyIDs == [ids[0], ids[2]])
+        #expect(try ring.current.id == ids[0])
+        #expect(ring.key(id: ids[1]) == nil && ring.key(id: ids[2])?.id == ids[2])
+        #expect(try RingFormat.decode(try #require(custody.contents(of: Self.name))).map(\.id) == [ids[0], ids[2]])
+    }
+
     // MARK: Threads
 
     @Test(.failureMode("design/24", "keys are used from many threads while the keyring rotates"))
