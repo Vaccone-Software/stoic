@@ -44,19 +44,24 @@ extension PosixFileSystem {
 /// Both descriptors are `O_EVTONLY`, which watches without keeping a volume
 /// from being unmounted. Everything that touches the sources happens under
 /// `sources`, and the handlers run on `queue`, so a re-arm never races the
-/// event that caused it; `stopped` makes the last one that does a no-op.
+/// event that caused it; the `stopped` state makes the last one that does a
+/// no-op, and holds no source for a re-arm to leave live.
 private final class VnodeWatch: Sendable {
-    private struct Sources {
-        var directory: (any DispatchSourceFileSystemObject)?
-        var file: (any DispatchSourceFileSystemObject)?
-        var stopped = false
+    private enum Sources {
+        /// Before the directory's source is stored. `start` leaves it before
+        /// anything can watch the file: the directory's handler does not run
+        /// until its source is stored and resumed.
+        case starting
+        /// The directory, and the file while there is one to watch.
+        case watching(directory: any DispatchSourceFileSystemObject, file: (any DispatchSourceFileSystemObject)?)
+        case stopped
     }
 
     private let directory: String
     private let path: String
     private let handler: @Sendable () -> Void
     private let queue = DispatchQueue(label: "stoic.store.watch")
-    private let sources = Mutex(Sources())
+    private let sources = Mutex(Sources.starting)
 
     private init(path: String, handler: @escaping @Sendable () -> Void) {
         self.path = path
@@ -83,7 +88,7 @@ private final class VnodeWatch: Sendable {
             handler()
         }
         source.setCancelHandler { _ = CWatch.close(descriptor) }
-        sources.withLock { $0.directory = source }
+        sources.withLock { $0 = .watching(directory: source, file: nil) }
         source.resume()
     }
 
@@ -92,33 +97,39 @@ private final class VnodeWatch: Sendable {
     private func watchFile() {
         let descriptor = CWatch.openForEvents(path)
         sources.withLock { sources in
-            sources.file?.cancel()
-            sources.file = nil
-            guard descriptor >= 0 else { return }
-            guard !sources.stopped else {
-                _ = CWatch.close(descriptor)
-                return
+            switch sources {
+            case .watching(let directory, let previous):
+                previous?.cancel()
+                guard descriptor >= 0 else {
+                    sources = .watching(directory: directory, file: nil)
+                    return
+                }
+                let source = DispatchSource.makeFileSystemObjectSource(
+                    fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename, .attrib, .revoke], queue: queue)
+                source.setEventHandler { [self, source] in
+                    let replaced = !source.data.isDisjoint(with: [.delete, .rename, .revoke])
+                    if replaced { watchFile() }
+                    handler()
+                }
+                source.setCancelHandler { _ = CWatch.close(descriptor) }
+                sources = .watching(directory: directory, file: source)
+                source.resume()
+            case .starting, .stopped:
+                // A re-arm that lost the race with `stop` has nothing to
+                // watch for: it closes the descriptor it opened. (`.starting`
+                // is not reached, for the reason given on the case.)
+                if descriptor >= 0 { _ = CWatch.close(descriptor) }
             }
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename, .attrib, .revoke], queue: queue)
-            source.setEventHandler { [self, source] in
-                let replaced = !source.data.isDisjoint(with: [.delete, .rename, .revoke])
-                if replaced { watchFile() }
-                handler()
-            }
-            source.setCancelHandler { _ = CWatch.close(descriptor) }
-            sources.file = source
-            source.resume()
         }
     }
 
     private func stop() {
         sources.withLock { sources in
-            sources.stopped = true
-            sources.directory?.cancel()
-            sources.file?.cancel()
-            sources.directory = nil
-            sources.file = nil
+            if case .watching(let directory, let file) = sources {
+                directory.cancel()
+                file?.cancel()
+            }
+            sources = .stopped
         }
     }
 }
