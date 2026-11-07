@@ -439,10 +439,17 @@ private struct PerformCall {
 
     /// What an attempt holds while it runs.
     struct Held {
-        /// The partition's slot, held by this call (not borrowed).
-        var slot = false
-        /// A slot borrowed from the enclosing call on the same backend.
-        var borrowed = false
+        /// The partition's slot an attempt runs in.
+        enum Slot {
+            /// None yet: the attempt is still being admitted.
+            case none
+            /// Held by this call.
+            case own
+            /// Borrowed from the enclosing call on the same backend.
+            case borrowed
+        }
+
+        var slot = Slot.none
         /// The writer lane, held by this call.
         var lane = false
         /// Whether the attempt writes under the lane, its own or the
@@ -461,7 +468,7 @@ private struct PerformCall {
                 held.lane = true
             }
             if outer.operation.borrowSlot(attempt: outer.attempt) {
-                held.borrowed = true
+                held.slot = .borrowed
                 return .success(held)
             }
             // Another nested call has the enclosing slot: take one of its own.
@@ -481,13 +488,16 @@ private struct PerformCall {
             release(held)
             return .failure(ending(for: refusal))
         }
-        held.slot = true
+        held.slot = .own
         return .success(held)
     }
 
     func release(_ held: Held) {
-        if held.slot { state.slots.release(rank: rank) }
-        if held.borrowed, let outer { outer.operation.returnSlot(attempt: outer.attempt) }
+        switch held.slot {
+        case .own: state.slots.release(rank: rank)
+        case .borrowed: if let outer { outer.operation.returnSlot(attempt: outer.attempt) }
+        case .none: break
+        }
         if held.lane { state.lane?.release(rank: rank) }
     }
 
