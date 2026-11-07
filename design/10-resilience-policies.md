@@ -375,9 +375,10 @@ or the queue already holds `queueLimit` waiters, it throws `.rateLimited` with
 `retryAfter` set to the computed wait. Nothing is queued and nothing consumed.
 Otherwise it queues. Only the head of the queue sleeps, on the limiter's clock,
 until it can be afforded; when it is served the next waiter is woken to compute
-its own wait. This is the semaphore's waiter queue (design/03), including its
-"arriving"/"left early" bookkeeping for a cancellation that arrives before the
-waiter is queued, with a timer in place of a release. Recomputing at the head
+its own wait. This is the semaphore's waiter queue (design/03), with a timer in
+place of a release. A waiter joins the queue as it takes its id, so it has no
+"on its way" state; a waiter removed by cancellation keeps the reason until its
+own task collects it. Recomputing at the head
 means a late wake-up or a departed waiter never leaves tokens unspent that a
 later waiter could use, and never grants tokens that were not earned.
 

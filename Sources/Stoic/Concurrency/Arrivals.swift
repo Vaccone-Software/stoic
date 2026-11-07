@@ -46,7 +46,9 @@ package struct Arrivals<Tag: Sendable, Reason: Sendable>: Sendable {
 
     /// Records that `id` has a place to reach and is on its way to it.
     package mutating func begin(_ id: UInt64, tag: Tag) {
-        precondition(statuses.updateValue(.onItsWay(tag), forKey: id) == nil, "Arrivals: id \(id) began twice")
+        // Not inside the precondition: -Ounchecked does not evaluate its condition.
+        let previous = statuses.updateValue(.onItsWay(tag), forKey: id)
+        precondition(previous == nil, "Arrivals: id \(id) began twice")
         onTheirWayCount += 1
     }
 

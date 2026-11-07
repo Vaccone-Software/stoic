@@ -17,9 +17,9 @@ internal import Synchronization
 /// outlive ``Deadline/current``, or the queue already holds `queueLimit`
 /// tasks. A task that is cancelled while queued, or whose enclosing deadline
 /// cancels it, leaves without taking any permits: it is the waiter pattern of
-/// ``AsyncSemaphore``, including the bookkeeping for a cancellation that
-/// arrives before the waiter has queued, with a timer where the semaphore has
-/// a release.
+/// ``AsyncSemaphore``, with a timer where the semaphore has a release. A waiter
+/// joins the queue as it takes its id, so unlike the semaphore's it is never on
+/// its way there; a cancellation only has to reach it before it next looks.
 ///
 /// **The arithmetic is exact.** Credit is an integer counted in units of
 /// "permit × interval-attoseconds", so a refill is `elapsed-attoseconds × rate`

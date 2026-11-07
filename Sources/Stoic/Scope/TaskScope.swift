@@ -276,7 +276,8 @@ final class TaskScopeState: Sendable {
                 state.body = .cancelOnArrival
                 return (true, nil)
             case .cancelOnArrival:
-                // Only the first failure gets here, and it set this.
+                // Unreachable: only the first failure gets here, and only a
+                // failure sets this.
                 return (true, nil)
             }
         }
