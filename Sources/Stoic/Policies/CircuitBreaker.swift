@@ -230,7 +230,30 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
     private enum Phase: Sendable {
         case closed
         case open(until: AnyClock.Instant?)   // nil: forced open
-        case halfOpen
+        case halfOpen(Episode)
+
+        /// What a half-open episode has counted. It exists only while the
+        /// breaker is half-open, so leaving half-open discards it, and the
+        /// next episode starts from nothing.
+        struct Episode: Sendable {
+            /// Probes that finished and counted as successes.
+            var successes = 0
+            /// Probes running now, by id, with when each began.
+            var inFlight: [UInt64: AnyClock.Instant] = [:]
+        }
+
+        /// Changes the half-open episode in place. False, with nothing
+        /// changed, when the breaker is not half-open.
+        @discardableResult
+        mutating func editEpisode(_ change: (inout Episode) -> Void) -> Bool {
+            guard case .halfOpen(var episode) = self else { return false }
+            // Out of the phase while it is changed, so the dictionary has one
+            // owner and is edited where it is, not copied first.
+            self = .closed
+            change(&episode)
+            self = .halfOpen(episode)
+            return true
+        }
 
         var state: State {
             switch self {
@@ -251,9 +274,8 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         var window: OutcomeWindow
         var trips = 0
         var closedAt: AnyClock.Instant
-        // The half-open episode.
-        var successes = 0
-        var inFlight: [UInt64: AnyClock.Instant] = [:]
+        // Not part of the episode: probe ids stay unique across episodes, so
+        // a ticket is never mistaken for a probe of a later one.
         var nextProbe: UInt64 = 0
         // When calls in flight left an inner stage's queue (see
         // `DispatchMark`). Entries are removed as their calls complete, so
@@ -564,15 +586,13 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         switch core.phase {
         case .open(let until?) where now >= until:
             core.generation += 1
-            core.phase = .halfOpen
-            core.successes = 0
-            core.inFlight = [:]
+            core.phase = .halfOpen(Phase.Episode())
             core.outbox.append(.halfOpen)
             return [Change(name: "breaker.half_open", level: .notice, fields: [
                 .init("probes", .int(configuration.halfOpenProbes)),
             ])]
-        case .halfOpen:
-            guard let oldest = core.inFlight.values.min(),
+        case .halfOpen(let episode):
+            guard let oldest = episode.inFlight.values.min(),
                   oldest.duration(to: now) >= configuration.halfOpenTimeout else { return [] }
             return trip(&core, now: now, trigger: "probe_timeout", random: random)
         default:
@@ -589,12 +609,17 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
             let retryAfter = until.map { max(.zero, now.duration(to: $0)) }
             return .reject(Rejection(.circuitOpen, label: label, retryAfter: retryAfter), .open)
         case .halfOpen:
-            guard core.successes + core.inFlight.count < configuration.halfOpenProbes else {
+            let id = core.nextProbe
+            var admitted = false
+            core.phase.editEpisode { episode in
+                guard episode.successes + episode.inFlight.count < configuration.halfOpenProbes else { return }
+                episode.inFlight[id] = now
+                admitted = true
+            }
+            guard admitted else {
                 return .reject(Rejection(.circuitOpen, label: label), .halfOpen)
             }
-            let id = core.nextProbe
             core.nextProbe += 1
-            core.inFlight[id] = now
             core.nextCall &+= 1
             return .run(Ticket(generation: core.generation, call: core.nextCall, probe: id, start: now))
         }
@@ -632,12 +657,21 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         // Measured from when the call left the last local queue, if an inner
         // stage said; a call cut short by a deadline is slow by definition.
         let dispatched = core.dispatchedAt.isEmpty ? nil : core.dispatchedAt.removeValue(forKey: ticket.call)
-        guard ticket.generation == core.generation else {
-            return [Change(name: "breaker.ignored", level: .debug, fields: [
+        func stale() -> [Change] {
+            [Change(name: "breaker.ignored", level: .debug, fields: [
                 .init("reason", .string("stale"), privacy: .public),
             ])]
         }
-        if let probe = ticket.probe { core.inFlight.removeValue(forKey: probe) }
+        guard ticket.generation == core.generation else { return stale() }
+        if let probe = ticket.probe {
+            // The permit goes back whatever the verdict says. A probe is
+            // issued in a half-open episode, and every transition moves the
+            // generation, so one that still matches finds its episode; a
+            // ticket that does not belongs to nothing now running, and is as
+            // stale as one from an older generation.
+            let returned = core.phase.editEpisode { _ = $0.inFlight.removeValue(forKey: probe) }
+            guard returned else { return stale() }
+        }
 
         switch verdict {
         case .ignored(let reason):
@@ -668,8 +702,15 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
                 if failed || slow {
                     return recorded + trip(&core, now: now, trigger: failed ? "probe_failed" : "probe_slow", random: random)
                 }
-                core.successes += 1
-                if core.successes >= configuration.halfOpenProbes {
+                var enough = false
+                let counted = core.phase.editEpisode { episode in
+                    episode.successes += 1
+                    enough = episode.successes >= configuration.halfOpenProbes
+                }
+                // The episode was found a few lines up, and nothing since has
+                // ended it; with none there would be nothing to count in.
+                guard counted else { return recorded }
+                if enough {
                     return recorded + closeNow(&core, now: now, reason: "probes_succeeded")
                 }
                 return recorded
@@ -716,8 +757,6 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         core.generation += 1
         core.phase = .open(until: until)
         core.window.clear()
-        core.successes = 0
-        core.inFlight = [:]
         core.outbox.append(.open)
         var fields: [Event.Field] = [
             .init("trigger", .string(trigger), privacy: .public),
@@ -736,8 +775,6 @@ public final class CircuitBreaker: Policy, CustomStringConvertible {
         core.generation += 1
         core.phase = .closed
         core.window.clear()
-        core.successes = 0
-        core.inFlight = [:]
         core.closedAt = now
         guard !wasClosed else { return [] }
         core.outbox.append(.closed)
