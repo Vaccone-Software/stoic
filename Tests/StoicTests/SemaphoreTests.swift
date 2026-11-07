@@ -119,7 +119,7 @@ struct SemaphoreTests {
         #expect(await eventually { semaphore.availablePermits == 0 })
         FaultPoint.install()
         defer { FaultPoint.uninstall() }
-        let first = stalledWaiter(semaphore, clock) { Issue.record("a cancelled waiter must not run") }
+        let first = stalledWaiter(semaphore, clock) { _ = Issue.record("a cancelled waiter must not run") }
         await clock.waitForSleepers(count: 1)
         let second = Task { try await semaphore.withPermit {} }
         #expect(await eventually { semaphore.waiterCount == 1 })
@@ -128,6 +128,87 @@ struct SemaphoreTests {
         first.cancel()   // the permit it was owed goes to the next in line
         try await second.value
         await #expect(throws: PolicyError<Never>.self) { try await first.value }
+        #expect(semaphore.availablePermits == 1)
+        #expect(semaphore.waiterCount == 0)
+    }
+
+    /// A waiter on its way to the queue is waiting, for the queue's bound; one
+    /// that has left is not, and neither is one that was refused.
+    @Test(.stoic(seed: 106), .timeLimit(.minutes(1)))
+    func aWaiterOnItsWayCountsAgainstTheQueueLimitUntilItLeaves() async throws {
+        let semaphore = AsyncSemaphore(permits: 1, label: "limit")
+        let clock = TestClock()
+        let gate = TestGate()
+        let queueing = AsyncSemaphore.Queueing(limit: 1, fullReason: .bulkheadFull, rejectedEvent: "bulkhead.rejected")
+        let holder = Task { try await semaphore.withPermit { await gate.wait() } }
+        #expect(await eventually { semaphore.availablePermits == 0 })
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let first = Task {
+            try await withAmbient({ $0.clock = clock.erased; $0.faultPolicy = StallArrival() }) { () async throws(PolicyError<Never>) in
+                try await semaphore.withPermit(queueing: queueing) { _ = Issue.record("a cancelled waiter must not run") }
+            }
+        }
+        await clock.waitForSleepers(count: 1)   // it found no permit, and is not queued yet
+        #expect(semaphore.waiterCount == 0)
+
+        let refused = await Task { try await semaphore.withPermit(queueing: queueing) { _ = Issue.record("a refused caller must not run") } }.result
+        guard case .failure(let refusal) = refused, let refusalError = refusal as? PolicyError<Never> else {
+            Issue.record("expected the one place in the queue to be taken by the waiter on its way")
+            return
+        }
+        #expect(refusalError.rejection?.reason == .bulkheadFull)
+
+        first.cancel()
+        let left = await first.result
+        guard case .failure(let leaving) = left, let leavingError = leaving as? PolicyError<Never> else {
+            Issue.record("expected the cancelled waiter to be rejected")
+            return
+        }
+        #expect(leavingError.rejection?.reason == .cancelled)
+
+        // Gone, it holds no place: the next waiter queues instead of being refused.
+        let third = Task { try await semaphore.withPermit(queueing: queueing) {} }
+        #expect(await eventually { semaphore.waiterCount == 1 })
+        gate.open()
+        try await holder.value
+        try await third.value
+        #expect(semaphore.availablePermits == 1)
+        #expect(semaphore.waiterCount == 0)
+    }
+
+    /// A waiter whose deadline passed before it reached the queue never
+    /// queues: the permit kept for it goes to the waiter behind.
+    @Test(.stoic(seed: 107), .timeLimit(.minutes(1)))
+    func aWaiterWhoseDeadlinePassesOnItsWayToTheQueueLetsTheOthersThrough() async throws {
+        let semaphore = AsyncSemaphore(permits: 1, label: "late")
+        let clock = TestClock()
+        let gate = TestGate()
+        let holder = Task { try await semaphore.withPermit { await gate.wait() } }
+        #expect(await eventually { semaphore.availablePermits == 0 })
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let first = Task {
+            try await withAmbient({ $0.clock = clock.erased; $0.faultPolicy = StallArrival() }) { () async throws in
+                try await withTimeout(.seconds(1)) {
+                    try await semaphore.withPermit { () throws(Failure) in _ = Issue.record("a late waiter must not run") }
+                }
+            }
+        }
+        await clock.waitForSleepers(count: 2)   // the timeout's timer, and the waiter held on its way
+        let second = Task { try await semaphore.withPermit {} }
+        #expect(await eventually { semaphore.waiterCount == 1 })
+        gate.open()
+        try await holder.value
+        #expect(semaphore.availablePermits == 1, "kept for the waiter still on its way")
+        await clock.advance(by: .seconds(1))
+        try await second.value
+        do {
+            try await first.value
+            Issue.record("expected a rejection")
+        } catch let error as PolicyError<Failure> {
+            #expect(error.rejection?.reason == .deadlineExceeded)
+        }
         #expect(semaphore.availablePermits == 1)
         #expect(semaphore.waiterCount == 0)
     }
