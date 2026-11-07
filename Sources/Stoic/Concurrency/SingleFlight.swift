@@ -54,9 +54,9 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
     private struct State {
         var nextID: UInt64 = 0
         var flights: [Key: Flight] = [:]
-        // Callers with an id that have not joined a flight yet, with the
-        // rejection (cancellation, deadline) that arrived first, if any.
-        var arriving: [UInt64: Rejection?] = [:]
+        // Callers with an id that have not joined a flight yet, and those of
+        // them whose cancellation or deadline came first.
+        var arrivals = Arrivals<Void, Rejection>()
         // The key each joined caller is waiting on.
         var membership: [UInt64: Key] = [:]
     }
@@ -105,7 +105,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
         if Task.isCancelled { throw .rejected(Rejection(.cancelled, label: label)) }
         let waiterID = state.withLock { state -> UInt64 in
             defer { state.nextID += 1 }
-            state.arriving[state.nextID] = .some(nil)
+            state.arrivals.begin(state.nextID)
             return state.nextID
         }
         await FaultPoint.hit("singleflight.arriving")
@@ -173,7 +173,7 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
     }
 
     private func joinLocked(_ state: inout State, _ waiterID: UInt64, key: Key, waiter: Waiter, priority: TaskPriority) -> FlightJoin {
-        if let early = state.arriving.removeValue(forKey: waiterID) ?? nil {
+        if let early = state.arrivals.arrive(waiterID) {
             return .rejected(early)
         }
         state.membership[waiterID] = key
@@ -248,9 +248,8 @@ public final class SingleFlight<Key: Hashable & Sendable, Value: Sendable, Failu
     /// operation reads as its cancellation cause.
     private func leave(_ waiterID: UInt64, because rejection: Rejection, cause: CancellationCause) {
         let (waiter, retired) = state.withLock { state -> (Waiter?, Flight?) in
-            if let arriving = state.arriving[waiterID] {
+            if state.arrivals.leave(waiterID, because: rejection) != nil {
                 // Not joined yet: it will find this on arrival.
-                if arriving == nil { state.arriving[waiterID] = .some(rejection) }
                 return (nil, nil)
             }
             guard let key = state.membership.removeValue(forKey: waiterID),
