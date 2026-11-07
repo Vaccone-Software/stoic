@@ -52,20 +52,78 @@ final class StreamTransfer: TransferSink {
         case failed(any Error)
     }
 
+    /// Who is parked in a continuation, waiting on the transfer. One slot, so
+    /// the head and a reader are never both waiting: the head is awaited before
+    /// the task resumes, and the body is read only once the head has arrived.
+    private enum Parked {
+        case nobody
+        /// The caller of `awaitHead`, until the head arrives or the transfer ends.
+        case head(CheckedContinuation<HTTPURLResponse, any Error>)
+        /// The consumer, waiting for a chunk or the end. The buffer is empty:
+        /// a reader parks because there was nothing to take, and what arrives
+        /// meanwhile goes to it.
+        case reader(CheckedContinuation<[UInt8]?, any Error>)
+    }
+
+    /// Where the transfer is, apart from who is waiting on it.
+    private enum Phase {
+        /// Bytes can still arrive.
+        case live
+        /// Over, and the consumer not yet told: it is told once it has taken
+        /// every chunk that arrived first.
+        case ending(End)
+        /// The consumer has been told of the end or of the failure; reads
+        /// that follow return the end.
+        case endDelivered
+        /// The consumer gave up. Reads throw `CancellationError`, even after
+        /// the end was delivered, and nothing that arrives is kept.
+        case abandoned
+
+        var isAbandoned: Bool {
+            if case .abandoned = self { true } else { false }
+        }
+    }
+
     private struct State {
         var task: URLSessionDataTask?
-        var head: CheckedContinuation<HTTPURLResponse, any Error>?
+        var parked = Parked.nobody
         var chunks: [[UInt8]] = []
         /// Index of the oldest chunk not yet taken; the array is compacted
         /// when enough have gone.
         var first = 0
         var buffered = 0
-        var waiter: CheckedContinuation<[UInt8]?, any Error>?
         var received = 0
-        var ending: End?
-        var endDelivered = false
+        var phase = Phase.live
+        /// Whether the data task is suspended for want of a consumer. A flag of
+        /// its own and not part of `phase`: a callback the session had already
+        /// dispatched can arrive after the suspension and take the transfer
+        /// over its limit, and the consumer then drains the chunks of a
+        /// transfer that is ending, which still resumes the task.
         var suspended = false
-        var abandoned = false
+
+        /// The caller waiting for the head, taken out of its slot.
+        mutating func takeHead() -> CheckedContinuation<HTTPURLResponse, any Error>? {
+            guard case .head(let continuation) = parked else { return nil }
+            parked = .nobody
+            return continuation
+        }
+
+        /// The reader waiting for a chunk, taken out of its slot.
+        mutating func takeReader() -> CheckedContinuation<[UInt8]?, any Error>? {
+            guard case .reader(let continuation) = parked else { return nil }
+            parked = .nobody
+            return continuation
+        }
+
+        /// Ends the transfer because the head was refused. A refusal replaces
+        /// the reason of an ending the consumer has not yet been told of, and
+        /// does nothing once it has been told, or has gone.
+        mutating func refuseHead(with failure: any Error) {
+            switch phase {
+            case .live, .ending: phase = .ending(.failed(failure))
+            case .endDelivered, .abandoned: break
+            }
+        }
     }
 
     /// Whether a full buffer suspends the data task. On Apple platforms it does,
@@ -102,12 +160,21 @@ final class StreamTransfer: TransferSink {
         state.withLock { $0.task = task }
     }
 
-    /// Waits for the head. Called before the task resumes.
+    /// Waits for the head. Called once, before the task resumes: a head that
+    /// arrives before anyone waits for it has nobody to go to. Nothing here can
+    /// tell that from a head that has not come yet, so the order is the caller's
+    /// to keep. A second wait, or one after a reader has parked, would drop a
+    /// continuation, and is refused.
     func awaitHead(_ continuation: CheckedContinuation<HTTPURLResponse, any Error>) {
         let abandoned = state.withLock { state -> Bool in
-            if state.abandoned { return true }
-            state.head = continuation
-            return false
+            if state.phase.isAbandoned { return true }
+            switch state.parked {
+            case .nobody:
+                state.parked = .head(continuation)
+                return false
+            case .head, .reader:
+                preconditionFailure("the head is awaited once, before the task resumes")
+            }
         }
         if abandoned { continuation.resume(throwing: CancellationError()) }
     }
@@ -120,11 +187,10 @@ final class StreamTransfer: TransferSink {
             case refused(any Error)
         }
         let (continuation, verdict) = state.withLock { state -> (CheckedContinuation<HTTPURLResponse, any Error>?, Verdict) in
-            let continuation = state.head
-            state.head = nil
+            let continuation = state.takeHead()
             guard let http = response as? HTTPURLResponse else {
                 let failure = URLError(.badServerResponse)
-                state.ending = .failed(failure)
+                state.refuseHead(with: failure)
                 return (continuation, .refused(failure))
             }
             // A HEAD, 204 or 304 transfers no body. Content-Length is the size
@@ -133,7 +199,7 @@ final class StreamTransfer: TransferSink {
             let declaresABody = ResponseBody.willBeTransferred(method: method, status: http.statusCode)
             if declaresABody, response.expectedContentLength > Int64(limit) {
                 let failure = HTTPTransportError.responseTooLarge(limit: limit)
-                state.ending = .failed(failure)
+                state.refuseHead(with: failure)
                 return (continuation, .refused(failure))
             }
             return (continuation, .head(http))
@@ -156,19 +222,18 @@ final class StreamTransfer: TransferSink {
         }
         let (keepGoing, delivery) = state.withLock { state -> (Bool, Delivery) in
             // Whatever follows an abandoned or ended transfer is dropped.
-            guard !state.abandoned, state.ending == nil else { return (false, .none) }
+            guard case .live = state.phase else { return (false, .none) }
             var bytes = [UInt8](data)
             let room = limit - state.received
             let over = bytes.count > room
             if over { bytes.removeSubrange(room...) }
             state.received += bytes.count
-            if over { state.ending = .failed(HTTPTransportError.responseTooLarge(limit: limit)) }
+            if over { state.phase = .ending(.failed(HTTPTransportError.responseTooLarge(limit: limit))) }
 
             var delivery = Delivery.none
             if !bytes.isEmpty {
-                if let waiter = state.waiter {
+                if let waiter = state.takeReader() {
                     // A waiting consumer means an empty buffer: it takes the chunk directly.
-                    state.waiter = nil
                     delivery = .chunk(waiter, bytes)
                 } else {
                     state.chunks.append(bytes)
@@ -181,9 +246,8 @@ final class StreamTransfer: TransferSink {
                     }
                 }
             }
-            if over, case .none = delivery, let waiter = state.waiter {
-                state.waiter = nil
-                state.endDelivered = true
+            if over, case .none = delivery, let waiter = state.takeReader() {
+                state.phase = .endDelivered
                 delivery = .failure(waiter)
             }
             return (!over, delivery)
@@ -204,16 +268,16 @@ final class StreamTransfer: TransferSink {
         }
         let (head, headFailure, delivery) = state.withLock { state -> (CheckedContinuation<HTTPURLResponse, any Error>?, any Error, Delivery) in
             state.task = nil
-            let head = state.head
-            state.head = nil
-            let headFailure: any Error = state.abandoned ? CancellationError() : (error ?? URLError(.badServerResponse))
-            if state.ending == nil {
-                state.ending = state.abandoned ? .failed(CancellationError()) : (error.map { .failed($0) } ?? .finished)
+            let head = state.takeHead()
+            let headFailure: any Error = state.phase.isAbandoned ? CancellationError() : (error ?? URLError(.badServerResponse))
+            // The first ending stands: a refusal or a limit passed has already
+            // said why the transfer is over.
+            if case .live = state.phase {
+                state.phase = .ending(error.map { .failed($0) } ?? .finished)
             }
             var delivery = Delivery.none
-            if let waiter = state.waiter, state.first == state.chunks.count, let ending = state.ending {
-                state.waiter = nil
-                state.endDelivered = true
+            if case .ending(let ending) = state.phase, state.first == state.chunks.count, let waiter = state.takeReader() {
+                state.phase = .endDelivered
                 switch ending {
                 case .finished: delivery = .end(waiter)
                 case .failed(let failure): delivery = .failure(waiter, failure)
@@ -234,7 +298,11 @@ final class StreamTransfer: TransferSink {
     /// Whether a reader is parked, waiting for a chunk or the end. The tests
     /// read it: a chunk that arrives once the reader is parked goes straight
     /// to it, and nothing else says the reader has got that far.
-    var isWaitingForChunk: Bool { state.withLock { $0.waiter != nil } }
+    var isWaitingForChunk: Bool {
+        state.withLock { state in
+            if case .reader = state.parked { true } else { false }
+        }
+    }
 
     /// The next chunk, or `nil` at the end of the body.
     func next() async throws -> [UInt8]? {
@@ -247,7 +315,7 @@ final class StreamTransfer: TransferSink {
                     case waiting
                 }
                 let step = state.withLock { state -> Step in
-                    if state.abandoned { return .failure(CancellationError()) }
+                    if state.phase.isAbandoned { return .failure(CancellationError()) }
                     if state.first < state.chunks.count {
                         let chunk = state.chunks[state.first]
                         state.first += 1
@@ -266,17 +334,23 @@ final class StreamTransfer: TransferSink {
                         }
                         return .chunk(chunk)
                     }
-                    if let ending = state.ending {
-                        if state.endDelivered { return .end }
-                        state.endDelivered = true
+                    if case .ending(let ending) = state.phase {
+                        state.phase = .endDelivered
                         switch ending {
                         case .finished: return .end
                         case .failed(let failure): return .failure(failure)
                         }
                     }
-                    precondition(state.waiter == nil, "two tasks are reading one response body")
-                    state.waiter = continuation
-                    return .waiting
+                    if case .endDelivered = state.phase { return .end }
+                    switch state.parked {
+                    case .nobody:
+                        state.parked = .reader(continuation)
+                        return .waiting
+                    case .reader:
+                        preconditionFailure("two tasks are reading one response body")
+                    case .head:
+                        preconditionFailure("the body is read before its head has arrived")
+                    }
                 }
                 switch step {
                 case .chunk(let chunk): continuation.resume(returning: chunk)
@@ -294,19 +368,21 @@ final class StreamTransfer: TransferSink {
     /// cancelled, what was buffered is dropped, and a reader that is waiting
     /// or comes later gets `CancellationError`. Harmless after the end.
     func abandon() {
-        let (task, head, waiter) = state.withLock { state -> (URLSessionDataTask?, CheckedContinuation<HTTPURLResponse, any Error>?, CheckedContinuation<[UInt8]?, any Error>?) in
-            guard !state.abandoned else { return (nil, nil, nil) }
-            state.abandoned = true
+        let (task, parked) = state.withLock { state -> (URLSessionDataTask?, Parked) in
+            guard !state.phase.isAbandoned else { return (nil, .nobody) }
+            state.phase = .abandoned
             state.chunks.removeAll()
             state.first = 0
             state.buffered = 0
-            let taken = (state.task, state.head, state.waiter)
-            state.head = nil
-            state.waiter = nil
-            return taken
+            let parked = state.parked
+            state.parked = .nobody
+            return (state.task, parked)
         }
-        head?.resume(throwing: CancellationError())
-        waiter?.resume(throwing: CancellationError())
+        switch parked {
+        case .nobody: break
+        case .head(let head): head.resume(throwing: CancellationError())
+        case .reader(let waiter): waiter.resume(throwing: CancellationError())
+        }
         task?.cancel()
     }
 }
