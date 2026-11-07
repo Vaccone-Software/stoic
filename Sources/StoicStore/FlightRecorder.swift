@@ -57,7 +57,7 @@ public final class FlightRecorder: Instrumentation {
     public let minimumLevel: Event.Level
 
     private struct Writer {
-        var file: OpenFile?
+        let file: OpenFile
         var head: Int
         var nextSequence: UInt64
         var status: Status = .recording
@@ -131,10 +131,9 @@ public final class FlightRecorder: Instrumentation {
     }
 
     deinit {
-        if let file = writer.withLock({ $0.file }) {
-            // stoic:allow(discarded-try): nothing can be done about a failed close while deallocating
-            try? fileSystem.close(file)
-        }
+        let file = writer.withLock { $0.file }
+        // stoic:allow(discarded-try): nothing can be done about a failed close while deallocating
+        try? fileSystem.close(file)
     }
 
     /// Whether the recorder is still writing.
@@ -163,9 +162,9 @@ public final class FlightRecorder: Instrumentation {
     /// One full sync: call it at moments that matter, not per event.
     public func flush() {
         writer.withLock { writer in
-            guard case .recording = writer.status, let file = writer.file else { return }
+            guard case .recording = writer.status else { return }
             do throws(StoreError) {
-                try fileSystem.fullSync(file)
+                try fileSystem.fullSync(writer.file)
             } catch {
                 writer.status = .stopped(error)
             }
@@ -189,12 +188,12 @@ public final class FlightRecorder: Instrumentation {
 
     private func append(_ payload: [UInt8]) {
         writer.withLock { writer in
-            guard case .recording = writer.status, let file = writer.file else { return }
+            guard case .recording = writer.status else { return }
             let record = FlightFormat.encode(sequence: writer.nextSequence, payload: payload)
             guard record.count <= capacity / 4 else { return }
             if writer.head + record.count > capacity { writer.head = 0 }
             do throws(StoreError) {
-                try fileSystem.write(file, record, at: FlightFormat.headerSize + writer.head)
+                try fileSystem.write(writer.file, record, at: FlightFormat.headerSize + writer.head)
                 writer.head += record.count
                 writer.nextSequence += 1
             } catch {
