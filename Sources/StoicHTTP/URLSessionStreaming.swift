@@ -231,6 +231,11 @@ final class StreamTransfer: TransferSink {
 
     // MARK: The consumer's side
 
+    /// Whether a reader is parked, waiting for a chunk or the end. The tests
+    /// read it: a chunk that arrives once the reader is parked goes straight
+    /// to it, and nothing else says the reader has got that far.
+    var isWaitingForChunk: Bool { state.withLock { $0.waiter != nil } }
+
     /// The next chunk, or `nil` at the end of the body.
     func next() async throws -> [UInt8]? {
         try await withTaskCancellationHandler {
