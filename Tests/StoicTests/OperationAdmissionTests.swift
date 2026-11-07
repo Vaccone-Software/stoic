@@ -300,6 +300,64 @@ struct OperationAdmissionTests {
         #expect(run.elapsed == .seconds(10))   // the writes, one after the other
     }
 
+    /// The lane is taken before the slot, so a writer refused its slot holds
+    /// the lane and nothing else: the refusal must give the lane back, or
+    /// every later write waits for a call that is gone.
+    @Test func aWriterRefusedItsSlotGivesTheLaneBack() async throws {
+        let backend = Backend.local("admission.lane-back", capacity: 1)
+        let save = backend.idempotent("save")
+        let load = backend.readOnly("load")
+        let run = try await simulated { _ in
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { _ = await withUrgency(.utility) { await performing(load, Script([.hang])) } }
+                try? await Ambient.sleep(for: .seconds(1))
+                let state = Self.state(backend)!
+                let refused = await withUrgency(.interactive) { await performing(save, Script([.succeed])) }
+                let afterwards = (state.lane!.isIdle, state.slots.held)
+                group.cancelAll()
+                return (refused.error?.stopName, refused.error?.attempts, afterwards)
+            }
+        }
+        let (stop, attempts, afterwards) = run.value
+        #expect(stop == "deadline_exceeded")
+        #expect(attempts == 0)
+        #expect(afterwards.0, "the lane is free again")
+        #expect(afterwards.1.reduce(0, +) == 1, "and only the reader's slot is held")
+    }
+
+    /// A write under an outer read takes the lane and borrows the slot; both
+    /// go back when the inner call ends, and the borrowed slot can be
+    /// borrowed again by the next inner call.
+    @Test func aWriteUnderAReadHoldsTheLaneAndBorrowsTheSlotThenReturnsBoth() async throws {
+        let backend = Backend.local("admission.write-under-read", capacity: 1)
+        let page = backend.readOnly("page")
+        let save = backend.idempotent("save")
+        let run = try await simulated { context in
+            let held = SendableBox<[(lane: [Int], slots: [Int])]>([])
+            let result = try? await page.perform { _ throws(OperationError<any Error>) -> Int in
+                // The backend's state exists once a call has been admitted.
+                let state = Self.state(backend)!
+                var total = 0
+                for _ in 0..<2 {
+                    total += try await save.perform { attempt throws(any Error) in
+                        held.mutate { $0.append((state.lane!.held, state.slots.held)) }
+                        return try await Script([.succeed]).call(attempt)
+                    }
+                }
+                return total
+            }
+            let state = Self.state(backend)!
+            return (result, held.value, state.lane!.isIdle, state.slots.isIdle, context.events.events(named: "operation.nested_admission").count)
+        }
+        let (result, held, laneIdle, slotsIdle, ownSlotsTaken) = run.value
+        #expect(result == 2)
+        #expect(held.count == 2)
+        #expect(held.allSatisfy { $0.lane.reduce(0, +) == 1 }, "each inner write held the lane")
+        #expect(held.allSatisfy { $0.slots.reduce(0, +) == 1 }, "and only the outer call's slot, borrowed")
+        #expect(ownSlotsTaken == 0, "the second inner call borrowed the slot the first one returned")
+        #expect(laneIdle && slotsIdle)
+    }
+
     @Test func aWaitForASlotEndsAtTheDeadlineAndIsNotAnAttempt() async throws {
         let backend = Backend.compute("admission.deadline")
         let infer = backend.readOnly("infer")
