@@ -192,13 +192,46 @@ private final class Debouncer: Sendable {
         let timer: Task<Void, Never>
     }
 
+    /// Where the debounce is.
+    private enum Phase {
+        /// Nothing delivered yet: the first path is delivered at once.
+        case awaitingFirst
+        /// `delivered` is what consumers last saw, and no change is waiting.
+        case settled(delivered: NetworkPath)
+        /// A change is waiting to have held for `settle`; `delivered` is still
+        /// what consumers last saw.
+        case debouncing(delivered: NetworkPath, pending: Pending)
+        /// The consumer has gone or the monitor has ended; nothing more is decided.
+        case stopped
+
+        /// What consumers last saw, if they have seen anything.
+        var delivered: NetworkPath? {
+            switch self {
+            case .awaitingFirst, .stopped: nil
+            case .settled(let delivered), .debouncing(let delivered, _): delivered
+            }
+        }
+
+        /// The change that is waiting, if one is.
+        var pending: Pending? {
+            if case .debouncing(_, let pending) = self { pending } else { nil }
+        }
+    }
+
     private struct State {
-        var delivered: NetworkPath?
-        var pending: Pending?
+        var phase = Phase.awaitingFirst
+        /// Numbers the timers. Outside `phase` because it only counts up: a
+        /// timer that has already fired can still be behind a newer one, and is
+        /// told apart by its number.
         var generation: UInt64 = 0
-        var stopped = false
         // Paths decided on and not yet yielded, in order.
         var outbox: [NetworkPath] = []
+
+        /// Delivers `path`: it is what consumers have last seen.
+        mutating func deliver(_ path: NetworkPath) {
+            phase = .settled(delivered: path)
+            outbox.append(path)
+        }
     }
 
     private let settle: Duration
@@ -225,37 +258,35 @@ private final class Debouncer: Sendable {
 
     func stop() {
         let timer = state.withLock { state -> Task<Void, Never>? in
-            state.stopped = true
-            defer { state.pending = nil }
-            return state.pending?.timer
+            defer { state.phase = .stopped }
+            return state.phase.pending?.timer
         }
         timer?.cancel()
     }
 
     private func receive(_ path: NetworkPath) {
         let superseded = state.withLock { state -> Task<Void, Never>? in
-            guard !state.stopped else { return nil }
+            if case .stopped = state.phase { return nil }
             // The first path, or no debouncing: deliver now.
-            if state.delivered == nil || settle <= .zero {
-                state.delivered = path
-                state.outbox.append(path)
+            guard let delivered = state.phase.delivered, settle > .zero else {
+                state.deliver(path)
                 return nil
             }
             // Back to what was delivered: the change was a glitch.
-            if path == state.delivered {
-                defer { state.pending = nil }
-                return state.pending?.timer
+            if path == delivered {
+                defer { state.phase = .settled(delivered: delivered) }
+                return state.phase.pending?.timer
             }
             // Already waiting on this very path: let its timer run.
-            if let pending = state.pending, pending.path == path { return nil }
+            if let pending = state.phase.pending, pending.path == path { return nil }
             state.generation += 1
             let generation = state.generation
-            let old = state.pending?.timer
+            let old = state.phase.pending?.timer
             let timer = Task { [settle] in
                 do { try await Ambient.sleep(for: settle) } catch { return }
                 self.settled(path, generation: generation)
             }
-            state.pending = Pending(path: path, generation: generation, timer: timer)
+            state.phase = .debouncing(delivered: delivered, pending: Pending(path: path, generation: generation, timer: timer))
             return old
         }
         superseded?.cancel()
@@ -264,10 +295,8 @@ private final class Debouncer: Sendable {
 
     private func settled(_ path: NetworkPath, generation: UInt64) {
         state.withLock { state in
-            guard !state.stopped, let pending = state.pending, pending.generation == generation else { return }
-            state.pending = nil
-            state.delivered = path
-            state.outbox.append(path)
+            guard let pending = state.phase.pending, pending.generation == generation else { return }
+            state.deliver(path)
         }
         publish()
     }
