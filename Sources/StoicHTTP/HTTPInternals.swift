@@ -320,34 +320,42 @@ final class AttemptLog: Sendable {
 /// as the rejections they are, and the retry's own events are the one place
 /// that says so. Everything is forwarded unchanged.
 final class RetryWatcher: Instrumentation {
-    private struct State {
-        var budgetExhausted = false
-        var deadlineSkip: Duration?
+    /// Why the retry stopped.
+    enum StopReason: Equatable {
+        /// Its budget had no token.
+        case budgetExhausted
+        /// The wait before the next attempt would have outlasted the deadline.
+        case deadlineSkip(wait: Duration)
     }
 
     private let inner: any Instrumentation
     private let label: String
-    private let state = Mutex(State())
+    private let state = Mutex<StopReason?>(nil)
 
     init(forwardingTo inner: any Instrumentation, label: String) {
         self.inner = inner
         self.label = label
     }
 
-    /// Whether the retry stopped because its budget had no token.
-    var budgetExhausted: Bool { state.withLock { $0.budgetExhausted } }
-
-    /// The wait the retry declined to start because it would outlast the
-    /// deadline, if that is why it stopped.
-    var deadlineSkip: Duration? { state.withLock { $0.deadlineSkip } }
+    /// Why the retry stopped, if its events said. A spent budget is the last
+    /// word: a skip that comes after it, or before it, does not replace it. A
+    /// later skip replaces an earlier one.
+    var stopReason: StopReason? { state.withLock { $0 } }
 
     func record(_ event: Event) {
         if event.label == label {
             switch event.name.rawValue {
             case "retry.budget_exhausted":
-                state.withLock { $0.budgetExhausted = true }
+                state.withLock { $0 = .budgetExhausted }
             case "retry.deadline_skip":
-                if case .duration(let delay)? = event["delay"] { state.withLock { $0.deadlineSkip = delay } }
+                if case .duration(let delay)? = event["delay"] {
+                    state.withLock { stopped in
+                        switch stopped {
+                        case .budgetExhausted?: break
+                        case .deadlineSkip?, nil: stopped = .deadlineSkip(wait: delay)
+                        }
+                    }
+                }
             default:
                 break
             }

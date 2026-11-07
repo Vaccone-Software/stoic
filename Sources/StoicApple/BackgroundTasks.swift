@@ -280,10 +280,9 @@ public final class BackgroundJob: Sendable {
         }
         let succeeded: Bool
         if case .success = result { succeeded = true } else { succeeded = false }
-        armed.completion.complete(success: succeeded, expired: false)
-        let outcome = armed.completion.outcome
+        let reportedSuccess = armed.completion.complete(success: succeeded, expired: false)
         let report = BackgroundRunReport(
-            work: result, expired: outcome.expired, reportedSuccess: outcome.success ?? succeeded, reschedule: reschedule)
+            work: result, expired: armed.completion.expired, reportedSuccess: reportedSuccess, reschedule: reschedule)
         onReport?(report)
         return report
     }
@@ -291,30 +290,47 @@ public final class BackgroundJob: Sendable {
 
 /// Completes a task exactly once, and remembers how.
 private final class Completion: Sendable {
-    struct Outcome {
-        var success: Bool?
-        var expired = false
+    private enum State {
+        case open
+        /// The task has been completed, by whichever of the work's end and an
+        /// expiry came first. `success` is what the system was told.
+        case completed(success: Bool, expired: Bool)
     }
 
     private let task: any BackgroundTaskHandle
-    private let state = Mutex(Outcome())
+    private let state = Mutex(State.open)
 
     init(_ task: any BackgroundTaskHandle) {
         self.task = task
     }
 
-    var outcome: Outcome { state.withLock { $0 } }
+    /// Whether the system has taken the time back, whatever completed the task.
+    var expired: Bool {
+        state.withLock { state in
+            switch state {
+            case .open: false
+            case .completed(_, let expired): expired
+            }
+        }
+    }
 
     /// Tells the system, unless something already has. An expiry is recorded
-    /// even when the task was completed first.
-    func complete(success: Bool, expired: Bool) {
-        let first = state.withLock { state -> Bool in
-            if expired { state.expired = true }
-            guard state.success == nil else { return false }
-            state.success = success
-            return true
+    /// even when the task was completed first. Returns the `success` the
+    /// system was told, whichever call told it.
+    @discardableResult
+    func complete(success: Bool, expired: Bool) -> Bool {
+        let (told, first) = state.withLock { state -> (Bool, Bool) in
+            switch state {
+            case .open:
+                state = .completed(success: success, expired: expired)
+                return (success, true)
+            case .completed(let told, _):
+                if expired { state = .completed(success: told, expired: true) }
+                return (told, false)
+            }
         }
         if first { task.setTaskCompleted(success: success) }
+        return told
     }
 }
 
