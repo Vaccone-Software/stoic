@@ -62,6 +62,28 @@ struct TestClockSleepersTests {
         #expect(clock.fireNextDeadline() == nil)
     }
 
+    /// A cancellation can land between a sleep taking its place and
+    /// registering: the sleep must still end, with `CancellationError`, and
+    /// must not register afterwards, whichever side of that gap it lands on.
+    /// The gap is not one a test can hold open, so this cancels sleeps from
+    /// another task while they start, many times over; a sleep that missed its
+    /// cancellation would never end, and the time limit would catch it.
+    @Test(.timeLimit(.minutes(1))) func aSleeperCancelledAsItStartsNeverRegisters() async throws {
+        let clock = TestClock()
+        for _ in 0..<200 {
+            let tasks = (0..<20).map { _ in Task { try await clock.sleep(until: clock.now.advanced(by: .seconds(3600))) } }
+            for task in tasks { task.cancel() }
+            for task in tasks {
+                switch await task.result {
+                case .success: Issue.record("a cancelled sleep returned normally")
+                case .failure(let error): #expect(error is CancellationError)
+                }
+            }
+        }
+        #expect(clock.sleeperCount == 0)
+        #expect(clock.fireNextDeadline() == nil)
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func thirtyThousandTimersFireInLinearishTime() async throws {
         // Finding the earliest deadline used to scan every sleeper, per
