@@ -591,11 +591,13 @@ public final class HTTPClient: Sendable {
         }
         // `retry` rethrows the last error whatever stopped it; its events
         // say what did.
-        if watcher?.budgetExhausted == true {
+        switch watcher?.stopReason {
+        case .budgetExhausted?:
             return .failed(.rejected(Rejection(.budgetExhausted, label: label), attempts: attempts))
-        }
-        if let wait = watcher?.deadlineSkip {
+        case .deadlineSkip(let wait)?:
             return .failed(.rejected(Rejection(.deadlineExceeded, label: label, retryAfter: wait), attempts: attempts))
+        case nil:
+            break
         }
         switch error {
         case .rejected(let rejection):

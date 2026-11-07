@@ -27,55 +27,49 @@ struct RetryWatcherTests {
 
     @Test func aRetryThatHasNotStoppedHasNoReason() {
         let (watcher, _) = Self.watcher()
-        #expect(!watcher.budgetExhausted)
-        #expect(watcher.deadlineSkip == nil)
+        #expect(watcher.stopReason == nil)
     }
 
     @Test func aSpentBudgetIsRemembered() {
         let (watcher, _) = Self.watcher()
         watcher.record(Self.budgetExhausted())
-        #expect(watcher.budgetExhausted)
-        #expect(watcher.deadlineSkip == nil)
+        #expect(watcher.stopReason == .budgetExhausted)
     }
 
     @Test func aWaitThatWouldOutlastTheDeadlineIsRememberedWithItsLength() {
         let (watcher, _) = Self.watcher()
         watcher.record(Self.deadlineSkip(.seconds(2)))
-        #expect(!watcher.budgetExhausted)
-        #expect(watcher.deadlineSkip == .seconds(2))
+        #expect(watcher.stopReason == .deadlineSkip(wait: .seconds(2)))
     }
 
     @Test func aLaterSkipReplacesAnEarlierOne() {
         let (watcher, _) = Self.watcher()
         watcher.record(Self.deadlineSkip(.seconds(2)))
         watcher.record(Self.deadlineSkip(.seconds(5)))
-        #expect(watcher.deadlineSkip == .seconds(5))
+        #expect(watcher.stopReason == .deadlineSkip(wait: .seconds(5)))
     }
 
     @Test func aSkipThatNamesNoWaitIsNotAReason() {
         let (watcher, _) = Self.watcher()
         watcher.record(Self.deadlineSkip(.seconds(2)))
         watcher.record(Self.deadlineSkip(nil))
-        #expect(watcher.deadlineSkip == .seconds(2), "the earlier skip stands")
+        #expect(watcher.stopReason == .deadlineSkip(wait: .seconds(2)), "the earlier skip stands")
     }
 
     @Test(arguments: [true, false])
-    func aSpentBudgetStaysTheReasonWhicheverArrivesFirst(budgetFirst: Bool) {
+    func aSpentBudgetIsTheReasonWhicheverArrivesFirst(budgetFirst: Bool) {
         let (watcher, _) = Self.watcher()
         let events = [Self.budgetExhausted(), Self.deadlineSkip(.seconds(2))]
         for event in budgetFirst ? events : events.reversed() { watcher.record(event) }
-        // The client reads the budget first, so it is what a retry that gave
-        // both reasons is reported as.
-        #expect(watcher.budgetExhausted)
-        #expect(watcher.deadlineSkip == .seconds(2))
+        // The client reports a retry that gave both reasons as a spent budget.
+        #expect(watcher.stopReason == .budgetExhausted)
     }
 
     @Test func eventsOfAnotherLabelAreNotThisRetrysReason() {
         let (watcher, _) = Self.watcher()
         watcher.record(Self.budgetExhausted(label: "http other.example.com"))
         watcher.record(Self.deadlineSkip(.seconds(2), label: nil))
-        #expect(!watcher.budgetExhausted)
-        #expect(watcher.deadlineSkip == nil)
+        #expect(watcher.stopReason == nil)
     }
 
     @Test func everyEventIsForwardedUnchanged() {
