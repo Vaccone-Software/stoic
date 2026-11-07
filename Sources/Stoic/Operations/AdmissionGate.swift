@@ -40,10 +40,9 @@ final class AdmissionGate: Sendable {
         /// Waiters queued or on their way to the queue, by rank: what the
         /// waiter limit counts.
         var waiting = [0, 0, 0, 0]
-        /// Waiters that have an id but have not queued yet, with their rank.
-        var arriving: [UInt64: Int] = [:]
-        /// Arriving waiters whose cancellation or deadline came first.
-        var leftEarly: [UInt64: Rejection] = [:]
+        /// Waiters that have an id but have not queued yet, with their rank,
+        /// and those of them whose cancellation or deadline came first.
+        var arrivals = Arrivals<Int, Rejection>()
         var nextID: UInt64 = 0
 
         /// Whether a call at `rank` may take a slot now: every cumulative
@@ -59,7 +58,7 @@ final class AdmissionGate: Sendable {
 
         /// Whether a waiter of rank `rank` or higher has not reached the queue.
         func isArriving(atLeast rank: Int) -> Bool {
-            arriving.values.contains { $0 >= rank }
+            arrivals.onTheirWay.contains { $0.tag >= rank }
         }
 
         /// Hands slots to the most urgent queued waiters the caps admit.
@@ -76,7 +75,7 @@ final class AdmissionGate: Sendable {
                 for rank in stride(from: 3, through: 0, by: -1) where admits(rank, caps: caps) {
                     if let head = queues[rank].first {
                         // An earlier arrival at this urgency has not queued.
-                        let earlierStillArriving = arriving.contains { id, arrived in arrived == rank && id < head.id }
+                        let earlierStillArriving = arrivals.onTheirWay.contains { $0.tag == rank && $0.id < head.id }
                         if earlierStillArriving { return granted }
                         granted.append(queues[rank].removeFirst())
                         held[rank] += 1
@@ -85,7 +84,7 @@ final class AdmissionGate: Sendable {
                         break
                     }
                     // The next waiter at this urgency has not queued.
-                    if arriving.values.contains(rank) { return granted }
+                    if arrivals.onTheirWay.contains(where: { $0.tag == rank }) { return granted }
                 }
             }
             return granted
@@ -140,7 +139,7 @@ final class AdmissionGate: Sendable {
             }
             if state.waiting[rank] >= waiterLimit { return .full }
             defer { state.nextID += 1 }
-            state.arriving[state.nextID] = rank
+            state.arrivals.begin(state.nextID, tag: rank)
             state.waiting[rank] += 1
             return .wait(state.nextID)
         }
@@ -154,15 +153,14 @@ final class AdmissionGate: Sendable {
             // Whatever ended the wait, this waiter is gone: forget it, and
             // let through anyone whose slot it was holding.
             let granted = state.withLock { state -> [Waiter] in
-                state.leftEarly.removeValue(forKey: id)
-                guard state.arriving.removeValue(forKey: id) != nil else { return [] }
+                guard state.arrivals.forget(id) != nil else { return [] }
                 state.waiting[rank] -= 1
                 return state.grant(caps: caps)
             }
             for waiter in granted { waiter.continuation.resume(returning: nil) }
         }
         // Between deciding to wait and queueing: where a cancellation or a
-        // deadline must find the waiter in `arriving`, and where a freed
+        // deadline must find the waiter in `arrivals`, and where a freed
         // slot has to be kept for them.
         await FaultPoint.hit("admission.arriving")
         let deadline = Deadline.current
@@ -206,12 +204,11 @@ final class AdmissionGate: Sendable {
 
     private func enqueue(_ waiter: Waiter, rank: Int) {
         let (rejection, granted) = state.withLock { state -> (Rejection?, [Waiter]) in
-            if let rejection = state.leftEarly.removeValue(forKey: waiter.id) {
-                // `leave` already took this waiter out of `arriving` and
-                // handed on the slot it was holding the line for.
+            if let rejection = state.arrivals.arrive(waiter.id) {
+                // `leave` already stopped counting this waiter as on its way
+                // and handed on the slot it was holding the line for.
                 return (rejection, [])
             }
-            state.arriving.removeValue(forKey: waiter.id)
             // Usually the newest id, so usually the end. One that took
             // longer to get here than a later arrival goes ahead of it.
             let index = state.queues[rank].lastIndex { $0.id < waiter.id }.map { $0 + 1 } ?? 0
@@ -231,11 +228,10 @@ final class AdmissionGate: Sendable {
                     return (state.queues[rank].remove(at: index), [])
                 }
             }
-            if let arrived = state.arriving.removeValue(forKey: id) {
+            if let arrived = state.arrivals.leave(id, because: rejection) {
                 // Not queued yet: it finds this on arrival and leaves, and
                 // the slot kept for it goes to whoever is next.
                 state.waiting[arrived] -= 1
-                state.leftEarly[id] = rejection
                 return (nil, state.grant(caps: caps))
             }
             // Otherwise it was already granted a slot, or has gone.

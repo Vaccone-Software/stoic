@@ -73,6 +73,34 @@ struct ChannelTests {
         #expect(received == [1])
     }
 
+    /// A cancellation that is already there when the sender goes to wait ends
+    /// the wait at once, with the element unsent, and leaves nothing behind
+    /// for the senders after it.
+    @Test(.timeLimit(.minutes(1))) func aSenderCancelledBeforeItWaitsSendsNothing() async throws {
+        let channel = Channel<Int>(capacity: 1, label: "precancel")
+        try await channel.send(1)
+        let gate = AsyncGate()
+        let sender = Task {
+            await gate.wait()   // ignores cancellation, so the task is cancelled before it sends
+            try await channel.send(2)
+        }
+        sender.cancel()
+        gate.open()
+        do {
+            try await sender.value
+            Issue.record("expected a rejection")
+        } catch let rejection as Rejection {
+            #expect(rejection.reason == .cancelled)
+        }
+        #expect(channel.count == 1)
+
+        let later = Task { try await channel.send(3) }
+        #expect(await channel.receive() == 1)
+        try await later.value
+        #expect(await channel.receive() == 3)
+        #expect(channel.count == 0)
+    }
+
     @Test func aSenderWhoseDeadlinePassesIsRejected() async throws {
         let clock = TestClock()
         let channel = Channel<Int>(capacity: 1, label: "deadline")

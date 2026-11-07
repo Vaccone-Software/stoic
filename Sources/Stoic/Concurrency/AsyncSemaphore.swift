@@ -36,16 +36,15 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
         var nextID: UInt64 = 0
         // In arrival (id) order, which is not always the order waiters queue in.
         var queue: [Waiter] = []
-        // Waiters that have an id but have not queued yet.
-        var arriving: Set<UInt64> = []
-        // Arriving waiters whose cancellation or deadline came first. They
-        // are no longer `arriving`: nobody waits behind a waiter that left.
-        var leftEarly: [UInt64: Rejection] = [:]
+        // Waiters that have an id but have not queued yet, and those of them
+        // whose cancellation or deadline came first: nobody waits behind a
+        // waiter that left.
+        var arrivals = Arrivals<Void, Rejection>()
 
         /// Whether waiter `id` may take a free permit: no waiter that
         /// arrived before it is still on its way to the queue.
         func isFirst(_ id: UInt64) -> Bool {
-            arriving.allSatisfy { $0 > id }
+            arrivals.onTheirWay.allSatisfy { $0.id > id }
         }
 
         /// Hands free permits to the queue's head while it is first in line;
@@ -170,16 +169,16 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
         let admission = state.withLock { state -> Admission in
             // A waiter still on its way to the queue is ahead of a newcomer,
             // however briefly: strict FIFO counts it.
-            if state.available > 0, state.queue.isEmpty, state.arriving.isEmpty {
+            if state.available > 0, state.queue.isEmpty, state.arrivals.onTheirWayCount == 0 {
                 state.available -= 1
                 return .granted
             }
-            let waiting = state.queue.count + state.arriving.count
+            let waiting = state.queue.count + state.arrivals.onTheirWayCount
             if let limit = queueing.limit, waiting >= limit {
                 return .full(waiting: waiting)
             }
             defer { state.nextID += 1 }
-            state.arriving.insert(state.nextID)
+            state.arrivals.begin(state.nextID)
             return .wait(state.nextID)
         }
         let id: UInt64
@@ -200,15 +199,14 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
             // Whatever ended the wait, this waiter is gone: forget it, and
             // let through anyone it was holding up.
             let granted = state.withLock { state -> [Waiter] in
-                state.leftEarly.removeValue(forKey: id)
-                guard state.arriving.remove(id) != nil else { return [] }
+                guard state.arrivals.forget(id) != nil else { return [] }
                 return state.grantInOrder()
             }
             for waiter in granted { waiter.continuation.resume(returning: nil) }
         }
 
         // Between deciding to wait and queueing: where a cancellation or a
-        // deadline must find the waiter in `arriving`.
+        // deadline must find the waiter in `arrivals`.
         await FaultPoint.hit("semaphore.arriving")
         let deadline = Deadline.current
         if let deadline, deadline.hasPassed {
@@ -248,10 +246,9 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
 
     private func enqueue(_ waiter: Waiter) {
         let (rejection, granted) = state.withLock { state -> (Rejection?, [Waiter]) in
-            if let rejection = state.leftEarly.removeValue(forKey: waiter.id) {
+            if let rejection = state.arrivals.arrive(waiter.id) {
                 return (rejection, [])
             }
-            state.arriving.remove(waiter.id)
             // Usually the newest id, so usually the end; a waiter that took
             // longer to get here than one that arrived after it goes ahead.
             let index = state.queue.lastIndex { $0.id < waiter.id }.map { $0 + 1 } ?? 0
@@ -268,10 +265,9 @@ public final class AsyncSemaphore: Sendable, CustomStringConvertible {
             if let index = state.queue.firstIndex(where: { $0.id == id }) {
                 return (state.queue.remove(at: index), [])
             }
-            if state.arriving.remove(id) != nil {
+            if state.arrivals.leave(id, because: rejection) != nil {
                 // Not queued yet: it will find this on arrival and leave, and
                 // it no longer holds the line for those behind it.
-                state.leftEarly[id] = rejection
                 return (nil, state.grantInOrder())
             }
             // Otherwise it was already granted a permit — the body will run

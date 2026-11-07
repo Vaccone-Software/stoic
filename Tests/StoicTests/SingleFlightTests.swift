@@ -57,6 +57,84 @@ struct SingleFlightTests {
         #expect(await holdsThroughout { committed.value == [2] }, "the abandoned flight finished and never committed")
     }
 
+    /// Holds a caller between asking for a flight and joining it, for a second
+    /// of the ambient clock.
+    struct StallArrival: FaultPolicy {
+        func action(at site: String) -> FaultAction {
+            site == "singleflight.arriving" ? .delay(.seconds(1)) : .proceed
+        }
+    }
+
+    /// A caller of `flight` for `key` held on its way to the flight by `clock`.
+    func stalledCaller(
+        _ flight: SingleFlight<String, Int, Failure>, _ key: String, _ clock: TestClock, runs: SendableBox<Int>
+    ) -> Task<Int, any Error> {
+        Task {
+            try await withAmbient({ $0.clock = clock.erased; $0.faultPolicy = StallArrival() }) { () async throws(PolicyError<Failure>) in
+                try await flight.run(key) { () async throws(Failure) -> Int in
+                    runs.mutate { $0 += 1 }
+                    return 1
+                }
+            }
+        }
+    }
+
+    @Test(.stoic(seed: 301), .timeLimit(.minutes(1)))
+    func aCallerCancelledOnItsWayToTheFlightNeverStartsOne() async throws {
+        let flight = SingleFlight<String, Int, Failure>(label: "arriving")
+        let clock = TestClock()
+        let runs = SendableBox(0)
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let caller = stalledCaller(flight, "k", clock, runs: runs)
+        await clock.waitForSleepers(count: 1)   // it has an id, and has not joined
+        #expect(flight.flightCount == 0)
+        caller.cancel()
+        do {
+            _ = try await caller.value
+            Issue.record("expected a rejection")
+        } catch let error as PolicyError<Failure> {
+            #expect(error.rejection?.reason == .cancelled)
+        }
+        #expect(runs.value == 0)
+        #expect(flight.flightCount == 0)
+        #expect(flight.waiterCount(for: "k") == 0)
+        let value = try await flight.run("k") { () async throws(Failure) -> Int in 5 }
+        #expect(value == 5, "the key is free for a caller after it")
+    }
+
+    @Test(.stoic(seed: 302), .timeLimit(.minutes(1)))
+    func aCallerCancelledOnItsWayToTheFlightLeavesTheFlightToTheOthers() async throws {
+        let flight = SingleFlight<String, Int, Failure>(label: "arriving-others")
+        let clock = TestClock()
+        let runs = SendableBox(0)
+        let gate = AsyncGate()
+        FaultPoint.install()
+        defer { FaultPoint.uninstall() }
+        let stalled = stalledCaller(flight, "k", clock, runs: runs)
+        await clock.waitForSleepers(count: 1)
+        let other = Task {
+            try await flight.run("k") { () async throws(Failure) -> Int in
+                runs.mutate { $0 += 1 }
+                await gate.wait()
+                return 2
+            }
+        }
+        await eventually { flight.waiterCount(for: "k") == 1 }
+        stalled.cancel()
+        do {
+            _ = try await stalled.value
+            Issue.record("expected a rejection")
+        } catch let error as PolicyError<Failure> {
+            #expect(error.rejection?.reason == .cancelled)
+        }
+        #expect(flight.waiterCount(for: "k") == 1, "the flight is the other caller's, and goes on")
+        gate.open()
+        #expect(try await other.value == 2)
+        #expect(runs.value == 1)
+        #expect(flight.flightCount == 0)
+    }
+
     @Test func everyCallerSeesTheSameFailure() async throws {
         let flight = SingleFlight<Int, Int, Failure>(label: "fail")
         let gate = AsyncGate()

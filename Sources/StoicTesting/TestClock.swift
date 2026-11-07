@@ -82,8 +82,7 @@ public final class TestClock: Clock, Sendable {
         var deadlines = DeadlineHeap()
         // Sleepers with an id that have not registered yet, and those of
         // them whose cancellation arrived first.
-        var arriving: Set<UInt64> = []
-        var cancelledBeforeSleeping: Set<UInt64> = []
+        var arrivals = Arrivals<Void, Void>()
         var countWaiters: [CountWaiter] = []
         var totalSleeps = 0
         // A wait for sleepers timed out: the test has already failed, and
@@ -203,15 +202,14 @@ public final class TestClock: Clock, Sendable {
         try Task.checkCancellation()
         let id = state.withLock { state -> UInt64 in
             defer { state.nextID += 1 }
-            state.arriving.insert(state.nextID)
+            state.arrivals.begin(state.nextID)
             return state.nextID
         }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 let (outcome, waiters) = state.withLock { state -> (SleepOutcome, [CheckedContinuation<WaitResult, Never>]) in
                     state.totalSleeps += 1
-                    state.arriving.remove(id)
-                    if state.cancelledBeforeSleeping.remove(id) != nil || state.aborted { return (.cancel, state.takeSatisfiedCountWaiters()) }
+                    if state.arrivals.arrive(id) != nil || state.aborted { return (.cancel, state.takeSatisfiedCountWaiters()) }
                     if deadline.offset <= state.now { return (.wake, state.takeSatisfiedCountWaiters()) }
                     state.add(Sleeper(id: id, deadline: deadline.offset, continuation: continuation))
                     return (.sleep, state.takeSatisfiedCountWaiters())
@@ -230,9 +228,7 @@ public final class TestClock: Clock, Sendable {
                 if let sleeper = state.remove(id: id) {
                     return sleeper
                 }
-                if state.arriving.contains(id) {
-                    state.cancelledBeforeSleeping.insert(id)
-                }
+                state.arrivals.leave(id)
                 return nil
             }
             sleeper?.continuation.resume(throwing: CancellationError())
