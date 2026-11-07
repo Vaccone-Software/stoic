@@ -286,6 +286,85 @@ struct CircuitBreakerTests {
         }
     }
 
+    /// The probes' successes belong to one half-open episode: neither a
+    /// failed probe nor a close carries them into the next.
+    @Test func eachHalfOpenEpisodeStartsWithNoSuccessesAtAll() async {
+        await withBreakerWorld { clock, _ in
+            let breaker = CircuitBreaker(label: "episodes", testConfiguration(probes: 2), clock: clock.erased)
+            await breaker.failUntilOpen()
+            await clock.advance(by: .seconds(30))
+            await breaker.succeed()   // one of two
+            await breaker.fail()      // the other fails: open again
+            #expect(breaker.state == .open)
+            await clock.advance(by: breaker.snapshot.retryAfter!)
+            #expect(breaker.state == .halfOpen)
+            await breaker.succeed()
+            #expect(breaker.state == .halfOpen, "the first episode's success is not counted again")
+            await breaker.succeed()
+            #expect(breaker.state == .closed)
+
+            await breaker.failUntilOpen()
+            await clock.advance(by: breaker.snapshot.retryAfter!)
+            #expect(breaker.state == .halfOpen)
+            await breaker.succeed()
+            #expect(breaker.state == .halfOpen, "nor the two that closed it")
+            await breaker.succeed()
+            #expect(breaker.state == .closed)
+        }
+    }
+
+    /// A probe still running when the episode ends by hand is no longer
+    /// anyone's: it must not be found overdue in the next one.
+    @Test func aProbeLeftRunningWhenTheBreakerIsClosedByHandDoesNotHauntTheNextEpisode() async {
+        await withBreakerWorld { clock, _ in
+            let breaker = CircuitBreaker(label: "closed-by-hand", testConfiguration(probeTimeout: .seconds(60)), clock: clock.erased)
+            await breaker.failUntilOpen()
+            await clock.advance(by: .seconds(30))
+            let gate = AsyncGate()
+            let started = SendableBox(0)
+            let probe = Task { await outcome(of: breaker) { started.mutate { $0 += 1 }; await gate.wait() } }
+            await waitUntil { started.value == 1 }
+            breaker.forceClosed()
+            await breaker.failUntilOpen()
+            await clock.advance(by: breaker.snapshot.retryAfter!)
+            #expect(breaker.state == .halfOpen)
+            await clock.advance(by: .seconds(60))   // longer than the first probe has been out
+            #expect(breaker.state == .halfOpen, "no probe of this episode is out, so none is overdue")
+            await breaker.succeed()                 // and its permit is free
+            #expect(breaker.state == .closed)
+            gate.open()
+            _ = await probe.value
+            #expect(breaker.state == .closed)
+        }
+    }
+
+    /// The same when the episode ends by the breaker giving up on its probe:
+    /// the abandoned probe is not carried into the half-open that follows.
+    @Test func aProbeGivenUpOnDoesNotHauntTheNextEpisode() async {
+        await withBreakerWorld { clock, events in
+            let breaker = CircuitBreaker(label: "given-up", testConfiguration(probeTimeout: .seconds(60)), clock: clock.erased)
+            await breaker.failUntilOpen()
+            await clock.advance(by: .seconds(30))
+            let gate = AsyncGate()
+            let started = SendableBox(0)
+            let probe = Task { await outcome(of: breaker) { started.mutate { $0 += 1 }; await gate.wait() } }
+            await waitUntil { started.value == 1 }
+            await clock.advance(by: .seconds(60))
+            #expect(breaker.state == .open)
+            #expect(events.events(named: "breaker.opened").last?.text("trigger") == "probe_timeout")
+            await clock.advance(by: breaker.snapshot.retryAfter!)
+            #expect(breaker.state == .halfOpen)
+            await clock.advance(by: .seconds(60))
+            #expect(breaker.state == .halfOpen, "the probe given up on is not out in this episode")
+            await breaker.succeed()
+            #expect(breaker.state == .closed)
+            gate.open()
+            _ = await probe.value
+            #expect(breaker.state == .closed)
+            #expect(events.events(named: "breaker.ignored").last?.text("reason") == "stale")
+        }
+    }
+
     @Test(.failureMode("design/10", "a dependency stays healthy for resetAfter after closing")) func growthStartsOverOnlyAfterTheBreakerHasStayedClosedLongEnough() async {
         await withBreakerWorld { clock, _ in
             let open = CircuitBreaker.OpenDuration.exponential(
