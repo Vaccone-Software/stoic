@@ -68,6 +68,77 @@ struct ReachabilityTests {
         }
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func aPathAlreadyDeliveredIsNotDeliveredAgain() async {
+        let clock = TestClock()
+        await withTestAmbient(clock: clock) {
+            let monitor = FakePathMonitor(.satisfied)
+            var paths = monitor.stablePaths(settle: .seconds(1)).makeAsyncIterator()
+            #expect(await paths.next() == .satisfied)
+            monitor.send(.satisfied)
+            monitor.send(.satisfied)
+            monitor.send(.unsatisfied)
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(1))
+            // Were the repeats delivered, they would come first.
+            #expect(await paths.next() == .unsatisfied)
+            #expect(clock.totalSleeps == 1, "a repeat of the delivered path waits for nothing")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aChangeAlreadyWaitingIsNotRestartedWhenItArrivesAgain() async {
+        let clock = TestClock()
+        await withTestAmbient(clock: clock) {
+            let monitor = FakePathMonitor(.satisfied)
+            var paths = monitor.stablePaths(settle: .seconds(1)).makeAsyncIterator()
+            #expect(await paths.next() == .satisfied)
+            monitor.send(.unsatisfied)
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .milliseconds(600))
+            monitor.send(.unsatisfied)   // the same change again: its wait goes on from where it was
+            await clock.advance(by: .milliseconds(400))
+            #expect(await paths.next() == .unsatisfied)
+            #expect(clock.totalSleeps == 1)
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aNewerChangeReplacesTheOneWaitingAndStartsItsOwnWait() async {
+        let clock = TestClock()
+        await withTestAmbient(clock: clock) {
+            let monitor = FakePathMonitor(.satisfied)
+            var paths = monitor.stablePaths(settle: .seconds(1)).makeAsyncIterator()
+            #expect(await paths.next() == .satisfied)
+            monitor.send(.unsatisfied)
+            await clock.waitForSleepers(count: 1)
+            let mark = clock.totalSleeps
+            await clock.advance(by: .milliseconds(400))
+            monitor.send(Self.constrained)
+            await clock.waitForSleepers(newerThan: mark)   // the newer change's wait has begun
+            await clock.advance(by: .milliseconds(600))    // the older change's second is up
+            #expect(clock.sleeperCount == 1, "only the newer change is still waiting")
+            await clock.advance(by: .milliseconds(400))
+            // Were the older change delivered, it would come first.
+            #expect(await paths.next() == Self.constrained)
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aChangeStillWaitingWhenTheMonitorEndsIsDropped() async {
+        let clock = TestClock()
+        await withTestAmbient(clock: clock) {
+            let monitor = FakePathMonitor(.satisfied)
+            var paths = monitor.stablePaths(settle: .seconds(1)).makeAsyncIterator()
+            #expect(await paths.next() == .satisfied)
+            monitor.send(.unsatisfied)
+            await clock.waitForSleepers(count: 1)
+            monitor.finish()
+            #expect(await paths.next() == nil, "the stream ends without the change that never held")
+            #expect(clock.sleeperCount == 0)
+        }
+    }
+
     @Test func aZeroSettleTimeDeliversEveryPath() async {
         let monitor = FakePathMonitor(.satisfied)
         var paths = monitor.stablePaths(settle: .zero).makeAsyncIterator()
