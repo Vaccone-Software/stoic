@@ -12,18 +12,50 @@ struct SupervisorRun {
     }
 
     private struct Slot {
+        /// What the slot is doing. Each phase holds what belongs to it and
+        /// nothing else: a finished slot has no task and no timer because
+        /// there is nowhere to keep one.
+        enum Phase {
+            /// No task, and no restart of its own waiting: before the first
+            /// start, after the child stopped and before the decision about it
+            /// is made, and while another slot's restart, which has this one
+            /// in its group, is the one that will start it.
+            case stopped
+            /// The child's task, and the monitor that watches its heartbeat
+            /// when it has a policy.
+            case running(task: Task<Void, Never>, monitor: Task<Void, Never>?)
+            /// This slot's decision is waiting for `timer` to fire, and then
+            /// starts every child of `group`, this one among them.
+            case restartScheduled(timer: Task<Void, Never>, group: [Int])
+            /// Ended for good (a transient child that returned, a temporary
+            /// one): a group restart does not bring it back.
+            case finished
+        }
+
+        var phase = Phase.stopped
         var generation: UInt64 = 0
-        var task: Task<Void, Never>?
         var cause: CancellationCauseBox?
-        var monitor: Task<Void, Never>?
         var startedAt: AnyClock.Instant?
         var stepper: Schedule.Stepper
         // When the current run of failures began: the backoff schedule's
         // elapsed time counts from here, and starts over with the stepper.
         var streakStart: AnyClock.Instant?
-        var restartTimer: Task<Void, Never>?
-        var pendingRestart: [Int] = []
-        var finished = false
+
+        var isRunning: Bool {
+            if case .running = phase { true } else { false }
+        }
+
+        var isFinished: Bool {
+            if case .finished = phase { true } else { false }
+        }
+
+        /// Calls off the restart this slot is waiting for, if it is waiting
+        /// for one: its group is no longer started by it.
+        mutating func cancelScheduledRestart() {
+            guard case .restartScheduled(let timer, _) = phase else { return }
+            timer.cancel()
+            phase = .stopped
+        }
     }
 
     struct Hung: Error, CustomStringConvertible {
@@ -60,10 +92,9 @@ struct SupervisorRun {
         for await signal in signals {
             switch signal {
             case .exited(let index, let generation, let error):
-                guard slots[index].generation == generation, slots[index].task != nil else { continue }
-                slots[index].monitor?.cancel()
-                slots[index].task = nil
-                slots[index].monitor = nil
+                guard slots[index].generation == generation, case .running(_, let monitor) = slots[index].phase else { continue }
+                monitor?.cancel()
+                slots[index].phase = .stopped
                 if let escalation = await handleStop(index, error: error, slots: &slots, restarts: &restarts, sink: sink) {
                     await stopAll(&slots)
                     finish(.escalated(child: supervisor.children[index].label), level: .error, child: index, error: error)
@@ -72,15 +103,17 @@ struct SupervisorRun {
 
             case .restartDue(let index, let generation):
                 guard slots[index].generation == generation else { continue }
-                slots[index].restartTimer = nil
-                let group = slots[index].pendingRestart
-                slots[index].pendingRestart = []
-                for member in group {
-                    start(member, in: &slots, sink: sink)
+                // A decision made since replaced the restart this signal
+                // belongs to, after its timer had fired: nothing is waiting.
+                if case .restartScheduled(_, let group) = slots[index].phase {
+                    slots[index].phase = .stopped
+                    for member in group {
+                        start(member, in: &slots, sink: sink)
+                    }
                 }
 
             case .hung(let index, let generation):
-                guard slots[index].generation == generation, slots[index].task != nil else { continue }
+                guard slots[index].generation == generation, slots[index].isRunning else { continue }
                 let label = supervisor.children[index].label
                 supervisor.publish(.hung(child: label))
                 record("supervisor.child_hung", .error, child: index)
@@ -91,7 +124,7 @@ struct SupervisorRun {
                     throw escalation
                 }
             }
-            if slots.allSatisfy({ $0.finished && $0.task == nil && $0.restartTimer == nil }) {
+            if slots.allSatisfy({ $0.isFinished }) {
                 finish(.stopped, level: .info, child: nil, error: nil)
                 return
             }
@@ -130,7 +163,7 @@ struct SupervisorRun {
         case .temporary: restart = false
         }
         guard restart else {
-            slots[index].finished = true
+            slots[index].phase = .finished
             return nil
         }
 
@@ -150,20 +183,17 @@ struct SupervisorRun {
         // A sibling that finished for good (a transient child that returned,
         // a temporary one) stays finished: restarting the group does not
         // resurrect it.
-        affected.removeAll { $0 != index && slots[$0].finished && slots[$0].task == nil && slots[$0].restartTimer == nil }
+        affected.removeAll { $0 != index && slots[$0].isFinished }
         // This decision supersedes any restart already pending for a member:
         // otherwise an older timer would start members out of order, and a
         // newer one would start them a second time.
         for member in affected {
-            slots[member].restartTimer?.cancel()
-            slots[member].restartTimer = nil
-            slots[member].pendingRestart = []
+            slots[member].cancelScheduledRestart()
         }
         // Stop the siblings that restart with it, newest first.
-        for member in affected.reversed() where member != index && slots[member].task != nil {
+        for member in affected.reversed() where member != index && slots[member].isRunning {
             await stop(member, in: &slots)
         }
-        for member in affected { slots[member].finished = false }
 
         // A child that ran long enough starts its backoff over.
         if let started = slots[index].startedAt, started.duration(to: now) >= supervisor.resetAfter {
@@ -189,10 +219,9 @@ struct SupervisorRun {
         supervisor.publish(.restarting(child: child.label, after: delay))
         record("supervisor.child_restarting", .info, child: index, extra: [.init("delay", .duration(delay))])
 
-        slots[index].pendingRestart = affected
         let generation = slots[index].generation
         let clock = clock
-        slots[index].restartTimer = Task.stoic {
+        let timer = Task.stoic {
             do {
                 try await clock.sleep(until: due, tolerance: nil)
             } catch {
@@ -200,6 +229,7 @@ struct SupervisorRun {
             }
             sink.yield(.restartDue(index: index, generation: generation))
         }
+        slots[index].phase = .restartScheduled(timer: timer, group: affected)
         return nil
     }
 
@@ -207,7 +237,10 @@ struct SupervisorRun {
 
     private func start(_ index: Int, in slots: inout [Slot], sink: AsyncStream<Signal>.Continuation) {
         // Never two instances of one child: a running child is left alone.
-        guard slots[index].task == nil else { return }
+        // Any other phase is replaced, and none holds a timer worth keeping:
+        // a first start has none, and the decision that put a member in a
+        // group called off the timer the member was waiting on.
+        guard !slots[index].isRunning else { return }
         let child = supervisor.children[index]
         slots[index].generation += 1
         let generation = slots[index].generation
@@ -216,8 +249,7 @@ struct SupervisorRun {
         let ambient = ambient
         slots[index].cause = cause
         slots[index].startedAt = clock.now
-        slots[index].finished = false
-        slots[index].task = TaskLedger.task(.supervisorChild, label: child.label) {
+        let task = TaskLedger.task(.supervisorChild, label: child.label) {
             let failure: (any Error)?
             do {
                 // A child lives as long as the supervisor keeps it, not as
@@ -236,13 +268,14 @@ struct SupervisorRun {
             }
             sink.yield(.exited(index: index, generation: generation, error: failure))
         }
+        var monitor: Task<Void, Never>?
         if let policy = child.heartbeat {
             let clock = ambient.livenessClock
             // Checks fall on fixed instants counted from the start, so the
             // monitor's own scheduling delays neither stretch the grace
             // period nor accumulate across intervals.
             let graceEnds = clock.now.advanced(by: policy.grace)
-            slots[index].monitor = Task.stoic {
+            monitor = Task.stoic {
                 do {
                     try await clock.sleep(until: graceEnds, tolerance: nil)
                     var last = heartbeat.count
@@ -279,6 +312,7 @@ struct SupervisorRun {
                 } catch {}
             }
         }
+        slots[index].phase = .running(task: task, monitor: monitor)
         supervisor.publish(.started(child: child.label))
         record("supervisor.child_started", .debug, child: index)
     }
@@ -287,12 +321,11 @@ struct SupervisorRun {
     /// cancelled with `cause`, and it gets its shutdown timeout before being
     /// abandoned.
     private func stop(_ index: Int, in slots: inout [Slot], cause: CancellationCause = .supervisorStopped) async {
-        guard let task = slots[index].task else { return }
+        guard case .running(let task, let monitor) = slots[index].phase else { return }
         slots[index].generation += 1
-        slots[index].monitor?.cancel()
-        slots[index].monitor = nil
+        monitor?.cancel()
         slots[index].cause?.record(cause)
-        slots[index].task = nil
+        slots[index].phase = .stopped
         task.cancel()
         let timeout = supervisor.children[index].shutdownTimeout
         let clock = clock
@@ -306,9 +339,7 @@ struct SupervisorRun {
 
     private func stopAll(_ slots: inout [Slot]) async {
         for index in slots.indices {
-            slots[index].restartTimer?.cancel()
-            slots[index].restartTimer = nil
-            slots[index].pendingRestart = []
+            slots[index].cancelScheduledRestart()
         }
         for index in slots.indices.reversed() {
             await stop(index, in: &slots)
