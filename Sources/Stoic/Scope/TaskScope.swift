@@ -148,17 +148,24 @@ final class TaskScopeState: Sendable {
     let label: String?
     let cause = CancellationCauseBox()
 
+    /// Where the body task is, for a fork that fails and must cancel it.
+    private enum Body {
+        /// The body task has not been handed over yet.
+        case pending
+        /// A fork failed before the body task was handed over: the body is
+        /// cancelled the moment it arrives, or it would run on, uncancelled.
+        case cancelOnArrival
+        /// The body task is here; this cancels it.
+        case arrived(cancel: @Sendable () -> Void)
+    }
+
     private struct State {
-        var body: Task<Void, Never>?
-        var bodyCancel: (@Sendable () -> Void)?
+        var body = Body.pending
         var forks: [UInt64: Task<Void, Never>] = [:]
         var forkLabels: [UInt64: String] = [:]
         var nextID: UInt64 = 0
         var failures: [any Error] = []
         var closed = false
-        // A fork failed before the body task was handed over: the body is
-        // cancelled the moment it arrives, or it would run on, uncancelled.
-        var cancelBodyOnArrival = false
     }
 
     private let state = Mutex(State())
@@ -182,8 +189,9 @@ final class TaskScopeState: Sendable {
 
     func setBody<R>(_ task: Task<R, Never>) {
         let cancelNow = state.withLock { state -> Bool in
-            state.bodyCancel = { task.cancel() }
-            return state.cancelBodyOnArrival
+            defer { state.body = .arrived(cancel: { task.cancel() }) }
+            if case .cancelOnArrival = state.body { return true }
+            return false
         }
         // A fork failed (and recorded `siblingFailed`) in the window between
         // the body task starting and this call.
@@ -260,9 +268,17 @@ final class TaskScopeState: Sendable {
         let (isFirst, bodyCancel) = state.withLock { state -> (Bool, (@Sendable () -> Void)?) in
             state.failures.append(error)
             guard state.failures.count == 1 else { return (false, nil) }
-            // The body may not exist yet; if so, `setBody` cancels it.
-            if state.bodyCancel == nil { state.cancelBodyOnArrival = true }
-            return (true, state.bodyCancel)
+            switch state.body {
+            case .arrived(let cancel):
+                return (true, cancel)
+            case .pending:
+                // The body may not exist yet; if so, `setBody` cancels it.
+                state.body = .cancelOnArrival
+                return (true, nil)
+            case .cancelOnArrival:
+                // Only the first failure gets here, and it set this.
+                return (true, nil)
+            }
         }
         // Before the body can be cancelled (here or in `setBody`), so it
         // always sees why.

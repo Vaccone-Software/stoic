@@ -491,3 +491,147 @@ struct SupervisorReviewTests {
         #expect(await collectSecond.value == expected)
     }
 }
+
+/// What a slot is doing between a child stopping and its restart: the
+/// decisions that must hold whichever way the run keeps that, on virtual time.
+@Suite("Supervisor: restarts in waiting")
+struct SupervisorWaitingTests {
+    struct Crash: Error {}
+
+    /// A decision about one child replaces a restart another slot is still
+    /// waiting for: the older timer must not start the group a second time,
+    /// or out of order.
+    @Test(.timeLimit(.minutes(1))) func aNewDecisionSupersedesARestartStillWaiting() async {
+        let clock = TestClock()
+        let script = SupervisorTests.Script()
+        let aFails = AsyncGate()
+        let supervisor = Supervisor(
+            label: "superseding", strategy: .restForOne,
+            intensity: .init(maxRestarts: 10, within: .seconds(600)), backoff: .fixed(.seconds(10))
+        ) {
+            Child("A") { _ in
+                if script.started("A") == 1 {
+                    await aFails.wait()
+                    throw Crash()
+                }
+                try await Task.sleep(for: .seconds(3600))
+            }
+            Child("B") { _ in
+                _ = script.started("B")
+                try await Task.sleep(for: .seconds(3600))
+            }
+            Child("C") { _ in
+                if script.started("C") == 1 { throw Crash() }
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        // C failed at 0 s and waits to restart alone at 10 s.
+        await clock.waitForSleepers(count: 1)
+        let start = clock.now
+        await clock.advance(by: .seconds(5))
+        // A fails at 5 s: its group is A, B and C, due at 15 s, and C's own
+        // timer goes with the decision it belonged to.
+        aFails.open()
+        #expect(await eventually { clock.pendingDeadlines == [start.advanced(by: .seconds(15))] })
+        await clock.advance(by: .seconds(5))
+        #expect(script.count("C") == 1, "the replaced timer's 10 s passed and started nothing")
+        await clock.advance(by: .seconds(5))
+        #expect(await eventually { script.count("A") == 2 && script.count("B") == 2 && script.count("C") == 2 })
+        run.cancel()
+        _ = await run.result
+        #expect(script.count("A") == 2 && script.count("B") == 2 && script.count("C") == 2, "each started once by the group")
+    }
+
+    /// The siblings a group restart takes down go down newest first, and
+    /// the child that failed is not stopped again.
+    @Test(.timeLimit(.minutes(1))) func aGroupRestartStopsTheSiblingsNewestFirst() async {
+        let script = SupervisorTests.Script()
+        let stops = SendableBox<[String]>([])
+        func child(_ name: String, crashes: Bool = false) -> Child {
+            Child(name) { _ in
+                let run = script.started(name)
+                if crashes && run == 1 { throw Crash() }
+                do { try await Task.sleep(for: .seconds(3600)) } catch {
+                    stops.mutate { $0.append(name) }
+                    throw error
+                }
+            }
+        }
+        let supervisor = Supervisor(label: "ordered", strategy: .oneForAll, backoff: .immediate) {
+            child("a")
+            child("b", crashes: true)
+            child("c")
+        }
+        let run = Task { try await withTestAmbient(clock: TestClock()) { try await supervisor.run() } }
+        #expect(await eventually { script.count("a") == 2 && script.count("b") == 2 && script.count("c") == 2 })
+        #expect(stops.value == ["c", "a"], "newest first, the failed child left out")
+        run.cancel()
+        _ = await run.result
+    }
+
+    /// The supervisor is not done while a restart is still due: the children
+    /// that finished for good do not end the run.
+    @Test(.timeLimit(.minutes(1))) func aRestartStillWaitingKeepsTheRunGoingWhileTheOthersAreFinished() async throws {
+        let clock = TestClock()
+        let script = SupervisorTests.Script()
+        let supervisor = Supervisor(label: "waiting", backoff: .fixed(.seconds(5))) {
+            Child("done", restart: .transient) { _ in _ = script.started("done") }
+            Child("flaky", restart: .transient) { _ in
+                if script.started("flaky") == 1 { throw Crash() }
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        await clock.waitForSleepers(count: 1)
+        await clock.advance(by: .seconds(5))
+        try await run.value
+        #expect(script.count("flaky") == 2, "restarted after the wait, rather than abandoned with it")
+        #expect(script.count("done") == 1, "and the finished child stayed finished")
+    }
+
+    /// Giving up cancels the restarts still waiting: nothing is left sleeping
+    /// on the clock for a supervisor that has returned.
+    @Test(.timeLimit(.minutes(1))) func anEscalationCancelsTheRestartsStillWaiting() async {
+        let clock = TestClock()
+        let script = SupervisorTests.Script()
+        let aFails = AsyncGate()
+        let supervisor = Supervisor(
+            label: "giving-up", intensity: .init(maxRestarts: 1, within: .seconds(600)), backoff: .fixed(.seconds(10))
+        ) {
+            Child("A") { _ in
+                _ = script.started("A")
+                await aFails.wait()
+                throw Crash()
+            }
+            Child("B") { _ in
+                if script.started("B") == 1 { throw Crash() }
+                try await Task.sleep(for: .seconds(3600))
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        await clock.waitForSleepers(count: 1)
+        aFails.open()
+        await #expect(throws: SupervisorEscalation.self) { try await run.value }
+        #expect(clock.pendingDeadlines.isEmpty, "B's restart timer was cancelled with the run")
+        #expect(script.count("B") == 1)
+    }
+
+    /// Cancelling the supervisor while a restart is waiting cancels the wait
+    /// as well, and the child is not started again.
+    @Test(.timeLimit(.minutes(1))) func cancellingTheSupervisorCancelsTheRestartsStillWaiting() async {
+        let clock = TestClock()
+        let script = SupervisorTests.Script()
+        let supervisor = Supervisor(label: "cancelled", backoff: .fixed(.seconds(10))) {
+            Child("worker") { _ in
+                _ = script.started("worker")
+                throw Crash()
+            }
+        }
+        let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
+        await clock.waitForSleepers(count: 1)
+        run.cancel()
+        await #expect(throws: CancellationError.self) { try await run.value }
+        #expect(clock.pendingDeadlines.isEmpty)
+        #expect(script.count("worker") == 1)
+    }
+}

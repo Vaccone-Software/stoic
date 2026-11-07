@@ -32,6 +32,59 @@ struct TaskScopeStateTests {
         await state.close()
     }
 
+    @Test(.stoic(seed: 6)) func aForkFailingAfterTheBodyArrivedCancelsItAfterRecordingWhy() async {
+        let state = TaskScopeState(label: "late")
+        let causeWhenCancelled = SendableBox<CancellationCause?>(nil)
+        let bodyStopped = TestGate()
+        let body = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(60)) } catch {
+                causeWhenCancelled.mutate { $0 = state.cause.cause }
+                bodyStopped.open()
+            }
+        }
+        state.setBody(body)
+        state.fork(label: "broken") { throw Boom() }
+        await bodyStopped.wait()
+        #expect(causeWhenCancelled.value == .siblingFailed, "the cause is recorded before the body can see the cancel")
+        await state.close()
+    }
+
+    @Test(.stoic(seed: 7)) func aBodyHandedOverWithoutAFailureIsNotCancelled() async {
+        let state = TaskScopeState(label: "calm")
+        let body = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(60)) } catch {}
+        }
+        state.setBody(body)
+        // A fork that finishes cleanly is not a failure: nothing cancels the body.
+        state.fork(label: "fine") {}
+        #expect(await eventually { state.trackedForkCount == 0 })
+        #expect(!body.isCancelled)
+        #expect(state.cause.cause == nil)
+        body.cancel()
+        await body.value
+        await state.close()
+    }
+
+    @Test(.stoic(seed: 8)) func onlyTheFirstOfSeveralFailuresCancelsTheBody() async {
+        let state = TaskScopeState(label: "several")
+        let cancels = SendableBox(0)
+        let bodyStopped = TestGate()
+        let body = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(60)) } catch {
+                cancels.mutate { $0 += 1 }
+                bodyStopped.open()
+            }
+        }
+        state.setBody(body)
+        state.fork(label: "first") { throw Boom() }
+        state.fork(label: "second") { throw Boom() }
+        await bodyStopped.wait()
+        await eventually { state.failures.count == 2 }
+        #expect(cancels.value == 1)
+        #expect(state.cause.cause == .siblingFailed)
+        await state.close()
+    }
+
     @Test(.stoic(seed: 2)) func aClosedScopeNeverStartsARejectedFork() async {
         let state = TaskScopeState(label: "closed")
         await state.close()
