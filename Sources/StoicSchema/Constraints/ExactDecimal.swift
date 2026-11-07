@@ -21,29 +21,23 @@ struct ExactDecimal: Sendable, Hashable {
         var digits: [UInt8] = []
         var scale = 0  // digits after the decimal point
         var exponentValue = 0
-        var seenPoint = false
-        var inExponent = false
         var exponentNegative = false
         var exponentDigits = 0
-        for byte in number.lexeme.utf8 {
-            if inExponent {
-                switch byte {
-                case UInt8(ascii: "-"): exponentNegative = true
-                case UInt8(ascii: "+"): break
-                default:
-                    exponentDigits += 1
-                    guard exponentDigits <= 6 else { return nil }
-                    exponentValue = exponentValue * 10 + Int(byte - 0x30)
-                }
-                continue
-            }
-            switch byte {
-            case UInt8(ascii: "-"): negative = true
-            case UInt8(ascii: "."): seenPoint = true
-            case UInt8(ascii: "e"), UInt8(ascii: "E"): inExponent = true
-            default:
-                if seenPoint { scale += 1 }
-                digits.append(byte - 0x30)
+        for element in NumberLexemeScanner(number.lexeme) {
+            switch element {
+            case .minus(in: .exponent):
+                exponentNegative = true
+            case .minus:
+                negative = true
+            case .digit(let digit, in: .integer):
+                digits.append(digit)
+            case .digit(let digit, in: .fraction):
+                scale += 1
+                digits.append(digit)
+            case .digit(let digit, in: .exponent):
+                exponentDigits += 1
+                guard exponentDigits <= 6 else { return nil }
+                exponentValue = exponentValue * 10 + Int(digit)
             }
         }
         var start = 0
