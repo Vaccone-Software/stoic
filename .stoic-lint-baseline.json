@@ -4,6 +4,11 @@
   ],
   "suppressions" : [
     {
+      "file" : "Sources/Stoic/Ambient/StoicTask.swift",
+      "hash" : "ba0526a6dc0ce75c",
+      "rule" : "stoic.task-detached"
+    },
+    {
       "file" : "Sources/Stoic/Concurrency/Race.swift",
       "hash" : "3205a7615662d3d5",
       "rule" : "stoic.unbounded-task-group"

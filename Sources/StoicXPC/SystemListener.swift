@@ -19,11 +19,22 @@ enum SystemListener {
     /// cannot stop the watchdog that ends them.
     static let watchdogQueue = DispatchQueue(label: "stoic.xpc.watchdog")
 
+    /// How long a service that has decided to exit goes on refusing
+    /// requests ("exiting", never run) before it exits: a request already on
+    /// its way when the decision was made is answered, not lost with the
+    /// process and left `.unknown`.
+    static let exitDrain: UInt32 = 250_000
+
     static func run(_ host: XPCHost, service: String) -> Never {
         let exit = host.policy.exit
         host.attach(HostRuntime(
             pid: getpid(),
-            exit: { code in exitQueue.async { exit(code) } },
+            exit: { code in
+                exitQueue.async {
+                    usleep(exitDrain)
+                    exit(code)
+                }
+            },
             watch: { _ in }  // the timer below checks every half second
         ))
         let watchdog = DispatchSource.makeTimerSource(queue: watchdogQueue)

@@ -42,6 +42,7 @@ plist "$service/Contents/Info.plist" com.stoic.xpc-integration.service Integrati
 codesign --force --sign - "$service"
 codesign --force --sign - "$app"
 
-# The app exits on its own; the timeout is for a hang, and its services go
-# with it (a bundled service does not outlive its client).
-timeout 180 "$app/Contents/MacOS/IntegrationApp"
+# The app exits on its own; the alarm is for a hang (macOS has no
+# `timeout`), and its services go with it (a bundled service does not
+# outlive its client).
+perl -e 'alarm shift; exec @ARGV or die "exec: $!"' 180 "$app/Contents/MacOS/IntegrationApp"

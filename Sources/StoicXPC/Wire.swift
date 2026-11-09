@@ -62,6 +62,8 @@ enum AnswerStatus: String, Codable, Sendable {
     case undecodable
     /// The client is another build: the request was not run.
     case buildMismatch
+    /// The handler ran, but its reply did not encode.
+    case badReply
 }
 
 /// The host's answer to a hello or a call.

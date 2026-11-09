@@ -600,6 +600,7 @@ private struct PerformCall {
     static func verdict(for failure: any Error, cut: Cut?, nothingReached: Bool, kind: Backend.Kind) -> CircuitBreaker.Verdict {
         if containsDefect(failure) { return .ignored("defect") }
         if nothingReached { return .ignored("not_reached") }
+        if let ended = failure as? any CallerDecidedFailure, ended.isCallerDecided { return .ignored("caller_decided") }
         switch cut {
         case .ownTimeout: return .recorded(failed: true, timedOut: true)
         case .deadline: return .ignored("deadline")
@@ -683,4 +684,12 @@ private struct PerformCall {
             .init("operation", .string(label), privacy: .public),
         ], fileID: fileID, line: line))
     }
+}
+
+/// A failure the calling side decided, not the backend: an XPC peer that
+/// ended the run its request was on (design/25). The breaker counts it no
+/// more than it counts a cancellation. Package-level: a library's own
+/// errors say so; an app's say it with cancellation.
+package protocol CallerDecidedFailure: Error {
+    var isCallerDecided: Bool { get }
 }

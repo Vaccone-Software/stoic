@@ -27,7 +27,8 @@ struct XPCHostTests {
     func anUnknownMethodIsAProtocolViolation() async throws {
         try await withRig { (rig) async throws in
             let error = try #require(await rig.failure(of: rig.start(Probe.missing, XPCEmpty()), Never.self))
-            #expect(error.last == .protocolViolation("the service has no method xpc.tests.missing"))
+            #expect(error.last == .refused("the service has no method xpc.tests.missing"))
+            #expect(error.outcome == .notExecuted)
             #expect(error.attempts == 1)
             #expect(rig.events.events(named: "xpc.request_refused").first?.text("reason") == "unknownMethod")
         }
@@ -37,10 +38,11 @@ struct XPCHostTests {
     func aMistypedRequestIsAProtocolViolation() async throws {
         try await withRig { (rig) async throws in
             let error = try #require(await rig.failure(of: rig.start(Probe.mistyped, 42), Never.self))
-            guard case .protocolViolation? = error.last else {
-                Issue.record("expected a protocol violation, got \(String(describing: error.last))")
+            guard case .refused? = error.last else {
+                Issue.record("expected a refusal, got \(String(describing: error.last))")
                 return
             }
+            #expect(error.outcome == .notExecuted)
             #expect(error.attempts == 1)
             #expect(rig.events.events(named: "xpc.request_refused").first?.text("reason") == "undecodable")
         }
@@ -102,14 +104,14 @@ struct XPCHostTests {
             _ = try await rig.peer.call(Probe.echo, "first")
             // Long enough that the next run, started within the advances
             // below, is not idle-exiting too.
-            await rig.clock.advance(by: .seconds(10))
+            await rig.advance(by: .seconds(10))
             await eventually { rig.events.count("xpc.idle_exit") == 1 }
             // The process lingers for its exit lag; the peer still thinks it live.
             let call = rig.start(Probe.echo, "second")
             await rig.passBackoff(after: 1)
             // To the exit, and short of the second attempt's own timeout
             // (5 s, from t = 11): a timeout there would repeat the read.
-            await rig.clock.advance(by: .seconds(4))
+            await rig.advance(by: .seconds(4))
             #expect(try await call.value == "second")
             #expect(rig.control.count("echo") == 2, "the refused request never ran in the exiting process")
             #expect(rig.service.runs == 2)
@@ -125,10 +127,10 @@ struct XPCHostTests {
                 try await withTimeout(.seconds(2)) { try await peer.call(Probe.slow, XPCEmpty()) }
             }
             await eventually { rig.control.count("slow") == 1 }
-            await rig.clock.advance(by: .seconds(2))
+            await rig.advance(by: .seconds(2))
             _ = await rig.failure(of: call, Never.self)
             // The handler's budget was two seconds; the grace is one.
-            await rig.clock.advance(by: .seconds(1))
+            await rig.advance(by: .seconds(1))
             await eventually { rig.service.exits == [1] }
             let watchdog = try #require(rig.events.events(named: "xpc.watchdog_exit").first)
             #expect(watchdog.level == .error)
@@ -141,7 +143,7 @@ struct XPCHostTests {
     func anIdleServiceExitsAndTheNextCallStartsANewRun() async throws {
         try await withRig(host: XPCHostPolicy(idleExit: .seconds(10))) { (rig) async throws in
             _ = try await rig.peer.call(Probe.echo, "first")
-            await rig.clock.advance(by: .seconds(10))
+            await rig.advance(by: .seconds(10))
             await eventually { rig.service.exits == [0] }
             #expect(rig.events.count("xpc.idle_exit") == 1)
             await eventually { rig.peer.run == nil }
@@ -155,13 +157,30 @@ struct XPCHostTests {
     func aRequestPutsOffTheIdleExit() async throws {
         try await withRig(host: XPCHostPolicy(idleExit: .seconds(10))) { (rig) async throws in
             _ = try await rig.peer.call(Probe.echo, "first")
-            await rig.clock.advance(by: .seconds(6))
+            await rig.advance(by: .seconds(6))
             _ = try await rig.peer.call(Probe.echo, "second")
-            await rig.clock.advance(by: .seconds(6))
+            await rig.advance(by: .seconds(6))
             #expect(rig.service.exits.isEmpty, "idle for six seconds since the second request")
-            await rig.clock.advance(by: .seconds(4))
+            await rig.advance(by: .seconds(4))
             await eventually { rig.service.exits == [0] }
             #expect(rig.service.runs == 1)
+        }
+    }
+
+    @Test(.failureMode("design/25", "the service is held outside a request"))
+    func aHoldOutsideARequestPutsOffTheIdleExitUntilItsRelease() async throws {
+        try await withRig(host: XPCHostPolicy(idleExit: .seconds(10))) { (rig) async throws in
+            _ = try await rig.peer.call(Probe.echo, "first")
+            await rig.advance(by: .seconds(5))
+            let host = try #require(rig.service.host)
+            host.hold("preload")
+            await rig.advance(by: .seconds(30))
+            #expect(rig.service.exits.isEmpty)
+            host.release("preload")
+            await rig.advance(by: .seconds(9))
+            #expect(rig.service.exits.isEmpty, "the idle period starts again at the release")
+            await rig.advance(by: .seconds(1))
+            await eventually { rig.service.exits == [0] }
         }
     }
 
@@ -169,10 +188,10 @@ struct XPCHostTests {
     func aHeldServiceDoesNotIdleExit() async throws {
         try await withRig(host: XPCHostPolicy(idleExit: .seconds(10))) { (rig) async throws in
             _ = try await rig.peer.call(Probe.load, "model")
-            await rig.clock.advance(by: .seconds(30))
+            await rig.advance(by: .seconds(30))
             #expect(rig.service.exits.isEmpty)
             _ = try await rig.peer.call(Probe.unload, "model")
-            await rig.clock.advance(by: .seconds(10))
+            await rig.advance(by: .seconds(10))
             await eventually { rig.service.exits == [0] }
         }
     }

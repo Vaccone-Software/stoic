@@ -158,7 +158,12 @@ public final class XPCHost: Sendable {
     /// Keeps an idle service from exiting while `reason` is held: a model
     /// it has loaded. Holding a reason twice holds it once.
     public func hold(_ reason: String) {
-        state.withLock { _ = $0.holds.insert(reason) }
+        state.withLock { state in
+            state.holds.insert(reason)
+            // Not idle while it is held: the idle period starts again at the
+            // release.
+            state.idleSince = nil
+        }
     }
 
     /// Lets go of `reason`; with nothing held and nothing in flight, the
@@ -224,11 +229,10 @@ public final class XPCHost: Sendable {
                     .init("expected", .string(build), privacy: .public), .init("found", .string(client), privacy: .public),
                 ])
             }
-            if exiting {
-                message.reply(Answer<Welcome, XPCEmpty>(status: .exiting))
-            } else {
-                message.reply(Answer<Welcome, XPCEmpty>(status: .welcome, reply: Welcome(pid: runtimePID, build: build)))
-            }
+            // An exiting service still says who it is: the peer may have to
+            // kill it if it lingers.
+            let welcome = Welcome(pid: runtimePID, build: build)
+            message.reply(Answer<Welcome, XPCEmpty>(status: exiting ? .exiting : .welcome, reply: welcome))
         case .call:
             let method = header.method ?? ""
             if session.clientBuild.map({ $0 != build }) ?? false {
@@ -277,20 +281,32 @@ public final class XPCHost: Sendable {
         let key = RequestKey(session: session.id, id: header.id)
         let overdueAt = budget.map { ambient.livenessClock.now.advanced(by: $0).advanced(by: policy.watchdogGrace) }
         let ambient = ambient
-        let runtime = state.withLock { state -> HostRuntime? in
+        // Admitted under the lock that decides an exit, so a request is
+        // either refused "exiting" or in flight when the decision is made:
+        // never accepted by a process that has already decided to go.
+        let admitted = state.withLock { state -> (admitted: Bool, runtime: HostRuntime?) in
+            guard !state.exiting else { return (false, nil) }
             state.idleSince = nil
-            let task = Task {
-                let answer = await withAmbient({ $0 = ambient }) { () async -> any Encodable & Sendable in
-                    guard let budget else { return await work(context) }
-                    return await withTimeout(budget, clock: ambient.clock) { await work(context) }
+            // A task of the host's: the handler runs under its caller's budget
+            // and in the host's context, and inherits nothing else.
+            let task = Task.owned(in: ambient) {
+                let answer: any Encodable & Sendable
+                if let budget {
+                    answer = await withTimeout(budget, clock: ambient.clock) { await work(context) }
+                } else {
+                    answer = await work(context)
                 }
                 self.finish(key)
                 message.reply(answer)
             }
             state.inFlight[key] = InFlight(task: task, method: method, overdueAt: overdueAt)
-            return state.runtime
+            return (true, state.runtime)
         }
-        if let overdueAt { runtime?.watch(overdueAt) }
+        guard admitted.admitted else {
+            refuse(message, .exiting, method: method, detail: nil)
+            return
+        }
+        if let overdueAt { admitted.runtime?.watch(overdueAt) }
     }
 
     private func finish(_ key: RequestKey) {
@@ -343,10 +359,7 @@ public final class XPCHost: Sendable {
             return true
         }
         guard arm else { return }
-        let ambient = ambient
-        Task {
-            await withAmbient({ $0 = ambient }) { await self.idleTimer(idleExit) }
-        }
+        Task.owned(in: ambient) { await self.idleTimer(idleExit) }
     }
 
     /// Waits out the idle period, which activity puts off; exits if it
@@ -367,12 +380,7 @@ public final class XPCHost: Sendable {
                 state.withLock { $0.idleTimerArmed = false }
                 return
             }
-            let idle = state.withLock { state -> Bool in
-                guard let since = state.idleSince, state.inFlight.isEmpty, state.holds.isEmpty, !state.exiting else { return false }
-                return since.advanced(by: idleExit) <= ambient.clock.now
-            }
-            if idle {
-                exit(0, event: "xpc.idle_exit", level: .info, fields: [.init("idle", .duration(idleExit))])
+            if exit(0, event: "xpc.idle_exit", level: .info, fields: [.init("idle", .duration(idleExit))], ifIdleFor: idleExit) {
                 return
             }
         }
@@ -381,16 +389,29 @@ public final class XPCHost: Sendable {
     // MARK: Exit
 
     /// Decides to exit, once: from here every request is refused
-    /// "exiting", and the runtime ends the process.
-    private func exit(_ code: Int32, event: EventName, level: Event.Level, fields: [Event.Field]) {
+    /// "exiting", and the runtime ends the process. With `ifIdleFor`, only
+    /// if the service has been idle that long, decided under the same lock
+    /// that admits requests. Returns whether this call decided it.
+    @discardableResult
+    private func exit(_ code: Int32, event: EventName, level: Event.Level, fields: [Event.Field], ifIdleFor idle: Duration? = nil) -> Bool {
+        let now = ambient.clock.now
         let runtime = state.withLock { state -> HostRuntime? in
             guard !state.exiting else { return nil }
+            if let idle {
+                guard state.inFlight.isEmpty, state.holds.isEmpty, let since = state.idleSince, since.advanced(by: idle) <= now else {
+                    // Not idle (long enough): the timer looks again, or
+                    // disarms if the idle period has not started.
+                    if !state.inFlight.isEmpty || !state.holds.isEmpty { state.idleSince = nil }
+                    return nil
+                }
+            }
             state.exiting = true
             return state.runtime
         }
-        guard let runtime else { return }
+        guard let runtime else { return false }
         report(event, level, label: nil, fields)
         runtime.exit(code)
+        return true
     }
 
     func report(_ name: EventName, _ level: Event.Level, label: String?, _ fields: [Event.Field]) {

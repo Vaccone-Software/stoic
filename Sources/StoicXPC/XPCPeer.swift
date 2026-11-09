@@ -108,10 +108,12 @@ public final class XPCPeer: Sendable {
 
     private let state = Mutex(State())
     private let requestIDs = Atomic<UInt64>(0)
-    private let registered: Bool
+    /// Whether the peer still counts in ``services``: it gives the service up
+    /// once, at shutdown or when released.
+    private let registered: Atomic<Bool>
 
-    /// The services that have a peer in this process.
-    private static let services = Mutex<Set<String>>([])
+    /// How many peers each service has in this process.
+    private static let services = Mutex<[String: Int]>([:])
 
     /// launchd's delay before restarting a service whose last run lived
     /// less than this, measured on macOS 27 (design/25, Origin). Reported,
@@ -141,12 +143,36 @@ public final class XPCPeer: Sendable {
         self.policy = policy
         self.transport = transport
         self.ambient = Ambient.current
-        self.registered = registers
+        self.registered = Atomic(registers)
         if registers {
-            let first = Self.services.withLock { $0.insert(service).inserted }
-            if !first {
+            let others = Self.services.withLock { services in
+                defer { services[service, default: 0] += 1 }
+                return services[service] ?? 0
+            }
+            if others > 0 {
                 report("xpc.peer_duplicate", .error, [.init("service", .string(service), privacy: .public)])
             }
+        }
+    }
+
+    // A peer released without `shutdown()` still owns a session and the
+    // process behind it: the session is cancelled here (synchronously, as
+    // releasing a live one traps), which ends the run, and the service is
+    // given up.
+    deinit {
+        let run = state.withLock { $0.phase.run }
+        if let run, let ended = run.end() {
+            for fail in ended.failures { fail() }
+            ended.connection?.cancel()
+        }
+        unregister()
+    }
+
+    private func unregister() {
+        guard registered.exchange(false, ordering: .relaxed) else { return }
+        Self.services.withLock { services in
+            let remaining = (services[service] ?? 1) - 1
+            services[service] = remaining > 0 ? remaining : nil
         }
     }
 
@@ -218,9 +244,14 @@ public final class XPCPeer: Sendable {
         guard run.register(id, fail: { slot.settle(.lost) }) else { throw .lost(afterSending: false) }
         do {
             try connection.send(message) { [self] (result: Result<Answer<Reply, Failure>, XPCDeliveryFailure>) in
-                // A connection lost is no answer: the run's end counts the
-                // request as in flight, and fails it if it still waits.
-                if case .failure(.connectionLost) = result {} else { run.answered(id) }
+                // A connection lost is no answer, and the first sign that the
+                // run is gone: the run's end fails this request with the
+                // others in flight, and counts it.
+                if case .failure(.connectionLost) = result {
+                    runGone(run)
+                    return
+                }
+                run.answered(id)
                 if !slot.settle(.delivered(result)), case .success = result {
                     report("xpc.late_reply", .debug, [.init("method", .string(method.name), privacy: .public), .init("run", .int(run.number))])
                 }
@@ -233,7 +264,7 @@ public final class XPCPeer: Sendable {
                 // yet: the run is gone, and the next attempt starts another.
                 runGone(run)
                 throw .lost(afterSending: false)
-            case .undecodable(let why): throw .protocolViolation("the request to \(method.name) did not encode: \(why)")
+            case .undecodable(let why): throw .refused("the request to \(method.name) did not encode: \(why)")
             }
         }
 
@@ -241,13 +272,10 @@ public final class XPCPeer: Sendable {
         case .cancelled:
             abandon(id, on: run, connection: connection, method: method)
             throw .cancelled(afterSending: true)
-        case .lost:
-            if isShutDown { throw .unavailable("the peer was shut down") }
-            throw .lost(afterSending: true)
-        case .delivered(.failure(.connectionLost)):
-            run.finished(id)
-            runGone(run)
-            throw .lost(afterSending: true)
+        case .lost, .delivered(.failure(.connectionLost)):
+            // An end the app decided (`end`, a stuck request, `shutdown`) is
+            // not the service failing.
+            throw run.endedByApp ? .ended(afterSending: true) : .lost(afterSending: true)
         case .delivered(.failure(.undecodable(let why))):
             run.finished(id)
             throw .protocolViolation("the reply from \(method.name) did not decode: \(why)")
@@ -276,9 +304,11 @@ public final class XPCPeer: Sendable {
             exiting(run)
             throw .lost(afterSending: false)
         case .unknownMethod:
-            throw .protocolViolation("the service has no method \(method.name)")
+            throw .refused("the service has no method \(method.name)")
         case .undecodable:
-            throw .protocolViolation(answer.detail ?? "the request to \(method.name) did not decode in the service")
+            throw .refused(answer.detail ?? "the request to \(method.name) did not decode in the service")
+        case .badReply:
+            throw .protocolViolation(answer.detail ?? "the reply from \(method.name) did not encode in the service")
         case .buildMismatch:
             throw .buildMismatch(expected: build, found: answer.detail ?? "unknown")
         case .welcome:
@@ -310,7 +340,7 @@ public final class XPCPeer: Sendable {
             report("xpc.call_stuck", .warning, [
                 .init("method", .string(name), privacy: .public), .init("run", .int(run.number)), .init("after", .duration(after)),
             ])
-            _ = await self.end(run, reason: "\(name) was stuck")
+            _ = await self.end(run, reason: "\(name) was stuck", byApp: true)
         }
     }
 
@@ -337,11 +367,11 @@ public final class XPCPeer: Sendable {
                 case .ending(let run):
                     return ifRunning ? .fail(.notRunning) : .waitSettled(run)
                 case .wedged:
-                    return .fail(.unavailable("the service's last run would not exit"))
+                    return .fail(.unavailable(.wedged))
                 case .mismatched(let expected, let found):
                     return .fail(.buildMismatch(expected: expected, found: found))
                 case .shutDown:
-                    return .fail(.unavailable("the peer was shut down"))
+                    return .fail(.unavailable(.shutDown))
                 }
             }
             switch next {
@@ -407,7 +437,7 @@ public final class XPCPeer: Sendable {
         do {
             connection = try transport.connect(onEnd: { [weak self] in self?.runGone(run) })
         } catch {
-            handshakeFailed(run, why: error.reason, readiness: .unavailable(error.reason))
+            handshakeFailed(run, why: error.reason, readiness: .unavailable(.noSession(error.reason)))
             return
         }
         guard run.attach(connection) else {
@@ -432,13 +462,14 @@ public final class XPCPeer: Sendable {
             report("xpc.handshake_failed", .warning, [.init("run", .int(run.number)), .init("reason", .string("lost: \(why)"))])
             runGone(run)
         case .answered(.failure(.undecodable(let why))):
+            handshakeFailed(run, why: "the handshake did not decode: \(why)", readiness: .unavailable(.noHandshake("its answer did not decode")))
             connection.cancel()
-            handshakeFailed(run, why: "the handshake did not decode: \(why)", readiness: .unavailable("the service's handshake did not decode"))
         case .timedOut:
             report("xpc.handshake_failed", .warning, [
                 .init("run", .int(run.number)), .init("reason", .string("no answer within \(policy.handshakeTimeout)"), privacy: .public),
             ])
-            connection.cancel()
+            // The run is gone to the peer (calls retry with another), and its
+            // session cancelled with it.
             runGone(run)
         }
     }
@@ -447,8 +478,8 @@ public final class XPCPeer: Sendable {
         switch answer.status {
         case .welcome:
             guard let welcome = answer.reply else {
+                handshakeFailed(run, why: "a welcome with no build", readiness: .unavailable(.noHandshake("its answer was empty")))
                 connection.cancel()
-                handshakeFailed(run, why: "a welcome with no build", readiness: .unavailable("the service's handshake was empty"))
                 return
             }
             guard welcome.build == build else {
@@ -463,9 +494,10 @@ public final class XPCPeer: Sendable {
                 return true
             }
             guard current else {
-                // Shut down while it started.
+                // Shut down while it started, or lost: whoever changed the
+                // phase decided what its waiters see; this only agrees.
+                run.ready.open(isShutDown ? .unavailable(.shutDown) : .lost)
                 connection.cancel()
-                run.ready.open(.unavailable("the peer was shut down"))
                 return
             }
             report("xpc.run_started", .info, [
@@ -475,14 +507,18 @@ public final class XPCPeer: Sendable {
             ])
             run.ready.open(.live(info))
         case .exiting:
-            // The process that answered is the last one, still leaving.
+            // The process that answered is the last one, still leaving. Its
+            // pid comes with the answer, so the end can kill it if it lingers.
+            if let welcome = answer.reply {
+                run.setInfo(XPCRun(number: run.number, pid: welcome.pid, build: welcome.build))
+            }
             exiting(run)
             run.ready.open(.retry)
         case .buildMismatch:
             mismatch(run, found: answer.detail ?? "unknown", connection: connection)
-        case .success, .failure, .cancelled, .unknownMethod, .undecodable:
+        case .success, .failure, .cancelled, .unknownMethod, .undecodable, .badReply:
+            handshakeFailed(run, why: "the handshake was answered \(answer.status.rawValue)", readiness: .unavailable(.noHandshake("it answered \(answer.status.rawValue)")))
             connection.cancel()
-            handshakeFailed(run, why: "the handshake was answered \(answer.status.rawValue)", readiness: .unavailable("the service did not shake hands"))
         }
     }
 
@@ -504,8 +540,16 @@ public final class XPCPeer: Sendable {
             .init("expected", .string(build), privacy: .public), .init("found", .string(found), privacy: .public),
             .init("run", .int(run.number)),
         ])
-        run.noteEnd(reason: "build mismatch", at: ambient.clock.now)
+        run.noteEnd(reason: "build mismatch", byApp: true, at: ambient.clock.now)
         run.ready.open(.buildMismatch(expected: build, found: found))
+        // The process is another build's: it is asked to exit, so it does not
+        // live on, unused, beside the app.
+        do {
+            try connection.send(Outgoing<XPCEmpty>(kind: .end))
+        } catch {
+            // Its session has ended already: so has its process.
+            return
+        }
         connection.cancel()
     }
 
@@ -522,7 +566,7 @@ public final class XPCPeer: Sendable {
             }
         }
         guard ending else { return }
-        background { [self] in _ = await self.end(run, reason: "the service is exiting") }
+        background { [self] in _ = await self.end(run, reason: "the service is exiting", byApp: false) }
     }
 
     /// The run is gone: the first sign of it wins, and every call still
@@ -569,18 +613,25 @@ public final class XPCPeer: Sendable {
     /// waiting (`.inProgress`).
     @discardableResult
     public func end(reason: String) async -> XPCEndResult {
-        let run = state.withLock { state -> RunState? in
+        let (run, starting) = state.withLock { state -> (RunState?, Bool) in
             switch state.phase {
-            case .starting(let run), .running(let run), .ending(let run): run
-            case .idle, .wedged, .mismatched, .shutDown: nil
+            case .starting(let run): (run, true)
+            case .running(let run), .ending(let run): (run, false)
+            case .idle, .wedged, .mismatched, .shutDown: (nil, false)
             }
         }
         guard let run else { return .notRunning }
-        return await end(run, reason: reason)
+        if starting {
+            // A run that is starting has no process to ask yet: its handshake
+            // decides first, and the calls waiting on it are not failed for it.
+            guard let readiness = await run.ready.wait() else { return .inProgress }
+            guard case .live = readiness else { return run.hasEnded ? .exited : .notRunning }
+        }
+        return await end(run, reason: reason, byApp: true)
     }
 
-    private func end(_ run: RunState, reason: String) async -> XPCEndResult {
-        let (outcome, first) = run.askToEnd(reason: reason, at: ambient.clock.now)
+    private func end(_ run: RunState, reason: String, byApp: Bool) async -> XPCEndResult {
+        let (outcome, first) = run.askToEnd(reason: reason, byApp: byApp, at: ambient.clock.now)
         if first {
             let proceeding = state.withLock { state -> Bool in
                 guard let current = state.phase.run, current === run, !run.hasEnded else { return false }
@@ -644,12 +695,10 @@ public final class XPCPeer: Sendable {
             state.phase = .shutDown
             return run
         }
-        if registered {
-            _ = Self.services.withLock { $0.remove(service) }
-        }
+        unregister()
         guard let run else { return }
-        run.noteEnd(reason: "the peer shut down", at: ambient.clock.now)
-        run.ready.open(.unavailable("the peer was shut down"))
+        run.noteEnd(reason: "the peer shut down", byApp: true, at: ambient.clock.now)
+        run.ready.open(.unavailable(.shutDown))
         // Fails the calls waiting on the run first, then cancels its session:
         // a handler that the cancellation ends must not answer them.
         runGone(run)
@@ -664,16 +713,11 @@ public final class XPCPeer: Sendable {
         }
     }
 
-    /// Runs `work` in a task the peer owns, in the context the peer was made
-    /// in and outside any caller's deadline: each such task is bounded by a
-    /// timeout or grace of its own.
+    /// Runs `work` in a task the peer owns: in the context the peer was made
+    /// in, and none of the calling task's (its deadline, its retry attempt).
+    /// Each such task is bounded by a timeout or grace of its own.
     private func background(_ work: @escaping @Sendable () async -> Void) {
-        let ambient = ambient
-        Task {
-            await withAmbient({ $0 = ambient }) {
-                await Deadline.withoutDeadline { await work() }
-            }
-        }
+        Task.owned(in: ambient) { await work() }
     }
 
     func report(_ name: EventName, _ level: Event.Level, _ fields: [Event.Field]) {

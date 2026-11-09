@@ -51,3 +51,24 @@ extension Task where Failure == any Error {
         return Task(operation: operation)
     }
 }
+
+extension Task where Success == Void, Failure == Never {
+    /// Starts a task that belongs to no caller: it inherits none of its
+    /// creator's call-scoped context — no deadline, no enclosing retry
+    /// attempt, no urgency, no cancellation cause — only `ambient`, and its
+    /// executor preference.
+    ///
+    /// For work a library does on behalf of many callers, started by
+    /// whichever caller came first and bounded by a timeout of its own: an
+    /// XPC peer's handshake and the end of a run, a simulated service's
+    /// handlers (design/25). Inheriting that one caller's deadline would fail
+    /// the work for every other caller waiting on it, and its retry attempt
+    /// would make a `perform` inside the work look nested in it.
+    @discardableResult
+    package static func owned(in ambient: Ambient, _ operation: sending @escaping () async -> Void) -> Task {
+        // stoic:allow(task-detached): inheriting nothing is the point; the ambient context is bound again inside, and the executor preference passed.
+        Task.detached(executorPreference: ambient.taskExecutor) {
+            await withAmbient({ $0 = ambient }, operation: operation)
+        }
+    }
+}

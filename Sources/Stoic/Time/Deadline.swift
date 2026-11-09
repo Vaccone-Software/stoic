@@ -66,17 +66,4 @@ public struct Deadline: Sendable, CustomStringConvertible {
     public var description: String {
         "Deadline(\(instant) on \(clock), \(remaining) remaining)"
     }
-
-    /// Runs `operation` with no deadline in force.
-    ///
-    /// For work a library does on behalf of every caller, started by
-    /// whichever caller came first, and bounded by a timeout of its own: an
-    /// XPC peer's handshake, the end of a run (design/25). Inheriting that
-    /// one caller's deadline would fail the work for everyone else waiting
-    /// on it.
-    package nonisolated(nonsending) static func withoutDeadline<R>(
-        _ operation: nonisolated(nonsending) () async -> R
-    ) async -> R {
-        await $stored.withValueTyped(nil, operation: operation)
-    }
 }

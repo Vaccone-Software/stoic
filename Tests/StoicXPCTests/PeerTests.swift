@@ -26,7 +26,7 @@ struct XPCPeerTests {
         try await withRig { (rig) async throws in
             rig.service.refusesConnections = "no such service"
             let error = try #require(await rig.failure(of: rig.start(Probe.echo, "x"), Never.self))
-            #expect(error.last == .unavailable("no such service"))
+            #expect(error.last == .unavailable(.noSession("no such service")))
             #expect(error.attempts == 1)
             #expect(error.outcome == .notExecuted)
             #expect(rig.events.count("xpc.handshake_failed") == 1)
@@ -56,10 +56,10 @@ struct XPCPeerTests {
             }
             let patient = rig.start(Probe.echo, "patient")
             await eventually { rig.service.sessions == 1 }
-            await rig.clock.advance(by: .seconds(1))
+            await rig.advance(by: .seconds(1))
             let error = try #require(await rig.failure(of: hurried, Never.self))
             #expect(error.rejection?.reason == .deadlineExceeded)
-            await rig.clock.advance(by: .seconds(2))
+            await rig.advance(by: .seconds(2))
             #expect(try await patient.value == "patient")
             #expect(rig.service.sessions == 1, "the handshake went on for the patient caller")
         }
@@ -182,7 +182,7 @@ struct XPCPeerTests {
             let throttled = try #require(rig.events.events(named: "xpc.relaunch_throttled").first)
             #expect(throttled.level == .notice)
             // A run that lived longer is not.
-            await rig.clock.advance(by: .seconds(11))
+            await rig.advance(by: .seconds(11))
             await rig.service.crash()
             _ = try await rig.peer.call(Probe.echo, "c")
             #expect(rig.events.count("xpc.relaunch_throttled") == 1)
@@ -200,7 +200,7 @@ struct XPCPeerTests {
             call.cancel()
             let error = try #require(await rig.failure(of: call, Never.self))
             #expect(error.outcome == .notExecuted)
-            await rig.clock.advance(by: .seconds(3))
+            await rig.advance(by: .seconds(3))
             await eventually { rig.peer.run != nil }
             #expect(rig.control.count("echo") == 0)
         }
@@ -237,13 +237,29 @@ struct XPCPeerTests {
             await eventually { rig.control.count("wedge") == 1 }
             call.cancel()
             _ = await rig.failure(of: call, Never.self)
-            await rig.clock.advance(by: .seconds(5))
+            await rig.advance(by: .seconds(1))
             await eventually { rig.events.count("xpc.run_ended") == 1 }
             #expect(rig.events.count("xpc.call_stuck") == 1)
             let ended = try #require(rig.events.events(named: "xpc.run_ended").first)
             #expect(ended.text("reason") == "xpc.tests.wedge was stuck")
             #expect(rig.service.exits == [0])
-            #expect(rig.events.count("breaker.recorded") == 0, "an end the peer decided is not counted against the service")
+        }
+    }
+
+    @Test(.failureMode("design/25", "the app ends a run with other calls in flight"))
+    func callsOnARunTheAppEndedFailEndedAndTheBreakerIgnoresThem() async throws {
+        try await withRig { (rig) async throws in
+            let wedged = rig.start(Probe.wedge, XPCEmpty())
+            let payment = rig.start(Probe.charge, "in flight")
+            await eventually { rig.control.count("wedge") == 1 && rig.control.count("charge") == 1 }
+            wedged.cancel()
+            _ = await rig.failure(of: wedged, Never.self)
+            await rig.advance(by: .seconds(1))
+            let error = try #require(await rig.failure(of: payment, Never.self))
+            #expect(error.last == .ended(afterSending: true))
+            #expect(error.outcome == .unknown)
+            #expect(rig.events.count("breaker.recorded") == 0, "neither call was counted against the service")
+            #expect(rig.events.events(named: "breaker.ignored").contains { $0.text("reason") == "caller_decided" })
         }
     }
 
@@ -257,7 +273,7 @@ struct XPCPeerTests {
             let end = Task { await peer.end(reason: "reload") }
             await eventually { rig.events.count("xpc.host_exiting") == 1 }
             let call = rig.start(Probe.echo, "second")
-            await rig.clock.advance(by: .seconds(5))
+            await rig.advance(by: .seconds(5))
             #expect(try await call.value == "second")
             #expect(await end.value == .exited)
             #expect(rig.service.runs == 2)
@@ -273,7 +289,7 @@ struct XPCPeerTests {
             let peer = rig.peer
             let end = Task { await peer.end(reason: "reload") }
             await eventually { rig.events.count("xpc.host_exiting") == 1 }
-            await rig.clock.advance(by: .seconds(2))
+            await rig.advance(by: .seconds(2))
             #expect(await end.value == .killed)
             #expect(rig.service.exits == [-9])
             let escalated = try #require(rig.events.events(named: "xpc.end_escalated").first)
@@ -288,13 +304,13 @@ struct XPCPeerTests {
             let peer = rig.peer
             let end = Task { await peer.end(reason: "reload") }
             await eventually { rig.events.count("xpc.host_exiting") == 1 }
-            await rig.clock.advance(by: .seconds(2))
+            await rig.advance(by: .seconds(2))
             #expect(await end.value == .wedged)
             #expect(rig.events.events(named: "xpc.run_wedged").first?.level == .error)
             let refused = try #require(await rig.failure(of: rig.start(Probe.echo, "refused"), Never.self))
-            #expect(refused.last == .unavailable("the service's last run would not exit"))
+            #expect(refused.last == .unavailable(.wedged))
             #expect(refused.attempts == 1)
-            await rig.clock.advance(by: .seconds(28))
+            await rig.advance(by: .seconds(28))
             await eventually { rig.service.pid == nil }
             await eventually { rig.peer.run == nil && rig.events.count("xpc.run_ended") == 1 }
             #expect(try await rig.peer.call(Probe.echo, "again") == "again")
@@ -305,14 +321,62 @@ struct XPCPeerTests {
     @Test(.failureMode("design/25", "the peer is shut down with calls waiting"))
     func shuttingDownFailsWaitingCallsAndCancelsTheSession() async throws {
         try await withRig { (rig) async throws in
-            let call = rig.start(Probe.hang, XPCEmpty())
-            await eventually { rig.control.count("hang") == 1 }
+            let payment = rig.start(Probe.charge, "in flight")
+            let hang = rig.start(Probe.hang, XPCEmpty())
+            await eventually { rig.control.count("charge") == 1 && rig.control.count("hang") == 1 }
             rig.peer.shutdown()
-            let error = try #require(await rig.failure(of: call, Never.self))
-            #expect(error.last == .unavailable("the peer was shut down"))
+            let error = try #require(await rig.failure(of: payment, Never.self))
+            #expect(error.last == .ended(afterSending: true), "it was sent: the service may have acted")
+            #expect(error.outcome == .unknown)
             await eventually("the session was not cancelled") { rig.control.count("hang.cancelled") == 1 }
+            await rig.passBackoff(after: 1)
+            let read = try #require(await rig.failure(of: hang, Never.self))
+            #expect(read.last == .unavailable(.shutDown), "a read is tried again, and finds the peer shut down")
             let after = try #require(await rig.failure(of: rig.start(Probe.echo, "x"), Never.self))
-            #expect(after.last == .unavailable("the peer was shut down"))
+            #expect(after.last == .unavailable(.shutDown))
+            #expect(after.outcome == .notExecuted)
+        }
+    }
+
+    @Test(.failureMode("design/25", "the app ends a run while it is starting"))
+    func endingARunThatIsStartingWaitsForItsHandshake() async throws {
+        try await withRig { (rig) async throws in
+            rig.service.launchDelay = .seconds(3)
+            let call = rig.start(Probe.echo, "waiting")
+            await eventually { rig.service.sessions == 1 }
+            let peer = rig.peer
+            let end = Task { await peer.end(reason: "reload") }
+            await rig.advance(by: .seconds(3))
+            rig.service.launchDelay = .zero
+            #expect(await end.value == .exited)
+            #expect(rig.events.count("xpc.host_exiting") == 1, "the process was asked to exit, not left running")
+            // Whether the waiting call reached the run before the end, or was
+            // held back and sent to the next: it is answered either way.
+            #expect(try await rig.value(of: call) == "waiting", "the waiting call was not failed for the end")
+            #expect(rig.service.exits.first == 0)
+        }
+    }
+
+    @Test(.failureMode("design/25", "a new session reaches a process that is exiting"))
+    func aSessionToAnExitingProcessWaitsForTheNextOne() async throws {
+        try await withRig(
+            policy: XPCPeerPolicy(endGrace: .seconds(10)), host: XPCHostPolicy(idleExit: .seconds(10)), exitLag: .seconds(3)
+        ) { (rig) async throws in
+            _ = try await rig.peer.call(Probe.echo, "first")
+            await rig.advance(by: .seconds(10))
+            await eventually { rig.events.count("xpc.idle_exit") == 1 }
+            // The process lingers (short of the call's 5 s attempt timeout);
+            // its session ends, so the next call opens a new one, which
+            // reaches the same, exiting process.
+            await rig.service.dropSessions()
+            await eventually { rig.peer.run == nil }
+            let call = rig.start(Probe.echo, "second")
+            await eventually { rig.service.sessions == 2 }
+            await eventually { rig.events.count("xpc.run_ended") == 0 && rig.peer.run == nil }
+            await rig.advance(by: .seconds(3))
+            #expect(try await call.value == "second")
+            #expect(rig.service.runs == 2)
+            #expect(rig.control.count("echo") == 2)
         }
     }
 

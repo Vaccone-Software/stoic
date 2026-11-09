@@ -65,7 +65,7 @@ enum Probe {
     static let slow = XPCMethod<XPCEmpty, String, Never>(backend.readOnly("slow", length: .long))
     /// Ignores cancellation until the pause opens; ends the service when stuck.
     static let wedge = XPCMethod<XPCEmpty, XPCEmpty, Never>(
-        backend.readOnly("wedge", length: .long), ifStuck: .endService(after: .seconds(5)))
+        backend.readOnly("wedge", length: .long), ifStuck: .endService(after: .seconds(1)))
     /// Answers with its idempotency key.
     static let keyed = XPCMethod<String, String, Never>(backend.keyed("keyed"))
     /// Holds and releases the service.
@@ -76,6 +76,19 @@ enum Probe {
     /// The client's idea of a method the service declares with a String request.
     static let mistyped = XPCMethod<Int, String, Never>(backend.readOnly("mistyped"))
     static let mistypedHost = XPCMethod<String, String, Never>(backend.readOnly("mistyped"))
+}
+
+/// A flag set once, read from anywhere.
+final class Flag: Sendable {
+    private let state = Mutex(false)
+
+    var isSet: Bool {
+        state.withLock { $0 }
+    }
+
+    func set() {
+        state.withLock { $0 = true }
+    }
 }
 
 /// What the tests' handlers saw and wait for.
@@ -178,11 +191,54 @@ struct Rig {
         }
     }
 
+    /// The task's value, moving the clock a second at a time until it has
+    /// one: for a call whose path (a retry or not) a race decides.
+    func value<Reply>(of task: Task<Reply, any Error>, limit: Int = 30) async throws -> Reply {
+        let done = Flag()
+        let watcher = Task {
+            _ = await task.result
+            done.set()
+        }
+        let real = ContinuousClock()
+        for _ in 0..<limit where !done.isSet {
+            await clock.advance(by: .seconds(1))
+            // A moment of real time for what the advance woke to settle.
+            let until = real.now.advanced(by: .milliseconds(50))
+            while !done.isSet, real.now < until {
+                do {
+                    try await real.sleep(for: .milliseconds(1))
+                } catch {
+                    break
+                }
+            }
+        }
+        await watcher.value
+        return try await task.value
+    }
+
     /// Waits until `count` attempts have failed, then moves the clock past
     /// the backoff that follows.
     func passBackoff(after count: Int) async {
         await eventually("attempt \(count) never failed") { events.count("retry.attempt_failed") >= count }
-        await clock.advance(by: .seconds(1))
+        await advance(by: .seconds(1))
+    }
+
+    /// Moves the clock by `duration`, once something is asleep that is due
+    /// within it, waiting up to a fifth of a second of real time for that:
+    /// work woken by the test's last step (a grace, a backoff, a watcher)
+    /// goes to sleep on a task of its own, and a clock moved before it does
+    /// leaves it asleep past the advance.
+    func advance(by duration: Duration) async {
+        let real = ContinuousClock()
+        let until = real.now.advanced(by: .milliseconds(200))
+        while real.now < until, !clock.pendingDeadlines.contains(where: { clock.now.duration(to: $0) <= duration }) {
+            do {
+                try await real.sleep(for: .milliseconds(1))
+            } catch {
+                break
+            }
+        }
+        await clock.advance(by: duration)
     }
 }
 

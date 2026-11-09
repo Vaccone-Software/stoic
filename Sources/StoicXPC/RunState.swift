@@ -13,7 +13,7 @@ final class RunState: Sendable {
         /// The process answered that it is exiting: wait for it to go, and
         /// start another.
         case retry
-        case unavailable(String)
+        case unavailable(XPCUnavailable)
         case buildMismatch(expected: String, found: String)
     }
 
@@ -33,9 +33,12 @@ final class RunState: Sendable {
         var info: XPCRun?
         var pending: [UInt64: Pending] = [:]
         var ended = false
-        /// Why the peer asked the run to end, and when; `nil` if it did not.
+        /// Why the run is ending, and since when; `nil` while it is not.
         var endReason: String?
         var endAskedAt: AnyClock.Instant?
+        /// Whether the app decided the end: its calls fail `.ended`, which
+        /// the breaker does not count.
+        var appDecided = false
         var ending: Gate<XPCEndResult>?
     }
 
@@ -77,8 +80,9 @@ final class RunState: Sendable {
         mutable.withLock { $0.endAskedAt }
     }
 
-    var inFlight: Int {
-        mutable.withLock { $0.pending.values.count { !$0.abandoned } }
+    /// Whether the app decided the run's end.
+    var endedByApp: Bool {
+        mutable.withLock { $0.appDecided }
     }
 
     /// Keeps the session. False if the run already ended: the caller cancels it.
@@ -96,47 +100,56 @@ final class RunState: Sendable {
 
     /// Marks the run as asked to end, once. Returns the gate the end's
     /// outcome opens, and whether this call is the one that asked.
-    func askToEnd(reason: String, at instant: AnyClock.Instant) -> (outcome: Gate<XPCEndResult>, first: Bool) {
+    func askToEnd(reason: String, byApp: Bool, at instant: AnyClock.Instant) -> (outcome: Gate<XPCEndResult>, first: Bool) {
         mutable.withLock { state in
             if let ending = state.ending { return (ending, false) }
             let ending = Gate<XPCEndResult>()
             state.ending = ending
-            state.endReason = reason
-            state.endAskedAt = instant
+            if state.endReason == nil {
+                state.endReason = reason
+                state.endAskedAt = instant
+                state.appDecided = byApp
+            }
             return (ending, true)
         }
     }
 
-    /// Records the reason for an end the peer did not run itself: the
-    /// service said it is exiting, or the peer shut down.
-    func noteEnd(reason: String, at instant: AnyClock.Instant) {
+    /// Records why the run is ending when the peer is not the one running
+    /// its end: the service said it is exiting (`byApp` false), or the peer
+    /// shut down or found another build (`byApp` true). The first reason
+    /// stays.
+    func noteEnd(reason: String, byApp: Bool, at instant: AnyClock.Instant) {
         mutable.withLock { state in
             if state.endReason == nil {
                 state.endReason = reason
                 state.endAskedAt = instant
+                state.appDecided = byApp
             }
         }
     }
 
     /// Ends the run, once: the first sign that the process is gone wins.
-    /// Returns the requests still waiting, to be failed, or `nil` if the run
-    /// had ended already.
+    /// Returns the requests still waiting, to be failed, and the session, to
+    /// be cancelled — the run lets go of it, so neither keeps the other —
+    /// or `nil` if the run had ended already.
     func end() -> (failures: [@Sendable () -> Void], connection: (any XPCConnection)?)? {
         mutable.withLock { state in
             guard !state.ended else { return nil }
             state.ended = true
             let failures = state.pending.values.filter { !$0.answered && !$0.abandoned }.map(\.fail)
             state.pending = [:]
+            defer { state.connection = nil }
             return (failures, state.connection)
         }
     }
 
     // MARK: Requests
 
-    /// Files request `id`. False if the run has ended: nothing is sent.
+    /// Files request `id`. False if the run has ended or is ending: nothing
+    /// is sent, so nothing can reach a process that is leaving.
     func register(_ id: UInt64, fail: @escaping @Sendable () -> Void) -> Bool {
         mutable.withLock { state in
-            guard !state.ended else { return false }
+            guard !state.ended, state.endReason == nil else { return false }
             state.pending[id] = Pending(fail: fail)
             return true
         }

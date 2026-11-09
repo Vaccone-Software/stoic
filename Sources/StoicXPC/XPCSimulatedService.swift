@@ -142,8 +142,17 @@ public final class XPCSimulatedService: XPCTransport {
             return current
         }
         guard let process else { return false }
-        Task { await process.die(code: -9, sessionsEndFirst: false) }
+        Task.owned(in: ambient) { await process.die(code: -9, sessionsEndFirst: false) }
         return true
+    }
+
+    /// Ends every session of the live process while the process lives on:
+    /// what the system does when a handler lets a reply-expecting message go
+    /// unanswered (design/25, Origin). The next session reaches the same
+    /// process.
+    public func dropSessions() async {
+        guard let process = state.withLock({ $0.current }) else { return }
+        process.dropSessions()
     }
 
     // MARK: Processes
@@ -227,7 +236,7 @@ final class SimulatedProcess: Sendable {
             return
         }
         let ambient = ambient
-        Task {
+        Task.owned(in: ambient) {
             do {
                 try await ambient.clock.sleep(for: delay)
             } catch {
@@ -263,9 +272,19 @@ final class SimulatedProcess: Sendable {
             return true
         }
         guard start else { return }
-        let ambient = ambient
-        Task {
-            await withAmbient({ $0 = ambient }) { self.drain() }
+        // The listener's queue: none of the sender's context reaches the
+        // host, as none crosses a process.
+        Task.owned(in: ambient) { self.drain() }
+    }
+
+    func dropSessions() {
+        let connections = state.withLock { state in
+            defer { state.connections = [] }
+            return state.connections
+        }
+        for connection in connections {
+            host.sessionEnded(connection.session)
+            connection.end(failingReplies: true)
         }
     }
 
@@ -292,27 +311,25 @@ final class SimulatedProcess: Sendable {
         guard first else { return }
         let lag = service?.exitLag ?? .zero
         let ambient = ambient
-        Task {
-            await withAmbient({ $0 = ambient }) {
-                if lag > .zero {
-                    do {
-                        try await ambient.clock.sleep(for: lag)
-                    } catch {
-                        // Nothing cancels this task; were it cancelled, the
-                        // process would exit at once rather than never.
-                        await self.die(code: code, sessionsEndFirst: false)
-                        return
-                    }
+        Task.owned(in: ambient) {
+            if lag > .zero {
+                do {
+                    try await ambient.clock.sleep(for: lag)
+                } catch {
+                    // Nothing cancels this task; were it cancelled, the
+                    // process would exit at once rather than never.
+                    await self.die(code: code, sessionsEndFirst: false)
+                    return
                 }
-                await self.die(code: code, sessionsEndFirst: false)
             }
+            await self.die(code: code, sessionsEndFirst: false)
         }
     }
 
     /// Checks the host's watchdog by `instant` on the liveness clock.
     func watch(until instant: AnyClock.Instant) {
         let ambient = ambient
-        let timer = Task {
+        let timer = Task.owned(in: ambient) {
             do {
                 try await ambient.livenessClock.sleep(until: instant)
             } catch {
@@ -366,7 +383,7 @@ final class SimulatedConnection: XPCConnection {
     }
 
     private let process: SimulatedProcess
-    private let session: HostSession
+    let session: HostSession
     private let onEnd: @Sendable () -> Void
     private let ambient: Ambient
     private let state = Mutex(State())
@@ -426,10 +443,7 @@ final class SimulatedConnection: XPCConnection {
         }
         guard first else { return }
         process.host.sessionEnded(session)
-        let ambient = ambient
-        Task {
-            await withAmbient({ $0 = ambient }) { self.end(failingReplies: false) }
-        }
+        Task.owned(in: ambient) { self.end(failingReplies: false) }
     }
 
     private func deliver(_ id: UInt64, _ data: Data) {
@@ -484,7 +498,7 @@ struct SimulatedMessage: HostMessage {
         } catch {
             // A reply that does not encode is the handler's bug: the caller
             // is told so, rather than left to time out.
-            let refusal = Answer<XPCEmpty, XPCEmpty>(status: .undecodable, detail: "the reply did not encode: \(error)")
+            let refusal = Answer<XPCEmpty, XPCEmpty>(status: .badReply, detail: "the reply did not encode: \(error)")
             do {
                 self.answer(try JSONEncoder().encode(refusal))
             } catch {
