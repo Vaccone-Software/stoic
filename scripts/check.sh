@@ -41,8 +41,10 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # graph, state machine, simulation, abandoning timeouts, the resilience
 # policies, the idempotency key hedged attempts read at once, and declared
 # operations (their admission partitions, breakers, settled marks and shielded
-# attempts). A few minutes: the instrumented build is separate from the one above.
-swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency'
+# attempts), and XPC peers and hosts (a run ended from several callbacks, a
+# reply settled once). A few minutes: the instrumented build is separate from
+# the one above.
+swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
 # Skipped here, run with their bounds in the plain test step above: the tests
@@ -152,7 +154,7 @@ ios_sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 swift build --traits Crypto --target StoicSealed --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicSealedKeychain --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicDownloads --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability; do
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done
@@ -164,7 +166,7 @@ step "documentation: DocC builds with no warnings, in every library (broken link
 # building. StoicUIKit builds for iOS, where its code compiles.
 docs=$(mktemp)
 for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings \
-    StoicHTTP StoicObservability StoicApple StoicAppKit StoicUIKit; do
+    StoicHTTP StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC; do
     destination='platform=macOS'
     if [ "$scheme" = StoicUIKit ]; then destination='generic/platform=iOS'; fi
     xcodebuild docbuild -scheme "$scheme" -destination "$destination" -derivedDataPath .build/docs > "$docs" 2>&1 || {
@@ -181,6 +183,12 @@ for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicF
     printf '  ok %s\n' "$scheme"
 done
 rm -f "$docs"
+
+step "XPC services against real processes: an app bundle and its service, through launchd (design/25)"
+# About a minute: launchd delays restarting a service that lived under ten
+# seconds, and each scenario ends one. It signals nothing but the service it
+# started, through StoicXPC's own pid check.
+scripts/xpc-integration.sh
 
 if [ "${1:-}" = "--stress" ]; then
     step "stress: every suite, up to 100 repetitions"

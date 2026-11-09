@@ -10,3 +10,6 @@ Package.resolved
 /Examples/*/Package.resolved
 /Benchmarks/.build
 /Benchmarks/Package.resolved
+/scripts/xpc-integration/.build
+/scripts/xpc-integration/Package.resolved
+/scripts/xpc-integration/out
