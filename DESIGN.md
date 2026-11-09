@@ -157,6 +157,7 @@ fetches no other package at all.
    StoicApple ······· reachability, BGTask, Keychain  ← Stoic, StoicFoundation
      StoicSealedKeychain · the Keychain as a sealed keyring's custody (Crypto) ← StoicSealed, StoicApple
    StoicAppKit, StoicUIKit · lifecycle bridges        ← Stoic
+   StoicXPC ········· a bundled XPC service, called and hosted (macOS) ← Stoic
  tools ────────────────────────────────────────────────────────────────────────
    StoicMacros (Macros trait) · StoicLint + stoic-lint (Lint trait): swift-syntax
    StoicSealed, StoicDownloads (Crypto trait): swift-crypto, which is BoringSSL off Apple platforms
@@ -178,6 +179,7 @@ fetches no other package at all.
 | `StoicApple`         | Reachability, background tasks, Keychain, device conditions                    | `Stoic`, `StoicFoundation`, Apple frameworks |
 | `StoicSealedKeychain` | A `SecretStore` (the Keychain) as the custody of a sealed keyring: the one place `StoicSealed` and `StoicApple` meet | `StoicSealed`, `StoicApple`; swift-crypto, behind `Crypto` |
 | `StoicAppKit`, `StoicUIKit` | Lifecycle bridges                                                       | `Stoic`, AppKit / UIKit            |
+| `StoicXPC`           | A bundled XPC service: the app's peer (runs, handshake by build, losses, ending) and the service's host (watchdog, idle exit); a simulated service for tests | `Stoic`, XPC; macOS only |
 | `StoicMacros`        | `@Schema`, `@Refined`; `@StateMachine`, `@Services` planned                    | `StoicSchema`; swift-syntax, behind `Macros` |
 | `StoicLint`          | Build-tool plugin that fails the build on unsafe patterns                      | swift-syntax, behind `Lint` (host only) |
 
@@ -376,6 +378,7 @@ incident review is the wrong default.
 | 22  | [Operations and backends](design/22-operations.md) | resilience numbers picked per call site, retried `POST`s, interactive taps waiting out background backoffs | Built: `Backend`, `perform`, `withUrgency`; `StoicHTTP` on operations planned |
 | 23  | [Downloads](design/23-downloads.md) | a download that restarts at zero, a partial file spliced onto a changed file, a digest in a second pass, half a model on disk | Built: `StoicDownloads` behind the `Crypto` trait |
 | 24  | [Sealed storage](design/24-sealed-storage.md) | private files in backups and synced folders, keys written beside their data, "decryption failed" for a tampered file, a lost key and a plaintext file alike | Built: `StoicSealed` behind the `Crypto` trait |
+| 25  | [XPC services](design/25-xpc.md) | a request sent to a service that is exiting, a loss handled twice, a hang on a wedged helper, an app talking to a service of another build | Built: `StoicXPC` (macOS) |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical

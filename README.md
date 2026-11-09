@@ -198,6 +198,7 @@ that replays exactly.
 | `StoicApple`   | Device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, `StoicFoundation`, Apple frameworks |
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
 | `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |
+| `StoicXPC`     | Calling a helper process in the app's bundle: its lifecycle explicit (a request never reaches a process that is exiting, a lost run is one event, a call says whether the service may have acted), a handshake by build, a stuck request ending the service, a watchdog and idle exit in the service; a simulated service so every failure is a test on virtual time | `Stoic`, XPC; macOS only |
 | `StoicObservability` | Events to swift-log and swift-metrics                 | behind the `Logging` / `Metrics` traits |
 | `StoicMacros`  | `@Schema` writes a type's schema from its declaration; `@Refined` a named refinement | `StoicSchema`, swift-syntax, behind the `Macros` trait |
 | `StoicLint`    | Build-tool plugin: unsafe patterns fail the build         | swift-syntax, behind the `Lint` trait |

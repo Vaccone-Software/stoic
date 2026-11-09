@@ -25,6 +25,7 @@ Short on purpose: each rule is one you can check.
 | a token in a `String` property                             | `Secret<String>`                                      |
 | private data in a plain file, or a key beside it           | `SealedFile` / `SealedJournal`, the key in a `Keyring` kept in custody (trait `Crypto`, design/24) |
 | ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`      |
+| `NSXPCConnection` with handlers, a continuation and an epoch | `XPCPeer` + `XPCMethod`, and `XPCHost` in the service (design/25) |
 
 ### Rules
 
