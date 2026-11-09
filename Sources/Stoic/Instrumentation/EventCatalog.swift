@@ -172,6 +172,23 @@ public enum EventCatalog {
         Entry(name: "supervisor.escalated", level: .error, meaning: "Restarts exceeded the supervisor's intensity; it stopped every child and gave up."),
         Entry(name: "supervisor.stopped", level: .info, meaning: "A supervisor stopped: all children finished, or it was cancelled."),
         Entry(name: "throttle.dropped", level: .debug, meaning: "A throttled call did not run: a newer call replaced it, or it fell inside a window that lets none run."),
+        Entry(name: "xpc.build_mismatch", level: .error, meaning: "An XPC service and its app are different builds (the app was replaced on disk while it ran): the handshake was refused. Reports both builds."),
+        Entry(name: "xpc.call_stuck", level: .warning, meaning: "A request to an XPC service stayed unanswered past its method's ifStuck after its caller left; the run is being ended. Reports the method and the run."),
+        Entry(name: "xpc.cancel_unknown", level: .debug, meaning: "An XPC service was asked to cancel a request it no longer holds (it had answered); the cancel was dropped."),
+        Entry(name: "xpc.end_escalated", level: .warning, meaning: "An XPC service's run did not exit within its grace after being asked; reports whether the kill was permitted."),
+        Entry(name: "xpc.handshake_failed", level: .warning, meaning: "A run of an XPC service could not be started: no session, no answer in time, or an answer that was not a handshake. Reports why."),
+        Entry(name: "xpc.host_exiting", level: .info, meaning: "An XPC service exits because its app asked (or, at error level, because it could not listen)."),
+        Entry(name: "xpc.host_started", level: .info, meaning: "An XPC service's host began serving; reports its build and pid."),
+        Entry(name: "xpc.idle_exit", level: .info, meaning: "An XPC service exits after its idle period with nothing in flight and nothing held."),
+        Entry(name: "xpc.late_reply", level: .debug, meaning: "An XPC service's reply arrived after its caller had left; it was dropped."),
+        Entry(name: "xpc.peer_duplicate", level: .error, meaning: "A second XPCPeer was made for a service that already has one in this process: both would own one process."),
+        Entry(name: "xpc.relaunch_throttled", level: .notice, meaning: "An XPC service's last run lived under ten seconds, so launchd delays its next start; reports the expected wait. Nothing is failed for it."),
+        Entry(name: "xpc.request_refused", level: .notice, meaning: "An XPC service refused a request without running it: an unknown method, a request that did not decode, a client of another build, or a service that is exiting."),
+        Entry(name: "xpc.run_ended", level: .info, meaning: "A run of an XPC service ended as its app asked (or as the service said it would); reports the reason and how long the exit took."),
+        Entry(name: "xpc.run_lost", level: .warning, meaning: "A run of an XPC service ended without being asked: a crash, an idle exit, the watchdog. A notice when nothing was in flight. Reports the run's lifetime and the calls it failed."),
+        Entry(name: "xpc.run_started", level: .info, meaning: "A run of an XPC service answered its handshake; reports the run, pid, build and how long the start took."),
+        Entry(name: "xpc.run_wedged", level: .error, meaning: "A run of an XPC service would not exit and could not be killed (a sandbox cannot signal its service): calls fail at once until it goes."),
+        Entry(name: "xpc.watchdog_exit", level: .error, meaning: "An XPC service's handler ran past its budget and the grace, ignoring cancellation; the service exits so the next call gets a fresh one."),
     ]
 
     /// The entry for `name`, if Stoic emits it.

@@ -124,6 +124,10 @@ let package = Package(
         // Resumable, verified, durable file downloads (design/23), digests by
         // swift-crypto. Needs the `Crypto` trait: `.package(url: …, traits: ["Crypto"])`.
         .library(name: "StoicDownloads", targets: ["StoicDownloads"]),
+        // Calling a bundled XPC service (design/25): the service's lifecycle
+        // explicit, every wait bounded, a handshake by build, and the host
+        // the service runs. macOS only; empty elsewhere.
+        .library(name: "StoicXPC", targets: ["StoicXPC"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -308,5 +312,11 @@ let package = Package(
             dependencies: ["StoicDownloads", "Stoic", "StoicHTTP", "StoicStore", "StoicTesting"] + crypto,
             swiftSettings: strict + [cryptoDefine]
         ),
+        // XPC services (design/25): the app's peer and the service's host,
+        // over XPCSession and XPCListener, with an in-process simulated
+        // service for tests. macOS only: the sources compile to nothing
+        // elsewhere.
+        .target(name: "StoicXPC", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicXPCTests", dependencies: ["StoicXPC", "Stoic", "StoicTesting"], swiftSettings: strict),
     ] + macroTargets
 )

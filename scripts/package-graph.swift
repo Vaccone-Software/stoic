@@ -30,7 +30,9 @@ import Foundation
 /// `StoicApple` does not know sealing: `StoicSealedKeychain` is the one place
 /// they meet (design/24), a library of its own because it is the only code that
 /// needs both, so an app that adopts either alone builds neither the other nor
-/// what the other brings (swift-crypto, with its trait).
+/// what the other brings (swift-crypto, with its trait). XPC services sit on
+/// the core alone: a service's executable imports `StoicXPC` and nothing
+/// that brings the Keychain or background tasks (design/25).
 let layering: [String: Set<String>] = [
     "Stoic": [],
     "StoicJSON": [],
@@ -48,6 +50,7 @@ let layering: [String: Set<String>] = [
     "StoicApple": ["Stoic", "StoicFoundation"],
     "StoicAppKit": ["Stoic"],
     "StoicUIKit": ["Stoic"],
+    "StoicXPC": ["Stoic"],
     "StoicMacros": ["StoicSchema", "StoicMacrosPlugin"],
     "StoicMacrosPlugin": [],
     "StoicLintCore": [],

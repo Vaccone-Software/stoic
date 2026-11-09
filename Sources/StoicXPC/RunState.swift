@@ -1,0 +1,187 @@
+#if os(macOS)
+public import Stoic
+internal import Synchronization
+
+/// One run of the service, as the peer sees it: from the session it opened
+/// to the first sign that the process is gone.
+final class RunState: Sendable {
+    /// What a handshake came to, for the calls waiting on it.
+    enum Readiness: Sendable {
+        case live(XPCRun)
+        /// The process was lost before it answered, or never answered.
+        case lost
+        /// The process answered that it is exiting: wait for it to go, and
+        /// start another.
+        case retry
+        case unavailable(String)
+        case buildMismatch(expected: String, found: String)
+    }
+
+    /// A request in flight on this run.
+    private struct Pending {
+        /// Settles the request's attempt as lost.
+        var fail: @Sendable () -> Void
+        /// Its reply has arrived (late, if its caller has left).
+        var answered = false
+        /// Its caller has left; the entry stays until the reply arrives or
+        /// the run ends, so a stuck request can be told from a late one.
+        var abandoned = false
+    }
+
+    private struct Mutable {
+        var connection: (any XPCConnection)?
+        var info: XPCRun?
+        var pending: [UInt64: Pending] = [:]
+        var ended = false
+        /// Why the peer asked the run to end, and when; `nil` if it did not.
+        var endReason: String?
+        var endAskedAt: AnyClock.Instant?
+        var ending: Gate<XPCEndResult>?
+    }
+
+    let number: Int
+    let startedAt: AnyClock.Instant
+
+    /// Opened once, when the handshake is decided.
+    let ready = Gate<Readiness>()
+
+    /// Opened once, when the process is gone (`true`) or would not go
+    /// (`false`, wedged): what a call made while the run is ending waits
+    /// for.
+    let settled = Gate<Bool>()
+
+    private let mutable = Mutex(Mutable())
+
+    init(number: Int, startedAt: AnyClock.Instant) {
+        self.number = number
+        self.startedAt = startedAt
+    }
+
+    var connection: (any XPCConnection)? {
+        mutable.withLock { $0.connection }
+    }
+
+    var info: XPCRun? {
+        mutable.withLock { $0.info }
+    }
+
+    var hasEnded: Bool {
+        mutable.withLock { $0.ended }
+    }
+
+    var endReason: String? {
+        mutable.withLock { $0.endReason }
+    }
+
+    var endAskedAt: AnyClock.Instant? {
+        mutable.withLock { $0.endAskedAt }
+    }
+
+    var inFlight: Int {
+        mutable.withLock { $0.pending.values.count { !$0.abandoned } }
+    }
+
+    /// Keeps the session. False if the run already ended: the caller cancels it.
+    func attach(_ connection: any XPCConnection) -> Bool {
+        mutable.withLock { state in
+            guard !state.ended else { return false }
+            state.connection = connection
+            return true
+        }
+    }
+
+    func setInfo(_ info: XPCRun) {
+        mutable.withLock { $0.info = info }
+    }
+
+    /// Marks the run as asked to end, once. Returns the gate the end's
+    /// outcome opens, and whether this call is the one that asked.
+    func askToEnd(reason: String, at instant: AnyClock.Instant) -> (outcome: Gate<XPCEndResult>, first: Bool) {
+        mutable.withLock { state in
+            if let ending = state.ending { return (ending, false) }
+            let ending = Gate<XPCEndResult>()
+            state.ending = ending
+            state.endReason = reason
+            state.endAskedAt = instant
+            return (ending, true)
+        }
+    }
+
+    /// Records the reason for an end the peer did not run itself: the
+    /// service said it is exiting, or the peer shut down.
+    func noteEnd(reason: String, at instant: AnyClock.Instant) {
+        mutable.withLock { state in
+            if state.endReason == nil {
+                state.endReason = reason
+                state.endAskedAt = instant
+            }
+        }
+    }
+
+    /// Ends the run, once: the first sign that the process is gone wins.
+    /// Returns the requests still waiting, to be failed, or `nil` if the run
+    /// had ended already.
+    func end() -> (failures: [@Sendable () -> Void], connection: (any XPCConnection)?)? {
+        mutable.withLock { state in
+            guard !state.ended else { return nil }
+            state.ended = true
+            let failures = state.pending.values.filter { !$0.answered && !$0.abandoned }.map(\.fail)
+            state.pending = [:]
+            return (failures, state.connection)
+        }
+    }
+
+    // MARK: Requests
+
+    /// Files request `id`. False if the run has ended: nothing is sent.
+    func register(_ id: UInt64, fail: @escaping @Sendable () -> Void) -> Bool {
+        mutable.withLock { state in
+            guard !state.ended else { return false }
+            state.pending[id] = Pending(fail: fail)
+            return true
+        }
+    }
+
+    /// The reply to `id` arrived.
+    func answered(_ id: UInt64) {
+        mutable.withLock { state in
+            guard var pending = state.pending[id] else { return }
+            if pending.abandoned {
+                state.pending[id] = nil
+            } else {
+                pending.answered = true
+                state.pending[id] = pending
+            }
+        }
+    }
+
+    /// The attempt for `id` is over with its reply in hand, or never sent.
+    func finished(_ id: UInt64) {
+        mutable.withLock { _ = $0.pending.removeValue(forKey: id) }
+    }
+
+    /// The caller of `id` has left. Returns whether its reply is still
+    /// awaited: false if it already arrived.
+    func abandon(_ id: UInt64) -> Bool {
+        mutable.withLock { state in
+            guard var pending = state.pending[id] else { return false }
+            if pending.answered {
+                state.pending[id] = nil
+                return false
+            }
+            pending.abandoned = true
+            state.pending[id] = pending
+            return true
+        }
+    }
+
+    /// Whether request `id`, whose caller left, is still unanswered on a
+    /// live run.
+    func isStillUnanswered(_ id: UInt64) -> Bool {
+        mutable.withLock { state in
+            guard !state.ended, let pending = state.pending[id] else { return false }
+            return !pending.answered
+        }
+    }
+}
+#endif

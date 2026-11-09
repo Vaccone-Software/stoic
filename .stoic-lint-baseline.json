@@ -107,6 +107,11 @@
       "file" : "Sources/StoicTesting/TestClock.swift",
       "hash" : "2cbe762450388a67",
       "rule" : "stoic.sleep-for-timeout"
+    },
+    {
+      "file" : "Sources/StoicXPC/SystemListener.swift",
+      "hash" : "dc969050dcb5a715",
+      "rule" : "stoic.unchecked-sendable"
     }
   ],
   "version" : 1
