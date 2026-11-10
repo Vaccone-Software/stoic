@@ -139,9 +139,17 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         // States entered but not yet yielded, each with the observers there
         // were when it was entered.
         var outbox: [(state: State, observers: [AsyncStream<State>.Continuation])] = []
+        // A lifecycle's effects, in transition order, not yet performed, and
+        // whether a caller is performing them now.
+        var effects: [@Sendable () -> Void] = []
+        var performing = false
     }
 
-    private let transition: TransitionFunction
+    /// The transition function, and what a lifecycle's step owes besides:
+    /// its effects, performed outside the lock in transition order.
+    typealias Step = @Sendable (State, Event) -> (Transition<State, Event>, effects: (@Sendable () -> Void)?)
+
+    private let step: Step
     private let clock: AnyClock
     private let core: Mutex<Core>
     // Keeps yields to observers in transition order. A stream holds its own
@@ -167,9 +175,29 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
         self.label = label
         precondition(historyLimit >= 0, "StateMachine \(label): historyLimit must not be negative")
         self.historyLimit = historyLimit
-        self.transition = transition
+        self.step = { state, event in (transition(state, event), nil) }
         self.clock = clock ?? Ambient.current.clock
         self.core = Mutex(Core(state: initial))
+    }
+
+    /// A machine whose steps may owe effects: a lifecycle's
+    /// (`init(_:initial:label:historyLimit:clock:perform:)`).
+    init(initial: State, label: String, historyLimit: Int, clock: AnyClock?, step: @escaping Step) {
+        self.label = label
+        precondition(historyLimit >= 0, "StateMachine \(label): historyLimit must not be negative")
+        self.historyLimit = historyLimit
+        self.step = step
+        self.clock = clock ?? Ambient.current.clock
+        self.core = Mutex(Core(state: initial))
+    }
+
+    /// Arms `timeout` for the initial state's visit: a lifecycle's initial
+    /// state times out like any state it enters.
+    func armInitialTimeout(_ timeout: StateTimeout<Event>) {
+        core.withLock { core in
+            guard core.visit == 0, core.timer == nil, !core.isShutDown else { return }
+            core.timer = makeTimer(timeout, visit: core.visit)
+        }
     }
 
     deinit {
@@ -364,10 +392,16 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
     private func apply(_ event: Event, onlyDuring visit: UInt64?) {
         var leaving: [Task<Void, Never>] = []
         var observed = false
+        var owesEffects = false
         let outcome = core.withLock { core -> Outcome in
             if core.isShutDown { return .stale }
             if let visit, core.visit != visit { return .stale }
-            switch Self.inTransition({ transition(core.state, event) }) {
+            let (transition, effects) = Self.inTransition({ step(core.state, event) })
+            if let effects, !Self.isRefusal(transition) {
+                core.effects.append(effects)
+                owesEffects = true
+            }
+            switch transition {
             case .stay, .ignore:
                 return .none
             case .invalid(let reason):
@@ -390,6 +424,7 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             registrar.withMutation(of: self, keyPath: stateKeyPath) {}
             registrar.withMutation(of: self, keyPath: historyKeyPath) {}
         }
+        if owesEffects { performEffects() }
         switch outcome {
         case .none:
             break
@@ -411,6 +446,41 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
                     .init("to", .string("\(record.to)"), privacy: .public),
                 ])
             }
+        }
+    }
+
+    private static func isRefusal(_ transition: Transition<State, Event>) -> Bool {
+        switch transition {
+        case .to, .stay: false
+        case .ignore, .invalid: true
+        }
+    }
+
+    /// Performs the effects transitions owe, once each, in transition order,
+    /// outside the lock and after the states that owe them are published.
+    ///
+    /// One caller performs at a time and drains every effect queued while it
+    /// does, its own and other senders': so effects keep transition order
+    /// across threads, and an effect that sends the machine an event queues
+    /// that event's effects behind its own rather than deadlocking.
+    private func performEffects() {
+        let claimed = core.withLock { core -> Bool in
+            guard !core.performing, !core.effects.isEmpty else { return false }
+            core.performing = true
+            return true
+        }
+        guard claimed else { return }
+        while true {
+            // A state entered by another sender may still be unpublished:
+            // its observers hear of it before its effects run.
+            publish()
+            let batch = core.withLock { core -> [@Sendable () -> Void] in
+                if core.effects.isEmpty { core.performing = false }
+                defer { core.effects.removeAll() }
+                return core.effects
+            }
+            if batch.isEmpty { return }
+            for effect in batch { effect() }
         }
     }
 
@@ -487,21 +557,27 @@ public final class StateMachine<State: Hashable & Sendable, Event: Sendable>: Se
             core.stateWork.append(start(activity, visit: visit, after: core.exit))
         }
         if let timeout {
-            let clock = clock
-            // The timer's instant is fixed at entry, not when its task first
-            // runs: advancing a test clock right after a transition must fire it.
-            let fireAt = clock.now.advanced(by: timeout.after)
-            let sender = makeSender(visit: visit)
-            core.timer = TaskLedger.task(.stateTimeout, label: label) {
-                do {
-                    try await clock.sleep(until: fireAt, tolerance: nil)
-                } catch {
-                    return
-                }
-                sender.send(timeout.event)
-            }
+            core.timer = makeTimer(timeout, visit: visit)
         }
         return record
+    }
+
+    /// The timer of a visit's timeout: it sends the event if the visit is
+    /// still current when the time is up.
+    private func makeTimer(_ timeout: StateTimeout<Event>, visit: UInt64) -> Task<Void, Never> {
+        let clock = clock
+        // The timer's instant is fixed at entry, not when its task first
+        // runs: advancing a test clock right after a transition must fire it.
+        let fireAt = clock.now.advanced(by: timeout.after)
+        let sender = makeSender(visit: visit)
+        return TaskLedger.task(.stateTimeout, label: label) {
+            do {
+                try await clock.sleep(until: fireAt, tolerance: nil)
+            } catch {
+                return
+            }
+            sender.send(timeout.event)
+        }
     }
 
     private func start(_ activity: Activity, visit: UInt64, after previous: Task<Void, Never>?) -> Running {

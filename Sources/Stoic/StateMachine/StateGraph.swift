@@ -25,7 +25,21 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
         public let from: State
         public let event: String
         public let to: State
+        /// The timeout a transition function armed on entering ``to``.
         public let timeout: Duration?
+        /// Whether ``from``'s own timeout sent the event (a lifecycle's).
+        public let byTimeout: Bool
+        /// The effects the transition owes, described (a lifecycle's).
+        public let effects: [String]
+
+        init(from: State, event: String, to: State, timeout: Duration?, byTimeout: Bool = false, effects: [String] = []) {
+            self.from = from
+            self.event = event
+            self.to = to
+            self.timeout = timeout
+            self.byTimeout = byTimeout
+            self.effects = effects
+        }
     }
 
     /// One state and event pair the function declared invalid.
@@ -44,6 +58,30 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
     /// Whether exploration finished: false when it stopped at
     /// `maximumStates` with states still unexplored.
     public let isComplete: Bool
+
+    /// Where exploration started.
+    let starts: [State]
+    /// What a lifecycle declares of each reached state; `nil` for a graph
+    /// explored from a transition function.
+    let declarations: Declarations?
+
+    /// A lifecycle's declarations about the states exploration reached.
+    struct Declarations: Sendable {
+        var final: Set<State> = []
+        var retired: Set<State> = []
+        var timed: Set<State> = []
+        /// States whose own timeout's event did not move them.
+        var stuck: [State] = []
+    }
+
+    init(states: [State], edges: [Edge], invalid: [InvalidPair], isComplete: Bool, starts: [State], declarations: Declarations?) {
+        self.states = states
+        self.edges = edges
+        self.invalid = invalid
+        self.isComplete = isComplete
+        self.starts = starts
+        self.declarations = declarations
+    }
 
     /// A state and event pair to try.
     private struct Attempt<E: Hashable>: Hashable {
@@ -106,7 +144,8 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
                 if let timeout, seen.contains(next) { enqueue(next, timeout.event) }
             }
         }
-        return StateGraph(states: states, edges: edges, invalid: invalid, isComplete: complete)
+        return StateGraph(
+            states: states, edges: edges, invalid: invalid, isComplete: complete, starts: [initial], declarations: nil)
     }
 
     /// The states in `declared` that exploration never reached.
@@ -121,13 +160,17 @@ public struct StateGraph<State: Hashable & Sendable, Event: Sendable>: Sendable 
         return states.filter { !leaving.contains($0) }
     }
 
-    /// The graph as a Mermaid state diagram.
+    /// The graph as a Mermaid state diagram. An edge a state's own timeout
+    /// took is marked `(timeout)`, and the effects a transition owes follow
+    /// a slash.
     public var mermaid: String {
         var lines = ["stateDiagram-v2"]
-        if let first = states.first { lines.append("    [*] --> \(name(first))") }
+        for start in starts { lines.append("    [*] --> \(name(start))") }
         for edge in edges {
             let timeout = edge.timeout.map { " (after \($0))" } ?? ""
-            lines.append("    \(name(edge.from)) --> \(name(edge.to)): \(edge.event)\(timeout)")
+            let byTimeout = edge.byTimeout ? " (timeout)" : ""
+            let effects = edge.effects.isEmpty ? "" : " / " + edge.effects.joined(separator: ", ")
+            lines.append("    \(name(edge.from)) --> \(name(edge.to)): \(edge.event)\(timeout)\(byTimeout)\(effects)")
         }
         return lines.joined(separator: "\n")
     }
