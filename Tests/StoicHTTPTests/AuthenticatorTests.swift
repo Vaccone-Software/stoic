@@ -121,7 +121,8 @@ final class AuthenticatedRig: Sendable {
 struct HTTPAuthenticatorTests {
     // MARK: Which attempts are authenticated
 
-    @Test func everyAttemptIsAuthenticatedAfreshWithTheSameKey() async throws {
+    @Test(.failureMode("design/29", "a signed request is retried"))
+    func everyAttemptIsAuthenticatedAfreshWithTheSameKey() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator())
         try await rig.run { (rig) async throws in
             rig.transport.on(.post("/v1/check-ins", json: [:]), respond: [.status(503), .status(503), .status(201)])
@@ -142,7 +143,8 @@ struct HTTPAuthenticatorTests {
                 "authenticate sees the request with the client's headers")
     }
 
-    @Test func aSameOriginRedirectIsAuthenticatedForItsOwnPathAndMethod() async throws {
+    @Test(.failureMode("design/29", "a signed request is redirected within its origin"))
+    func aSameOriginRedirectIsAuthenticatedForItsOwnPathAndMethod() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator())
         try await rig.run { (rig) async throws in
             rig.transport.on(.post("/v1/orders", json: [:]), respond: [.status(303, headers: ["Location": "/v1/orders/7"])])
@@ -157,7 +159,8 @@ struct HTTPAuthenticatorTests {
         #expect(rig.authenticator.prepared.count == 2, "each hop is prepared")
     }
 
-    @Test func aRedirectToAnotherOriginCarriesNothingOfTheAuthenticator() async throws {
+    @Test(.failureMode("design/29", "a signed request is redirected to another origin"))
+    func aRedirectToAnotherOriginCarriesNothingOfTheAuthenticator() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator())
         try await rig.run { (rig) async throws in
             rig.transport.on(.post("/v1/upload", json: [:]),
@@ -173,7 +176,8 @@ struct HTTPAuthenticatorTests {
         #expect(rig.authenticator.prepared.count == 1)
     }
 
-    @Test func identicalGETsCoalesceIntoOneAuthenticatedFlight() async throws {
+    @Test(.failureMode("design/29", "identical GETs coalesce"))
+    func identicalGETsCoalesceIntoOneAuthenticatedFlight() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator())
         try await rig.run { (rig) async throws in
             rig.transport.on(.get("/v1/events"), respond: [Step.json("[]").after(.seconds(1))])
@@ -258,7 +262,8 @@ struct HTTPAuthenticatorTests {
         #expect(rig.renewals.started == 0, "the authenticator's 401 is not the reauthentication hook's")
     }
 
-    @Test func aReplayIsOncePerHopAndTheSecondRefusalIsTheAnswer() async throws {
+    @Test(.failureMode("design/29", "a replay is refused again"))
+    func aReplayIsOncePerHopAndTheSecondRefusalIsTheAnswer() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator(verdicts: [.replay, .replay, .replay]))
         let outcome = try await rig.run { (rig) async throws in
             rig.transport.on(.post("/v1/check-ins", json: [:]), respond: [.status(401), .status(401), .status(201)])
@@ -289,7 +294,8 @@ struct HTTPAuthenticatorTests {
         #expect(rig.api.breaker(forHost: "api.example.com")?.snapshot.failures == 0, "a refusal says nothing about the host")
     }
 
-    @Test func anAccepted401StillReachesTheReauthenticationHook() async throws {
+    @Test(.failureMode("design/29", "a 401 without AppAttest arrives"))
+    func anAccepted401StillReachesTheReauthenticationHook() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator())
         try await rig.run { (rig) async throws in
             rig.transport.on(.get("/v1/me"), respond: [.status(401), .json("{}")])
@@ -342,7 +348,8 @@ struct HTTPAuthenticatorTests {
         #expect(rig.transport.requestCount == 0)
     }
 
-    @Test func aDeadlineShorterThanTheWaitIsTheAuthenticatorsTimeout() async throws {
+    @Test(.failureMode("design/29", "a waiting request's deadline is shorter than the enrolment"))
+    func aDeadlineShorterThanTheWaitIsTheAuthenticatorsTimeout() async throws {
         let rig = AuthenticatedRig(ScriptedAuthenticator(preparing: .waiting(.seconds(60))))
         let outcome = try await rig.run { (rig) async throws in
             rig.transport.on(.post("/v1/check-ins", json: [:]), respond: [.status(201)])

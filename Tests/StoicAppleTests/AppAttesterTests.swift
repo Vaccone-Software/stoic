@@ -13,7 +13,7 @@ struct AppAttesterTests {
 
     // MARK: Unsupported
 
-    @Test(.designRow("the device cannot attest (a Mac, the simulator, an extension, older hardware)"))
+    @Test(.failureMode("design/29", "the device cannot attest (a Mac, the simulator, an extension, older hardware)"))
     func availabilityIsDecidedOnceFromThePlatformAndTheService() async {
         func decide(_ supported: Bool, simulator: Bool = false, mac: Bool = false, appex: Bool = false, watch: Bool = false) -> AppAttestAvailability {
             AppAttester.availability(
@@ -44,7 +44,7 @@ struct AppAttesterTests {
         #expect(rig.events.events(named: "attest.unsupported").first?["reason"]?.description == "device")
     }
 
-    @Test(.designRow("isSupported is true and generateKey says featureUnsupported"))
+    @Test(.failureMode("design/29", "isSupported is true and generateKey says featureUnsupported"))
     func featureUnsupportedFromTheServiceIsTheSame() async {
         let rig = AttesterRig()
         rig.service.fail(.generateKey, with: .featureUnsupported)
@@ -58,7 +58,7 @@ struct AppAttesterTests {
 
     // MARK: Enrolment
 
-    @Test(.designRow("the key's record is absent (a new install, a restore to another device)"))
+    @Test(.failureMode("design/29", "the key's record is absent (a new install, a restore to another device)"))
     func anEnrolmentWritesEachPhaseAndEndsEnrolled() async throws {
         let rig = AttesterRig()
         let attester = await rig.attester()
@@ -84,7 +84,7 @@ struct AppAttesterTests {
         #expect(try await rig.outcome(attester).get() == key)
     }
 
-    @Test(.designRow("the account changes"))
+    @Test(.failureMode("design/29", "the account changes"))
     func anotherAccountHasAnotherRecordAndAnotherKey() async throws {
         let rig = AttesterRig()
         let first = try await rig.outcome(await rig.attester(account: "volunteer-7")).get()
@@ -93,7 +93,7 @@ struct AppAttesterTests {
         #expect(rig.store.inner.keys == ["stoic.app-attest.parent-3", "stoic.app-attest.volunteer-7"])
     }
 
-    @Test(.designRow("many requests arrive while an enrolment is in flight"))
+    @Test(.failureMode("design/29", "many requests arrive while an enrolment is in flight"))
     func aHundredCallersShareOneEnrolment() async throws {
         let rig = AttesterRig()
         rig.service.delay(.attestKey, by: .seconds(1))
@@ -110,7 +110,7 @@ struct AppAttesterTests {
         #expect(rig.server.enrolments.count == 1)
     }
 
-    @Test(.designRow("a waiting request's deadline is shorter than the enrolment"))
+    @Test(.failureMode("design/29", "a waiting request's deadline is shorter than the enrolment"))
     func aWaiterLeavesAtItsDeadlineAndTheEnrolmentGoesOn() async throws {
         let rig = AttesterRig()
         rig.service.delay(.attestKey, by: .seconds(30))
@@ -129,7 +129,7 @@ struct AppAttesterTests {
         #expect(try await rig.outcome(attester).get().base64 == "key-1")
     }
 
-    @Test(.designRow("the request that started the enrolment is cancelled"))
+    @Test(.failureMode("design/29", "the request that started the enrolment is cancelled"))
     func theStartersCancellationEndsOnlyItsOwnWait() async throws {
         let rig = AttesterRig()
         rig.service.delay(.attestKey, by: .seconds(10))
@@ -145,7 +145,7 @@ struct AppAttesterTests {
         #expect(try await other.value.get().base64 == "key-1")
     }
 
-    @Test(.designRow("Apple's service is unavailable during enrolment"))
+    @Test(.failureMode("design/29", "Apple's service is unavailable during enrolment"))
     func anUnavailableServiceIsAskedAgainWithTheSameKeyAndHashThenResumed() async throws {
         let rig = AttesterRig()
         rig.service.fail(.attestKey, with: .serverUnavailable, times: 50)
@@ -164,7 +164,7 @@ struct AppAttesterTests {
         #expect(rig.service.calls(.generateKey).count == 1)
     }
 
-    @Test(.designRow("the enrolment challenge's lifetime passes while Apple is unavailable"))
+    @Test(.failureMode("design/29", "the enrolment challenge's lifetime passes while Apple is unavailable"))
     func aStaleChallengeIsReplacedAndTheKeyKept() async throws {
         let rig = AttesterRig()
         rig.server.setEnrolmentLifetime(.seconds(5))
@@ -180,7 +180,7 @@ struct AppAttesterTests {
         #expect(Set(rig.service.calls(.attestKey).map(\.keyID)) == ["key-1"])
     }
 
-    @Test(.designRow("the process dies after generateKey, before the key id is kept"))
+    @Test(.failureMode("design/29", "the process dies after generateKey, before the key id is kept"))
     func aKeyWhoseIdWasNeverKeptIsOrphanedAndAnotherGenerated() async throws {
         let rig = AttesterRig()
         rig.store.failWrite(1)
@@ -191,7 +191,7 @@ struct AppAttesterTests {
         #expect(try await rig.outcome(next).get().base64 == "key-2", "key-1 is orphaned in the Secure Enclave")
     }
 
-    @Test(.designRow("the process dies after attestKey, before the attestation is kept"))
+    @Test(.failureMode("design/29", "the process dies after attestKey, before the attestation is kept"))
     func anAttestationThatWasNeverKeptCostsOneExtraKey() async throws {
         let rig = AttesterRig()
         rig.store.failWrite(3)
@@ -204,7 +204,7 @@ struct AppAttesterTests {
         #expect(rig.server.enrolments.map(\.key) == ["key-2"])
     }
 
-    @Test(.designRow("the enrolment's response is lost"))
+    @Test(.failureMode("design/29", "the enrolment's response is lost"))
     func aLostResponseResendsTheKeptAttestation() async throws {
         let rig = AttesterRig()
         rig.server.failEnrol(with: .unreachable(.retry, neverReachedBackend: false))
@@ -217,7 +217,7 @@ struct AppAttesterTests {
         #expect(rig.service.calls(.attestKey).count == 1, "Apple was asked once")
     }
 
-    @Test(.designRow("the server refuses the attestation"))
+    @Test(.failureMode("design/29", "the server refuses the attestation"))
     func aRefusedEnrolmentHoldsOffForAnHour() async throws {
         let rig = AttesterRig()
         rig.server.failEnrol(with: .refused(code: "invalid_attestation"))
@@ -236,7 +236,7 @@ struct AppAttesterTests {
         #expect(try await rig.outcome(attester).get().base64 == "key-2")
     }
 
-    @Test(.designRow("the enrolment challenge expired between attestKey and the POST"))
+    @Test(.failureMode("design/29", "the enrolment challenge expired between attestKey and the POST"))
     func aSpentChallengeSpendsTheKeyAndEnrolsAnother() async throws {
         let rig = AttesterRig()
         rig.server.failEnrol(with: .refused(code: "challenge_expired"))
@@ -248,7 +248,7 @@ struct AppAttesterTests {
         #expect(rig.events.events(named: "attest.enrolled").first?["keys"]?.description == "2")
     }
 
-    @Test(.designRow("a fresh key is refused too"))
+    @Test(.failureMode("design/29", "a fresh key is refused too"))
     func aSecondSpentKeyIsARefusal() async throws {
         let rig = AttesterRig()
         rig.service.fail(.attestKey, with: .invalidKey, times: 2)
@@ -261,7 +261,7 @@ struct AppAttesterTests {
         #expect(AppAttestError.keyRefused.retryDecision == .stop)
     }
 
-    @Test(.designRow("DCError.invalidInput is thrown"))
+    @Test(.failureMode("design/29", "DCError.invalidInput is thrown"))
     func invalidInputIsADefect() async {
         let rig = AttesterRig()
         rig.service.fail(.attestKey, with: .invalidInput)
@@ -272,7 +272,7 @@ struct AppAttesterTests {
         #expect(AppAttestError.invalidInput.retryDecision == .stop)
     }
 
-    @Test(.designRow("DCError.unknownSystemFailure is thrown"))
+    @Test(.failureMode("design/29", "DCError.unknownSystemFailure is thrown"))
     func aSystemFailureIsRetriedThreeTimes() async throws {
         let rig = AttesterRig()
         rig.service.fail(.generateKey, with: .unknownSystemFailure, times: 3)
@@ -291,7 +291,7 @@ struct AppAttesterTests {
         #expect((try? signed.get()) != nil, "a transient URLError is retried as a system failure")
     }
 
-    @Test(.designRow("the Keychain is locked when the key's record is read"))
+    @Test(.failureMode("design/29", "the Keychain is locked when the key's record is read"))
     func aLockedKeychainIsNoReasonToGenerateAKey() async {
         let rig = AttesterRig()
         rig.store.failNext(with: .locked)
@@ -303,7 +303,7 @@ struct AppAttesterTests {
 
     // MARK: Assertions and dead keys
 
-    @Test(.designRow("the device's key is invalidated (reinstall, restore, migration)"))
+    @Test(.failureMode("design/29", "the device's key is invalidated (reinstall, restore, migration)"))
     func aDeadKeyIsDiscardedAndAnotherEnrolled() async throws {
         let rig = AttesterRig()
         let attester = await rig.attester()
@@ -320,7 +320,7 @@ struct AppAttesterTests {
         #expect(rig.events.events(named: "attest.enrolled").last?["replaced"]?.description == "true", "it replaced the dead key")
     }
 
-    @Test(.designRow("two requests find the same dead key"))
+    @Test(.failureMode("design/29", "two requests find the same dead key"))
     func twoRequestsOnOneDeadKeyEnrolOnce() async throws {
         let rig = AttesterRig()
         let attester = await rig.attester()

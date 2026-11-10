@@ -1,0 +1,259 @@
+{
+  "app" : "A1B2C3D4E5.app.kindora",
+  "attestation" : "o2NmbXRvYXBwbGUtYXBwYXR0ZXN0Z2F0dFN0bXSiY3g1Y4JZAjYwggIyMIIBuaADAgECAhUA0Jmd4af2AQtNa3FDs1UiB1hcQ1gwCgYIKoZIzj0EAwIwQDEoMCYGA1UEAwwfU3RvaWMgVGVzdCBBcHAgQXR0ZXN0YXRpb24gQ0EgMTEUMBIGA1UECgwLU3RvaWMgdGVzdHMwHhcNMjUxMjMxMjM1OTAwWhcNMjYwMTA0MDAwMDAwWjB7MUcwRQYDVQQDDD5lZTdlNGU3NzZkZTBlZDZlN2NkNDY0MWM3ZGE5NDkyOTdiZjZjYWIxOTYyZGY0NGY1NjdhNGRhMDlkNzRlYjEaMBgGA1UECwwRQUFBIENlcnRpZmljYXRpb24xFDASBgNVBAoMC1N0b2ljIHRlc3RzMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE0XPNTQ25pWC98auq9Y1pYO05/JtfHdq/qUGziRnTYeMXsc807PdctbMRRr0cK8lUAPXqoEhxPOkgZxlYsBCxTqNVMFMwDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwMwYJKoZIhvdjZAgCBCYwJKEiBCBurD47hdVGHHjVBqfiOUfMyY02usdMbUbljq/0Pj0sSTAKBggqhkjOPQQDAgNnADBkAjBdC1IqUJrifoP+PvAbrNEu+cAzJlxI145OCJImVZWWugIM2xzqiFD/SK91l3xJXEwCMAsXhcwtaLX5VRL22tI54/Pj9rTzb7tZ+K398ra7TNKWvGAGmUhKdZXo5cqxbA+llVkB7TCCAekwggFvoAMCAQICFQC2Hf1IwbObMnlVf178HehmpqVKgTAKBggqhkjOPQQDAzBDMSswKQYDVQQDDCJTdG9pYyBUZXN0IEFwcCBBdHRlc3RhdGlvbiBSb290IENBMRQwEgYDVQQKDAtTdG9pYyB0ZXN0czAeFw0yNTEyMzEwMDAwMDBaFw0zNTEyMzAwMDAwMDBaMEAxKDAmBgNVBAMMH1N0b2ljIFRlc3QgQXBwIEF0dGVzdGF0aW9uIENBIDExFDASBgNVBAoMC1N0b2ljIHRlc3RzMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE3aWdFlIU+nhPC5jASzvxZC2luf7NZrpj/X+NkuErcE8G9h7b60YuzPdEvU7BQAIQAtYjBB7+jNEiyegzBbX/GD59Cdw48N5mJIr0EZLQcDZb1ma8BPGH4Yg0iYWDPhRToyYwJDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAwNoADBlAjBka+699heXSHxbMeVgUy1Te5pPsXEj2jHu+Uo9Kh8z2Frf2fpVJbiB8tcabIRPsLcCMQCt9Ggleq0e+vAH6b5GIE0AYdfrCDprg9UN10tgm9BfD0Nd1q7jNhm351O3reLvldZncmVjZWlwdFBzdGFuZC1pbiByZWNlaXB0aGF1dGhEYXRhWKTtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAAYXBwYXR0ZXN0AAAAAAAAAAAg7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOulAQIDJiABIVgg0XPNTQ25pWC98auq9Y1pYO05/JtfHdq/qUGziRnTYeMiWCAXsc807PdctbMRRr0cK8lUAPXqoEhxPOkgZxlYsBCxTg==",
+  "challenge" : "AQEAAAGbdtqoADU9GBPOv4dvrmK3ypD1EZi3PSCY1/3XyZedMWzva+LT",
+  "environment" : "production",
+  "format" : "app-attest v1",
+  "keyID" : "7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=",
+  "requests" : [
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": POST\n\"@authority\": api.kindora.app\n\"@path\": /v1/check-ins\n\"@query\": ?event=e42\n\"content-digest\": sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:\n\"idempotency-key\": 3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "eyJjb21taXRtZW50IjoiYzciLCJsYXRpdHVkZSI6NTEuNSwibG9uZ2l0dWRlIjotMC4xMn0=",
+      "clientDataHash" : "u2DYYKy5jlrqV+E2hrI4c5Bq2umX0y/tbTeIm5s7Go8=",
+      "counter" : 1,
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "idempotency-key",
+          "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRzBFAiAyaLgnSmVNrwQpTWTFjnG7n6045qYAVA6ylVwWGdtnUgIhAJ2zyRByipYhTBLoeTioahONcoRdutk7RqXhzNPDDaRbcWF1dGhlbnRpY2F0b3JEYXRhWCXtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAB:"
+        ]
+      ],
+      "idempotencyKey" : "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73",
+      "method" : "POST",
+      "name" : "a keyed POST with a query",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/check-ins",
+      "query" : "event=e42"
+    },
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": GET\n\"@authority\": api.kindora.app\n\"@path\": /v1/events\n\"@query\": ?\n\"content-digest\": sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "",
+      "clientDataHash" : "iO8CWnS4HcUvcZcifFTcOJNj9KCKd6dhDfMIZv2kKno=",
+      "counter" : 2,
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRzBFAiB4IKhtAbExyoo+h9jEkm9dvaRz98ctbXShKhE0tIhPQgIhALGVPjKMnXCojHjE3vH345YTg/IB6k64oY7gvM0QYj1JcWF1dGhlbnRpY2F0b3JEYXRhWCXtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAC:"
+        ]
+      ],
+      "method" : "GET",
+      "name" : "a GET with no query, no body and no idempotency key",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/events",
+      "query" : ""
+    },
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": POST\n\"@authority\": api.kindora.app\n\"@path\": /v1/files/a%20b\n\"@query\": ?q=%2F&r=1\n\"content-digest\": sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:\n\"idempotency-key\": 3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "eyJjb21taXRtZW50IjoiYzciLCJsYXRpdHVkZSI6NTEuNSwibG9uZ2l0dWRlIjotMC4xMn0=",
+      "clientDataHash" : "wrRUbnmithwpM7rXakvBSe+nPteuCnsTUdMJ6jl0nXI=",
+      "counter" : 4,
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "idempotency-key",
+          "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRzBFAiAGbRpwKiqF/M0mFVsGDt4BNlZ4FQCOuFstCnZhrZz6ewIhALH0CGf8uOcUGg9egLN3xyc5UHyGCavZclr1zzBOM3v+cWF1dGhlbnRpY2F0b3JEYXRhWCXtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAE:"
+        ]
+      ],
+      "idempotencyKey" : "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73",
+      "method" : "POST",
+      "name" : "a percent-encoded path and query, counter 4 before 3",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/files/a%20b",
+      "query" : "q=%2F&r=1"
+    },
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": POST\n\"@authority\": api.kindora.app\n\"@path\": /v1/check-ins\n\"@query\": ?event=e42\n\"content-digest\": sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:\n\"idempotency-key\": k3\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "eyJjb21taXRtZW50IjoiYzciLCJsYXRpdHVkZSI6NTEuNSwibG9uZ2l0dWRlIjotMC4xMn0=",
+      "clientDataHash" : "nQGL6dctK7hGGdnYd9zIoIGo0/ULLtJueGXZ6wg66MY=",
+      "counter" : 3,
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "idempotency-key",
+          "k3"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRzBFAiEA3bNZH2F/8qXhP1n9Or5otibMqtIFG/iMsrs+B26+udMCICkFF8vaV1GYx/PrLsO1yKyJr7yKXp77GD2Ni40uhCeucWF1dGhlbnRpY2F0b3JEYXRhWCXtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAD:"
+        ]
+      ],
+      "idempotencyKey" : "k3",
+      "method" : "POST",
+      "name" : "counter 3 after 4, within the window",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/check-ins",
+      "query" : "event=e42"
+    },
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": POST\n\"@authority\": api.kindora.app\n\"@path\": /v1/check-ins\n\"@query\": ?event=e42\n\"content-digest\": sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:\n\"idempotency-key\": 3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "eyJjb21taXRtZW50IjoiYzciLCJsYXRpdHVkZSI6NTEuNSwibG9uZ2l0dWRlIjotMC4xMn0=",
+      "clientDataHash" : "u2DYYKy5jlrqV+E2hrI4c5Bq2umX0y/tbTeIm5s7Go8=",
+      "counter" : 1,
+      "failure" : "replayed",
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "idempotency-key",
+          "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRzBFAiEAqrrpKufduRP6Gzhuv/uZhS5bAJWTMp4gutsvMjQKZkUCIGxjMlLWepyDoNYaGmW2lz/oe9GHxzttp3G61Yut7h29cWF1dGhlbnRpY2F0b3JEYXRhWCXtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAB:"
+        ]
+      ],
+      "idempotencyKey" : "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73",
+      "method" : "POST",
+      "name" : "the first request again",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/check-ins",
+      "query" : "event=e42"
+    },
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": POST\n\"@authority\": api.kindora.app\n\"@path\": /v1/check-ins\n\"@query\": ?event=e42\n\"content-digest\": sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:\n\"idempotency-key\": 3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "e30=",
+      "clientDataHash" : "u2DYYKy5jlrqV+E2hrI4c5Bq2umX0y/tbTeIm5s7Go8=",
+      "counter" : 1,
+      "failure" : "body_digest",
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "idempotency-key",
+          "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRzBFAiBjMHTZE4OoFbaaMK5vYYQkBeYAOeFWDtkcc4zbYI7HEAIhAKneQNfn6OqoYoTXnpkxQJ8TYldS++FJ1j0ofOFfEoc4cWF1dGhlbnRpY2F0b3JEYXRhWCXtI78HSua3fYI8WQa5EUNj/6+KFHPFnV0JMJbNajjzbkAAAAAB:"
+        ]
+      ],
+      "idempotencyKey" : "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73",
+      "method" : "POST",
+      "name" : "a body altered",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/check-ins",
+      "query" : "event=e42"
+    },
+    {
+      "authority" : "api.kindora.app",
+      "base" : "\"@method\": POST\n\"@authority\": api.kindora.app\n\"@path\": /v1/check-ins\n\"@query\": ?event=e42\n\"content-digest\": sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:\n\"idempotency-key\": 3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\"",
+      "body" : "eyJjb21taXRtZW50IjoiYzciLCJsYXRpdHVkZSI6NTEuNSwibG9uZ2l0dWRlIjotMC4xMn0=",
+      "clientDataHash" : "u2DYYKy5jlrqV+E2hrI4c5Bq2umX0y/tbTeIm5s7Go8=",
+      "counter" : 1,
+      "failure" : "signature",
+      "headers" : [
+        [
+          "content-digest",
+          "sha-256=:DuVKdT8rMtrIHHM78g454PlpWsLXQK9HBiS+/vgDmlk=:"
+        ],
+        [
+          "host",
+          "internal-lb.local"
+        ],
+        [
+          "idempotency-key",
+          "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73"
+        ],
+        [
+          "signature-input",
+          "attest=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"7n5Od23g7W4HzUZBx9qUkpe/bKsZYt9E9WcKTaCddOs=\";nonce=\"AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC\";alg=\"apple-app-attest\""
+        ],
+        [
+          "signature",
+          "attest=:omlzaWduYXR1cmVYRjBEAiBGVkokEi8ujpY1H+HN6hcgXYUIJRynWwyRPiGHaR3lhQIgGCs5tXqv/fgXwupqu7Z//8il3X1bTuvxtgNo0gjMSJpxYXV0aGVudGljYXRvckRhdGFYJe0jvwdK5rd9gjxZBrkRQ2P/r4oUc8WdXQkwls1qOPNuQAAAAAE=:"
+        ]
+      ],
+      "idempotencyKey" : "3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73",
+      "method" : "POST",
+      "name" : "a path altered",
+      "nonce" : "AQIAAAGbdtqoAEkAenEVHyFiJ80bNWoDhSM38rgqSmwIaZlcnoJ+JpHC",
+      "path" : "/v1/other",
+      "query" : "event=e42"
+    }
+  ],
+  "root" : "MIIB6TCCAW+gAwIBAgIVAIIkZOazxcw4WNNQm2id0Wd8k3zeMAoGCCqGSM49BAMDMEMxKzApBgNVBAMMIlN0b2ljIFRlc3QgQXBwIEF0dGVzdGF0aW9uIFJvb3QgQ0ExFDASBgNVBAoMC1N0b2ljIHRlc3RzMB4XDTI1MTIzMTAwMDAwMFoXDTM1MTIzMDAwMDAwMFowQzErMCkGA1UEAwwiU3RvaWMgVGVzdCBBcHAgQXR0ZXN0YXRpb24gUm9vdCBDQTEUMBIGA1UECgwLU3RvaWMgdGVzdHMwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAASOFe7gWuQnZ/k56G61FFNxzFg1bW2GVJyccQD3rAVsM08BU7Os1nedLJp8NMaVkdharXvk+RJHFT4WYEUm7hG/EKOA8rtkS/QIWBHdd2ZyNsyv9S1kpXvJD/0K8pik0xWjIzAhMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMDA2gAMGUCMDbMY83tEzGZ4jAJE4R80fuf1Nmq7nZTyA1mN1RUEtSB5H9s3ZhTnvHYUOKShlCC2QIxAISEzDVucXPope2Mo9SmytX10BX1NAS5nNibHXLo7o0Z12AqJTrqY7IdeXfZVMDF6w==",
+  "validAt" : "2026-01-01T00:00:00Z",
+  "workedExample" : {
+    "base" : "\"@method\": POST\n\"@authority\": api.example.com\n\"@path\": /v1/check-ins\n\"@query\": ?event=e42\n\"content-digest\": sha-256=:TFIG1rH3ac1z4inoc/WSdJvUoBvcPaNKY+HcrXjxBAw=:\n\"idempotency-key\": 3f2a9c1e-7b40-4d1a-9e55-0c6b2d8f1a73\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\" \"idempotency-key\");keyid=\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\";nonce=\"AQIAAAGabxssAAABAgMEBQYHCAkKCwwNDg+goaKjpKWmp6ipqqusra6v\";alg=\"apple-app-attest\"",
+    "clientDataHash" : "Slmfi7Tpym02yJb133bgVo8qJ4JcehJjSYX0vDUVz1U="
+  }
+}

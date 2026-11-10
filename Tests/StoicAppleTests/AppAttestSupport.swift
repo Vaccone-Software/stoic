@@ -7,12 +7,6 @@ import StoicTesting
 import Synchronization
 import Testing
 
-extension Trait where Self == ConditionTrait {
-    /// Names the design/29 row a test proves, until the contract is committed
-    /// and the name becomes a `.failureMode` claim.
-    static func designRow(_ row: String) -> Self { .enabled(if: true) }
-}
-
 /// The app's server, from a script: numbered challenges, recorded enrolments,
 /// failures queued per call.
 final class ScriptedAttestServer: AppAttestServer {

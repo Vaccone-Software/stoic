@@ -9,12 +9,6 @@ import StoicTesting
 import Synchronization
 import Testing
 
-extension Trait where Self == ConditionTrait {
-    /// Names the design/29 row a test proves, until the contract is committed
-    /// and the name becomes a `.failureMode` claim.
-    static func designRow(_ row: String) -> Self { .enabled(if: true) }
-}
-
 let api = URL(string: "https://api.example.com")!
 let phone = AppAttestPlatform(isSimulator: false, isMac: false, isAppExtension: false, isWatch: false)
 

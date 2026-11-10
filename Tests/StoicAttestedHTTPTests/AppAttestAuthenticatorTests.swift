@@ -35,6 +35,46 @@ struct AppAttestRequestFormatTests {
         #expect(AppAttestRequestFormat.contentDigest(of: []) == AppAttestRequestFormat.emptyBodyDigest)
     }
 
+    /// The signer is held to the vectors the server's verifier is held to
+    /// (StoicAttestationTests/Vectors/app-attest-v1.json).
+    @Test func theSignerBuildsTheCommittedVectorsBases() throws {
+        struct Vector: Decodable {
+            let name, method, authority, path, query, body, nonce, base, clientDataHash: String
+            let idempotencyKey: String?
+            let failure: String?
+            let headers: [[String]]
+        }
+        struct File: Decodable {
+            let keyID: String
+            let requests: [Vector]
+        }
+        let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "StoicAttestationTests/Vectors/app-attest-v1.json")
+        let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: url))
+        let signed = file.requests.filter { $0.failure == nil }
+        #expect(signed.count == 4)
+        for vector in signed {
+            let body = Array(try #require(Data(base64Encoded: vector.body)))
+            let digest = AppAttestRequestFormat.contentDigest(of: body)
+            #expect(vector.headers.contains([ "content-digest", digest ]), "\(vector.name): the same Content-Digest")
+            let base = AppAttestRequestFormat.signatureBase(
+                method: vector.method, authority: vector.authority, path: vector.path, query: vector.query, contentDigest: digest,
+                idempotencyKey: vector.idempotencyKey, keyID: file.keyID, nonce: Array(try #require(Data(base64Encoded: vector.nonce))))
+            #expect(base == vector.base, "\(vector.name)")
+            #expect(Data(AppAttestRequestFormat.clientDataHash(of: base)).base64EncodedString() == vector.clientDataHash)
+            // And from an HTTPRequest, as the authenticator builds it.
+            var components = URLComponents()
+            components.scheme = "https"
+            components.host = vector.authority
+            components.percentEncodedPath = vector.path
+            components.percentEncodedQuery = vector.query.isEmpty ? nil : vector.query
+            let request = HTTPRequest(
+                method: HTTPMethod(rawValue: vector.method), target: .url(try #require(components.url)),
+                headers: vector.idempotencyKey.map { ["Idempotency-Key": $0] } ?? [:], body: body.isEmpty ? nil : body)
+            #expect(try Statement(request).base(keyID: file.keyID, nonce: Array(try #require(Data(base64Encoded: vector.nonce)))) == vector.base)
+        }
+    }
+
     @Test func theStatementTakesTheRequestAsSent() throws {
         let request = HTTPRequest(
             method: .post, target: .url(URL(string: "https://API.Example.com:443/v1/a%20b?x=1&y=%2F")!),
@@ -95,15 +135,16 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.sent(to: "/app-attest/keys").first?.headers["Signature"] == nil)
     }
 
-    @Test(.designRow("a signed request is retried"))
+    @Test(.failureMode("design/29", "a signed request is retried"))
     func everyRetryIsSignedAfresh() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
         rig.transport.on(.post("/v1/check-ins", json: [:]), respond: [.status(503), .status(201)])
         let task = await rig.run { rig.start(.post("/v1/check-ins", json: [:]), key: IdempotencyKey(rawValue: "k1")) }
         await rig.run {
-            await eventually { rig.sent(to: "/v1/check-ins").count == 1 && rig.clock.sleeperCount >= 1 }
-            await rig.clock.advance(by: .seconds(1))
+            // The attempt's own timeout is a sleeper too: wait for the failure, then its backoff.
+            await eventually { rig.events.events(named: "retry.attempt_failed").count == 1 && rig.clock.sleeperCount == 1 }
+            _ = await rig.clock.advanceToNextDeadline()
         }
         #expect(try await task.value.status == 201)
         let attempts = rig.sent(to: "/v1/check-ins")
@@ -111,7 +152,7 @@ struct AppAttestAuthenticatorTests {
         #expect(Set(attempts.map { $0.headers["Idempotency-Key"] }) == ["k1"], "the same idempotency key")
     }
 
-    @Test(.designRow("a signed request is redirected within its origin"), .designRow("a signed request is redirected to another origin"))
+    @Test(.failureMode("design/29", "a signed request is redirected within its origin"), .failureMode("design/29", "a signed request is redirected to another origin"))
     func redirectsAreSignedWithinTheOriginAndNeverBeyond() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -129,7 +170,7 @@ struct AppAttestAuthenticatorTests {
         }
     }
 
-    @Test(.designRow("a request already has a Signature header"))
+    @Test(.failureMode("design/29", "a request already has a Signature header"))
     func aRequestThatIsAlreadySignedIsRefusedBeforeItIsSent() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -142,7 +183,7 @@ struct AppAttestAuthenticatorTests {
 
     // MARK: Unsupported
 
-    @Test(.designRow("the device cannot attest (a Mac, the simulator, an extension, older hardware)"))
+    @Test(.failureMode("design/29", "the device cannot attest (a Mac, the simulator, an extension, older hardware)"))
     func anUnsupportedDeviceDeclaresOrFailsAsTheAppChose() async throws {
         let simulator = AppAttestPlatform(isSimulator: true, isMac: false, isAppExtension: false, isWatch: false)
         let declaring = await AttestedRig(ifUnsupported: .declare, platform: simulator)
@@ -168,7 +209,7 @@ struct AppAttestAuthenticatorTests {
         return .status(401, headers: headers)
     }
 
-    @Test(.designRow("the server answers stale_challenge"))
+    @Test(.failureMode("design/29", "the server answers stale_challenge"))
     func aStaleChallengeIsReplacedFromTheRefusalAndTheRequestSignedAgain() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -181,7 +222,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.events.events(named: "attest.refused").first?["code"]?.description == "stale_challenge")
     }
 
-    @Test(.designRow("the server answers unknown_key"))
+    @Test(.failureMode("design/29", "the server answers unknown_key"))
     func anUnknownKeyIsReplacedAndTheRequestSignedAgain() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -191,7 +232,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.sent(to: "/app-attest/keys").count == 2)
     }
 
-    @Test(.designRow("the server answers revoked"))
+    @Test(.failureMode("design/29", "the server answers revoked"))
     func aRevokedKeyEndsTheCallAndHoldsOffEnrolment() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -206,7 +247,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.service.calls(.generateKey).count == 1, "nothing enrolled for refusedRetryAfter")
     }
 
-    @Test(.designRow("the server answers replayed"))
+    @Test(.failureMode("design/29", "the server answers replayed"))
     func aReplayedCounterIsSignedAgainWithANewOne() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -216,7 +257,7 @@ struct AppAttestAuthenticatorTests {
         #expect(counters == ["1", "2"])
     }
 
-    @Test(.designRow("the server answers missing"))
+    @Test(.failureMode("design/29", "the server answers missing"))
     func aMissingSignatureIsAddedToARequestNotSignedByDefault() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -227,7 +268,7 @@ struct AppAttestAuthenticatorTests {
         #expect(sent[0].headers["Signature"] == nil && sent[1].headers["Signature"] != nil, "signed, whatever `signing` says, and replayed once")
     }
 
-    @Test(.designRow("the server answers invalid"))
+    @Test(.failureMode("design/29", "the server answers invalid"))
     func anInvalidSignatureIsNeverReplayed() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -238,7 +279,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.sent(to: "/v1/check-ins").count == 1)
     }
 
-    @Test(.designRow("a replay is refused again"))
+    @Test(.failureMode("design/29", "a replay is refused again"))
     func theSecondRefusalIsTheAnswer() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -252,7 +293,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.renewals.value == 0)
     }
 
-    @Test(.designRow("a 401 without AppAttest arrives"))
+    @Test(.failureMode("design/29", "a 401 without AppAttest arrives"))
     func anotherSchemes401ReachesTheReauthenticationHook() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -262,7 +303,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.sent(to: "/v1/check-ins").last?.headers["Authorization"] == "Bearer t2")
     }
 
-    @Test(.designRow("the device's key is invalidated (reinstall, restore, migration)"))
+    @Test(.failureMode("design/29", "the device's key is invalidated (reinstall, restore, migration)"))
     func aKeyLostOnTheDeviceIsReplacedWhileSigning() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -274,7 +315,7 @@ struct AppAttestAuthenticatorTests {
         #expect(rig.events.events(named: "attest.key_invalidated").count == 1)
     }
 
-    @Test(.designRow("many requests arrive while an enrolment is in flight"))
+    @Test(.failureMode("design/29", "many requests arrive while an enrolment is in flight"))
     func requestsWaitingForTheEnrolmentShareIt() async throws {
         let rig = await AttestedRig()
         rig.scriptEnrolment()
@@ -282,7 +323,9 @@ struct AppAttestAuthenticatorTests {
         rig.transport.on(.post("/v1/check-ins", json: [:]), respond: [], then: .status(201))
         let requests = await rig.run { (0..<20).map { _ in rig.start(.post("/v1/check-ins", json: [:])) } }
         await rig.run {
+            // Every request waiting, and the device's delay asleep beside the enrolment's timeout.
             await eventually { await rig.attester.enrolmentWaiters == 20 }
+            await eventually { rig.service.calls(.attestKey).count == 1 && rig.clock.sleeperCount == 2 }
             await rig.clock.advance(by: .seconds(1))
         }
         for request in requests { #expect(try await request.value.status == 201) }

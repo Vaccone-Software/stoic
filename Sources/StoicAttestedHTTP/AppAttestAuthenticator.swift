@@ -31,6 +31,9 @@ public final class AppAttestAuthenticator: HTTPAuthenticator {
     private let fallback: AppAttestFallback
     private let clock: AnyClock
     private let state = Mutex(State())
+    /// One request-challenge fetch at a time, however many requests find
+    /// none: a hundred requests after an enrolment ask the server once.
+    private let fetches = SingleFlight<Int, AppAttestChallenge, AppAttestError>(label: "app-attest challenge")
 
     private struct State {
         /// The request challenge received most recently, and when (monotonic).
@@ -71,10 +74,7 @@ public final class AppAttestAuthenticator: HTTPAuthenticator {
         }
         do throws(AppAttestError) {
             _ = try await attester.enrolledKey()
-            if heldChallenge() == nil {
-                let fresh = try await attester.requestChallenge()
-                keep(fresh)
-            }
+            if heldChallenge() == nil { try await fetchChallenge() }
         } catch {
             if case .unsupported = error, fallback == .declare { return }
             throw Self.error(for: error)
@@ -145,7 +145,7 @@ public final class AppAttestAuthenticator: HTTPAuthenticator {
             verdict = await forget(request, revoked: false) ?? .replay
         case "revoked":
             verdict = await forget(request, revoked: true) ?? .refuse(Self.error("revoked", .stop))
-        case "invalid", "unsupported_refused":
+        case "invalid", "unsupported_refused", "account_mismatch":
             verdict = .refuse(Self.error(code, .stop))
         default:
             // A code this version does not know is not trusted to mean
@@ -189,6 +189,23 @@ public final class AppAttestAuthenticator: HTTPAuthenticator {
     private func keep(_ challenge: AppAttestChallenge) {
         let now = clock.now
         state.withLock { $0.challenge = (challenge, now) }
+    }
+
+    /// Fetches a request challenge, sharing the fetch in flight; the one that
+    /// arrives is kept for every request.
+    private func fetchChallenge() async throws(AppAttestError) {
+        let attester = attester
+        do throws(PolicyError<AppAttestError>) {
+            let fresh = try await fetches.run(0) { () async throws(AppAttestError) -> AppAttestChallenge in
+                try await attester.requestChallenge()
+            }
+            keep(fresh)
+        } catch {
+            switch error {
+            case .failed(let failure): throw failure
+            case .rejected(let rejection): throw rejection.reason == .cancelled ? .cancelled : .timedOut
+            }
+        }
     }
 
     /// Forgets the key that signed `request`: `nil` when that went well, or
@@ -279,7 +296,7 @@ enum AppAttestHeaders {
     /// The codes design/29's table defines for requests and enrolments.
     static let knownCodes: Set<String> = [
         "challenge_expired", "challenge_used", "challenge_invalid", "key_enrolled", "invalid_attestation", "environment",
-        "missing", "stale_challenge", "unknown_key", "revoked", "replayed", "invalid", "unsupported_refused",
+        "missing", "stale_challenge", "unknown_key", "revoked", "replayed", "invalid", "unsupported_refused", "account_mismatch",
     ]
 
     /// `App-Attest-Challenge: :<base64>:;lifetime=<seconds>` (an RFC 8941

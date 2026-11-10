@@ -38,6 +38,17 @@ let crypto: [Target.Dependency] = [
     .product(name: "Crypto", package: "swift-crypto", condition: .when(traits: cryptoTrait))
 ]
 
+// The App Attest verifier's build setting and its products: present only
+// when `Attestation` is on (which enables `Crypto`), so a consumer that never
+// enables it never fetches swift-certificates. See design/29.
+let attestationTrait: Set<String> = ["Attestation"]
+let attestationDefine: SwiftSetting = .define("STOIC_ATTESTATION", .when(traits: attestationTrait))
+let attestation: [Target.Dependency] = [
+    .product(name: "Crypto", package: "swift-crypto", condition: .when(traits: attestationTrait)),
+    .product(name: "X509", package: "swift-certificates", condition: .when(traits: attestationTrait)),
+    .product(name: "SwiftASN1", package: "swift-asn1", condition: .when(traits: attestationTrait)),
+]
+
 // The macros' build setting and their swift-syntax products: present only
 // when `Macros` is on. The same arrangement as `Lint`, and for the same
 // reason: SwiftPM builds every target of the package, so the macro sources
@@ -137,6 +148,10 @@ let package = Package(
         // StoicApple (the key) and StoicHTTP (the client) meet. Apple
         // platforms; empty elsewhere.
         .library(name: "StoicAttestedHTTP", targets: ["StoicAttestedHTTP"]),
+        // The server's App Attest verifier (design/29): attestations,
+        // assertions, signed requests, challenges and the counter window,
+        // portable. Needs the `Attestation` trait: `.package(url: …, traits: ["Attestation"])`.
+        .library(name: "StoicAttestation", targets: ["StoicAttestation"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -155,6 +170,11 @@ let package = Package(
             name: "Crypto",
             description: "Build the libraries that use swift-crypto (StoicSealed, StoicDownloads). Pulls in swift-crypto, which is fetched only when this trait is enabled."
         ),
+        .trait(
+            name: "Attestation",
+            description: "Build StoicAttestation, the App Attest verifier. Pulls in swift-certificates, and swift-crypto through Crypto, which are fetched only when this trait is enabled.",
+            enabledTraits: ["Crypto"]
+        ),
         .trait(name: "Logging", description: "Send Stoic's events to swift-log (StoicObservability). Fetches swift-log only when enabled."),
         .trait(name: "Metrics", description: "Count Stoic's events with swift-metrics (StoicObservability). Fetches swift-metrics only when enabled."),
         .default(enabledTraits: []),
@@ -166,6 +186,12 @@ let package = Package(
         // Used only by targets conditioned on the `Crypto` trait. On Apple
         // platforms `Crypto` is CryptoKit; elsewhere it is BoringSSL.
         .package(url: "https://github.com/apple/swift-crypto", "3.0.0"..<"6.0.0"),
+        // Used only by StoicAttestation, conditioned on the `Attestation` trait:
+        // X.509 path validation (swift-certificates, whose 1.21 admits
+        // swift-crypto 5) and the DER of the attestation's nonce (swift-asn1,
+        // which swift-crypto already brings).
+        .package(url: "https://github.com/apple/swift-certificates", from: "1.21.0"),
+        .package(url: "https://github.com/apple/swift-asn1", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.16.0"),
         .package(url: "https://github.com/apple/swift-metrics", from: "2.12.0"),
     ],
@@ -343,7 +369,17 @@ let package = Package(
         .target(name: "StoicAttestedHTTP", dependencies: ["Stoic", "StoicApple", "StoicHTTP", "StoicJSON"], swiftSettings: strict),
         .testTarget(
             name: "StoicAttestedHTTPTests",
-            dependencies: ["StoicAttestedHTTP", "StoicApple", "StoicHTTP", "StoicJSON", "Stoic", "StoicTesting"],
-            swiftSettings: strict),
+            dependencies: ["StoicAttestedHTTP", "StoicApple", "StoicHTTP", "StoicJSON", "Stoic", "StoicTesting", "StoicAttestation"]
+                + attestation,
+            swiftSettings: strict + [attestationDefine]),
+        // The server's verifier (design/29): compiled only with the
+        // `Attestation` trait, so adopting the other libraries fetches no
+        // certificate library. Portable: it runs where the app's server does.
+        .target(name: "StoicAttestation", dependencies: ["Stoic"] + attestation, swiftSettings: strict + [attestationDefine]),
+        .testTarget(
+            name: "StoicAttestationTests",
+            dependencies: ["StoicAttestation", "Stoic", "StoicTesting"] + attestation,
+            exclude: ["Vectors"],
+            swiftSettings: strict + [attestationDefine]),
     ] + macroTargets
 )

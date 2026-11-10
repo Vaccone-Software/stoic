@@ -36,7 +36,9 @@ import Foundation
 /// core, whose `Moment` it extends, and on schemas, for its text forms'
 /// leaves (design/26). App Attest on the device meets StoicApple's key and
 /// StoicHTTP's client in `StoicAttestedHTTP`, the one place they meet, as
-/// sealing and the Keychain do in `StoicSealedKeychain` (design/29).
+/// sealing and the Keychain do in `StoicSealedKeychain` (design/29). The
+/// server's verifier, `StoicAttestation`, sits on the core alone (and on
+/// swift-crypto and swift-certificates, behind its trait).
 let layering: [String: Set<String>] = [
     "Stoic": [],
     "StoicJSON": [],
@@ -56,6 +58,7 @@ let layering: [String: Set<String>] = [
     "StoicUIKit": ["Stoic"],
     "StoicXPC": ["Stoic"],
     "StoicAttestedHTTP": ["Stoic", "StoicApple", "StoicHTTP", "StoicJSON"],
+    "StoicAttestation": ["Stoic"],
     "StoicTime": ["Stoic", "StoicSchema"],
     "StoicMacros": ["StoicSchema", "StoicMacrosPlugin"],
     "StoicMacrosPlugin": [],

@@ -2,3 +2,15 @@ Stoic
 Copyright 2026 Vaccone Software
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Tests/StoicAttestationTests/Vectors/apple-development.json holds App Attest
+attestations and assertions captured from iPhones (iOS 14.2 to 14.4, the
+development environment) by Vincent Haupert, taken from the test resources of
+devicecheck-appattest (https://github.com/veehaitch/devicecheck-appattest,
+src/test/resources/ios-*.yaml, commit cb26211f63c1e2e7949deafe2efdf352daca27fa),
+licensed under the Apache License, Version 2.0. The values were copied
+unchanged into another file format.
+
+Sources/StoicAttestation/AppAttestTypes.swift embeds the Apple App Attestation
+Root CA certificate, as Apple publishes it at
+https://www.apple.com/certificateauthority/.
