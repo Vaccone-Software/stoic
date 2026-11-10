@@ -23,6 +23,7 @@ public enum RuleID: String, CaseIterable, Sendable, Codable {
     case keepAliveLoop = "stoic.keep-alive-loop"
     case unboundedTaskGroup = "stoic.unbounded-task-group"
     case unsafeContinuation = "stoic.unsafe-continuation"
+    case wallClockRead = "stoic.wall-clock-read"
     /// A suppression comment that does not say why. Never itself suppressible:
     /// a reason is the whole point of allowing something.
     case allowWithoutReason = "stoic.allow-without-reason"

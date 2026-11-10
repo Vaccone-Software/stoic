@@ -74,7 +74,8 @@ struct MomentTests {
         #expect(Moment(rfc3339: text) == nil)
     }
 
-    @Test func aMomentBeforeTheEpochOrFarAheadIsExactAndItsTextStopsAtTheRange() throws {
+    @Test(.failureMode("design/26", "a moment is before 1970 or far in the future"))
+    func aMomentBeforeTheEpochOrFarAheadIsExactAndItsTextStopsAtTheRange() throws {
         let early = Moment(sinceEpoch: .seconds(-62_135_596_800))
         #expect(early.rfc3339 == "0001-01-01T00:00:00Z")
         let before = early - .nanoseconds(1)

@@ -24,7 +24,8 @@ struct WallClockTests {
 
     /// A person sets the clock back an hour: moments jump, and nothing
     /// measured on the monotonic clock does.
-    @Test func jumpingTheWallClockMovesMomentsAndNotDeadlinesOrSleeps() async throws {
+    @Test(.failureMode("design/26", "a test jumps the wall clock alone"))
+    func jumpingTheWallClockMovesMomentsAndNotDeadlinesOrSleeps() async throws {
         let clock = TestClock()
         let woke = SendableBox(false)
         let task = Task {
@@ -57,7 +58,8 @@ struct WallClockTests {
 
     /// The clock is set back an hour while a thirty-second timeout waits: it
     /// still fires thirty seconds in, because it is on the continuous clock.
-    @Test func aWallClockJumpBackwardsDuringATimeoutDoesNotMoveIt() async throws {
+    @Test(.failureMode("design/26", "the wall clock jumps backwards during a timeout"))
+    func aWallClockJumpBackwardsDuringATimeoutDoesNotMoveIt() async throws {
         let clock = TestClock()
         let task = Task {
             try await withTestAmbient(clock: clock) {

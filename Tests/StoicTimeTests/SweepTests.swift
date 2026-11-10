@@ -16,7 +16,8 @@ struct SweepTests {
         ]
     }
 
-    @Test func aChangedVersionSweepsOnceAndRecordsIt() async throws {
+    @Test(.failureMode("design/26", "the rules version changes between launches"))
+    func aChangedVersionSweepsOnceAndRecordsIt() async throws {
         let rules = Zones.rules()
         let events = RecordingInstrumentation()
         try await onTestTime(rules, events: events) {
@@ -61,7 +62,8 @@ struct SweepTests {
         #expect(changes.last?["moved"]?.description == "1")
     }
 
-    @Test func anUnchangedVersionDoesNothingAndAsksForNothing() async throws {
+    @Test(.failureMode("design/26", "the rules version is unchanged"))
+    func anUnchangedVersionDoesNothingAndAsksForNothing() async throws {
         let events = RecordingInstrumentation()
         try await onTestTime(events: events) {
             var sweep = ZoneRulesSweep(lastSweptVersion: "2026a")

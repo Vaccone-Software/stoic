@@ -21,7 +21,8 @@ struct ZonedDateTimeTests {
 
     /// 02:30 on 14 March 2027 does not exist in New York: the clocks go from
     /// 01:59:59 EST to 03:00:00 EDT.
-    @Test func aLocalTimeInAGapIsResolvedByThePolicyAndSaysSo() async throws {
+    @Test(.failureMode("design/26", "a local time falls in a gap"))
+    func aLocalTimeInAGapIsResolvedByThePolicyAndSaysSo() async throws {
         let events = RecordingInstrumentation()
         let night = Zones.local(2027, 3, 14, 2, 30)
         try await onTestTime(events: events) {
@@ -55,7 +56,8 @@ struct ZonedDateTimeTests {
 
     /// 01:30 on 7 November 2027 happens twice in New York: once in EDT,
     /// then again an hour later in EST.
-    @Test func aLocalTimeInAnOverlapIsResolvedByThePolicyAndSaysSo() async throws {
+    @Test(.failureMode("design/26", "a local time falls in an overlap"))
+    func aLocalTimeInAnOverlapIsResolvedByThePolicyAndSaysSo() async throws {
         let events = RecordingInstrumentation()
         let night = Zones.local(2027, 11, 7, 1, 30)
         try await onTestTime(events: events) {
@@ -93,7 +95,8 @@ struct ZonedDateTimeTests {
         }
     }
 
-    @Test func aZoneTheRulesDoNotKnowIsAnErrorAtResolution() async throws {
+    @Test(.failureMode("design/26", "a zone name is unknown to the rules"))
+    func aZoneTheRulesDoNotKnowIsAnErrorAtResolution() async throws {
         let unknown: TimeZoneID = "Mars/Olympus_Mons"
         try await onTestTime {
             #expect(throws: TimeError.unknownZone(unknown)) {
@@ -114,7 +117,8 @@ struct ZonedDateTimeTests {
     /// New York's rules change in a release `2026b`: no daylight saving in
     /// 2027. A June event resolved under `2026a` was 09:00 EDT, 13:00Z; it is
     /// now 09:00 EST, 14:00Z.
-    @Test func aRuleChangeMakesAFutureValueStaleAndRefreshingKeepsItsLocalTime() async throws {
+    @Test(.failureMode("design/26", "the zone's rules change for a future zoned value"))
+    func aRuleChangeMakesAFutureValueStaleAndRefreshingKeepsItsLocalTime() async throws {
         let rules = Zones.rules()
         let clock = TestClock()
         try await onTestTime(rules, clock: clock) {
@@ -133,7 +137,8 @@ struct ZonedDateTimeTests {
         }
     }
 
-    @Test func aRuleChangeLeavesAPastValueFinal() async throws {
+    @Test(.failureMode("design/26", "the zone's rules change for a past zoned value"))
+    func aRuleChangeLeavesAPastValueFinal() async throws {
         let rules = Zones.rules()
         let clock = TestClock()
         try await onTestTime(rules, clock: clock) {
@@ -153,7 +158,8 @@ struct ZonedDateTimeTests {
     /// Release `2026c` starts New York's 2027 daylight saving on 4 April at
     /// 02:00 instead of 14 March: an event stored for 02:30 on 4 April now
     /// falls in the gap.
-    @Test func aRuleChangeThatMovesAStoredTimeIntoAGapIsResolvedByThePolicy() async throws {
+    @Test(.failureMode("design/26", "a rule change moves a stored local time into a gap"))
+    func aRuleChangeThatMovesAStoredTimeIntoAGapIsResolvedByThePolicy() async throws {
         let rules = Zones.rules()
         let events = RecordingInstrumentation()
         try await onTestTime(rules, events: events) {
@@ -198,7 +204,8 @@ struct ZonedDateTimeTests {
     /// Until it is refreshed, a stale value sorts by the instant it was
     /// resolved to; its local time and zone, which are what is shown, are
     /// still right.
-    @Test func aStaleValueSortsByItsOldInstantAndStillShowsTheRightTime() async throws {
+    @Test(.failureMode("design/26", "a stale value is sorted before it is refreshed"))
+    func aStaleValueSortsByItsOldInstantAndStillShowsTheRightTime() async throws {
         let rules = Zones.rules()
         try await onTestTime(rules) {
             let nineInNewYork = try ZonedDateTime(Zones.date(2027, 6, 1), Zones.time(9, 0), in: Zones.newYork)
@@ -220,7 +227,8 @@ struct ZonedDateTimeTests {
 
     /// The text names New York with an offset of -04:00 for a day in
     /// January, when New York is at -05:00: written under other rules.
-    @Test func textWithAnOffsetItsZoneDoesNotGiveDecodesStale() async throws {
+    @Test(.failureMode("design/26", "a zoned value's text has an offset its zone does not give"))
+    func textWithAnOffsetItsZoneDoesNotGiveDecodesStale() async throws {
         try await onTestTime {
             let text = "2027-01-20T09:00:00-04:00[America/New_York]"
             let read = try ZonedDateTime(parsing: text)

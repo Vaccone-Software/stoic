@@ -8,7 +8,8 @@ import Testing
 struct PlainTypesTests {
     // MARK: Construction
 
-    @Test func aDateThatDoesNotExistIsRefusedAtConstruction() {
+    @Test(.failureMode("design/26", "a date that does not exist is made (30 February, month 13)"))
+    func aDateThatDoesNotExistIsRefusedAtConstruction() {
         #expect(throws: TimeError.invalid("month 2 of 2027 has 28 days, not 30")) { try PlainDate(2027, 2, 30) }
         #expect(throws: TimeError.invalid("month 2 of 2027 has 28 days, not 29")) { try PlainDate(2027, 2, 29) }
         #expect(throws: TimeError.invalid("there is no month 13")) { try PlainDate(2027, 13, 1) }
@@ -41,7 +42,8 @@ struct PlainTypesTests {
 
     // MARK: Calendar arithmetic
 
-    @Test func aMonthAddedToTheThirtyFirstIsDecidedByTheNamedOverflow() throws {
+    @Test(.failureMode("design/26", "a month is added to the 31st"))
+    func aMonthAddedToTheThirtyFirstIsDecidedByTheNamedOverflow() throws {
         let end = Zones.date(2027, 1, 31)
         #expect(try end.adding(.months(1)) == Zones.date(2027, 2, 28))
         #expect(try end.adding(.months(1), overflow: .constrain) == Zones.date(2027, 2, 28))
@@ -110,7 +112,8 @@ struct PlainTypesTests {
         #expect(count == 292_560, "801 years, 195 of them leap years")
     }
 
-    @Test func aBirthdayIsTheSameDayInEveryZone() async throws {
+    @Test(.failureMode("design/26", "a birthday is read in a zone west of UTC"))
+    func aBirthdayIsTheSameDayInEveryZone() async throws {
         // Stored as a plain date, a birthday has no zone to shift it. Read
         // west of UTC (New York), east of it (Kolkata), and with the device
         // in either, it is the day it was stored as.
@@ -135,7 +138,8 @@ struct PlainTypesTests {
         }
     }
 
-    @Test func aLeapDayBirthdayIsCountedByTheNamedRule() {
+    @Test(.failureMode("design/26", "a person born on 29 February is aged in a non-leap year"))
+    func aLeapDayBirthdayIsCountedByTheNamedRule() {
         let born = Zones.date(2008, 2, 29)
         let eve = Zones.date(2027, 2, 28), next = Zones.date(2027, 3, 1)
         #expect(born.age(on: eve) == 18)

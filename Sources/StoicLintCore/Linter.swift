@@ -74,6 +74,7 @@ public struct Linter: Sendable {
         { KeepAliveLoopRule(reporter: $0) },
         { UnboundedTaskGroupRule(reporter: $0) },
         { UnsafeContinuationRule(reporter: $0) },
+        { WallClockReadRule(reporter: $0) },
     ]
 }
 

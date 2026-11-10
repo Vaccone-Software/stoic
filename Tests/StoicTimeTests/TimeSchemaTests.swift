@@ -1,6 +1,7 @@
 import Stoic
 import StoicSchema
 import StoicSchemaTesting
+import StoicTesting
 import StoicTime
 import Testing
 
@@ -19,7 +20,8 @@ struct TimeSchemaTests {
     /// A date where a moment is expected, or a moment where a date is: one
     /// `invalid_format` issue that says which form it is, never a value read
     /// by guessing (midnight UTC, or the date part).
-    @Test func aPlainDateAndAMomentDoNotReadAsEachOther() {
+    @Test(.failureMode("design/26", "a plain date is decoded from a moment's text, or the reverse"))
+    func aPlainDateAndAMomentDoNotReadAsEachOther() {
         let asMoment = Moment.schema.decodeReporting(#""2027-03-14""#)
         #expect(asMoment.value == nil)
         #expect(asMoment.errors.map(\.code) == [.invalidFormat])

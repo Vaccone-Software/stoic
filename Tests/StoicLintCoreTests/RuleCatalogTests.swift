@@ -33,6 +33,7 @@ struct RuleCatalogTests {
         .unboundedTaskGroup:
             "func f() async {\n    await withTaskGroup(of: Void.self) { group in\n        for url in urls { group.addTask { await fetch(url) } }\n    }\n}\n",
         .unsafeContinuation: "func f() async {\n    await withUnsafeContinuation { $0.resume() }\n}\n",
+        .wallClockRead: "let checkedInAt = Date()\n",
         .allowWithoutReason: "// stoic:allow(force-try)\nlet x = 1\n",
     ]
 

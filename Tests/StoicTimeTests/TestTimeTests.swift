@@ -7,7 +7,8 @@ import Testing
 struct TestTimeTests {
     /// The wall clock is the test clock's: `Moment.now` and today move when
     /// the test moves time, and only then.
-    @Test func advancingTheTestClockMovesNowAndToday() async throws {
+    @Test(.failureMode("design/26", "a test advances its clock"))
+    func advancingTheTestClockMovesNowAndToday() async throws {
         let clock = TestClock()
         try await onTestTime(clock: clock) { () async throws in
             #expect(Moment.now == Zones.moment("2026-01-01T00:00:00Z"))
