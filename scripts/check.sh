@@ -42,9 +42,14 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # policies, the idempotency key hedged attempts read at once, and declared
 # operations (their admission partitions, breakers, settled marks and shielded
 # attempts), and XPC peers and hosts (a run ended from several callbacks, a
-# reply settled once). A few minutes: the instrumented build is separate from
-# the one above.
-swift test --sanitize=thread --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests'
+# reply settled once), expiring work, and lifecycles (a live machine's
+# effects performed from any sender, the device store's hand-off beside its
+# commits, the outbox that remembers). Their crash explorations, which run no
+# two tasks at once, are left to the plain step. A few minutes: the
+# instrumented build is separate from the one above.
+swift test --sanitize=thread \
+    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember' \
+    --skip 'LifecycleCrashTests|OutboxRememberCrashTests'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
 # Skipped here, run with their bounds in the plain test step above: the tests

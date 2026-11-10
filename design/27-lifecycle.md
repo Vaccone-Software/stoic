@@ -1193,7 +1193,13 @@ Departures from the reviewed draft, and decisions it left open.
   `JournaledLifecycleStore.nextDue` leaves out records it cannot settle.
 - **`purge(finishedBefore:)`** removes the records that are final as read
   at the store's moment and whose final state was entered before the cutoff;
-  a record that is not final, or does not decode, is never selected.
+  a record that is not final, or does not decode, is never selected. Effects
+  a purged record's commits already handed to the outbox stay there and are
+  delivered: the purge removes history, not what was owed.
+- **The crash tests that must fail** build their defects into the store
+  through an internal switch (enqueue before the append, head and entries
+  as two appends, an outbox that does not remember), so the harness is
+  shown to catch the real store's code going wrong, not a copy of it.
 - **A live machine's effects** are performed by one caller at a time, which
   drains the effects of every transition queued meanwhile: transition order
   holds across senders, and an effect that sends the machine an event queues
