@@ -35,7 +35,9 @@ public struct ZoneRulesSweep: Sendable, Hashable, Codable {
     /// Whether the rules in force are of another version than the last
     /// sweep's, so ``run(now:resolving:values:apply:)`` would sweep.
     public var isDue: Bool {
-        lastSweptVersion != ZoneRules.current.version
+        let version = ZoneRules.current.version
+        // A version that cannot be read is unknown, not unchanged.
+        return version.isEmpty || lastSweptVersion != version
     }
 
     /// What one sweep did.
@@ -81,7 +83,7 @@ public struct ZoneRulesSweep: Sendable, Hashable, Codable {
         apply: ([Key: ZonedDateTime]) async throws(Failure) -> Void
     ) async throws(Failure) -> Report? {
         let version = ZoneRules.current.version
-        guard version != lastSweptVersion else { return nil }
+        guard version.isEmpty || version != lastSweptVersion else { return nil }
         let given = try await values()
         var moved: [Key: ZonedDateTime] = [:]
         var unresolved = 0

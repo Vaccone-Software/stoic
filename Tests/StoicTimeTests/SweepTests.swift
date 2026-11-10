@@ -78,6 +78,21 @@ struct SweepTests {
         #expect(events.events(named: "time.zone_rules_changed").isEmpty)
     }
 
+    @Test(.failureMode("design/26", "the rules version cannot be read"))
+    func anUnknownVersionSweepsWheneverAsked() async throws {
+        let rules = Zones.rules(version: "")
+        try await onTestTime(rules) {
+            let stored = try Self.upcoming()
+            var sweep = ZoneRulesSweep()
+            let first = await sweep.run(values: { stored }) { _ in }
+            #expect(first != nil)
+            #expect(sweep.isDue, "unknown is not unchanged")
+            let second = await sweep.run(values: { stored }) { _ in }
+            #expect(second != nil, "it sweeps again: a comparison per value, and nothing moves")
+            #expect(second?.moved == 0)
+        }
+    }
+
     @Test func aFailedApplyLeavesTheVersionForTheNextRun() async throws {
         struct Unwritable: Error {}
         let rules = Zones.rules()

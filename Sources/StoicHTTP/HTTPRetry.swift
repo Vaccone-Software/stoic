@@ -1,7 +1,10 @@
-public import Foundation
 #if canImport(FoundationNetworking)
-// URLSession and HTTPURLResponse live here on Linux.
+// URLSession and HTTPURLResponse live here on Linux, so Foundation itself
+// is in no public declaration of this file there.
+internal import Foundation
 public import FoundationNetworking
+#else
+public import Foundation
 #endif
 public import Stoic
 
