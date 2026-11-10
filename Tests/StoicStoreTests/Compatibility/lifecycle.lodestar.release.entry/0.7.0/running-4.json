@@ -1,0 +1,1 @@
+{"at":"2026-01-01T00:00:43Z","because":"the router answered 1.2 s after launch","by":{"principal":{"successor":{"pid":4242}}},"effects":["7e1792d2d255f10dfcc84b1f55ba8d33"],"entered":true,"event":"confirm","from":"applying","record":"release-0.56","sequence":3,"to":"running"}

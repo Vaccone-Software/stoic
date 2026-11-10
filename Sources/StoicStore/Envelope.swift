@@ -77,3 +77,20 @@ func readLittleEndian<T: FixedWidthInteger>(_ bytes: [UInt8], at offset: Int) ->
     }
     return value
 }
+
+/// The payload of an enveloped file, for the libraries of this package that
+/// read a file's bytes without a file (StoicSettings' `read`).
+package enum EnvelopedFile {
+    /// Whether `bytes` begin with the envelope's magic.
+    package static func isEnveloped(_ bytes: [UInt8]) -> Bool {
+        bytes.starts(with: Envelope.magic)
+    }
+
+    /// The payload, or `nil` with why the envelope is not intact.
+    package static func payload(of bytes: [UInt8]) -> (payload: [UInt8]?, problem: String?) {
+        switch Envelope.open(bytes) {
+        case .success(let payload): (payload, nil)
+        case .failure(let failure): (nil, failure.description)
+        }
+    }
+}

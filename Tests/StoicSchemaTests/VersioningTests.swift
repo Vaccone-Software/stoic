@@ -435,33 +435,38 @@ struct VersionedObjectTests {
 
 @Suite("Time capsule")
 struct TimeCapsuleTests {
-    @Test func everyReleasedVersionStillDecodesToWhatItMeant() {
-        for entry in PrefsCapsule.entries {
-            let result = decode(Prefs.schema, entry.text)
-            #expect(result.errors.isEmpty, "version \(entry.version): \(result.issues)")
-            #expect(result.value == entry.expected, "version \(entry.version)")
+    @Test func everyReleasedVersionStillDecodesToWhatItMeant() throws {
+        let fixtures = try PrefsCapsule.set().fixtures
+        #expect(fixtures.count == PrefsCapsule.expected.count)
+        for fixture in fixtures {
+            let result = Prefs.schema.decodeReporting(fixture.bytes)
+            let version = try #require(JSONParser().parseValue(fixture.bytes).object?["version"]?.number?.int64)
+            #expect(result.errors.isEmpty, "\(fixture.release): \(result.issues)")
+            #expect(result.value == PrefsCapsule.expected[fixture.release.description], "\(fixture.release)")
             // Nothing but migration notices.
-            #expect(result.issues.allSatisfy { $0.code == .migrated }, "version \(entry.version)")
-            #expect(result.issues.count == 4 - entry.version, "version \(entry.version)")
+            #expect(result.issues.allSatisfy { $0.code == .migrated }, "\(fixture.release)")
+            #expect(result.issues.count == 4 - Int(version), "\(fixture.release)")
         }
     }
 
-    @Test func everyVersionTheSchemaCanReadHasADocumentInTheCapsule() {
-        // The reminder to add a document when a release changes the format:
-        // this fails the moment the history grows without a capsule entry.
+    @Test func everyVersionTheSchemaCanReadHasADocumentInTheCapsule() throws {
+        // The reminder to record a release when it changes the format: this
+        // fails the moment the history grows without a fixture.
         guard case .object(let node) = Prefs.schema.node, let versioning = node.versioning else { return fail("node") }
-        let kept = Set(PrefsCapsule.entries.map(\.version))
+        let kept = Set(try PrefsCapsule.set().fixtures.compactMap { fixture in
+            (try? JSONParser().parseValue(fixture.bytes))?.object?["version"]?.number?.int64.map(Int.init)
+        })
         let readable = Set(versioning.migrations.map(\.from) + [versioning.current])
         #expect(kept == readable)
     }
 
-    @Test func capsuleDocumentsSurviveARoundTripThroughTheCurrentSchema() {
-        for entry in PrefsCapsule.entries {
-            guard let value = decode(Prefs.schema, entry.text).value else { return fail("decode \(entry.version)") }
+    @Test func capsuleDocumentsSurviveARoundTripThroughTheCurrentSchema() throws {
+        for fixture in try PrefsCapsule.set().fixtures {
+            guard let value = Prefs.schema.decodeReporting(fixture.bytes).value else { return fail("decode \(fixture.release)") }
             let written = Prefs.schema.encode(value, style: .sparse).encodedString()
             let again = decode(Prefs.schema, written)
-            #expect(again.issues.isEmpty, "version \(entry.version)")
-            #expect(again.value == value, "version \(entry.version)")
+            #expect(again.issues.isEmpty, "\(fixture.release)")
+            #expect(again.value == value, "\(fixture.release)")
         }
     }
 }

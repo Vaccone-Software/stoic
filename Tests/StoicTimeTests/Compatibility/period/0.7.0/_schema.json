@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "string",
+  "x-stoic-transform": {
+    "name": "Period",
+    "description": "an ISO 8601 period of years, months and days, such as \"P1M\" or \"P7D\""
+  }
+}

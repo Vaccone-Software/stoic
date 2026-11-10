@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "string",
+  "format": "date",
+  "x-stoic-transform": {
+    "name": "PlainDate",
+    "description": "a calendar date, such as \"2027-03-14\""
+  }
+}

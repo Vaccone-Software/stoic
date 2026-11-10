@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "string",
+  "format": "date-time",
+  "x-stoic-transform": {
+    "name": "Moment",
+    "description": "an RFC 3339 date-time with an offset, such as \"2026-11-09T18:34:12.425Z\""
+  }
+}

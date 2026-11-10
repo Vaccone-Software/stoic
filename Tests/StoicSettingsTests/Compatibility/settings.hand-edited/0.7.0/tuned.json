@@ -1,0 +1,13 @@
+{
+  "$schema": "https://example.com/prefs.schema.json",
+  "version": 2,
+  "theme": "dark",
+  "fontSize": 15,
+  "recent": [
+    "/Users/ana/notes.txt"
+  ],
+  "editor": {
+    "tabWidth": 2,
+    "wrap": false
+  }
+}

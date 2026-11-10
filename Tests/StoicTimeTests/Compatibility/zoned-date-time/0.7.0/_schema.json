@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "string",
+  "x-stoic-transform": {
+    "name": "ZonedDateTime",
+    "description": "an RFC 9557 date-time with its zone, such as \"2027-03-14T09:00:00-04:00[America/New_York]\""
+  }
+}

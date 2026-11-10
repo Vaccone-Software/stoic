@@ -222,10 +222,13 @@ let package = Package(
         // The Swift Testing glue for SchemaSuite. The suite itself lives in
         // StoicSchema and asserts nothing, so the library that apps ship
         // never links a test framework; this target is for test bundles.
-        .target(name: "StoicSchemaTesting", dependencies: ["StoicSchema"], swiftSettings: strict),
+        // It also reads compatibility fixtures beside a test (design/32), through
+        // Foundation's files and environment.
+        .target(name: "StoicSchemaTesting", dependencies: ["StoicSchema", "StoicJSON"], swiftSettings: strict),
         .testTarget(
             name: "StoicSchemaTests", dependencies: ["StoicSchema", "StoicSchemaTesting", "StoicJSON", "StoicTesting"],
-            swiftSettings: strict),
+            // Compatibility fixtures (design/32), read beside the test file.
+            exclude: ["Compatibility"], swiftSettings: strict),
         .testTarget(name: "StoicTests", dependencies: ["Stoic", "StoicTesting"], swiftSettings: strict),
         // AppKit lifecycle: finishing async shutdown before a Mac app quits.
         // Empty on platforms without AppKit.
@@ -243,7 +246,10 @@ let package = Package(
         // background tasks, the Keychain, device conditions. Builds on
         // StoicFoundation, so its error table comes along.
         .target(name: "StoicApple", dependencies: ["Stoic", "StoicFoundation"], swiftSettings: strict),
-        .testTarget(name: "StoicAppleTests", dependencies: ["StoicApple", "Stoic", "StoicTesting"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicAppleTests", dependencies: ["StoicApple", "Stoic", "StoicTesting"],
+            // Compatibility fixtures (design/32): what released builds wrote.
+            exclude: ["Compatibility"], swiftSettings: strict),
         // UIKit lifecycle: background work bounded by the time the system
         // grants. Empty on platforms without UIKit.
         .target(name: "StoicUIKit", dependencies: ["Stoic"], swiftSettings: strict),
@@ -294,13 +300,18 @@ let package = Package(
         // journal and an outbox, over a FileSystem protocol that a simulated
         // file system can replace to test every crash point. Foundation-free.
         .target(name: "StoicStore", dependencies: ["Stoic"], swiftSettings: strict),
-        .testTarget(name: "StoicStoreTests", dependencies: ["StoicStore", "Stoic", "StoicTesting"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicStoreTests", dependencies: ["StoicStore", "Stoic", "StoicJSON", "StoicSchema", "StoicSchemaTesting", "StoicTesting"],
+            // Compatibility fixtures (design/32): what released builds wrote.
+            exclude: ["Compatibility"], swiftSettings: strict),
         // Settings: a schema-declared value kept in an atomic file, migrated,
         // validated and observable (design/18).
         .target(name: "StoicSettings", dependencies: ["Stoic", "StoicSchema", "StoicStore", "StoicJSON"], swiftSettings: strict),
         .testTarget(
-            name: "StoicSettingsTests", dependencies: ["StoicSettings", "Stoic", "StoicSchema", "StoicStore", "StoicJSON", "StoicTesting"],
-            swiftSettings: strict),
+            name: "StoicSettingsTests",
+            dependencies: ["StoicSettings", "Stoic", "StoicSchema", "StoicSchemaTesting", "StoicStore", "StoicJSON", "StoicTesting"],
+            // Compatibility fixtures (design/32): what released builds wrote.
+            exclude: ["Compatibility"], swiftSettings: strict),
         // Sealed storage (design/24): AES-256-GCM over swift-crypto for whole
         // files and journals, with the keys in a keyring the app keeps in its
         // own custody. Compiled only with the `Crypto` trait, so adopting the
@@ -361,7 +372,8 @@ let package = Package(
         .target(name: "StoicTime", dependencies: ["Stoic", "StoicSchema"], swiftSettings: strict),
         .testTarget(
             name: "StoicTimeTests", dependencies: ["StoicTime", "Stoic", "StoicSchema", "StoicSchemaTesting", "StoicTesting"],
-            swiftSettings: strict),
+            // Compatibility fixtures (design/32): what released builds wrote.
+            exclude: ["Compatibility"], swiftSettings: strict),
         // Live values and actions (design/31): what a screen shows, joined by
         // key, and what a person triggers, guarded and keyed per intent. On
         // the kernel alone: TaskSlot, declared operations, presentations.

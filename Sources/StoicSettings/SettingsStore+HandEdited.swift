@@ -27,23 +27,20 @@ extension SettingsStore {
         guard let bytes = contents?.bytes else {
             return Loaded(value: defaults, issues: [], source: .defaults(.missing), document: nil, read: .missing)
         }
-        let document: JSONDocument
-        do throws(JSONParseError) {
-            // The header is the app's, not a setting: the schema never sees it
-            // (a `json` schema would otherwise hold it in its value, and the
-            // next write would put the app's header over a value that says
-            // another), and what it reports is about the rest of the text.
-            document = try JSONDocument(parsing: bytes, options: options.parse).removingRootMembers(header.keys)
-        } catch {
-            // The schema turns the parse failure into its typed issue, with the
-            // line and column of the character the parser stopped at.
-            let issues = schema.decodeReporting(bytes, options: options).issues
+        // The header is the app's, not a setting: the schema never sees it
+        // (a `json` schema would otherwise hold it in its value, and the
+        // next write would put the app's header over a value that says
+        // another), and what it reports is about the rest of the text. The
+        // same read as `SettingsStore.read`, so the two cannot drift apart.
+        let (parsed, decoded) = decodeHandEdited(bytes, schema: schema, options: options, header: header)
+        guard let document = parsed else {
+            // The schema turned the parse failure into its typed issue, with
+            // the line and column of the character the parser stopped at.
             return Loaded(
-                value: defaults, issues: issues, source: .defaults(.unusable), document: nil, problem: .unparsable(issues),
-                read: .bytes(bytes))
+                value: defaults, issues: decoded.issues, source: .defaults(.unusable), document: nil,
+                problem: .unparsable(decoded.issues), read: .bytes(bytes))
         }
-        let decoded = schema.decode(document, options: options)
-        let issues = annotatingRepeats(decoded.issues)
+        let issues = decoded.issues
         // A newer document is intact, not unusable: read what can be read, and
         // leave the file alone, as an app-owned store does.
         if let newer = issues.first(where: { $0.code == .versionTooNew }) {

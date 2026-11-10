@@ -26,12 +26,12 @@ public struct JSONSchemaValidator: Sendable {
         accepts(instance, against: root)
     }
 
-    private func accepts(_ instance: JSONValue, against schema: JSONValue) -> Bool {
+    func accepts(_ instance: JSONValue, against schema: JSONValue) -> Bool {
         if case .bool(let allowed) = schema { return allowed }
         guard let schema = schema.object else { return false }
 
         if let ref = schema["$ref"]?.string {
-            guard let target = resolve(ref), accepts(instance, against: target) else { return false }
+            guard let target = resolve(reference: ref), accepts(instance, against: target) else { return false }
         }
         if let branches = schema["allOf"]?.array {
             for branch in branches where !accepts(instance, against: branch) { return false }
@@ -61,7 +61,7 @@ public struct JSONSchemaValidator: Sendable {
         }
     }
 
-    private func resolve(_ ref: String) -> JSONValue? {
+    func resolve(reference ref: String) -> JSONValue? {
         guard ref.hasPrefix("#/") else { return ref == "#" ? root : nil }
         var current = root
         for token in ref.dropFirst(2).split(separator: "/") {
@@ -72,7 +72,7 @@ public struct JSONSchemaValidator: Sendable {
         return current
     }
 
-    private func matches(type: String, _ instance: JSONValue) -> Bool {
+    func matches(type: String, _ instance: JSONValue) -> Bool {
         switch (type, instance) {
         case ("null", .null), ("boolean", .bool), ("string", .string), ("array", .array), ("object", .object):
             return true

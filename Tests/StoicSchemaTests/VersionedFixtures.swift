@@ -1,5 +1,6 @@
 import StoicJSON
 import StoicSchema
+import StoicSchemaTesting
 
 enum Mode: String, CaseIterable, Sendable {
     case slow, normal, turbo
@@ -77,37 +78,30 @@ struct Prefs: Sendable, Equatable {
 }
 
 /// The time capsule: a document as each released version wrote it, kept for
-/// good. Each must still decode to the value it meant, under today's schema,
-/// with only `migrated` notices to say so. When a release changes the format,
-/// its document is added here before anything else.
+/// good, as compatibility fixtures (design/32) in `Compatibility/prefs/`, one
+/// release per version of the format. Each must still decode to the value it
+/// meant, under today's schema, with only `migrated` notices to say so. When a
+/// release changes the format, its document is recorded before anything else.
 enum PrefsCapsule {
-    struct Entry {
-        var version: Int
-        var text: String
-        var expected: Prefs
+    /// `Compatibility/` beside this file.
+    static var directory: String {
+        var parts = #filePath.split(separator: "/", omittingEmptySubsequences: false)
+        parts.removeLast()
+        return parts.joined(separator: "/") + "/Compatibility"
     }
 
-    static let entries: [Entry] = [
+    /// The value each release's document meant, by release.
+    static let expected: [String: Prefs] = [
         // Version 1 wrote the defaults sparsely: no scroll_speed means 600.
-        Entry(
-            version: 1,
-            text: #"{"version": 1, "mode": "fast", "hosts": ["a.example", "b.example"], "legacy": true}"#,
-            expected: Prefs(
-                scrollSpeed: 600, mode: .turbo,
-                network: Net(hosts: ["a.example", "b.example"], timeoutMillis: 30_000))),
-        Entry(
-            version: 2,
-            text: #"{"version": 2, "scrollSpeed": 900, "mode": "slow", "hosts": ["c.example"]}"#,
-            expected: Prefs(scrollSpeed: 900, mode: .slow, network: Net(hosts: ["c.example"], timeoutMillis: 30_000))),
-        Entry(
-            version: 3,
-            text: #"{"version": 3, "mode": "turbo", "network": {"hosts": [], "timeoutSeconds": 5}}"#,
-            expected: Prefs(scrollSpeed: 1200, mode: .turbo, network: Net(hosts: [], timeoutMillis: 5000))),
-        Entry(
-            version: 4,
-            text: #"{"version": 4, "scrollSpeed": 3000, "network": {"timeoutMillis": 250}}"#,
-            expected: Prefs(scrollSpeed: 3000, mode: .normal, network: Net(hosts: ["localhost"], timeoutMillis: 250))),
+        "1.0.0": Prefs(scrollSpeed: 600, mode: .turbo, network: Net(hosts: ["a.example", "b.example"], timeoutMillis: 30_000)),
+        "1.1.0": Prefs(scrollSpeed: 900, mode: .slow, network: Net(hosts: ["c.example"], timeoutMillis: 30_000)),
+        "1.2.0": Prefs(scrollSpeed: 1200, mode: .turbo, network: Net(hosts: [], timeoutMillis: 5000)),
+        "2.0.0": Prefs(scrollSpeed: 3000, mode: .normal, network: Net(hosts: ["localhost"], timeoutMillis: 250)),
     ]
+
+    static func set() throws -> CompatibilitySet {
+        try loadCompatibilitySet(format: "prefs", from: directory)
+    }
 }
 
 /// A configuration that keeps what it does not understand.
