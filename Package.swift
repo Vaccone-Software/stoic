@@ -133,6 +133,10 @@ let package = Package(
         // explicit, every wait bounded, a handshake by build, and the host
         // the service runs. macOS only; empty elsewhere.
         .library(name: "StoicXPC", targets: ["StoicXPC"]),
+        // App Attest as an HTTP authenticator (design/29): the one place
+        // StoicApple (the key) and StoicHTTP (the client) meet. Apple
+        // platforms; empty elsewhere.
+        .library(name: "StoicAttestedHTTP", targets: ["StoicAttestedHTTP"]),
         // The build-tool plugin and the command it runs (design/13). Both
         // need the `Lint` trait: `.package(url: …, traits: ["Lint"])`.
         .executable(name: "stoic-lint", targets: ["stoic-lint"]),
@@ -332,5 +336,14 @@ let package = Package(
         // elsewhere.
         .target(name: "StoicXPC", dependencies: ["Stoic"], swiftSettings: strict),
         .testTarget(name: "StoicXPCTests", dependencies: ["StoicXPC", "Stoic", "StoicTesting"], swiftSettings: strict),
+        // App Attest on the device, as an HTTP authenticator (design/29): the
+        // AppAttester from StoicApple signing StoicHTTP's requests, and the
+        // wire protocol with the app's server. It meets both so that neither
+        // depends on the other, as StoicSealedKeychain does for sealing.
+        .target(name: "StoicAttestedHTTP", dependencies: ["Stoic", "StoicApple", "StoicHTTP", "StoicJSON"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicAttestedHTTPTests",
+            dependencies: ["StoicAttestedHTTP", "StoicApple", "StoicHTTP", "StoicJSON", "Stoic", "StoicTesting"],
+            swiftSettings: strict),
     ] + macroTargets
 )

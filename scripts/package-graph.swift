@@ -34,7 +34,9 @@ import Foundation
 /// the core alone: a service's executable imports `StoicXPC` and nothing
 /// that brings the Keychain or background tasks (design/25). Time sits on the
 /// core, whose `Moment` it extends, and on schemas, for its text forms'
-/// leaves (design/26).
+/// leaves (design/26). App Attest on the device meets StoicApple's key and
+/// StoicHTTP's client in `StoicAttestedHTTP`, the one place they meet, as
+/// sealing and the Keychain do in `StoicSealedKeychain` (design/29).
 let layering: [String: Set<String>] = [
     "Stoic": [],
     "StoicJSON": [],
@@ -53,6 +55,7 @@ let layering: [String: Set<String>] = [
     "StoicAppKit": ["Stoic"],
     "StoicUIKit": ["Stoic"],
     "StoicXPC": ["Stoic"],
+    "StoicAttestedHTTP": ["Stoic", "StoicApple", "StoicHTTP", "StoicJSON"],
     "StoicTime": ["Stoic", "StoicSchema"],
     "StoicMacros": ["StoicSchema", "StoicMacrosPlugin"],
     "StoicMacrosPlugin": [],
