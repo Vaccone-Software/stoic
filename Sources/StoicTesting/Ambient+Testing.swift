@@ -3,9 +3,15 @@ internal import Synchronization
 internal import Testing
 
 /// Runs `operation` with a fully controlled ambient context: the given clock
-/// for both deadlines and liveness, a seeded random source, recorded
-/// instrumentation, and fresh retry budgets and backend states, so no other
-/// test's retries or breakers can change what this one sees.
+/// for both deadlines and liveness, a wall clock that follows it, a seeded
+/// random source, recorded instrumentation, and fresh retry budgets and
+/// backend states, so no other test's retries or breakers can change what
+/// this one sees.
+///
+/// The wall clock (`Moment.now`) starts at ``TestClock/wallClockStart``,
+/// 2026-01-01T00:00:00Z, and moves with the clock: a ``TestClock``'s own
+/// ``TestClock/wallClock``, which a test can also jump alone; for any other
+/// clock, the start plus the time that clock has moved since the call.
 ///
 /// The events that report a bug in the code under test rather than a fault
 /// of a dependency — a keyed operation that sends no key
@@ -27,20 +33,37 @@ public nonisolated(nonsending) func withTestAmbient<C: Clock<Duration>, R, Failu
     operation: nonisolated(nonsending) () async throws(Failure) -> R
 ) async throws(Failure) -> R {
     let erased: AnyClock
+    let wallClock: WallClock
     switch clock {
-    case let test as TestClock: erased = test.erased
-    case let immediate as ImmediateClock: erased = immediate.erased
-    default: erased = AnyClock(clock)
+    case let test as TestClock:
+        erased = test.erased
+        wallClock = test.wallClock
+    case let immediate as ImmediateClock:
+        erased = immediate.erased
+        wallClock = .following(erased)
+    default:
+        erased = AnyClock(clock)
+        wallClock = .following(erased)
     }
     return try await withAmbient({ ambient in
         ambient.clock = erased
         ambient.livenessClock = erased
+        ambient.wallClock = wallClock
         ambient.random = .seeded(seed)
         ambient.instrumentation = FailingOnBugs(events)
         ambient.budgets = RetryBudgets()
         ambient.backends = BackendRegistry()
         ambient.ledgerTag = LedgerTags.next()
     }, operation: operation)
+}
+
+extension WallClock {
+    /// A wall clock at ``TestClock/wallClockStart`` that moves as `clock`
+    /// does from now on.
+    static func following(_ clock: AnyClock) -> WallClock {
+        let origin = clock.now
+        return WallClock { TestClock.wallClockStart + origin.duration(to: clock.now) }
+    }
 }
 
 /// Passes every event to the test's recorder, and records a test issue for

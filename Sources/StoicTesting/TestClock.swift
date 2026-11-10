@@ -14,6 +14,12 @@ public import Testing
 /// suspension. When a test needs to know that woken work has gone back to
 /// sleep, it waits for that explicitly with ``waitForSleepers(count:timeout:sourceLocation:)``,
 /// which is exact, rather than relying on yields, which are not.
+///
+/// It also keeps a wall clock (``wallClock``), which ``withTestAmbient(clock:seed:events:operation:)``
+/// installs, so `Moment.now` in the code under test is virtual too. It
+/// starts at ``wallClockStart`` and moves with ``advance(by:)``; a test that
+/// plays a person setting the clock moves it alone with
+/// ``jumpWallClock(by:)``, and deadlines and sleeps do not notice.
 public final class TestClock: Clock, Sendable {
     public typealias Duration = Swift.Duration
 
@@ -73,6 +79,10 @@ public final class TestClock: Clock, Sendable {
 
     private struct State {
         var now: Swift.Duration = .zero
+        // How far the wall clock has been jumped away from `now`, by
+        // `jumpWallClock`: a person setting the clock, which moves moments
+        // and nothing that measures.
+        var wallClockJump: Swift.Duration = .zero
         var nextID: UInt64 = 0
         // By id, with a heap of (deadline, id) beside it: the earliest is
         // found in O(log n), not by scanning every sleeper. A cancelled
@@ -162,7 +172,58 @@ public final class TestClock: Clock, Sendable {
         observer.withLock { $0 = handler }
     }
 
-    public init() {}
+    private let wallClockOrigin: Moment
+
+    /// A clock at zero whose wall clock reads ``wallClockStart``.
+    public init() {
+        wallClockOrigin = Self.wallClockStart
+    }
+
+    /// A clock at zero whose wall clock reads `wallClockStart`: for a test
+    /// about a particular day.
+    public init(wallClockStart: Moment) {
+        wallClockOrigin = wallClockStart
+    }
+
+    /// Where a test's wall clock starts, unless the test says otherwise:
+    /// 2026-01-01T00:00:00Z, a Thursday.
+    ///
+    /// Fixed, so a test that reads the time reads the same time on every run
+    /// and on every machine, whatever today is.
+    public static let wallClockStart = Moment(sinceEpoch: .seconds(1_767_225_600))
+
+    /// The wall clock that goes with this clock: ``Moment/now`` under
+    /// ``withTestAmbient(clock:seed:events:operation:)``.
+    ///
+    /// It reads the start moment, plus the virtual time since the clock was
+    /// made, plus every ``jumpWallClock(by:)``. So ``advance(by:)`` moves
+    /// both clocks together, as the passing of time does, and a jump moves
+    /// only this one, as a person changing the clock does.
+    public var wallClock: WallClock {
+        WallClock { [self] in self.wallClockNow }
+    }
+
+    /// What ``wallClock`` reads now.
+    public var wallClockNow: Moment {
+        let (now, jump) = state.withLock { ($0.now, $0.wallClockJump) }
+        return wallClockOrigin + now + jump
+    }
+
+    /// Moves the wall clock alone by `duration`, back when it is negative:
+    /// a person setting the clock, or the network correcting it.
+    ///
+    /// Nothing asleep on this clock wakes, and no deadline moves: they are
+    /// measured on the monotonic clock, which a wall-clock change does not
+    /// touch. Only `Moment.now` jumps.
+    public func jumpWallClock(by duration: Swift.Duration) {
+        state.withLock { $0.wallClockJump += duration }
+    }
+
+    /// Sets the wall clock alone to `moment`, as ``jumpWallClock(by:)`` does.
+    public func jumpWallClock(to moment: Moment) {
+        let origin = wallClockOrigin
+        state.withLock { $0.wallClockJump = origin.duration(to: moment) - $0.now }
+    }
 
     /// This clock, erased, for `Ambient` or any `clock:` parameter.
     ///

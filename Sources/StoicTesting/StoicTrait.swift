@@ -13,7 +13,9 @@ public import Testing
 ///
 /// The seed appears in the test's traits, so a failure names the run that
 /// reproduces it. The clock is left as it is: give time-sensitive code a
-/// ``TestClock`` explicitly, where the test can drive it.
+/// ``TestClock`` explicitly, where the test can drive it. The wall clock
+/// stands still at ``TestClock/wallClockStart``, so `Moment.now` is the
+/// same on every run and no test reads today's date.
 public struct StoicTrait: TestTrait, SuiteTrait, TestScoping {
     public let seed: UInt64
 
@@ -31,6 +33,7 @@ public struct StoicTrait: TestTrait, SuiteTrait, TestScoping {
         try await StoicTest.$current.withValue(StoicTest(seed: seed, events: events)) {
             try await withAmbient({ ambient in
                 ambient.random = .seeded(seed)
+                ambient.wallClock = .fixed(TestClock.wallClockStart)
                 ambient.instrumentation = events
                 ambient.budgets = RetryBudgets()
                 ambient.backends = BackendRegistry()

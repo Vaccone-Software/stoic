@@ -536,6 +536,7 @@ final class Simulation<R: Sendable>: Sendable {
         let context = SimulationContext(seed: seed, clock: clock, events: events)
         let body = body
         let erased = clock.erased
+        let wallClock = clock.wallClock
         let executor = executor
         let seed = seed
         let tag = tag
@@ -543,6 +544,7 @@ final class Simulation<R: Sendable>: Sendable {
             let outcome: Result<R, any Error> = await withAmbient({ ambient in
                 ambient.clock = erased
                 ambient.livenessClock = erased
+                ambient.wallClock = wallClock
                 ambient.random = .seeded(seed)
                 ambient.instrumentation = context.events
                 ambient.budgets = RetryBudgets()

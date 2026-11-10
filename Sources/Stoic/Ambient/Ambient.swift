@@ -20,6 +20,12 @@ public struct Ambient: Sendable {
     /// Suspending by default: a process that was asleep was not hung.
     public var livenessClock: AnyClock
 
+    /// The clock that says what time it is, which ``Moment/now`` reads.
+    ///
+    /// The system's real-time clock by default. Never used to measure: it
+    /// can jump, and the two clocks above cannot (design/26).
+    public var wallClock: WallClock = .system
+
     /// The source of jitter and every other random choice.
     public var random: RandomSource
 
@@ -122,7 +128,7 @@ public func withAmbient<R, Failure: Error>(
 
 extension TaskLocal {
     /// `withValue`, with the operation's error type preserved.
-    func withValueTyped<R, Failure: Error>(
+    package func withValueTyped<R, Failure: Error>(
         _ value: Value,
         operation: () throws(Failure) -> R
     ) throws(Failure) -> R {
@@ -137,7 +143,7 @@ extension TaskLocal {
     }
 
     /// `withValue`, with the operation's error type preserved.
-    nonisolated(nonsending) func withValueTyped<R, Failure: Error>(
+    package nonisolated(nonsending) func withValueTyped<R, Failure: Error>(
         _ value: Value,
         operation: nonisolated(nonsending) () async throws(Failure) -> R
     ) async throws(Failure) -> R {
