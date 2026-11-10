@@ -58,6 +58,18 @@ extension Presenter {
     ///
     ///     withAmbient({ $0.presenter = .foundation }) { … }
     public static let foundation: Presenter = Presenter.standard
+        // Asked last. Foundation can hold any of the three as its `NSError`,
+        // and off Apple platforms a cast from that to the Swift type finds
+        // nothing, so the typed rules below never see it: the `NSError` is
+        // asked for its Swift value, as retry classification asks it.
+        .adding(NSError.self) { error in
+            switch error.domain {
+            case NSURLErrorDomain: FoundationPresentation.urlError(URLError(_nsError: error).code)
+            case NSPOSIXErrorDomain: FoundationPresentation.posixError(POSIXError(_nsError: error).code)
+            case NSCocoaErrorDomain: FoundationPresentation.cocoaError(CocoaError(_nsError: error).code)
+            default: nil
+            }
+        }
         .adding(URLError.self, wordings: [StoicWording.offline, StoicWording.slow, StoicWording.unreachable]) {
             FoundationPresentation.urlError($0.code)
         }
