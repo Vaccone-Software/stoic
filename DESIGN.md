@@ -139,12 +139,13 @@ fetches no other package at all.
 
 ```text
  portable ─────────────────────────────────────────────────────────────────────
-   Stoic ············ the kernel: Ambient · Deadline · Schedule · Retry ·
-   (stdlib, Sync.)    Operations · Concurrency · Scope · Policies ·
+   Stoic ············ the kernel: Ambient · Deadline · Moment · Schedule ·
+   (stdlib, Sync.)    Retry · Operations · Concurrency · Scope · Policies ·
                       StateMachine · ServiceGraph · Supervisor · Report ·
                       Instrumentation
    StoicJSON ········ strict JSON, the trust boundary (stdlib only)
      StoicSchema ···· one declaration per type        ← StoicJSON
+       StoicTime ···· dates, times, zones and their rules ← Stoic, StoicSchema
    StoicTesting ····· clocks, seeds, faults, simulation ← Stoic
    StoicFoundation ·· Foundation's errors classified  ← Stoic
    StoicStore ······· atomic files, journal, outbox   ← Stoic
@@ -165,10 +166,11 @@ fetches no other package at all.
 
 | Product              | Contents                                                                       | Depends on                         |
 | -------------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
-| `Stoic`              | Every runtime primitive                                                        | stdlib, `Synchronization`, `os`    |
+| `Stoic`              | Every runtime primitive, and `Moment` with the ambient wall clock              | stdlib, `Synchronization`, `os`, the C library's real-time clock |
 | `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation     | `Stoic`, Swift Testing             |
 | `StoicJSON`          | Strict JSON: duplicate keys, exact numbers, positions                          | stdlib                             |
 | `StoicSchema`        | Decode, encode, validate, JSON Schema, migrations, generators                 | `StoicJSON`                        |
+| `StoicTime`          | Plain dates and times, zoned date-times kept as local time + zone, periods, zone rules (system or scripted), the rules sweep | `Stoic`, `StoicSchema`; Foundation for the system's zone rules |
 | `StoicFoundation`    | `URLError`, `POSIXError`, `CocoaError` classified for retry                    | `Stoic`, Foundation                |
 | `StoicStore`         | Atomic files, journal, outbox, launch guard, flight recorder                   | `Stoic`                            |
 | `StoicSettings`      | Schema-declared settings in an atomic file                                     | `Stoic`, `StoicStore`, `StoicSchema` |
@@ -230,6 +232,7 @@ live in one task-local value.
 public struct Ambient: Sendable {
     public var clock: AnyClock                  // default: ContinuousClock
     public var livenessClock: AnyClock          // default: SuspendingClock
+    public var wallClock: WallClock             // default: the system's real-time clock (Moment.now)
     public var random: RandomSource             // default: system generator
     public var instrumentation: any Instrumentation  // default: OSLog sink
 
@@ -379,6 +382,7 @@ incident review is the wrong default.
 | 23  | [Downloads](design/23-downloads.md) | a download that restarts at zero, a partial file spliced onto a changed file, a digest in a second pass, half a model on disk | Built: `StoicDownloads` behind the `Crypto` trait |
 | 24  | [Sealed storage](design/24-sealed-storage.md) | private files in backups and synced folders, keys written beside their data, "decryption failed" for a tampered file, a lost key and a plaintext file alike | Built: `StoicSealed` behind the `Crypto` trait |
 | 25  | [XPC services](design/25-xpc.md) | a request sent to a service that is exiting, a loss handled twice, a hang on a wedged helper, an app talking to a service of another build | Built: `StoicXPC` (macOS) |
+| 26  | [Time](design/26-time.md) | `Date()` read in the middle of a test, a birthday shown a day early, an event with no zone, a future meeting stored in UTC an hour wrong after a rule change | Built: `Moment` and the ambient wall clock (kernel), `StoicTime`, `stoic.wall-clock-read` |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical

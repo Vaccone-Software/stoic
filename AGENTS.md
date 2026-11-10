@@ -26,6 +26,7 @@ Short on purpose: each rule is one you can check.
 | private data in a plain file, or a key beside it           | `SealedFile` / `SealedJournal`, the key in a `Keyring` kept in custody (trait `Crypto`, design/24) |
 | ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`      |
 | `NSXPCConnection` with handlers, a continuation and an epoch | `XPCPeer` + `XPCMethod`, and `XPCHost` in the service (design/25) |
+| `Date()` / a date string / a UTC-stored future event        | `Moment.now` for when it happened; `PlainDate` for a day; `ZonedDateTime` (local time + zone) for a planned one, refreshed by `ZoneRulesSweep` (design/26) |
 
 ### Rules
 
@@ -55,7 +56,9 @@ Sendable`, `nonisolated(unsafe)`, `try!`, `@preconcurrency`. With the
    `StoicLint` plugin each fails the build unless the reason is
    written as `// stoic:allow(<rule>): <why>` on that line or the one above
    (`design/13`).
-9. **Test on virtual time.** `TestClock` for anything that races time,
+9. **Test on virtual time.** `TestClock` for anything that races time (and
+   for "now": `Moment.now` is its wall clock; `jumpWallClock` plays a person
+   setting the clock), `ScriptedZoneRules` for zones,
    `ImmediateClock` only for recording delays (its timers fire at once),
    `FaultInjector` for failures, `@Test(.stoic(seed:))` for isolation.
    Wait with `clock.waitForSleepers(count:)`, never with real sleeps.
