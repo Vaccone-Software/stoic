@@ -5,6 +5,12 @@ internal import Glibc
 #elseif canImport(Musl)
 internal import Musl
 #endif
+#if !canImport(Darwin) && canImport(SwiftOverlayShims)
+// Off Apple platforms the toolchain can attribute `timespec` to the standard
+// library's own shim module, when the kernel's other imports load it before
+// the C library's; member visibility then asks for it by name here.
+internal import SwiftOverlayShims
+#endif
 
 /// The clock that says when: what time it is on the world's timeline, as a
 /// ``Moment``.

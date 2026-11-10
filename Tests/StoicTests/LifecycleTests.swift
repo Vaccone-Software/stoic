@@ -552,6 +552,9 @@ struct LifecycleTests {
         #expect(throws: HistoryGap(.broken(1))) {
             try LifecycleHistory.verify(first.entries + fromElsewhere.entries.map { Waiver.Entry.reNumbered($0, 1) }, of: final)
         }
+        #expect(throws: HistoryGap(.backwards(1))) {
+            try LifecycleHistory.verify(first.entries + change.entries.map { Waiver.Entry.reDated($0, wallStart - day) }, of: final)
+        }
     }
 
     // MARK: Queries and coding
@@ -613,6 +616,15 @@ struct LifecycleTests {
 
 extension LifecycleEntry {
     /// `entry` with another sequence: for a test that builds a broken history.
+    /// The entry as if it had been written at another moment: what a store
+    /// that let history's moments go backwards would hold.
+    static func reDated(_ entry: Self, _ at: Moment) -> Self {
+        var object = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(entry))) as? [String: Any] ?? [:]
+        object["at"] = at.rfc3339
+        let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+        do { return try JSONDecoder().decode(Self.self, from: data) } catch { preconditionFailure("\(error)") }
+    }
+
     static func reNumbered(_ entry: Self, _ sequence: UInt64) -> Self {
         let encoder = JSONEncoder()
         var object = (try? JSONSerialization.jsonObject(with: encoder.encode(entry))) as? [String: Any] ?? [:]
