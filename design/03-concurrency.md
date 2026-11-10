@@ -138,6 +138,19 @@ the elements it never started, which is what `.rejected` says. The earlier
 design threw `CancellationError` when `Failure` could hold one and otherwise
 returned the leading results, a shorter array that an index lookup trips on.
 
+**mapConcurrentResults** is the settled fan-out. It takes the same limit,
+starts elements in the same order, and returns every element's outcome in
+input order, `.success` or `.failure`. A failure cancels no sibling and is
+not reported in `map.failed`: the caller holds every failure, so none is
+lost and there is nothing to report. Cancellation is `mapConcurrent`'s. A
+cancelled caller starts no further element, and the running ones are
+cancelled and awaited. If that left an element without an outcome, it
+throws the `Rejection` (`.cancelled`, or `.deadlineExceeded` for an
+enclosing deadline) rather than return a shorter array. The outcomes of
+elements that had finished are not returned then. Work whose completion
+must be known after a cancellation is not a fan-out's to record: send the
+emails as lifecycle effects (design/27), and let the outbox know.
+
 **Child-task closures are `@concurrent`.** They run concurrently by design;
 the explicit attribute keeps that true under `NonisolatedNonsendingByDefault`.
 
@@ -211,6 +224,10 @@ that keeps the promise, and the lint rule against
 | `mapConcurrent` caller is cancelled                                   | No further element starts; children cancelled and awaited; `.rejected(.cancelled)` if an element has no result; no `map.failed`, no `siblingFailed`                                                              |
 | `mapConcurrent` with a typed failure is cancelled midway              | `.rejected(.cancelled)`, as for any `Failure`; never an array shorter than the input                                                                                                                             |
 | `mapConcurrent` siblings fail while the first failure winds them down | The first is thrown as `.failed`; `map.failed` carries it and every other failure that was not a cancellation                                                                                                    |
+| a `mapConcurrentResults` element fails                                | Its outcome is `.failure`; the others run on, none cancelled; no `map.failed`                                                                                                                                    |
+| every `mapConcurrentResults` element fails                            | Every outcome is `.failure`, in input order; nothing thrown                                                                                                                                                      |
+| a `mapConcurrentResults` caller is cancelled midway                   | No further element starts; the running ones are cancelled and awaited; the `Rejection` is thrown; finished outcomes are not returned                                                                             |
+| a `mapConcurrentResults` caller is cancelled after every element finished | Every outcome is returned                                                                                                                                                                                    |
 | a semaphore waiter is cancelled while queued                          | Removed from the queue; no permit consumed; `.rejected(.cancelled)` (`isCancellation`; see Cancellation of the caller)                                                                                           |
 | a semaphore waiter's deadline passes while queued                     | Removed; `.rejected(.deadlineExceeded)`                                                                                                                                                                          |
 | a permit frees while a waiter is on its way to the queue              | The waiter keeps its place: the permit is kept for it, and a newcomer queues behind it                                                                                                                           |

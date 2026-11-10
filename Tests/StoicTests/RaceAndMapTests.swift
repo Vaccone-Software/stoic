@@ -190,6 +190,64 @@ struct RaceAndMapTests {
         #expect(others.contains { $0.hasSuffix("boom(1)") } && others.contains { $0.hasSuffix("boom(2)") })
     }
 
+    @Test(.stoic(seed: 31), .failureMode("design/03", "a `mapConcurrentResults` element fails"))
+    func aSettledFanOutsFailureCancelsNoSiblingAndIsNotReported() async throws {
+        let failed = AsyncGate()
+        let cancelledSiblings = SendableBox(0)
+        let results = try await mapConcurrentResults(Array(0..<6), limit: 3) { (value: Int) async throws(Failure) -> Int in
+            if value == 0 {
+                failed.open()
+                throw .boom(0)
+            }
+            // Every other element waits until the first has failed, then
+            // sees whether that cancelled it.
+            await failed.wait()
+            if Task.isCancelled { cancelledSiblings.mutate { $0 += 1 } }
+            return value
+        }
+        #expect(results.map { (try? $0.get()) ?? -1 } == [-1, 1, 2, 3, 4, 5])
+        #expect(cancelledSiblings.value == 0, "none cancelled")
+        #expect(StoicTest.events.events(named: "map.failed").isEmpty)
+    }
+
+    @Test(.failureMode("design/03", "every `mapConcurrentResults` element fails"))
+    func aSettledFanOutWhoseEveryElementFailsThrowsNothing() async throws {
+        let results = try await mapConcurrentResults(Array(0..<5), limit: 2) { (value: Int) async throws(Failure) -> Int in
+            throw .boom(value)
+        }
+        let failures = results.map { result -> Failure? in
+            if case .failure(let failure) = result { return failure }
+            return nil
+        }
+        #expect(failures == (0..<5).map { .boom($0) })
+    }
+
+    /// The caller is cancelled as the last element returns: every element
+    /// has an outcome, and all of them are returned.
+    @Test(.failureMode("design/03", "a `mapConcurrentResults` caller is cancelled after every element finished"))
+    func aSettledFanOutCancelledAfterEveryElementFinishedReturnsThemAll() async throws {
+        let caller = SendableBox<Task<[Result<Int, Failure>], any Error>?>(nil)
+        let ready = AsyncGate()
+        let finished = SendableBox(0)
+        let othersDone = AsyncGate()
+        let task = Task {
+            await ready.wait()
+            return try await mapConcurrentResults(Array(0..<3), limit: 3) { (value: Int) async throws(Failure) -> Int in
+                if value < 2 {
+                    if finished.mutate({ $0 += 1; return $0 }) == 2 { othersDone.open() }
+                    return value
+                }
+                await othersDone.wait()
+                caller.value?.cancel()
+                return value
+            }
+        }
+        caller.mutate { $0 = task }
+        ready.open()
+        let results = try await task.value
+        #expect(results.map { try? $0.get() } == [0, 1, 2])
+    }
+
     @Test func mapConcurrentResultsReportsEveryOutcome() async throws {
         let results = try await mapConcurrentResults(Array(0..<10), limit: 3) { (value: Int) async throws(Failure) -> Int in
             if value.isMultiple(of: 3) { throw .boom(value) }
@@ -316,8 +374,10 @@ struct RaceAndMapTests {
         #expect(try await task.value.get() == [0, 1, 2, 3, 4])
     }
 
-    @Test func mapConcurrentResultsAlsoStopsForACancelledCaller() async {
+    @Test(.failureMode("design/03", "a `mapConcurrentResults` caller is cancelled midway"))
+    func mapConcurrentResultsAlsoStopsForACancelledCaller() async {
         let started = SendableBox(0)
+        let sawCancellation = SendableBox(0)
         let entered = AsyncGate()
         let release = AsyncGate()
         let task = Task {
@@ -325,6 +385,7 @@ struct RaceAndMapTests {
                 try await mapConcurrentResults(Array(0..<100), limit: 3) { (value: Int) async throws(Failure) -> Int in
                     if started.mutate({ $0 += 1; return $0 }) == 3 { entered.open() }
                     await release.wait()
+                    if Task.isCancelled { sawCancellation.mutate { $0 += 1 } }
                     return value
                 }
             }
@@ -334,7 +395,8 @@ struct RaceAndMapTests {
         release.open()
         let error = await task.value.error
         #expect(error?.reason == .cancelled, "previously returned the three outcomes that started")
-        #expect(started.value == 3)
+        #expect(started.value == 3, "no further element started")
+        #expect(sawCancellation.value == 3, "the running ones were cancelled, and awaited before the map threw")
     }
 
     @Test func mapConcurrentHandlesEmptyInput() async throws {
