@@ -21,7 +21,10 @@ public struct HTTPRetry: Sendable {
     /// - Every other 4xx is the request's fault: stop.
     /// - Other 5xx (501 Not Implemented, 505, …) will not change: stop.
     /// - Anything else is not a failure: stop (there is nothing to retry).
-    public static func decision(status: Int, retryAfter: String? = nil, now: Date = Date()) -> RetryDecision {
+    ///
+    /// An HTTP date is measured from `now`, the ambient wall clock's
+    /// `Moment.now` by default (the wait itself runs on the ambient clock).
+    public static func decision(status: Int, retryAfter: String? = nil, now: Moment = .now) -> RetryDecision {
         switch status {
         case 408, 425, 500, 502, 504:
             return .retry
@@ -35,16 +38,16 @@ public struct HTTPRetry: Sendable {
 
     /// Parses a `Retry-After` header: a number of seconds, or an HTTP date in
     /// any of the three formats RFC 9110 §5.6.7 requires a recipient to accept
-    /// (IMF-fixdate, obsolete RFC 850, and asctime). A date in the past is a
-    /// delay of zero; anything else unparseable is `nil`.
-    public static func retryAfterDelay(_ header: String?, now: Date = Date()) -> Duration? {
+    /// (IMF-fixdate, obsolete RFC 850, and asctime). A date is measured from
+    /// `now`, the ambient wall clock's `Moment.now` by default; one in the
+    /// past is a delay of zero. Anything else unparseable is `nil`.
+    public static func retryAfterDelay(_ header: String?, now: Moment = .now) -> Duration? {
         guard let header = header?.trimmingCharacters(in: .whitespaces), !header.isEmpty else { return nil }
         if let seconds = Int(header), seconds >= 0 {
             return .seconds(seconds)
         }
         guard let date = HTTPDate.parse(header, now: now) else { return nil }
-        let interval = max(0, date.timeIntervalSince(now))
-        return .milliseconds(Int64((interval * 1000).rounded()))
+        return max(.zero, now.duration(to: date))
     }
 }
 

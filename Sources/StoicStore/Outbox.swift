@@ -332,7 +332,7 @@ public actor Outbox<Item: Sendable> {
         }
         // Stamped only when the policy expires entries: an outbox that never
         // does writes the record format every earlier release reads.
-        let enqueuedAt = policy.expiry.map { Self.milliseconds($0.wallClock()) }
+        let enqueuedAt = policy.expiry.map { _ in Self.milliseconds(Moment.now.sinceEpoch) }
         let record = try Self.enqueueRecord(key: key, item: encoded, enqueuedAt: enqueuedAt)
         let sequence = try journal.append(record)
         pending.append(Stored(key: key, sequence: sequence, bytes: encoded, enqueuedAt: enqueuedAt))
@@ -474,7 +474,7 @@ public actor Outbox<Item: Sendable> {
         _ stored: Stored, using deliver: (Entry) async throws -> DeliveryResult
     ) async throws -> Settled {
         if let expiry = policy.expiry, let enqueuedAt = stored.enqueuedAt,
-            Self.isExpired(enqueuedAt: enqueuedAt, now: Self.milliseconds(expiry.wallClock()), maxAge: expiry.maxAge)
+            Self.isExpired(enqueuedAt: enqueuedAt, now: Self.milliseconds(Moment.now.sinceEpoch), maxAge: expiry.maxAge)
         {
             try acknowledge(stored.key)
             return .discarded(.expired, attempts: 0)

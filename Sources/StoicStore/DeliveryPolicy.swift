@@ -106,28 +106,19 @@ public struct DeliveryPolicy: Sendable {
     /// When an entry is too old to be worth sending.
     public struct Expiry: Sendable {
         /// An entry whose age is at least this when a run reaches it is
-        /// discarded (`.expired`), unsent. Age is measured on the wall clock,
-        /// from the moment it was enqueued, across launches.
+        /// discarded (`.expired`), unsent. Age is measured on the wall clock
+        /// (`Moment.now`, the ambient one, which a test sets), from the
+        /// moment it was enqueued, across launches.
         public var maxAge: Duration
 
-        /// The time now, as a duration since 1970-01-01 UTC. The system clock
-        /// by default; a test passes its own.
-        public var wallClock: @Sendable () -> Duration
-
-        /// - Parameters:
-        ///   - maxAge: How old an entry may be. A wall clock is set by the
-        ///     user and by time zones' neighbours, so this is for days, not
-        ///     seconds: a clock set forward expires entries early, and one set
-        ///     back, late.
-        ///   - wallClock: The time now; the system clock by default.
-        public init(maxAge: Duration, wallClock: @escaping @Sendable () -> Duration = Expiry.systemClock) {
+        /// - Parameter maxAge: How old an entry may be. A wall clock is set
+        ///   by the user and corrected by the network, so this is for days,
+        ///   not seconds: a clock set forward expires entries early, and one
+        ///   set back, late.
+        public init(maxAge: Duration) {
             precondition(maxAge > .zero, "an entry's lifetime must be positive")
             self.maxAge = maxAge
-            self.wallClock = wallClock
         }
-
-        /// The system's wall clock.
-        public static let systemClock: @Sendable () -> Duration = { .nanoseconds(WallClock.now()) }
     }
 
     /// The attempts each entry gets per run, and the waits between them.

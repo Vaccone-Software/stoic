@@ -28,7 +28,7 @@ final class ExpiringOnCompletion: BackgroundTaskHandle {
 @Suite("Background jobs")
 struct BackgroundJobTests {
     static let id = "com.example.sync"
-    static let epoch = Date(timeIntervalSince1970: 1_000)
+    static let epoch = Moment(sinceEpoch: .seconds(1_000))
 
     static func job(
         _ scheduler: FakeBackgroundScheduler,
@@ -36,8 +36,7 @@ struct BackgroundJobTests {
         work: @escaping @Sendable () async throws -> Void
     ) -> BackgroundJob {
         BackgroundJob(
-            identifier: id, every: .seconds(900), budget: budget, scheduler: scheduler,
-            now: { epoch }, work: work)
+            identifier: id, every: .seconds(900), budget: budget, scheduler: scheduler, work: work)
     }
 
     @Test(.failureMode("design/21", "the work returns"))
@@ -46,12 +45,13 @@ struct BackgroundJobTests {
         let submittedBeforeWork = SendableBox(-1)
         let job = Self.job(scheduler) { submittedBeforeWork.mutate { $0 = scheduler.requests.count } }
         let task = FakeBackgroundTask(identifier: Self.id)
-        let report = await job.run(task)
+        // The next run is asked for 900 s from the ambient wall clock's now.
+        let report = await withAmbient({ $0.wallClock = .fixed(Self.epoch) }) { await job.run(task) }
         #expect(task.completions == [true])
         #expect(report.reportedSuccess && !report.expired)
         #expect(submittedBeforeWork.value == 1)
         #expect(scheduler.requests == [
-            BackgroundTaskRequest(identifier: Self.id, kind: .appRefresh, earliestBeginDate: Self.epoch.addingTimeInterval(900))
+            BackgroundTaskRequest(identifier: Self.id, kind: .appRefresh, earliestBeginDate: Date(timeIntervalSince1970: 1_900))
         ])
     }
 
@@ -226,7 +226,7 @@ struct BackgroundJobTests {
         let ran = SendableBox(false)
         let (reports, continuation) = AsyncStream.makeStream(of: BackgroundRunReport.self)
         let job = BackgroundJob(
-            identifier: Self.id, every: .seconds(60), scheduler: scheduler, now: { Self.epoch },
+            identifier: Self.id, every: .seconds(60), scheduler: scheduler,
             onReport: { continuation.yield($0) }
         ) { ran.mutate { $0 = true } }
         try job.register()
@@ -244,7 +244,7 @@ struct BackgroundJobTests {
         let scheduler = FakeBackgroundScheduler()
         let (reports, continuation) = AsyncStream.makeStream(of: BackgroundRunReport.self)
         let job = BackgroundJob(
-            identifier: Self.id, every: .seconds(60), scheduler: scheduler, now: { Self.epoch },
+            identifier: Self.id, every: .seconds(60), scheduler: scheduler,
             onReport: { continuation.yield($0) }, work: {})
         try job.register()
         let task = try #require(scheduler.launch(Self.id))
@@ -257,7 +257,7 @@ struct BackgroundJobTests {
         let scheduler = FakeBackgroundScheduler()
         let drained = SendableBox(0)
         let job = BackgroundJob.drainingOutbox(
-            identifier: Self.id, every: .seconds(600), scheduler: scheduler, now: { Self.epoch }
+            identifier: Self.id, every: .seconds(600), scheduler: scheduler
         ) { drained.mutate { $0 += 1 } }
         let task = FakeBackgroundTask(identifier: Self.id)
         await job.run(task)

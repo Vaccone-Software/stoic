@@ -1,4 +1,3 @@
-public import Foundation
 public import Stoic
 public import StoicSchema
 internal import StoicJSON
@@ -161,11 +160,6 @@ public struct HTTPPolicy: Sendable {
     /// case-insensitive. Default: none.
     public var ignoreHeadersForCoalescing: [String]
 
-    /// The current wall-clock time, used only to turn an HTTP-date
-    /// `Retry-After` into a wait. (The wait itself runs on the ambient
-    /// clock.) Tests pin it.
-    public var wallClock: @Sendable () -> Date
-
     public init(
         attemptTimeout: Duration = .seconds(10),
         schedule: BoundedSchedule = HTTPPolicy.standardSchedule,
@@ -182,8 +176,7 @@ public struct HTTPPolicy: Sendable {
         decodeOptions: DecodeOptions? = nil,
         coalesceGETs: Bool = true,
         ignoreHeadersForCoalescing: [String] = [],
-        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil,
-        wallClock: @escaping @Sendable () -> Date = { Date() }
+        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil
     ) {
         precondition(attemptTimeout > .zero, "an attempt needs a positive timeout")
         precondition(maxResponseBytes >= 0 && errorExcerptBytes >= 0, "byte limits cannot be negative")
@@ -206,7 +199,6 @@ public struct HTTPPolicy: Sendable {
         self.coalesceGETs = coalesceGETs
         self.ignoreHeadersForCoalescing = ignoreHeadersForCoalescing
         self.retryOnResponse = retryOnResponse
-        self.wallClock = wallClock
     }
 
     /// The defaults described on each field: 10 s per attempt; 3 attempts

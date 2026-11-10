@@ -187,28 +187,35 @@ struct OutboxDeliveryTests {
 
     // MARK: Expiry
 
-    /// A wall clock the test sets.
-    func expiring(_ now: SendableBox<Duration>, maxAge: Duration = .seconds(3600)) -> DeliveryPolicy {
-        DeliveryPolicy(
-            schedule: .immediate.attempts(1), expiry: .init(maxAge: maxAge, wallClock: { now.value }))
+    /// One attempt, and entries an hour old expire.
+    func expiring(maxAge: Duration = .seconds(3600)) -> DeliveryPolicy {
+        DeliveryPolicy(schedule: .immediate.attempts(1), expiry: .init(maxAge: maxAge))
     }
 
-    static let epoch = Duration.seconds(1_800_000_000)
+    static let epoch = Moment(sinceEpoch: .seconds(1_800_000_000))
+
+    /// Runs `body` with the ambient wall clock on a test clock that starts at
+    /// ``epoch``: the outbox stamps and ages entries by `Moment.now`. Time
+    /// passing is `advance`; a person setting the clock is `jumpWallClock`.
+    func onWallClock<R>(_ body: (TestClock) async throws -> R) async throws -> R {
+        let clock = TestClock(wallClockStart: Self.epoch)
+        return try await withTestAmbient(clock: clock) { () async throws -> R in try await body(clock) }
+    }
 
     @Test(.failureMode("design/15", "an entry is older than the policy's expiry when a run reaches it"))
     func anEntryOlderThanTheExpiryIsDiscardedUnsent() async throws {
-        let now = SendableBox(Self.epoch)
-        let outbox = try open(try disk(), policy: expiring(now))
-        let old = try await outbox.enqueue("old")
-        now.mutate { $0 += .seconds(1800) }
-        let young = try await outbox.enqueue("young")
-        now.mutate { $0 += .seconds(1900) }   // old is 3700 s old, young 1900 s
         let seen = SendableBox<[String]>([])
-        let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { entry in
+        let (old, young, report) = try await onWallClock { clock in
+            let outbox = try open(try disk(), policy: expiring())
+            let old = try await outbox.enqueue("old")
+            await clock.advance(by: .seconds(1800))
+            let young = try await outbox.enqueue("young")
+            await clock.advance(by: .seconds(1900))   // old is 3700 s old, young 1900 s
+            let report = try await outbox.deliverPending { entry in
                 seen.mutate { $0.append(entry.item) }
                 return .delivered
             }
+            return (old, young, report)
         }
         #expect(seen.value == ["young"], "an expired entry is never sent")
         #expect(report.discarded.map(\.key) == [old])
@@ -228,12 +235,11 @@ struct OutboxDeliveryTests {
 
     @Test(.failureMode("design/15", "the wall clock is behind an entry's enqueue time"))
     func anEntryEnqueuedInTheFutureByAClockThatMovedBackIsNotExpired() async throws {
-        let now = SendableBox(Self.epoch)
-        let outbox = try open(try disk(), policy: expiring(now))
-        let key = try await outbox.enqueue("a")
-        now.mutate { $0 -= .seconds(86_400) }   // the user set the clock back a day
-        let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { _ in .delivered }
+        let (key, report) = try await onWallClock { clock in
+            let outbox = try open(try disk(), policy: expiring())
+            let key = try await outbox.enqueue("a")
+            clock.jumpWallClock(by: .seconds(-86_400))   // the user set the clock back a day
+            return (key, try await outbox.deliverPending { _ in .delivered })
         }
         #expect(report.delivered == [key] && report.discarded.isEmpty)
     }
@@ -241,14 +247,13 @@ struct OutboxDeliveryTests {
     @Test(.failureMode("design/15", "an expiring outbox is relaunched or compacted"))
     func theTimeAnEntryWasEnqueuedSurvivesARelaunch() async throws {
         let disk = try disk()
-        let now = SendableBox(Self.epoch)
-        var outbox = try open(disk, policy: expiring(now))
-        let key = try await outbox.enqueue("a")
-        try await outbox.close()
-        now.mutate { $0 += .seconds(2 * 3600) }
-        outbox = try open(disk, policy: expiring(now))
-        let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { _ in .delivered }
+        let (key, report) = try await onWallClock { clock in
+            var outbox = try open(disk, policy: expiring())
+            let key = try await outbox.enqueue("a")
+            try await outbox.close()
+            await clock.advance(by: .seconds(2 * 3600))
+            outbox = try open(disk, policy: expiring())
+            return (key, try await outbox.deliverPending { _ in .delivered })
         }
         #expect(report.discarded.map(\.key) == [key])
         #expect(report.discarded.first?.reason == .expired)
@@ -257,20 +262,17 @@ struct OutboxDeliveryTests {
     @Test(.failureMode("design/15", "an expiring outbox is relaunched or compacted"))
     func theTimeAnEntryWasEnqueuedSurvivesACompaction() async throws {
         let disk = try disk()
-        let now = SendableBox(Self.epoch)
-        var outbox = try open(disk, policy: expiring(now), threshold: 1)
-        let key = try await outbox.enqueue("a")
-        // A run that fails folds the log into a snapshot (the threshold is one byte).
-        _ = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { _ in throw Unavailable() }
-        }
-        #expect(disk.contents(of: "/d/outbox.snapshot") != nil)
-        try await outbox.close()
-        // The enqueue now exists only in the snapshot.
-        now.mutate { $0 += .seconds(2 * 3600) }
-        outbox = try open(disk, policy: expiring(now))
-        let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { _ in .delivered }
+        let (key, report) = try await onWallClock { clock in
+            var outbox = try open(disk, policy: expiring(), threshold: 1)
+            let key = try await outbox.enqueue("a")
+            // A run that fails folds the log into a snapshot (the threshold is one byte).
+            _ = try await outbox.deliverPending { _ in throw Unavailable() }
+            #expect(disk.contents(of: "/d/outbox.snapshot") != nil)
+            try await outbox.close()
+            // The enqueue now exists only in the snapshot.
+            await clock.advance(by: .seconds(2 * 3600))
+            outbox = try open(disk, policy: expiring())
+            return (key, try await outbox.deliverPending { _ in .delivered })
         }
         #expect(report.discarded.map(\.key) == [key])
         #expect(report.discarded.first?.reason == .expired)
@@ -279,14 +281,13 @@ struct OutboxDeliveryTests {
     @Test(.failureMode("design/15", "an entry was enqueued with no expiry set"))
     func anEntryEnqueuedBeforeExpiryWasSetNeverExpires() async throws {
         let disk = try disk()
-        let now = SendableBox(Self.epoch)
-        var outbox = try open(disk)
-        let key = try await outbox.enqueue("old")
-        try await outbox.close()
-        now.mutate { $0 += .seconds(1000 * 3600) }
-        outbox = try open(disk, policy: expiring(now))
-        let report = try await withTestAmbient(clock: ImmediateClock()) {
-            try await outbox.deliverPending { _ in .delivered }
+        let (key, report) = try await onWallClock { clock in
+            var outbox = try open(disk)
+            let key = try await outbox.enqueue("old")
+            try await outbox.close()
+            await clock.advance(by: .seconds(1000 * 3600))
+            outbox = try open(disk, policy: expiring())
+            return (key, try await outbox.deliverPending { _ in .delivered })
         }
         #expect(report.delivered == [key] && report.discarded.isEmpty)
     }
@@ -314,7 +315,7 @@ struct OutboxDeliveryTests {
 
         // With expiry, the same entries carry the time.
         let stamped = try Outbox<String>.open(
-            at: "/d/stamped", codec: .utf8, fileSystem: disk, policy: expiring(SendableBox(Self.epoch)))
+            at: "/d/stamped", codec: .utf8, fileSystem: disk, policy: expiring())
         try await stamped.enqueue("c")
         let stampedJournal = try Journal.open(at: "/d/stamped", fileSystem: disk)
         #expect(try stampedJournal.replay().records.map { $0.bytes[0] } == [0x03])
@@ -529,16 +530,17 @@ struct OutboxDeliveryTests {
     }
 
     @Test func deliveringAnExpiredEntryDiscardsItAsARunWouldWithoutSendingIt() async throws {
-        let now = SendableBox(Self.epoch)
-        let outbox = try open(try disk(), policy: expiring(now))
-        let key = try await outbox.enqueue("old")
-        now.mutate { $0 += .seconds(7200) }
-        let outcome = try await outbox.deliver(key) { _ in
-            Issue.record("an expired entry was sent")
-            return .delivered
+        try await onWallClock { clock in
+            let outbox = try open(try disk(), policy: expiring())
+            let key = try await outbox.enqueue("old")
+            await clock.advance(by: .seconds(7200))
+            let outcome = try await outbox.deliver(key) { _ in
+                Issue.record("an expired entry was sent")
+                return .delivered
+            }
+            #expect(Self.kind(outcome) == "discarded:expired:expired")
+            #expect(await outbox.pendingCount == 0)
         }
-        #expect(Self.kind(outcome) == "discarded:expired:expired")
-        #expect(await outbox.pendingCount == 0)
     }
 
     @Test func deliveringAnUndecodableEntryFollowsTheUndecodablePolicy() async throws {

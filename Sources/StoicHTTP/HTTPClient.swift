@@ -709,7 +709,7 @@ public final class HTTPClient: Sendable {
                     result = .failure(.status(
                         code: response.status,
                         excerpt: String(decoding: response.body.prefix(policy.errorExcerptBytes), as: UTF8.self),
-                        retryAfter: HTTPRetry.retryAfterDelay(response.headers["Retry-After"], now: policy.wallClock()),
+                        retryAfter: HTTPRetry.retryAfterDelay(response.headers["Retry-After"]),
                         verdict: verdict
                     ))
                 }

@@ -10,7 +10,7 @@ struct HTTPStatusSemanticsTests {
         #expect(HTTPRetry.decision(status: 429, retryAfter: "7") == .retryAfter(.seconds(7)))
         #expect(HTTPRetry.decision(status: 404) == .stop)
         #expect(HTTPRetry.decision(status: 501) == .stop)
-        let now = Date(timeIntervalSince1970: 1_000_000)
+        let now = Moment(sinceEpoch: .seconds(1_000_000))
         let later = "Mon, 12 Jan 1970 13:47:00 GMT"   // 1_000_020
         #expect(HTTPRetry.retryAfterDelay(later, now: now) == .seconds(20))
         #expect(HTTPRetry.retryAfterDelay("soon") == nil)
@@ -23,13 +23,13 @@ struct HTTPStatusSemanticsTests {
         "Sun Nov  6 08:49:37 1994",
     ])
     func retryAfterAcceptsEveryHTTPDateFormat(_ header: String) {
-        let now = Date(timeIntervalSince1970: 784_111_777 - 90)   // 08:49:37 minus 90 seconds
+        let now = Moment(sinceEpoch: .seconds(784_111_777 - 90))   // 08:49:37 minus 90 seconds
         #expect(HTTPRetry.retryAfterDelay(header, now: now) == .seconds(90))
         #expect(HTTPRetry.decision(status: 503, retryAfter: header, now: now) == .retryAfter(.seconds(90)))
     }
 
     @Test func aDateInThePastIsNoDelayAndGarbageIsNone() {
-        let now = Date(timeIntervalSince1970: 784_111_777 + 3600)
+        let now = Moment(sinceEpoch: .seconds(784_111_777 + 3600))
         #expect(HTTPRetry.retryAfterDelay("Sun, 06 Nov 1994 08:49:37 GMT", now: now) == .zero)
         for bad in ["", "soon", "Sun, 31 Feb 1994 08:49:37 GMT", "Sun, 06 Nov 1994 25:49:37 GMT",
                     "Sun, 06 Nov 1994 08:49:37 PST", "Fri, 06 Nov 1994 08:49:37", "Sunday, 06-Nov-1994 08:49:37 GMT",
@@ -40,7 +40,7 @@ struct HTTPStatusSemanticsTests {
 
     @Test func aTwoDigitYearMoreThanFiftyYearsAheadMeansThePastCentury() {
         // RFC 9110: "Sunday, 06-Nov-94" read in 2026 is 1994, not 2094 (68 years ahead).
-        let now = Date(timeIntervalSince1970: 1_790_000_000)   // late 2026
+        let now = Moment(sinceEpoch: .seconds(1_790_000_000))   // late 2026
         let past = HTTPRetry.retryAfterDelay("Sunday, 06-Nov-94 08:49:37 GMT", now: now)
         #expect(past == .zero)
         // And "40" is within 50 years ahead, so it is 2040: a long delay.

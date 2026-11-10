@@ -1,12 +1,6 @@
 public import Stoic
 internal import Synchronization
 
-#if canImport(Darwin)
-internal import Darwin
-#elseif canImport(Glibc)
-internal import Glibc
-#endif
-
 /// Keeps the app's recent events in a file that survives the app, so the
 /// next launch can say what it was doing when it died.
 ///
@@ -67,7 +61,6 @@ public final class FlightRecorder: Instrumentation {
     private let path: String
     private let capacity: Int
     private let recordPrivateValues: Bool
-    private let wallClock: @Sendable () -> Int64
     private let writer: Mutex<Writer>
 
     /// Opens the recording at `path`, creating it if needed, and reads what
@@ -84,26 +77,12 @@ public final class FlightRecorder: Instrumentation {
     /// - Throws: ``StoreError`` if the file cannot be opened or allocated.
     ///   An existing file that is unreadable is not an error: it is started
     ///   over, and ``previousRun`` is `nil`.
-    public convenience init(
+    public init(
         path: String,
         capacity: Int = 1 << 20,
         minimumLevel: Event.Level = .info,
         recordPrivateValues: Bool = false,
         fileSystem: any FileSystem = PosixFileSystem()
-    ) throws(StoreError) {
-        try self.init(
-            path: path, capacity: capacity, minimumLevel: minimumLevel,
-            recordPrivateValues: recordPrivateValues, fileSystem: fileSystem, wallClock: WallClock.now
-        )
-    }
-
-    init(
-        path: String,
-        capacity: Int,
-        minimumLevel: Event.Level,
-        recordPrivateValues: Bool,
-        fileSystem: any FileSystem,
-        wallClock: @escaping @Sendable () -> Int64
     ) throws(StoreError) {
         precondition(capacity >= 4096 && capacity <= Int(UInt32.max), "FlightRecorder capacity must be between 4 KiB and 4 GiB")
         precondition(capacity % FlightFormat.alignment == 0, "FlightRecorder capacity must be a multiple of 8")
@@ -112,7 +91,6 @@ public final class FlightRecorder: Instrumentation {
         self.capacity = capacity
         self.minimumLevel = minimumLevel
         self.recordPrivateValues = recordPrivateValues
-        self.wallClock = wallClock
 
         let file = try fileSystem.open(path, mode: .readWriteCreate)
         let records: [FlightFormat.Record]
@@ -127,7 +105,7 @@ public final class FlightRecorder: Instrumentation {
         let last = records.last
         let head = last.map { $0.offset + $0.size } ?? 0
         writer = Mutex(Writer(file: file, head: head >= capacity ? 0 : head, nextSequence: (last?.sequence ?? 0) + 1))
-        append(FlightFormat.markerPayload(.runStarted, time: wallClock()))
+        append(FlightFormat.markerPayload(.runStarted, time: Self.now()))
     }
 
     deinit {
@@ -147,14 +125,14 @@ public final class FlightRecorder: Instrumentation {
 
     public func record(_ event: Event) {
         guard event.level >= minimumLevel else { return }
-        append(FlightFormat.eventPayload(event, time: wallClock(), recordPrivate: recordPrivateValues))
+        append(FlightFormat.eventPayload(event, time: Self.now(), recordPrivate: recordPrivateValues))
     }
 
     /// Records that this run is ending on purpose, so the next one sees
     /// ``RecordedRun/endedCleanly``. Call it last, from the app's
     /// termination path, after the services have stopped.
     public func markCleanExit() {
-        append(FlightFormat.markerPayload(.runEnded, time: wallClock()))
+        append(FlightFormat.markerPayload(.runEnded, time: Self.now()))
         flush()
     }
 
@@ -229,12 +207,12 @@ public final class FlightRecorder: Instrumentation {
     }
 }
 
-/// Wall-clock time, without Foundation.
-enum WallClock {
-    @Sendable static func now() -> Int64 {
-        var spec = timespec()
-        // clock_gettime fills the struct whose address it is given; it lives for the call.
-        _ = unsafe clock_gettime(CLOCK_REALTIME, &spec)
-        return Int64(spec.tv_sec) * 1_000_000_000 + Int64(spec.tv_nsec)
+extension FlightRecorder {
+    /// The ambient wall clock's time now (`Moment.now`), in nanoseconds since
+    /// 1970: the recording's timestamps, which a test sets as it sets every
+    /// other "now".
+    static func now() -> Int64 {
+        let (nanoseconds, _) = Moment.now.sinceEpoch.attoseconds.quotientAndRemainder(dividingBy: 1_000_000_000)
+        return Int64(clamping: nanoseconds)
     }
 }

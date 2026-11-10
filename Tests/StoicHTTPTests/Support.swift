@@ -61,8 +61,7 @@ extension HTTPPolicy {
         retryBudget: RetryBudget = .unlimited,
         coalesce: Bool = true,
         rateLimit: HTTPRateLimit? = nil,
-        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil,
-        wallClock: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 0) }
+        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil
     ) -> HTTPPolicy {
         HTTPPolicy(
             attemptTimeout: timeout,
@@ -74,8 +73,7 @@ extension HTTPPolicy {
             rateLimit: rateLimit,
             maxResponseBytes: maxResponseBytes,
             coalesceGETs: coalesce,
-            retryOnResponse: retryOnResponse,
-            wallClock: wallClock
+            retryOnResponse: retryOnResponse
         )
     }
 }

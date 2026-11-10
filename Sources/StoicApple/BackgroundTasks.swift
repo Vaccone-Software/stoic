@@ -139,7 +139,6 @@ public final class BackgroundJob: Sendable {
     public let budget: Duration?
 
     private let scheduler: any BackgroundTaskScheduling
-    private let now: @Sendable () -> Date
     private let work: @Sendable () async throws -> Void
     private let onReport: (@Sendable (BackgroundRunReport) -> Void)?
     private let registered = Mutex(false)
@@ -150,7 +149,6 @@ public final class BackgroundJob: Sendable {
     ///   - interval: The earliest begin of each next run, from the moment it is requested.
     ///   - budget: A cap on the work's time.
     ///   - scheduler: The system's, or a fake.
-    ///   - now: The wall clock, for `earliestBeginDate`.
     ///   - onReport: Called with each run's report, for logging.
     ///   - work: What to do. Throw to say it failed.
     public init(
@@ -159,7 +157,6 @@ public final class BackgroundJob: Sendable {
         every interval: Duration,
         budget: Duration? = nil,
         scheduler: any BackgroundTaskScheduling,
-        now: @escaping @Sendable () -> Date = { Date() },
         onReport: (@Sendable (BackgroundRunReport) -> Void)? = nil,
         work: @escaping @Sendable () async throws -> Void
     ) {
@@ -168,7 +165,6 @@ public final class BackgroundJob: Sendable {
         self.interval = interval
         self.budget = budget
         self.scheduler = scheduler
-        self.now = now
         self.onReport = onReport
         self.work = work
     }
@@ -186,7 +182,6 @@ public final class BackgroundJob: Sendable {
         requiresNetworkConnectivity: Bool = true,
         requiresExternalPower: Bool = false,
         scheduler: any BackgroundTaskScheduling,
-        now: @escaping @Sendable () -> Date = { Date() },
         onReport: (@Sendable (BackgroundRunReport) -> Void)? = nil,
         drain: @escaping @Sendable () async throws -> Void
     ) -> BackgroundJob {
@@ -194,7 +189,7 @@ public final class BackgroundJob: Sendable {
             identifier: identifier,
             kind: .processing(
                 requiresNetworkConnectivity: requiresNetworkConnectivity, requiresExternalPower: requiresExternalPower),
-            every: interval, budget: budget, scheduler: scheduler, now: now, onReport: onReport, work: drain)
+            every: interval, budget: budget, scheduler: scheduler, onReport: onReport, work: drain)
     }
 
     /// Registers the identifier with the system. Call it once, before the
@@ -223,12 +218,11 @@ public final class BackgroundJob: Sendable {
         }
     }
 
-    /// Asks the system to launch the task `interval` from now.
+    /// Asks the system to launch the task `interval` from now: from
+    /// `Moment.now`, the ambient wall clock, which a test sets.
     public func schedule() async throws(BackgroundTaskError) {
         try await scheduler.submit(
-            BackgroundTaskRequest(
-                identifier: identifier, kind: kind,
-                earliestBeginDate: now().addingTimeInterval(interval.seconds)))
+            BackgroundTaskRequest(identifier: identifier, kind: kind, earliestBeginDate: Date(Moment.now + interval)))
     }
 
     /// Runs the job against `task` and returns its report. Public so a test
@@ -337,5 +331,14 @@ private final class Completion: Sendable {
 extension Duration {
     fileprivate var seconds: Double {
         Double(components.seconds) + Double(components.attoseconds) / 1e18
+    }
+}
+
+extension Date {
+    /// `moment` as a `Date`, for `BGTaskRequest`. (StoicTime has the public
+    /// conversion; StoicApple does not depend on it for one line.)
+    fileprivate init(_ moment: Moment) {
+        let (seconds, attoseconds) = moment.sinceEpoch.components
+        self.init(timeIntervalSince1970: Double(seconds) + Double(attoseconds) * 1e-18)
     }
 }

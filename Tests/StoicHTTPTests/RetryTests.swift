@@ -139,8 +139,9 @@ struct HTTPRetryTests {
     }
 
     @Test func retryAfterAsAnHTTPDateIsRelativeToTheWallClock() async throws {
-        let now = Date(timeIntervalSince1970: 784_111_777)   // Sun, 06 Nov 1994 08:49:37 GMT
-        try await withRig(.testing(wallClock: { now })) { (rig) async throws in
+        try await withRig { (rig) async throws in
+            // The ambient wall clock, which the rig's test clock keeps.
+            rig.clock.jumpWallClock(to: Moment(sinceEpoch: .seconds(784_111_777)))   // Sun, 06 Nov 1994 08:49:37 GMT
             rig.transport.on(.get("/a"), respond: [.status(503, headers: ["Retry-After": "Sun, 06 Nov 1994 08:50:07 GMT"]), .status(200)])
             let task = rig.start(.get("/a"))
             await rig.waitForBackoff(1)

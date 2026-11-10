@@ -12,12 +12,6 @@ import Testing
 struct FlightRecorderTests {
     static let path = "/d/flight.rec"
 
-    /// A wall clock that ticks one second per reading, so times are exact.
-    static func ticking() -> @Sendable () -> Int64 {
-        let now = Atomic<Int64>(0)
-        return { now.wrappingAdd(1_000_000_000, ordering: .relaxed).newValue }
-    }
-
     static func open(
         _ disk: SimulatedFileSystem,
         capacity: Int = 64 * 1024,
@@ -25,7 +19,7 @@ struct FlightRecorderTests {
     ) throws(StoreError) -> FlightRecorder {
         try FlightRecorder(
             path: path, capacity: capacity, minimumLevel: .info, recordPrivateValues: recordPrivateValues,
-            fileSystem: disk, wallClock: ticking()
+            fileSystem: disk
         )
     }
 
@@ -286,10 +280,11 @@ struct FlightRecorderTests {
         #expect(report.images > 50)
     }
 
-    @Test func aRealFileOnDisk() throws {
+    @Test func aRealFileOnDiskStampedByTheAmbientWallClock() throws {
         let directory = try TempDirectory()
         let path = directory.file("flight.rec")
-        do {
+        let start = Moment(sinceEpoch: .seconds(1_800_000_000) + .nanoseconds(5))
+        try withAmbient({ $0.wallClock = .fixed(start) }) { () throws in
             let recorder = try FlightRecorder(path: path, capacity: 16 * 1024)
             recorder.record(Self.event(1))
             recorder.markCleanExit()
@@ -297,6 +292,7 @@ struct FlightRecorderTests {
         let run = try #require(try FlightRecorder(path: path, capacity: 16 * 1024).previousRun)
         #expect(run.events.map(\.name) == ["test.e1"])
         #expect(run.endedCleanly)
-        #expect((run.startTime ?? 0) > 1_700_000_000 * 1_000_000_000, "a real wall-clock time")
+        let expected: Int64 = 1_800_000_000_000_000_005
+        #expect(run.startTime == expected, "the time is Moment.now's, to the nanosecond")
     }
 }
