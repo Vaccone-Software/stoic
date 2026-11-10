@@ -60,6 +60,7 @@ public enum EventCatalog {
         Entry(name: "download.started", level: .info, meaning: "A download of one file began; reports the method, host and path of the request, never its query."),
         Entry(name: "download.verification_failed", level: .warning, meaning: "A complete file's digest was not the expected one; reports the algorithm, the attempt and both digests."),
         Entry(name: "download.verified", level: .info, meaning: "A complete file's digest, computed while it streamed, is the expected one."),
+        Entry(name: "failure.presented", level: .info, meaning: "A failure reached a person (error.presented()): the support reference, the wording's key and table, the recovery, whether anyone classified it, and the error's type; its description is private. Warning when the generic words were used, error for a defect. Never the wording's text or arguments."),
         Entry(name: "hedge.all_failed", level: .notice, meaning: "Every attempt of a hedged call failed; the first failure was thrown."),
         Entry(name: "hedge.attempt_failed", level: .debug, meaning: "One attempt of a hedged call failed."),
         Entry(name: "hedge.budget_exhausted", level: .notice, meaning: "A hedge was not started because the retry budget had no token."),

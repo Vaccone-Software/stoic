@@ -62,6 +62,11 @@ public struct Ambient: Sendable {
     /// means nothing: set only by simulations.
     public var faultPolicy: (any FaultPolicy)?
 
+    /// How failures are presented to a person (design/31), read through
+    /// ``presenter``: `nil` is ``Presenter/standard``, so the ambient most
+    /// tasks copy carries no rules at all.
+    var storedPresenter: Presenter?
+
     public init(
         clock: AnyClock = .continuous,
         livenessClock: AnyClock = .suspending,

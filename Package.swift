@@ -232,7 +232,9 @@ let package = Package(
         // ships on Linux, and nothing here needs an Apple framework.
         .target(name: "StoicFoundation", dependencies: ["Stoic"], swiftSettings: strict),
         .testTarget(
-            name: "StoicFoundationTests", dependencies: ["StoicFoundation", "Stoic", "StoicTesting"], swiftSettings: strict),
+            name: "StoicFoundationTests", dependencies: ["StoicFoundation", "Stoic", "StoicTesting"],
+            // An app's `Stoic` table, for `String(localized:)` (design/31).
+            resources: [.copy("Resources/Stoic.strings")], swiftSettings: strict),
         // Apple platform integration (design/21): network reachability,
         // background tasks, the Keychain, device conditions. Builds on
         // StoicFoundation, so its error table comes along.

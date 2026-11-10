@@ -37,6 +37,7 @@ struct RuleCatalogTests {
         .unverifiedClaim: "let age = claimedDateOfBirth.unverified()\n",
         .evidenceMintAccess: "struct Session: PrincipalEvidence {\n    struct Mint {}\n}\n",
         .derivationIgnoresInput: "let body = try request.deriving { _ in forged }\n",
+        .errorTextShown: "let message = error.localizedDescription\n",
         .allowWithoutReason: "// stoic:allow(force-try)\nlet x = 1\n",
     ]
 

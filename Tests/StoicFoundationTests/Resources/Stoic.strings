@@ -1,0 +1,24 @@
+/* An app's translation of Stoic's keys, as a test reads it: every key
+   Presenter.foundation can produce, in a made-up register so a test can tell
+   a translation from the default text. */
+"stoic.failure" = "Translated: something went wrong.";
+"stoic.failure.ours" = "Translated: our side.";
+"stoic.unavailable" = "Translated: not answering.";
+"stoic.busy" = "Translated: too many requests.";
+"stoic.slow" = "Translated: too slow.";
+"stoic.closing" = "Translated: closing.";
+"stoic.stuck" = "Translated: stuck.";
+"stoic.outcome.unconfirmed" = "Translated: unconfirmed.";
+"stoic.outcome.unknown" = "Translated: check first.";
+"stoic.unreachable" = "Translated: unreachable.";
+"stoic.lifecycle.no_effect" = "Translated: no effect.";
+"stoic.lifecycle.newer" = "Translated: newer.";
+"stoic.lifecycle.gone" = "Translated: gone.";
+"stoic.lifecycle.conflict" = "Translated: conflict.";
+"stoic.permission.denied" = "Translated: denied.";
+"stoic.permission.loading" = "Translated: checking.";
+"stoic.permission.unknown" = "Translated: could not check.";
+"stoic.sync" = "Translated: could not sync.";
+"stoic.offline" = "Translated: offline.";
+"stoic.disk_full" = "Translated: disk full.";
+"test.arguments" = "{count} people, by {when}, within {left}, for {name}; {missing} stays.";

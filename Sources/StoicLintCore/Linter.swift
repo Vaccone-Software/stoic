@@ -78,6 +78,7 @@ public struct Linter: Sendable {
         { UnverifiedClaimRule(reporter: $0) },
         { EvidenceMintAccessRule(reporter: $0) },
         { DerivationIgnoresInputRule(reporter: $0) },
+        { ErrorTextShownRule(reporter: $0) },
     ]
 }
 
