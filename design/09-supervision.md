@@ -126,6 +126,7 @@ finishes.
 | two observers watch the supervisor                   | Each `events()` stream sees every event                                           |
 | the backoff schedule ends                            | All children stopped; `SupervisorEscalation` thrown                               |
 | a child stops beating                                | After `misses` intervals (past `grace`): stopped and restarted                    |
+| a child runs before its heartbeat monitor starts | The grace and every check are counted from the start, fixed before the child could run |
 | the Mac sleeps                                       | The liveness clock stops; no false hang                                           |
 | the process is suspended for longer than an interval | A gap, not misses: checks restart from the resume; the child gets a full interval |
 | a child is cancelled by something else               | A failure, restarted; `child_exited` says `cancelled_from_outside`                |

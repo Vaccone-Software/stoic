@@ -111,24 +111,38 @@ struct SupervisorTests {
         _ = try? await run.value
     }
 
+    /// Waits on the children's starts themselves, not on real time: the
+    /// test ends when middle and last have each started twice, however slow
+    /// the machine (it once timed out under the Address Sanitizer).
     @Test func restForOneRestartsOnlyLaterChildren() async throws {
         let script = Script()
+        let (starts, started) = AsyncStream<String>.makeStream()
         let supervisor = Supervisor(label: "test", strategy: .restForOne, backoff: .immediate) {
             Child("first") { _ in
                 _ = script.started("first")
+                started.yield("first")
                 try await Task.sleep(for: .seconds(3600))
             }
             Child("middle") { _ in
-                if script.started("middle") == 1 { throw Crash() }
+                let run = script.started("middle")
+                started.yield("middle")
+                if run == 1 { throw Crash() }
                 try await Task.sleep(for: .seconds(3600))
             }
             Child("last") { _ in
                 _ = script.started("last")
+                started.yield("last")
                 try await Task.sleep(for: .seconds(3600))
             }
         }
         let run = Task { try await withTestAmbient(clock: TestClock()) { try await supervisor.run() } }
-        await eventually { script.count("middle") >= 2 && script.count("last") >= 2 }
+        var seen: [String: Int] = [:]
+        for await name in starts {
+            seen[name, default: 0] += 1
+            if seen["middle", default: 0] >= 2 && seen["last", default: 0] >= 2 { break }
+        }
+        // First never restarts: its one start came before middle crashed,
+        // and the restart that would have included it is the one just seen.
         #expect(script.count("first") == 1)
         #expect(script.count("middle") == 2)
         #expect(script.count("last") == 2)
@@ -421,21 +435,28 @@ struct SupervisorReviewTests {
         _ = await run.result
     }
 
-    @Test(.timeLimit(.minutes(1))) func heartbeatChecksFallOnFixedInstantsFromTheStart() async {
+    /// The child yields as it starts and the test advances at once: a grace
+    /// read after the child could run would start at 15 s, not 0.
+    @Test(.timeLimit(.minutes(1)), .failureMode("design/09", "a child runs before its heartbeat monitor starts"))
+    func heartbeatChecksFallOnFixedInstantsFromTheStart() async {
         let clock = TestClock()
-        let script = SupervisorTests.Script()
+        // Waits on the child's starts, not on real time: it once ran out of
+        // `eventually`'s five seconds under a 300-repetition stress.
+        let (starts, started) = AsyncStream<Void>.makeStream()
         let supervisor = Supervisor(label: "test", backoff: .immediate) {
             Child("tap", heartbeat: .init(interval: .seconds(5), misses: 1, grace: .seconds(10))) { _ in
-                _ = script.started("tap")
+                started.yield()
                 try await Task.sleep(for: .seconds(3600))   // never beats
             }
         }
         let run = Task { try await withTestAmbient(clock: clock) { try await supervisor.run() } }
-        #expect(await eventually { script.count("tap") == 1 })
+        var next = starts.makeAsyncIterator()
+        _ = await next.next()
         // Grace ends at 10 s and the first check is at 15 s, both counted
-        // from the start: one jump past both finds the child hung.
+        // from the start: one jump past both finds the child hung, and the
+        // child starts again.
         await clock.advance(by: .seconds(15))
-        #expect(await eventually { script.count("tap") == 2 })
+        _ = await next.next()
         run.cancel()
         _ = await run.result
     }

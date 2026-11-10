@@ -249,6 +249,11 @@ struct SupervisorRun {
         let ambient = ambient
         slots[index].cause = cause
         slots[index].startedAt = clock.now
+        // The heartbeat's grace is counted from the start, fixed before the
+        // child can run: read after it, a child that ran (and a clock that
+        // moved) first would push every check later.
+        let livenessClock = ambient.livenessClock
+        let graceEnds = child.heartbeat.map { livenessClock.now.advanced(by: $0.grace) }
         let task = TaskLedger.task(.supervisorChild, label: child.label) {
             let failure: (any Error)?
             do {
@@ -269,12 +274,11 @@ struct SupervisorRun {
             sink.yield(.exited(index: index, generation: generation, error: failure))
         }
         var monitor: Task<Void, Never>?
-        if let policy = child.heartbeat {
-            let clock = ambient.livenessClock
+        if let policy = child.heartbeat, let graceEnds {
+            let clock = livenessClock
             // Checks fall on fixed instants counted from the start, so the
             // monitor's own scheduling delays neither stretch the grace
             // period nor accumulate across intervals.
-            let graceEnds = clock.now.advanced(by: policy.grace)
             monitor = Task.stoic {
                 do {
                     try await clock.sleep(until: graceEnds, tolerance: nil)
