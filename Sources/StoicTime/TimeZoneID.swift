@@ -99,7 +99,8 @@ extension TimeZoneID: ExpressibleByStringLiteral {
     ///
     /// A literal is code, so a malformed one is a bug and stops the program
     /// with the reason, as a malformed regular expression literal would.
-    /// Text that comes from outside is read with ``init(_:)``, which throws.
+    /// Text that comes from outside is read with ``init(_:)-(String)``,
+    /// which throws.
     public init(stringLiteral identifier: String) {
         if let problem = Self.problem(with: identifier) {
             preconditionFailure("\"\(identifier)\" is not a time zone name: \(problem)")

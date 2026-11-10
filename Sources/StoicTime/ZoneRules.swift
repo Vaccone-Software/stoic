@@ -11,7 +11,7 @@ internal import Synchronization
 /// offsets and transitions the test writes, and whose rules and version it
 /// can change halfway, as an OS update would. Everything that needs an
 /// offset reads ``current``, so a test sets the rules once, with
-/// ``withZoneRules(_:operation:)``.
+/// `withZoneRules(_:operation:)`.
 ///
 /// The rules are asked for one thing, the offset of a zone at an instant,
 /// and everything else (gaps, overlaps, staleness) is derived from it here,
@@ -24,7 +24,7 @@ public struct ZoneRules: Sendable {
     }
 
     /// The rules in force for the current task: those of the nearest
-    /// ``withZoneRules(_:operation:)``, else the ``system``'s.
+    /// `withZoneRules(_:operation:)`, else the ``system``'s.
     public static var current: ZoneRules { stored ?? .system }
 
     @TaskLocal static var stored: ZoneRules?
@@ -145,7 +145,7 @@ public final class ScriptedZoneRules: Sendable {
         state = Mutex(State(version: version, deviceZone: deviceZone))
     }
 
-    /// These rules, for ``withZoneRules(_:operation:)``.
+    /// These rules, for `withZoneRules(_:operation:)`.
     public var rules: ZoneRules { ZoneRules(source: Source(owner: self)) }
 
     /// The version the rules report; set it to play an update.

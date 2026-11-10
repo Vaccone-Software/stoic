@@ -59,8 +59,12 @@ public struct ZonedDateTime: Sendable {
 
     /// `date` at `time` in `zone`, resolved by the zone rules in force.
     ///
-    /// - Parameter resolving: Which instant a local time in a gap or an
-    ///   overlap means; ``Disambiguation/compatible`` by default.
+    /// - Parameters:
+    ///   - date: The day on the zone's calendar.
+    ///   - time: The time on the zone's clocks.
+    ///   - zone: The place whose rules read them.
+    ///   - resolving: Which instant a local time in a gap or an overlap
+    ///     means; ``Disambiguation/compatible`` by default.
     /// - Throws: ``TimeError/unknownZone(_:)`` if the rules do not know
     ///   `zone`; ``TimeError/inGap(_:_:)`` or ``TimeError/inOverlap(_:_:)``
     ///   under ``Disambiguation/reject``.
