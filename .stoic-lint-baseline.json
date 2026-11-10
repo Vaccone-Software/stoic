@@ -49,6 +49,11 @@
       "rule" : "stoic.unchecked-sendable"
     },
     {
+      "file" : "Sources/StoicHTTP/URLSessionPulledStream.swift",
+      "hash" : "e33f439276b35f4c",
+      "rule" : "stoic.unchecked-sendable"
+    },
+    {
       "file" : "Sources/StoicSchema/Versioning/Migration+Apply.swift",
       "hash" : "f500cbfa35b47239",
       "rule" : "stoic.discarded-try"

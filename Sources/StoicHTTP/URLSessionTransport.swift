@@ -9,18 +9,21 @@ internal import Synchronization
 ///
 /// What it adds to the session, and why:
 ///
-/// - **Streaming with backpressure** (``stream(_:maxResponseBytes:)``). The
-///   body reaches the caller as the delegate hands it over, chunk by chunk,
-///   never a byte at a time (`URLSession.bytes(for:)` pays an async hop per
-///   byte, which a 20 GB model cannot afford). The chunks wait in a buffer of
-///   bounded size; when a consumer lags and the buffer fills, the data task is
-///   *suspended*, so the system stops reading from the connection and TCP's
-///   window closes, and it is resumed once the consumer has drained the
-///   buffer to a quarter. A slow disk slows the download; it does not
-///   fill memory. **On Apple platforms only:** swift-corelibs-foundation
-///   restarts a suspended data task from its first byte when it is resumed, so
-///   on Linux the task is never suspended and the buffer holds whatever the
-///   consumer has not yet taken.
+/// - **Streaming with backpressure** (``stream(_:maxResponseBytes:)``), on
+///   Apple platforms. The body is pulled from `URLSession.bytes(for:)` into a
+///   ring of `streamBufferBytes`, and reaches the caller in chunks of up to
+///   64 KiB: a full chunk when the body is fast, and within a millisecond of
+///   arriving when it trickles. When a consumer lags and the ring is full,
+///   nothing more is taken from the system, which stops reading from the
+///   connection at a window of its own (11 to 13 MB, measured on macOS 27),
+///   and the server waits. A slow disk slows the download; it does not fill
+///   memory. What the transport holds never exceeds the ring, whatever the
+///   load: a data task's delegate cannot promise that, because the system
+///   reads ahead of a delegate queue that is not running. **On Linux** there
+///   is no `bytes(for:)`: the body comes from the delegate, and a buffer holds
+///   whatever the consumer has not yet taken (swift-corelibs-foundation
+///   restarts a suspended data task from its first byte, so the task is never
+///   suspended there).
 ///
 /// - **A byte limit enforced while reading.** The body is collected from the
 ///   task's delegate callbacks, not from `data(for:)`, which would buffer a
@@ -65,10 +68,11 @@ public final class URLSessionTransport: HTTPTransport {
     /// - Parameters:
     ///   - configuration: The session's configuration.
     ///   - streamBufferBytes: The most body bytes a streamed response holds
-    ///     for a consumer that lags. Past it the data task is suspended; it
-    ///     resumes when a quarter of this is left. A transfer can overshoot it
-    ///     by what the system had already read, so it is a bound of the order
-    ///     of this size, not an exact one. ``init(configuration:)`` uses 4 MiB.
+    ///     for a consumer that lags, exactly, on Apple platforms: when it is
+    ///     full, nothing more is taken from the system until the consumer
+    ///     takes a chunk. The system's own window for the connection comes on
+    ///     top. On Linux it is not a bound (see the type's notes).
+    ///     ``init(configuration:)`` uses 4 MiB.
     public init(configuration: URLSessionConfiguration, streamBufferBytes: Int) {
         precondition(streamBufferBytes > 0, "a stream needs room for at least one byte")
         let transfers = Transfers()
@@ -106,8 +110,19 @@ public final class URLSessionTransport: HTTPTransport {
     /// dropped, or when the task reading it is.
     public func stream(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPStreamedResponse {
         let urlRequest = try Self.urlRequest(for: request)
-        let transfer = StreamTransfer(
-            limit: maxResponseBytes, bufferLimit: streamBufferBytes, statistics: transfers.streams, method: request.method)
+        #if canImport(Darwin)
+        let pulled = PulledTransfer(
+            limit: maxResponseBytes, capacity: streamBufferBytes, statistics: transfers.streams, method: request.method)
+        let pulledHead = try await withTaskCancellationHandler {
+            try await pulled.open(urlRequest, on: session)
+        } onCancel: {
+            pulled.abandon()
+        }
+        return HTTPStreamedResponse(
+            status: pulledHead.statusCode, headers: Self.headers(of: pulledHead),
+            body: HTTPBodyStream(next: { try await pulled.next() }, cancel: { pulled.abandon() }))
+        #else
+        let transfer = StreamTransfer(limit: maxResponseBytes, statistics: transfers.streams, method: request.method)
         let task = session.dataTask(with: urlRequest)
         transfer.attach(task)
         transfers.register(transfer, for: task)
@@ -125,12 +140,17 @@ public final class URLSessionTransport: HTTPTransport {
             if Task.isCancelled { throw CancellationError() }
             throw error
         }
+        let body = HTTPBodyStream(next: { try await transfer.next() }, cancel: { transfer.abandon() })
+        return HTTPStreamedResponse(status: head.statusCode, headers: Self.headers(of: head), body: body)
+        #endif
+    }
+
+    private static func headers(of response: HTTPURLResponse) -> HTTPHeaders {
         var headers = HTTPHeaders()
-        for (name, value) in head.allHeaderFields {
+        for (name, value) in response.allHeaderFields {
             if let name = name as? String, let value = value as? String { headers.add(name, value) }
         }
-        let body = HTTPBodyStream(next: { try await transfer.next() }, cancel: { transfer.abandon() })
-        return HTTPStreamedResponse(status: head.statusCode, headers: headers, body: body)
+        return headers
     }
 
     public func send(_ request: HTTPRequest, maxResponseBytes: Int) async throws -> HTTPResponse {

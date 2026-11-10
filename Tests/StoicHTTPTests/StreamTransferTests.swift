@@ -7,14 +7,14 @@ import FoundationNetworking
 import Testing
 
 /// The buffer between a data task's delegate callbacks and the reader of a
-/// streamed body, driven by hand: the callbacks are made in the order a
+/// streamed body on Linux (Apple platforms pull from `bytes(for:)`), driven by hand: the callbacks are made in the order a
 /// session makes them, so what a real session does only by timing is
 /// settled here (which is why `URLSessionStreamingTests` need not assert it).
 @Suite("Stream transfer")
 struct StreamTransferTests {
-    static func transfer(limit: Int = 1_000_000, buffer: Int = 100, method: HTTPMethod = .get) -> (StreamTransfer, StreamStatistics) {
+    static func transfer(limit: Int = 1_000_000, method: HTTPMethod = .get) -> (StreamTransfer, StreamStatistics) {
         let statistics = StreamStatistics()
-        return (StreamTransfer(limit: limit, bufferLimit: buffer, statistics: statistics, method: method), statistics)
+        return (StreamTransfer(limit: limit, statistics: statistics, method: method), statistics)
     }
 
     static func head(status: Int = 200, length: Int64 = -1) -> HTTPURLResponse {
@@ -76,26 +76,6 @@ struct StreamTransferTests {
         transfer.complete(error: nil)
         #expect(try await reading.value == nil)
     }
-
-    #if canImport(Darwin)
-    @Test func theTaskIsSuspendedWhenTheBufferFillsAndResumedWhenAQuarterIsLeft() async throws {
-        let (transfer, statistics) = Self.transfer(buffer: 100)
-        try await Self.open(transfer)
-        for _ in 0..<4 { _ = transfer.receive(Self.data(30)) }   // 30, 60, 90, 120: over 100 at the fourth
-        #expect(statistics.suspensions == 1)
-        #expect(statistics.peakBufferedBytes == 120)
-        _ = transfer.receive(Self.data(30))   // the system had more in flight: no second suspension
-        #expect(statistics.suspensions == 1)
-
-        _ = try await transfer.next()   // 120 left
-        _ = try await transfer.next()   // 90
-        _ = try await transfer.next()   // 60
-        _ = try await transfer.next()   // 30: over a quarter (25)
-        #expect(statistics.resumptions == 0)
-        _ = try await transfer.next()   // 0
-        #expect(statistics.resumptions == 1)
-    }
-    #endif
 
     @Test func aBodyPastTheLimitDeliversUpToItAndThenFailsWithResponseTooLarge() async throws {
         let (transfer, _) = Self.transfer(limit: 50)
@@ -354,64 +334,4 @@ struct StreamTransferTests {
         transfer.complete(error: URLError(.cancelled))
         #expect(try await transfer.next() == nil, "the failure was delivered to the reader")
     }
-
-    @Test func aBodyPastTheLimitDoesNotSuspendTheTaskThatIsAboutToBeCancelled() async throws {
-        let (transfer, statistics) = Self.transfer(limit: 110, buffer: 100)
-        try await Self.open(transfer)
-        #expect(transfer.receive(Self.data(90)))
-        #expect(!transfer.receive(Self.data(30)), "20 bytes over: the task is to be cancelled")
-        #expect(statistics.peakBufferedBytes == 110, "the buffer passed its limit, but only on the way out")
-        #expect(statistics.suspensions == 0)
-    }
-
-    // A callback the session had already dispatched can arrive after the task
-    // was suspended, so a transfer can end while suspended; the consumer then
-    // drains it, and draining resumes the task whatever the transfer's state.
-    #if canImport(Darwin)
-    @Test func aTransferThatPassesItsLimitWhileSuspendedResumesTheTaskAsTheConsumerDrainsIt() async throws {
-        let (transfer, statistics) = Self.transfer(limit: 150, buffer: 100)
-        try await Self.open(transfer)
-        #expect(transfer.receive(Self.data(60)))
-        #expect(transfer.receive(Self.data(60)))   // 120: suspended
-        #expect(statistics.suspensions == 1)
-        #expect(!transfer.receive(Self.data(60)), "30 bytes of it fit, and then the transfer is over")
-        transfer.complete(error: URLError(.cancelled))
-        #expect(statistics.suspensions == 1, "a transfer that is over is not suspended again")
-
-        #expect(try await transfer.next()?.count == 60)   // 90 left
-        #expect(try await transfer.next()?.count == 60)   // 30: over a quarter (25)
-        #expect(statistics.resumptions == 0)
-        #expect(try await transfer.next()?.count == 30)   // 0
-        #expect(statistics.resumptions == 1, "draining resumes the task although the transfer is over")
-        await #expect(throws: HTTPTransportError.responseTooLarge(limit: 150)) { _ = try await transfer.next() }
-        #expect(try await transfer.next() == nil)
-        #expect(statistics.resumptions == 1)
-    }
-
-    @Test func aTransferThatCompletesWhileSuspendedResumesTheTaskAsTheConsumerDrainsIt() async throws {
-        let (transfer, statistics) = Self.transfer(buffer: 100)
-        try await Self.open(transfer)
-        #expect(transfer.receive(Self.data(60)))
-        #expect(transfer.receive(Self.data(60)))   // 120: suspended
-        transfer.complete(error: nil)
-
-        #expect(try await transfer.next()?.count == 60)   // 60: over a quarter
-        #expect(statistics.resumptions == 0)
-        #expect(try await transfer.next()?.count == 60)   // 0
-        #expect(statistics.resumptions == 1)
-        #expect(try await transfer.next() == nil)
-        #expect(statistics.resumptions == 1)
-    }
-
-    @Test func anAbandonedTransferDoesNotResumeTheTaskItSuspended() async throws {
-        let (transfer, statistics) = Self.transfer(buffer: 100)
-        try await Self.open(transfer)
-        #expect(transfer.receive(Self.data(60)))
-        #expect(transfer.receive(Self.data(60)))   // 120: suspended
-        transfer.abandon()
-        await #expect(throws: CancellationError.self) { _ = try await transfer.next() }
-        #expect(statistics.suspensions == 1)
-        #expect(statistics.resumptions == 0)
-    }
-    #endif
 }

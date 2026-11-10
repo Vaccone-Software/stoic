@@ -111,7 +111,8 @@ extension URLSessionTransportTests {
     #if canImport(Darwin)
     @Test(.failureMode("design/19", "a consumer reads slower than the body arrives"))
     func aSlowConsumerMakesTheServerWait() async throws {
-        let total = 256 << 20
+        let total = 96 << 20
+        let buffer = 512 * 1024
         let server = try LoopbackServer { connection in
             guard connection.writeHead(200, ["Content-Length": String(total)]) else { return }
             var offset = 0
@@ -121,15 +122,16 @@ extension URLSessionTransportTests {
             }
         }
         defer { server.stop() }
-        let transport = Self.loopbackTransport(bufferBytes: 512 * 1024)
+        let transport = Self.loopbackTransport(bufferBytes: buffer)
         let response = try await transport.stream(Self.loopbackRequest(server, "/model"), maxResponseBytes: total)
 
-        // The consumer takes one chunk and stops. The server must stop too: its
-        // sends block once the connection's windows and our buffer are full.
+        // The consumer takes one chunk and stops. The transport stops taking
+        // bytes once its buffer is full, the system stops reading at its own
+        // window, and the server's sends block.
         var iterator = response.body.makeAsyncIterator()
         var checker = BlockChecker()
         checker.check(try #require(try await iterator.next()))
-        await eventually("the transfer was never suspended") { transport.transfers.streams.suspensions >= 1 }
+        await eventually("the transfer never stopped taking bytes") { transport.transfers.streams.suspensions >= 1 }
         var stable = 0
         var last = -1
         for _ in 0..<200 where stable < 6 {
@@ -139,24 +141,67 @@ extension URLSessionTransportTests {
             last = now
         }
         #expect(stable >= 6, "the server never stopped writing: \(last) bytes of \(total)")
-        #expect(last < total / 4, "the server wrote \(last) bytes of \(total) to a reader that had stopped")
-        let peakWhileStopped = transport.transfers.streams.peakBufferedBytes
+        // The buffer, and the system's window for the connection (11 to 13 MB
+        // on macOS 27; no API sets it): far less than the body.
+        #expect(last < total / 2, "the server wrote \(last) bytes of \(total) to a reader that had stopped")
+        #expect(transport.transfers.streams.peakBufferedBytes <= buffer, "the transport held more than its buffer")
 
-        // Reading on resumes the transfer, and every byte arrives in order.
-        while let chunk = try await iterator.next() { checker.check(chunk) }
+        // Reading on resumes the transfer, and every byte arrives in order, in
+        // chunks of at most 64 KiB, the transport never holding more than its buffer.
+        while let chunk = try await iterator.next() {
+            #expect(chunk.count <= 65_536)
+            checker.check(chunk)
+        }
         #expect(checker.offset == total)
         #expect(transport.transfers.streams.resumptions >= 1)
-        // The buffer is a bound of the order of its size, not an exact one: what the
-        // system had already read when the task was suspended still arrives (measured
-        // on a Mac: the server wrote 1.6 MB to a stopped reader, and 917,504 bytes were
-        // the most held, for a limit of 524,288; 13.6 MB on a loaded machine, where the reader drained
-        // slower than the connection refilled). What matters is that it is the connection's own
-        // windows and a few buffers, not the body.
-        let peak = transport.transfers.streams.peakBufferedBytes
-        #expect(peakWhileStopped < total / 32, "held \(peakWhileStopped) bytes while the consumer had stopped")
-        #expect(peak < total / 8, "held \(peak) bytes of \(total) at the most")
+        #expect(transport.transfers.streams.peakBufferedBytes <= buffer, "an exact bound, whatever the machine's load")
+    }
+
+    @Test func aBufferSmallerThanAChunkBoundsEveryChunk() async throws {
+        let transport = Self.streamingTransport(bufferBytes: 1_000)
+        let response = try await transport.stream(Self.request("/chunks"), maxResponseBytes: 1_000_000)
+        var bytes: [UInt8] = []
+        for try await chunk in response.body {
+            #expect(chunk.count <= 1_000)
+            bytes.append(contentsOf: chunk)
+        }
+        #expect(bytes == (0..<100_000).map { UInt8(truncatingIfNeeded: $0) })
+        #expect(transport.transfers.streams.peakBufferedBytes <= 1_000)
     }
     #endif
+
+    @Test(.failureMode("design/19", "a streamed body trickles"))
+    func aTrickleIsDeliveredAsItArrivesNotWhenAChunkFills() async throws {
+        // Each event is sent only once the reader has taken the one before: a
+        // transport that waited for a chunk to fill would never be sent the
+        // next, and the server gives up after ten seconds. A `Content-Type` is
+        // sent, as an event stream's server does: without one, URL loading
+        // holds the first 512 bytes to guess it.
+        let received = ReaderProgress()
+        let server = try LoopbackServer { connection in
+            guard connection.writeHead(200, ["Content-Type": "text/event-stream"]) else { return }
+            for index in 0..<5 {
+                guard connection.write(Array("event \(index)\n".utf8)) else { return }
+                guard received.wait(for: index, timeout: .seconds(10)) else { return }
+            }
+        }
+        defer { server.stop() }
+        let transport = Self.loopbackTransport()
+        let response = try await transport.stream(Self.loopbackRequest(server, "/events"), maxResponseBytes: 1 << 20)
+        var text = ""
+        var iterator = response.body.makeAsyncIterator()
+        for index in 0..<5 {
+            while !text.contains("event \(index)\n") {
+                guard let chunk = try await iterator.next() else {
+                    Issue.record("the body ended before event \(index): \(text)")
+                    return
+                }
+                text += String(decoding: chunk, as: UTF8.self)
+            }
+            received.reached(index)
+        }
+        #expect(try await iterator.next() == nil)
+    }
 
     @Test(.failureMode("design/19", "a streamed body fails after its head"))
     func aConnectionLostMidBodyIsThrownAfterTheBytesThatArrived() async throws {
@@ -402,5 +447,27 @@ extension URLSessionTransportTests {
         #expect(total == 100_000)
         let missing = await #expect(throws: HTTPError.self) { try await api.stream(.get("/missing"), maxBytes: 1000) }
         #expect(missing?.statusCode == 404)
+    }
+}
+
+/// How far a reader has got through a loopback server's events: the server's
+/// thread waits on it before sending the next.
+final class ReaderProgress: Sendable {
+    private let taken = Mutex(-1)
+
+    func reached(_ index: Int) {
+        taken.withLock { $0 = max($0, index) }
+    }
+
+    /// Blocks the calling thread until the reader has taken event `index`;
+    /// `false` after `timeout`.
+    func wait(for index: Int, timeout: Duration) -> Bool {
+        let clock = ContinuousClock()
+        let end = clock.now.advanced(by: timeout)
+        while clock.now < end {
+            if taken.withLock({ $0 >= index }) { return true }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        return false
     }
 }

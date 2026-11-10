@@ -259,7 +259,8 @@ inside a simulation.
 | a streamed request is redirected | Followed as any request is; the redirect's body is dropped unread; `Range` and `If-Range` go along even to another origin |
 | a streamed call runs inside a `perform` attempt | One attempt through none of the client's retry, breaker, bulkhead or rate limit; no attempt timeout cuts the body |
 | a transport has no streaming of its own | The default `stream` sends, and yields the whole body as one chunk: fine for a test transport, never for a large body |
-| a consumer reads slower than the body arrives | On Apple platforms `URLSessionTransport` holds a bounded buffer: past it the data task is suspended, so the server waits; it resumes when the consumer has drained the buffer (on Linux the task is never suspended: see As built) |
+| a consumer reads slower than the body arrives | On Apple platforms `URLSessionTransport` holds at most `streamBufferBytes`, exactly, whatever the load: when its buffer is full it takes nothing more from the system, which stops reading at its own window, so the server waits; reading on resumes it (on Linux the buffer is not bounded: see As built) |
+| a streamed body trickles | Each chunk is delivered within a millisecond of arriving, not when a chunk fills; a fast body arrives in chunks of up to 64 KiB |
 
 ## Events
 
@@ -524,26 +525,45 @@ decoder for what it holds; the depth limit is not about size and stays.`send(\_:
   return `nil`; after `cancel()` they throw `CancellationError`.
 - **`[UInt8]` chunks.** The file system's `write` and the hashers a download
   feeds take bytes; `Data` would have been converted at every chunk. The one
-  copy is from the `Data` the delegate hands over.
-- **`URLSessionTransport`** streams from the session delegate, never through
-  `URLSession.bytes(for:)`, which pays an async hop per byte. Chunks wait in a
-  buffer (`streamBufferBytes`, 4 MiB by default); when it holds that much the
-  data task is _suspended_ (the system stops reading, TCP's window closes), and
-  it is resumed when a quarter is left. The decision and the `suspend()` or
-  `resume()` it causes are made under one lock: a resume run before the suspend
-  it answers would leave a reader waiting on a task nothing wakes. Measured on
-  a Mac against a loopback server with a 512 KiB buffer and a reader that had
-  stopped: the server had written 1.6 MB of 256 MiB, and 917,504 bytes were the
-  most held (13.6 MB, once, with the machine loaded and the reader draining
-  slower than the connection refilled: what the connection's windows already
-  held arrives in a rush on resume). The bound is of the order of the buffer, not exact, because what
-  the system had already read when it was told to stop still arrives. **On
-  Linux there is no backpressure.** The same loopback test, run in the
-  `swift:6.4` image, showed swift-corelibs-foundation restarting a suspended data
-  task from its first byte when it is resumed (the body began again at block 0,
-  which is what Apple's documentation says of every task that is not a download),
-  so the transport never suspends there and the buffer holds whatever the
-  consumer has not taken: a consumer slower than the network on Linux grows
+  copy is out of the ring (on Linux, from the `Data` the delegate hands over).
+- **`URLSessionTransport`** pulls a streamed body from `URLSession.bytes(for:)`
+  on Apple platforms, into a ring of `streamBufferBytes` (4 MiB by default),
+  and hands the caller chunks of up to 64 KiB. **What the transport holds never
+  exceeds the ring**, exactly, whatever the load: when it is full the pump
+  takes no byte from the system, which stops reading from the connection at a
+  window of its own (11 to 13 MB, measured on macOS 27, idle and loaded, and
+  set by no API), so the server waits. That window is on top of the ring.
+  **Why not the delegate**, as built first: a data task's delegate is handed
+  what the system has read, and the system reads ahead of a delegate queue
+  that is not running. Suspending the task cannot recall what is already
+  queued. On an idle Mac the first design held 0.5 MB for a 512 KiB buffer; on a
+  loaded 3-core CI machine it once held 266 MB of a 256 MiB body; and with its
+  delegate queue held for one second, a probe saw all 268 MB read into the
+  process. `bytes(for:)` is flow-controlled inside the loading system, and
+  held its window in every case measured. **Its cost** is a byte at a time: the pump
+  stores each byte in the ring and publishes it with one atomic store, and
+  wakes the reader only when the byte it asked for has arrived. Measured over
+  loopback in an optimised build: about 370 MB/s idle and 290 MB/s loaded,
+  against 2,800 MB/s for the delegate. That is well above what a network
+  delivers, but it is CPU spent on every byte. (The draft's objection, "an async hop per byte",
+  was wrong for a pump off any actor: `bytes(for:)` buffers, and its fast path
+  does not suspend. On an actor it does hop, and 256 MB took minutes.) **A
+  trickle is not held for a chunk**: the pump cannot tell the reader "nothing
+  more right now", so a reader that finds less than a chunk waits for one, or
+  for a millisecond, whichever comes first. One event at a time, each sent only
+  after the last was read, arrives within about 2 ms. URL loading itself holds
+  the first 512 bytes of a body that has no `Content-Type`, to guess one; a
+  server that streams events names its type. The pump runs off any actor, as a
+  task of its own, cancelled with the stream. The session delegate is still
+  asked about redirects for these tasks, and declines them, but it is handed
+  no data, so the limit is counted once, in the pump. **On Linux** there is no
+  `bytes(for:)` (swift-corelibs-foundation has `data`, `upload` and `download`
+  only). The body comes from the delegate, into a buffer that is not bounded:
+  the loopback test, run in the `swift:6.4` image, showed
+  swift-corelibs-foundation restarting a suspended data task from its first
+  byte when it is resumed (the body began again at block 0, which is what
+  Apple's documentation says of every task that is not a download), so the task
+  is never suspended there, and a consumer slower than the network on Linux grows
   memory. Apple platforms are the target of the pilot; a Linux transport with real
   flow control (a libcurl pause the corelibs session does not expose) is not built.
   The consumer is told of a failure only after every chunk that arrived before it.

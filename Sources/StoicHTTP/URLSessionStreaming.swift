@@ -18,9 +18,10 @@ final class StreamStatistics: Sendable {
 
     /// The most body bytes any streamed transfer has held for its consumer.
     var peakBufferedBytes: Int { counts.withLock { $0.peakBufferedBytes } }
-    /// How often a transfer stopped the system reading, for want of a consumer.
+    /// How often a transfer stopped taking bytes from the system, its buffer
+    /// full, for want of a consumer (Apple platforms).
     var suspensions: Int { counts.withLock { $0.suspensions } }
-    /// How often a drained buffer let it read again.
+    /// How often a consumer's read let it take bytes again.
     var resumptions: Int { counts.withLock { $0.resumptions } }
 
     func noteBuffered(_ bytes: Int) {
@@ -31,17 +32,16 @@ final class StreamStatistics: Sendable {
     func noteResumption() { counts.withLock { $0.resumptions += 1 } }
 }
 
-/// One streamed response: the buffer between a data task's delegate callbacks
-/// and the task reading the body.
+/// One streamed response on Linux: the buffer between a data task's delegate
+/// callbacks and the task reading the body. (Apple platforms pull the body
+/// from `bytes(for:)` instead: `PulledTransfer`.)
 ///
-/// The buffer is bounded. When it holds `bufferLimit` bytes the data task is
-/// suspended, which stops the system reading from the connection, and it is
-/// resumed when the consumer has drained the buffer to a quarter of the limit
-/// (so it does not flap on every chunk). The suspending and resuming happen
-/// under the state's lock, with the decision that causes them: done outside
-/// it, a resume could run before the suspend it answers and leave a consumer
-/// waiting on a task that nothing will wake. Both calls only enqueue work on
-/// the session, so the lock is not held across anything that waits.
+/// The buffer is not bounded. swift-corelibs-foundation restarts a suspended
+/// data task from its first byte when it is resumed (the behaviour Apple's
+/// documentation describes for every task that is not a download), which
+/// would hand the consumer the body again from zero, and it has no
+/// `bytes(for:)`; so the task is never suspended, and the buffer holds what
+/// the consumer has not yet taken (design/19, Streaming).
 ///
 /// The consumer is told of the end, or of a failure, only after it has taken
 /// every chunk that arrived first: bytes that reached the buffer are valid
@@ -94,12 +94,6 @@ final class StreamTransfer: TransferSink {
         var buffered = 0
         var received = 0
         var phase = Phase.live
-        /// Whether the data task is suspended for want of a consumer. A flag of
-        /// its own and not part of `phase`: a callback the session had already
-        /// dispatched can arrive after the suspension and take the transfer
-        /// over its limit, and the consumer then drains the chunks of a
-        /// transfer that is ending, which still resumes the task.
-        var suspended = false
 
         /// The caller waiting for the head, taken out of its slot.
         mutating func takeHead() -> CheckedContinuation<HTTPURLResponse, any Error>? {
@@ -126,32 +120,14 @@ final class StreamTransfer: TransferSink {
         }
     }
 
-    /// Whether a full buffer suspends the data task. On Apple platforms it does,
-    /// and the system stops reading (measured: the server's sends block, and
-    /// every byte arrives in order after the resume). It does not elsewhere:
-    /// swift-corelibs-foundation restarts a suspended data task from its first byte
-    /// when it is resumed (the behaviour Apple's own documentation describes for
-    /// every task that is not a download), which would hand the consumer the body
-    /// again from zero. On Linux the buffer is therefore not bounded: it holds
-    /// what the consumer has not yet taken (design/19, Streaming).
-    static var suspendsTask: Bool {
-        #if canImport(Darwin)
-        true
-        #else
-        false
-        #endif
-    }
-
     private let limit: Int
-    private let bufferLimit: Int
     private let statistics: StreamStatistics
     /// The request's method: a `HEAD` transfers no body, whatever the status.
     private let method: HTTPMethod
     private let state = Mutex(State())
 
-    init(limit: Int, bufferLimit: Int, statistics: StreamStatistics, method: HTTPMethod) {
+    init(limit: Int, statistics: StreamStatistics, method: HTTPMethod) {
         self.limit = limit
-        self.bufferLimit = bufferLimit
         self.statistics = statistics
         self.method = method
     }
@@ -239,11 +215,6 @@ final class StreamTransfer: TransferSink {
                     state.chunks.append(bytes)
                     state.buffered += bytes.count
                     statistics.noteBuffered(state.buffered)
-                    if Self.suspendsTask, state.buffered >= bufferLimit, !state.suspended, !over {
-                        state.suspended = true
-                        state.task?.suspend()
-                        statistics.noteSuspension()
-                    }
                 }
             }
             if over, case .none = delivery, let waiter = state.takeReader() {
@@ -327,11 +298,6 @@ final class StreamTransfer: TransferSink {
                             state.first = 0
                         }
                         state.buffered -= chunk.count
-                        if state.suspended, state.buffered <= bufferLimit / 4 {
-                            state.suspended = false
-                            state.task?.resume()
-                            statistics.noteResumption()
-                        }
                         return .chunk(chunk)
                     }
                     if case .ending(let ending) = state.phase {

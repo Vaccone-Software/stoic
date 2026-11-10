@@ -395,11 +395,12 @@ Foundation-free apart from what `StoicHTTP`'s public types bring (`URL`, `URLErr
   `BoundedSchedule`: a bound on a download is a decision, and it is the policy's.
 - **The progress callback**, not an `AsyncStream`: a callback is the primitive, needs no
   consumer task and no buffering policy, and an `AsyncStream` continuation is one line.
-- **No backpressure on Linux.** The streaming transport suspends the data task when
-  the consumer lags, which swift-corelibs-foundation answers by restarting the task
-  from the first byte on resume (design/19). So on Linux a download whose disk is
-  slower than its network buffers the difference in memory; on Apple platforms,
-  where the downloads are used, the buffer is bounded.
+- **No backpressure on Linux.** On Apple platforms the streaming transport pulls
+  the body from `bytes(for:)` and holds at most its buffer, exactly (design/19).
+  Linux has no `bytes(for:)`, and swift-corelibs-foundation restarts a suspended
+  task from the first byte, so the task is never suspended there: on Linux a
+  download whose disk is slower than its network buffers the difference in
+  memory. On Apple platforms, where the downloads are used, the buffer is bounded.
 - **What a bundle cannot do.** A directory swap is `renamex_np`; on Linux
   `replaceItem` over an existing directory is `.unsupported` (design/15), and a
   bundle whose destination exists fails there with `.store(.unsupported)` before it

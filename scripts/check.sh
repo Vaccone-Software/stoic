@@ -49,12 +49,15 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # wait on, assertions beside it), reconcilers (a loop woken by changes,
 # triggers and backoffs while a pass corrects keys at once) and live values
 # and actions (loads, subscriptions and runs superseding one another on the
-# main actor). Their crash explorations, which run no two
+# main actor), and the streaming transport (a pump and a reader sharing a ring
+# through atomics; the 96 MiB back-pressure test, a minute and a half under
+# the sanitizer, is left to the plain step: the small-buffer test fills and
+# drains the ring hundreds of times). Their crash explorations, which run no two
 # tasks at once, are left to the plain step. A few minutes: the instrumented
 # build is separate from the one above.
 swift test --sanitize=thread \
-    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests|Reconciler|StoicLiveTests' \
-    --skip 'LifecycleCrashTests|OutboxRememberCrashTests'
+    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests|Reconciler|StoicLiveTests|URLSessionTransportTests|StreamTransferTests' \
+    --skip 'LifecycleCrashTests|OutboxRememberCrashTests|aSlowConsumerMakesTheServerWait'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
 # Skipped here, run with their bounds in the plain test step above: the tests
