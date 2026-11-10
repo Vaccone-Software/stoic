@@ -80,7 +80,7 @@ public final class AppAttestStandIn: Sendable {
         let notBefore = AppAttest.date(of: moment - .seconds(86_400))
         let notAfter = AppAttest.date(of: moment + .seconds(86_400 * 3650))
         let rootCertificate = try Certificate(
-            version: .v3, serialNumber: Certificate.SerialNumber(), publicKey: .init(rootKey.publicKey),
+            version: .v3, serialNumber: Self.serialNumber(), publicKey: .init(rootKey.publicKey),
             notValidBefore: notBefore, notValidAfter: notAfter, issuer: rootName, subject: rootName,
             signatureAlgorithm: .ecdsaWithSHA384,
             extensions: try Certificate.Extensions {
@@ -94,7 +94,7 @@ public final class AppAttestStandIn: Sendable {
             OrganizationName("Stoic tests")
         }
         intermediate = try Certificate(
-            version: .v3, serialNumber: Certificate.SerialNumber(), publicKey: .init(intermediateKey.publicKey),
+            version: .v3, serialNumber: Self.serialNumber(), publicKey: .init(intermediateKey.publicKey),
             notValidBefore: notBefore, notValidAfter: notAfter, issuer: rootName, subject: intermediateName,
             signatureAlgorithm: .ecdsaWithSHA384,
             extensions: try Certificate.Extensions {
@@ -141,7 +141,7 @@ public final class AppAttestStandIn: Sendable {
             OrganizationName("Stoic tests")
         }
         let credential = try Certificate(
-            version: .v3, serialNumber: Certificate.SerialNumber(), publicKey: .init(key.publicKey),
+            version: .v3, serialNumber: Self.serialNumber(), publicKey: .init(key.publicKey),
             notValidBefore: AppAttest.date(of: window.lowerBound), notValidAfter: AppAttest.date(of: window.upperBound),
             issuer: intermediateName, subject: subject, signatureAlgorithm: .ecdsaWithSHA256,
             extensions: try Certificate.Extensions {
@@ -187,6 +187,16 @@ public final class AppAttestStandIn: Sendable {
     /// Why the stand-in refused, as a device's `invalidKey` would.
     public enum StandInError: Error, Sendable, Hashable {
         case invalidKey
+    }
+
+    /// A random 20-byte serial number, as RFC 5280 asks. Made from bytes
+    /// rather than with `Certificate.SerialNumber()`, whose generic random
+    /// initialiser faults inside Thread Sanitizer's own instrumentation on
+    /// this toolchain (a SEGV in TSan, not a race it reports).
+    private static func serialNumber() -> Certificate.SerialNumber {
+        var generator = SystemRandomNumberGenerator()
+        let bytes = (0..<20).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        return Certificate.SerialNumber(bytes: bytes[...])
     }
 
     private static func der(_ certificate: Certificate) throws -> [UInt8] {

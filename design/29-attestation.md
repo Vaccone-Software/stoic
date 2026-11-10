@@ -1371,6 +1371,15 @@ Departures from the reviewed draft, and decisions it left open.
 - **The stand-in** makes CBOR defects through the tests' own writer, not
   through its API; it takes `Attesting` for every other way an attestation is
   wrong, and an app id for an assertion.
+- **Property tests, as run.** The window against its model over a million
+  random sequences of six counters, each with a random window. The CBOR
+  reader over 200,000 random inputs and 20,000 mutations of a real
+  attestation: never a trap, and whatever it accepts re-encodes to exactly the
+  bytes it read (one reading). The structured-field reader over 100,000
+  random strings: never a trap; its refusals are proved class by class (a
+  duplicate key, non-canonical base64, a decimal, …), not for every mutation.
+  Every one-bit change of a challenge is refused: `.forged`, except in the
+  version byte, which is `.malformed` first.
 - **Compile-fail**: `scripts/compile-fail/attestation/` (compiled against the
   trait build by `StoicAttestationTests`, and by check.sh), and
   `scripts/compile-fail/attested-http-without-fallback.swift`.
