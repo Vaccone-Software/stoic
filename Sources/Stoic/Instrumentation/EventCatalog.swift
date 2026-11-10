@@ -156,6 +156,7 @@ public enum EventCatalog {
         Entry(name: "store.journal_removed", level: .notice, meaning: "A journal and the files it keeps beside it (snapshot, tombstone, lock, damaged-log copies) were removed; reports the path and how many files went."),
         Entry(name: "store.journal_snapshot_lost", level: .error, meaning: "A journal's snapshot was lost (corrupt, and quarantined), and the records it folded in with it; open refuses until the app accepts the loss. Reports whether this open accepted it."),
         Entry(name: "store.journal_truncated", level: .warning, meaning: "A journal's torn or corrupt tail was cut at open; reports how many bytes were dropped."),
+        Entry(name: "store.outbox_already_settled", level: .info, meaning: "An outbox that remembers settled keys was asked to enqueue one; nothing was written and the key was returned."),
         Entry(name: "store.outbox_delivered", level: .debug, meaning: "An outbox entry was delivered and its acknowledgement made durable."),
         Entry(name: "store.outbox_delivery_failed", level: .warning, meaning: "An outbox entry used up its attempts or failed permanently; it stays pending."),
         Entry(name: "store.outbox_discarded", level: .warning, meaning: "An outbox entry was dropped without being delivered, and its removal made durable: the delivery refused it for good, it no longer decodes, or it expired. Reports the kind and the reason; never the entry."),

@@ -498,6 +498,25 @@ only: entries ahead of it are neither attempted nor waited for, so under
 order matters more than one entry. It must not be called from inside a delivery
 closure (it would wait for the turn its caller holds).
 
+**Settled keys, remembered on request (0.6).** By default an entry's key is
+forgotten once it settles, and enqueueing it again is a new entry. An outbox
+opened with `rememberSettled: n` (an overload of `open`, and of its
+`lockTimeout:` form) keeps the keys of the last `n` entries to settle, in
+settlement order: delivered, discarded by the delivery or by `discard(_:)`,
+undecodable or expired, for an expired effect must not be sent late either.
+Enqueueing a remembered key writes nothing, returns the key and reports
+`store.outbox_already_settled`; `isSettled(_:)` answers directly;
+`deliver(_:using:)` still answers `.notPending`. The window needs no log
+record of its own: acknowledgements are already `0x02` records, so recovery
+rebuilds it from the snapshot and the log, and the oldest key is forgotten
+first. A snapshot written by an outbox that remembers sets bit 30 of the
+count and carries the keys after the entries
+(`settledCount:u32 | (keyLength:u8 | key)*`): a one-way door, taken only by
+an outbox that asks, as expiry's bit 31 is. A release before 0.6 reads the
+flag as part of the count, finds the bytes too short, and refuses the
+snapshot with `.corrupt`. `JournaledLifecycleStore` (design/27) asks, so a
+hand-off repeated after a crash sends nothing twice.
+
 | What happens if…                                      | Behaviour                                                                                         |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | the app dies after `enqueue` returned                 | The entry is pending at the next launch                                                           |
@@ -525,6 +544,13 @@ closure (it would wait for the turn its caller holds).
 | the log passes `compactionThreshold` after a run      | Pending entries are folded into a snapshot; a failure to do so is reported, never thrown          |
 | the journal lost records to damage in the middle      | The intact entries are pending as before; `openReport.corruption` says how many records were lost and from which sequence: a lost enqueue is an entry that is never delivered, a lost acknowledgement one that is delivered again |
 | the outbox's snapshot is lost                         | `open` throws `.corrupt`, and keeps throwing until it is opened with `journalOptions.lostSnapshot = .acceptLoss`; the entries the snapshot held are gone, and `openReport.lostSnapshot` says so |
+| an outbox that remembers is asked to enqueue a key it delivered | Nothing is written; the key is returned; `store.outbox_already_settled`; nothing is sent again |
+| an outbox that remembers is asked to enqueue a key it discarded | The same, for a key discarded by the delivery, by `discard(_:)` or as expired |
+| an outbox that remembers is relaunched or compacted   | The remembered keys survive, rebuilt from the snapshot and the log's acknowledgements             |
+| more keys settle than the outbox remembers            | The oldest are forgotten first; one enqueued again is a new entry, delivered again under the same key |
+| an outbox does not remember (`rememberSettled: 0`)    | It behaves as before and writes the formats earlier releases read                                 |
+| an older build opens an outbox whose snapshot remembers settled keys | It refuses it with `StoreError.corrupt` (`outbox snapshot`, "malformed"); it never misreads it |
+| an outbox that remembers dies at any point            | design/15's invariants hold, and no acknowledged key is pending again or enqueued again after recovery |
 | two processes open one outbox                         | With `journalOptions.crossProcessLock`, the second `open` throws `.busy` (or waits, with `lockTimeout:`); without it, each keeps its own end of the log and they overwrite each other's records |
 
 ### Cross-process lock

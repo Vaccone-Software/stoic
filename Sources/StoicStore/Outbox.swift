@@ -76,6 +76,14 @@ internal import Synchronization
 ///   older than ``DeliveryPolicy/Expiry/maxAge``, is handled by the policy
 ///   (``DeliveryPolicy/onUndecodable``, ``DeliveryPolicy/expiry``) and reported,
 ///   so it does not hold the queue forever.
+/// - **Settled keys, remembered on request.** By default an entry's key is
+///   forgotten once it settles (delivered, discarded, or expired), and
+///   enqueueing it again is a new entry. An outbox opened with
+///   `rememberSettled: n` keeps the keys of the last `n` entries to settle,
+///   across relaunches and compactions: enqueueing one of them writes
+///   nothing (``isSettled(_:)`` says so). A store that hands effects to the
+///   outbox after its own commit, and may hand them again after a crash,
+///   relies on it (design/27).
 /// - **Keys inside.** The entry's key is the enclosing key of every attempt:
 ///   a `.keyed` operation performed inside `deliver` without a key of its own
 ///   derives one from it, the same on every attempt and every relaunch.
@@ -143,7 +151,7 @@ public actor Outbox<Item: Sendable> {
         public var wasAlreadyRunning = false
     }
 
-    private struct Stored {
+    struct Stored {
         let key: IdempotencyKey
         let sequence: UInt64
         let bytes: [UInt8]
@@ -206,6 +214,8 @@ public actor Outbox<Item: Sendable> {
     private let policy: DeliveryPolicy
     private let compactionThreshold: Int
     private var pending: PendingQueue
+    /// The keys of the last entries to settle, when the outbox remembers.
+    private var settled: SettledKeys
 
     /// Who may deliver: one at a time, so an entry is never attempted twice at
     /// once and a run is never interleaved with another. A `Mutex` rather than
@@ -230,13 +240,17 @@ public actor Outbox<Item: Sendable> {
         var queue: [(id: UInt64, continuation: CheckedContinuation<Void, any Error>)] = []
     }
 
-    private init(journal: Journal, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int, pending: PendingQueue) {
+    private init(
+        journal: Journal, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int, pending: PendingQueue,
+        settled: SettledKeys
+    ) {
         self.openReport = journal.openReport
         self.journal = journal
         self.codec = codec
         self.policy = policy
         self.compactionThreshold = compactionThreshold
         self.pending = pending
+        self.settled = settled
     }
 
     /// Opens the outbox at `path` (a journal and its snapshot beside it),
@@ -265,7 +279,40 @@ public actor Outbox<Item: Sendable> {
         journalOptions: Journal.Options = Journal.Options()
     ) throws(StoreError) -> Outbox {
         let journal = try Journal.open(at: path, fileSystem: fileSystem, options: journalOptions)
-        return try recover(journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold)
+        return try recover(
+            journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold, rememberSettled: 0)
+    }
+
+    /// ``open(at:codec:fileSystem:policy:compactionThreshold:journalOptions:)``,
+    /// remembering the keys of the last `rememberSettled` entries to settle,
+    /// so that enqueueing one of them again writes nothing.
+    ///
+    /// An entry settles when it is delivered, discarded (by the delivery, by
+    /// ``discard(_:)``, as undecodable or as expired). A discarded key must
+    /// not come back either, or an expired effect would be sent late. The
+    /// keys are rebuilt at open from the snapshot and the log's
+    /// acknowledgements, and the oldest are forgotten first.
+    ///
+    /// With `rememberSettled` above 0, a compaction writes a snapshot that
+    /// carries the keys, which a release before this one refuses to open
+    /// (`.corrupt`): a one-way door, taken only by an outbox that asks. With
+    /// 0 this is the form above, and writes what every release reads.
+    public static func open(
+        at path: String,
+        codec: OutboxCodec<Item>,
+        fileSystem: any FileSystem = PosixFileSystem(),
+        policy: DeliveryPolicy = DeliveryPolicy(),
+        compactionThreshold: Int = 64 * 1024,
+        journalOptions: Journal.Options = Journal.Options(),
+        rememberSettled: Int
+    ) throws(StoreError) -> Outbox {
+        guard rememberSettled >= 0 else {
+            throw StoreError(kind: .invalidArgument, operation: "open", path: path, detail: "rememberSettled must not be negative")
+        }
+        let journal = try Journal.open(at: path, fileSystem: fileSystem, options: journalOptions)
+        return try recover(
+            journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold,
+            rememberSettled: rememberSettled)
     }
 
     /// ``open(at:codec:fileSystem:policy:compactionThreshold:journalOptions:)``,
@@ -280,32 +327,67 @@ public actor Outbox<Item: Sendable> {
         journalOptions: Journal.Options = Journal.Options(),
         lockTimeout: Duration
     ) async throws(PolicyError<StoreError>) -> Outbox {
+        try await open(
+            at: path, codec: codec, fileSystem: fileSystem, policy: policy, compactionThreshold: compactionThreshold,
+            journalOptions: journalOptions, lockTimeout: lockTimeout, rememberSettled: 0)
+    }
+
+    /// ``open(at:codec:fileSystem:policy:compactionThreshold:journalOptions:lockTimeout:)``,
+    /// remembering settled keys as
+    /// ``open(at:codec:fileSystem:policy:compactionThreshold:journalOptions:rememberSettled:)``
+    /// does.
+    public static func open(
+        at path: String,
+        codec: OutboxCodec<Item>,
+        fileSystem: any FileSystem = PosixFileSystem(),
+        policy: DeliveryPolicy = DeliveryPolicy(),
+        compactionThreshold: Int = 64 * 1024,
+        journalOptions: Journal.Options = Journal.Options(),
+        lockTimeout: Duration,
+        rememberSettled: Int
+    ) async throws(PolicyError<StoreError>) -> Outbox {
+        guard rememberSettled >= 0 else {
+            throw .failed(StoreError(kind: .invalidArgument, operation: "open", path: path, detail: "rememberSettled must not be negative"))
+        }
         let journal = try await Journal.open(at: path, fileSystem: fileSystem, options: journalOptions, lockTimeout: lockTimeout)
         do throws(StoreError) {
-            return try recover(journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold)
+            return try recover(
+                journal, path: path, codec: codec, policy: policy, compactionThreshold: compactionThreshold,
+                rememberSettled: rememberSettled)
         } catch {
             throw .failed(error)
         }
     }
 
-    /// The pending entries, rebuilt from the snapshot and the log.
+    /// The pending entries, and the settled keys remembered, rebuilt from
+    /// the snapshot and the log.
     private static func recover(
-        _ journal: Journal, path: String, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int
+        _ journal: Journal, path: String, codec: OutboxCodec<Item>, policy: DeliveryPolicy, compactionThreshold: Int,
+        rememberSettled: Int
     ) throws(StoreError) -> Outbox {
         let replay = try journal.replay()
         var pending = PendingQueue()
+        var settled = SettledKeys(capacity: rememberSettled)
         if let snapshot = replay.snapshot {
-            for stored in try Self.decodeSnapshot(snapshot.bytes, path: path) { pending.append(stored) }
+            let (entries, window) = try Self.decodeSnapshot(snapshot.bytes, path: path)
+            for stored in entries { pending.append(stored) }
+            for key in window { settled.add(key) }
         }
         for record in replay.records {
             switch try Self.decodeRecord(record.bytes, path: path) {
             case .enqueue(let key, let item, let enqueuedAt):
                 pending.append(Stored(key: key, sequence: record.sequence, bytes: item, enqueuedAt: enqueuedAt))
+                // A key enqueued again after it settled (by an outbox that
+                // did not remember) is pending, not settled.
+                settled.remove(key)
             case .acknowledge(let key):
                 pending.remove(key)
+                settled.add(key)
             }
         }
-        return Outbox(journal: journal, codec: codec, policy: policy, compactionThreshold: compactionThreshold, pending: pending)
+        return Outbox(
+            journal: journal, codec: codec, policy: policy, compactionThreshold: compactionThreshold, pending: pending,
+            settled: settled)
     }
 
     // MARK: Enqueue
@@ -320,16 +402,31 @@ public actor Outbox<Item: Sendable> {
     /// discarded) the outbox forgets the key: enqueueing it again is a new
     /// entry, delivered again under the same key, which a server that honours
     /// the key deduplicates and one that does not acts on twice. An operation
-    /// must not be enqueued again after its delivery has been reported.
+    /// must not be enqueued again after its delivery has been reported,
+    /// unless the outbox remembers settled keys (`rememberSettled`): then
+    /// enqueueing a key it remembers writes nothing, returns the key and
+    /// reports `store.outbox_already_settled`.
     @discardableResult
     public func enqueue(_ item: Item, key: IdempotencyKey = .random()) throws(StoreError) -> IdempotencyKey {
         if pending.contains(key) { return key }
+        if alreadySettled(key) { return key }
         let encoded: [UInt8]
         do {
             encoded = try codec.encode(item)
         } catch {
             throw StoreError(kind: .invalidArgument, operation: "enqueue", detail: "the item could not be encoded: \(error)")
         }
+        return try enqueue(encoded: encoded, key: key)
+    }
+
+    /// Enqueues an item already encoded by this outbox's codec, as
+    /// ``enqueue(_:key:)`` does: for a store that keeps the encoded bytes
+    /// itself and hands them over without decoding them (an effect a newer
+    /// build wrote decodes only in that build).
+    @discardableResult
+    func enqueue(encoded: [UInt8], key: IdempotencyKey) throws(StoreError) -> IdempotencyKey {
+        if pending.contains(key) { return key }
+        if alreadySettled(key) { return key }
         // Stamped only when the policy expires entries: an outbox that never
         // does writes the record format every earlier release reads.
         let enqueuedAt = policy.expiry.map { _ in Self.milliseconds(Moment.now.sinceEpoch) }
@@ -339,7 +436,21 @@ public actor Outbox<Item: Sendable> {
         return key
     }
 
+    /// Whether `key` is remembered as settled, reported when it is.
+    private func alreadySettled(_ key: IdempotencyKey) -> Bool {
+        guard settled.contains(key) else { return false }
+        StoreEvents.record(Event("store.outbox_already_settled", level: .info, fields: [.init("key", .string(key.rawValue))]))
+        return true
+    }
+
     // MARK: Inspecting
+
+    /// Whether the entry `key` names has settled (been delivered, discarded
+    /// or expired) and is still remembered: always `false` for an outbox
+    /// that does not remember (`rememberSettled: 0`).
+    public func isSettled(_ key: IdempotencyKey) -> Bool {
+        settled.contains(key)
+    }
 
     /// How many entries are waiting.
     public var pendingCount: Int { pending.count }
@@ -644,6 +755,7 @@ public actor Outbox<Item: Sendable> {
         guard pending.contains(key) else { return }
         try journal.append(try Self.acknowledgeRecord(key: key))
         pending.remove(key)
+        settled.add(key)
     }
 
     /// Folds the pending entries into a snapshot once the log is long. A
@@ -651,7 +763,7 @@ public actor Outbox<Item: Sendable> {
     /// reported, not thrown: the delivery run's result matters more.
     private func compactIfNeeded() {
         guard journal.byteCount > compactionThreshold else { return }
-        let snapshot = Self.encodeSnapshot(pending.entries)
+        let snapshot = Self.encodeSnapshot(pending.entries, settled: settled.isRemembering ? settled.keys : nil)
         do throws(StoreError) {
             try journal.compact(snapshot: snapshot)
         } catch {
@@ -723,19 +835,36 @@ extension Outbox {
     /// top bit of `count` set and each entry's `enqueuedAt:i64` (`Int64.min`
     /// for none) after its `sequence`. The first is what every release has
     /// written; the second only appears under ``DeliveryPolicy/expiry``.
-    private static func encodeSnapshot(_ entries: [Stored]) -> [UInt8] {
+    ///
+    /// An outbox that remembers settled keys sets bit 30 of `count` and
+    /// writes them after the entries, oldest first:
+    /// `settledCount:u32 | (keyLength:u8 | key)*`. A release before this one
+    /// reads the flag as part of the count, finds the bytes too short for
+    /// that many entries, and refuses the snapshot as `.corrupt`.
+    static func encodeSnapshot(_ entries: [Stored], settled: [IdempotencyKey]?) -> [UInt8] {
         let stamped = entries.contains { $0.enqueuedAt != nil }
-        var bytes = littleEndian(UInt32(entries.count) | (stamped ? Self.stampedFlag : 0))
+        let flags = (stamped ? Self.stampedFlag : 0) | (settled != nil ? Self.rememberedFlag : 0)
+        var bytes = littleEndian(UInt32(entries.count) | flags)
         for entry in entries {
             let key = Array(entry.key.rawValue.utf8)
             bytes += littleEndian(entry.sequence)
             if stamped { bytes += littleEndian(UInt64(bitPattern: entry.enqueuedAt ?? .min)) }
             bytes += [UInt8(key.count)] + key + littleEndian(UInt32(entry.bytes.count)) + entry.bytes
         }
+        if let settled {
+            bytes += littleEndian(UInt32(settled.count))
+            for key in settled {
+                // Every key was checked at 255 bytes or fewer when its entry
+                // was enqueued.
+                let utf8 = Array(key.rawValue.utf8)
+                bytes += [UInt8(utf8.count)] + utf8
+            }
+        }
         return bytes
     }
 
     private static var stampedFlag: UInt32 { 0x8000_0000 }
+    private static var rememberedFlag: UInt32 { 0x4000_0000 }
 
     /// Whole milliseconds in `time` (since 1970, for a wall-clock reading).
     static func milliseconds(_ time: Duration) -> Int64 {
@@ -752,14 +881,17 @@ extension Outbox {
         return Duration.milliseconds(age) >= maxAge
     }
 
-    private static func decodeSnapshot(_ bytes: [UInt8], path: String) throws(StoreError) -> [Stored] {
+    /// The entries of a snapshot, and the settled keys it remembers (none
+    /// for one written by an outbox that does not remember).
+    static func decodeSnapshot(_ bytes: [UInt8], path: String) throws(StoreError) -> (entries: [Stored], settled: [IdempotencyKey]) {
         func corrupt() -> StoreError {
             StoreError(kind: .corrupt, operation: "outbox snapshot", path: path, detail: "malformed")
         }
         guard bytes.count >= 4 else { throw corrupt() }
         let header = readLittleEndian(bytes, at: 0) as UInt32
         let stamped = header & stampedFlag != 0
-        let count = Int(header & ~stampedFlag)
+        let remembered = header & rememberedFlag != 0
+        let count = Int(header & ~(stampedFlag | rememberedFlag))
         var offset = 4
         var entries: [Stored] = []
         for _ in 0..<count {
@@ -783,7 +915,72 @@ extension Outbox {
             entries.append(Stored(key: key, sequence: sequence, bytes: Array(bytes[offset..<offset + length]), enqueuedAt: enqueuedAt))
             offset += length
         }
+        var settled: [IdempotencyKey] = []
+        if remembered {
+            guard bytes.count >= offset + 4 else { throw corrupt() }
+            let settledCount = Int(readLittleEndian(bytes, at: offset) as UInt32)
+            offset += 4
+            for _ in 0..<settledCount {
+                guard bytes.count >= offset + 1 else { throw corrupt() }
+                let keyLength = Int(bytes[offset])
+                offset += 1
+                guard bytes.count >= offset + keyLength else { throw corrupt() }
+                settled.append(IdempotencyKey(rawValue: String(decoding: bytes[offset..<offset + keyLength], as: UTF8.self)))
+                offset += keyLength
+            }
+        }
         guard offset == bytes.count else { throw corrupt() }
-        return entries
+        return (entries, settled)
+    }
+}
+
+// MARK: - Settled keys
+
+extension Outbox {
+    /// The keys of the last `capacity` entries to settle, in settlement
+    /// order, found in constant time: a queue that forgets its oldest.
+    struct SettledKeys {
+        let capacity: Int
+        /// Every key added and not yet forgotten, oldest first from `head`;
+        /// a key removed or added again since leaves a stale slot, skipped.
+        private var order: [IdempotencyKey] = []
+        private var head = 0
+        /// Each remembered key's index in `order`.
+        private var positions: [IdempotencyKey: Int] = [:]
+
+        init(capacity: Int) {
+            self.capacity = max(0, capacity)
+        }
+
+        var isRemembering: Bool { capacity > 0 }
+
+        func contains(_ key: IdempotencyKey) -> Bool { positions[key] != nil }
+
+        /// The remembered keys, oldest first.
+        var keys: [IdempotencyKey] {
+            order[head...].enumerated().compactMap { offset, key in positions[key] == head + offset ? key : nil }
+        }
+
+        mutating func add(_ key: IdempotencyKey) {
+            guard capacity > 0 else { return }
+            positions[key] = order.count
+            order.append(key)
+            while positions.count > capacity {
+                let oldest = order[head]
+                if positions[oldest] == head { positions[oldest] = nil }
+                head += 1
+            }
+            // Squeeze out what has been forgotten once it outweighs the rest.
+            if head > 64, head > order.count / 2 {
+                let live = keys
+                order = live
+                head = 0
+                positions = Dictionary(uniqueKeysWithValues: live.enumerated().map { ($1, $0) })
+            }
+        }
+
+        mutating func remove(_ key: IdempotencyKey) {
+            positions[key] = nil
+        }
     }
 }
