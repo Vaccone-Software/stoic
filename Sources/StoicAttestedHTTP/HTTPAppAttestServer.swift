@@ -6,7 +6,7 @@ public import StoicHTTP
 internal import StoicJSON
 
 /// The app's server, over HTTP, as design/29's wire protocol has it: what an
-/// ``AppAttester`` asks for a challenge and an enrolment.
+/// `AppAttester` asks for a challenge and an enrolment.
 ///
 /// | Exchange | Request | Success | Refusal |
 /// | --- | --- | --- | --- |

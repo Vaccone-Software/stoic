@@ -121,6 +121,26 @@ true)`) makes a deletion real.
     `PosixFileSystem(newFileMode: 0o600, newDirectoryMode: 0o700)` when what
     it holds is private. `outbox.deliver(key) { … }` sends one entry now and
     says what happened to it, while a schedule drains the rest.
+13. **"Who is asking" as an argument, a device's moment taken as when, a
+    permission still loading read as "denied"** → provenance
+    ([design/28](../design/28-provenance.md)). At each trust boundary, decode
+    through the schema and wrap what arrives as `Claimed<T>`; write the one
+    verifier per evidence kind (`struct Session: PrincipalEvidence` with a
+    `fileprivate` `Mint`) and make functions that need facts take
+    `Verified<T, E>`. Record the service's own time with `Moment.stamped()`
+    and keep the device's beside it as a claim. Turn `if isAllowed` into a
+    `PermissionPolicy` per permission, and switch on its three answers. The
+    lint rules (`unverified-claim`, `evidence-mint-access`,
+    `derivation-ignores-input`) arrive with the plugin; each `unverified()`
+    you keep gets its reason written down.
+14. **Hand-rolled DeviceCheck calls** → `AppAttester` (in `StoicApple`) and
+    `AppAttestAuthenticator` (the `StoicAttestedHTTP` product) on the app's
+    client, and, on a Swift server, `AppAttestGate` (the `StoicAttestation`
+    product, behind `traits: ["Attestation"]`) over the app's own ledger
+    ([design/29](../design/29-attestation.md)). Decide `ifUnsupported:`
+    explicitly on both sides: a claim of "unsupported" is only a claim. App
+    Attest proves an unmodified app on genuine hardware sent the bytes, never
+    who the user is or that the content is true.
 
 ## 6. Make tests deterministic
 

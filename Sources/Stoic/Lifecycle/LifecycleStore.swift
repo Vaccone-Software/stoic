@@ -2,7 +2,7 @@
 /// journal on a device, memory in a test.
 ///
 /// The protocol is the obligation; ``update(_:attempts:_:)`` (and
-/// ``apply(_:to:by:because:)``, ``settle(_:)``) is the compliant path.
+/// ``apply(_:to:by:because:)-(_,_,Definition.Principal,_)``, ``settle(_:)``) is the compliant path.
 ///
 /// **What a conforming store promises.** `commit` compares the stored
 /// revision with the change's ``LifecycleChange/base`` and, in one
@@ -154,7 +154,7 @@ extension LifecycleStore {
     }
 
     /// Applies `event` by a principal a verifier authenticated, recording
-    /// the principal's value (design/28). See ``apply(_:to:by:because:)``.
+    /// the principal's value (design/28). See ``apply(_:to:by:because:)-(_,_,Definition.Principal,_)``.
     ///
     /// A server's write path takes this one, so "who did it" is never an
     /// argument the caller chose. History read back is the store's record of

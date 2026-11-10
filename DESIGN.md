@@ -142,7 +142,7 @@ fetches no other package at all.
    Stoic ············ the kernel: Ambient · Deadline · Moment · Schedule ·
    (stdlib, Sync.)    Retry · Operations · Concurrency · Scope · Policies ·
                       StateMachine · Lifecycle · ServiceGraph · Supervisor ·
-                      Report · Instrumentation
+                      Claimed · Verified · permissions · Report · Instrumentation
    StoicJSON ········ strict JSON, the trust boundary (stdlib only)
      StoicSchema ···· one declaration per type        ← StoicJSON
        StoicTime ···· dates, times, zones and their rules ← Stoic, StoicSchema
@@ -154,19 +154,22 @@ fetches no other package at all.
      StoicSettings ·· settings that cannot corrupt    ← Stoic, StoicStore, StoicSchema
      StoicHTTP ······ the resilient HTTP client       ← Stoic, StoicFoundation, StoicSchema
        StoicDownloads  resumable, verified downloads (Crypto) ← Stoic, StoicHTTP, StoicStore
+   StoicAttestation · the server's App Attest verifier (Attestation) ← Stoic
  Apple ────────────────────────────────────────────────────────────────────────
    StoicApple ······· reachability, BGTask, Keychain  ← Stoic, StoicFoundation
      StoicSealedKeychain · the Keychain as a sealed keyring's custody (Crypto) ← StoicSealed, StoicApple
    StoicAppKit, StoicUIKit · lifecycle bridges        ← Stoic
    StoicXPC ········· a bundled XPC service, called and hosted (macOS) ← Stoic
+   StoicAttestedHTTP · App Attest signing StoicHTTP's requests ← StoicApple, StoicHTTP, StoicJSON
  tools ────────────────────────────────────────────────────────────────────────
    StoicMacros (Macros trait) · StoicLint + stoic-lint (Lint trait): swift-syntax
    StoicSealed, StoicDownloads (Crypto trait): swift-crypto, which is BoringSSL off Apple platforms
+   StoicAttestation (Attestation trait, which enables Crypto): swift-certificates, swift-asn1, swift-crypto
 ```
 
 | Product              | Contents                                                                       | Depends on                         |
 | -------------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
-| `Stoic`              | Every runtime primitive, `Moment` with the ambient wall clock, and lifecycles read at rest and live | stdlib, `Synchronization`, `os`, the C library's real-time clock |
+| `Stoic`              | Every runtime primitive, `Moment` with the ambient wall clock, lifecycles read at rest and live, and provenance (`Claimed`, `Verified`, minters, permissions) | stdlib, `Synchronization`, `os`, the C library's real-time clock |
 | `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation, an in-memory lifecycle store | `Stoic`, Swift Testing             |
 | `StoicJSON`          | Strict JSON: duplicate keys, exact numbers, positions                          | stdlib                             |
 | `StoicSchema`        | Decode, encode, validate, JSON Schema, migrations, generators                 | `StoicJSON`                        |
@@ -182,6 +185,8 @@ fetches no other package at all.
 | `StoicSealedKeychain` | A `SecretStore` (the Keychain) as the custody of a sealed keyring: the one place `StoicSealed` and `StoicApple` meet | `StoicSealed`, `StoicApple`; swift-crypto, behind `Crypto` |
 | `StoicAppKit`, `StoicUIKit` | Lifecycle bridges                                                       | `Stoic`, AppKit / UIKit            |
 | `StoicXPC`           | A bundled XPC service: the app's peer (runs, handshake by build, losses, ending) and the service's host (watchdog, idle exit); a simulated service for tests | `Stoic`, XPC; macOS only |
+| `StoicAttestedHTTP`  | App Attest as an HTTP authenticator: `AppAttestAuthenticator` signs `StoicHTTP`'s requests with `StoicApple`'s `AppAttester`; the wire protocol with the app's server. The one place the two meet | `StoicApple`, `StoicHTTP`, `StoicJSON`; DeviceCheck, CryptoKit; Apple platforms |
+| `StoicAttestation`   | The server's App Attest verifier: attestations, assertions, signed requests, challenges, the counter window, a ledger protocol, `AppAttestGate`, and a stand-in device for tests | `Stoic`; swift-crypto, swift-certificates, swift-asn1, behind `Attestation` |
 | `StoicMacros`        | `@Schema`, `@Refined`; `@StateMachine`, `@Services` planned                    | `StoicSchema`; swift-syntax, behind `Macros` |
 | `StoicLint`          | Build-tool plugin that fails the build on unsafe patterns                      | swift-syntax, behind `Lint` (host only) |
 
@@ -384,6 +389,8 @@ incident review is the wrong default.
 | 25  | [XPC services](design/25-xpc.md) | a request sent to a service that is exiting, a loss handled twice, a hang on a wedged helper, an app talking to a service of another build | Built: `StoicXPC` (macOS) |
 | 26  | [Time](design/26-time.md) | `Date()` read in the middle of a test, a birthday shown a day early, an event with no zone, a future meeting stored in UTC an hour wrong after a rule change | Built: `Moment` and the ambient wall clock (kernel), `StoicTime`, `stoic.wall-clock-read` |
 | 27  | [Lifecycles](design/27-lifecycle.md) | status booleans and timestamps decoded by ternaries, an expiry checked on one path and forgotten on another, no record of who did what, an email sent twice or never | Built: `Lifecycle`, records at rest and `LifecycleStore` (kernel), `JournaledLifecycleStore` (`StoicStore`), `InMemoryLifecycleStore` (`StoicTesting`) |
+| 28  | [Provenance](design/28-provenance.md) | a `userId` argument trusted as who is asking, a device's clock taken as when, a permission still loading read as "denied", a signature taken for proof of what was signed | Built: `Claimed`, `Verified`, `Minter`, `OwnClock`, permissions with three outcomes (kernel), `TestProof`, `Sealing.verify`, three lint rules |
+| 29  | [App Attest](design/29-attestation.md) | every request failing after a reinstall, attesting on every launch, "unsupported" skipped silently, a chain checked and the nonce forgotten, counters refused when requests arrive out of order | Built: `AppAttester` (`StoicApple`), the `HTTPAuthenticator` seam (`StoicHTTP`), `StoicAttestedHTTP`, `StoicAttestation` behind the `Attestation` trait; tested against Apple's real attestations |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical

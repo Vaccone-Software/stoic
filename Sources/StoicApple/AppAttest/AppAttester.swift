@@ -182,8 +182,10 @@ public actor AppAttester {
     /// The next ``enrolledKey()`` enrols another. Nothing happens if `key` is
     /// not the current key.
     ///
-    /// - Parameter reason: Why, in the app's words (`"unknown_key"`); recorded
-    ///   privately in no event, kept for the caller's own log.
+    /// - Parameters:
+    ///   - key: The key to forget.
+    ///   - reason: Why, in the app's words (`"unknown_key"`): for the caller's
+    ///     own log; no event records it.
     public func discard(_ key: AppAttestKeyID, because reason: String) async throws(AppAttestError) {
         deadKeys.insert(key.base64)
         if enrolled == key { enrolled = nil }

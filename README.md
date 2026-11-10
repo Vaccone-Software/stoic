@@ -200,6 +200,8 @@ that replays exactly.
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
 | `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |
 | `StoicXPC`     | Calling a helper process in the app's bundle: its lifecycle explicit (a request never reaches a process that is exiting, a lost run is one event, a call says whether the service may have acted), a handshake by build, a stuck request ending the service, a watchdog and idle exit in the service; a simulated service so every failure is a test on virtual time | `Stoic`, XPC; macOS only |
+| `StoicAttestedHTTP` | App Attest on the device: `StoicApple`'s `AppAttester` (one key per account, enrolled once, replaced when it dies) signing `StoicHTTP`'s requests, every attempt afresh, and the wire protocol with the app's server | `StoicApple`, `StoicHTTP`, `StoicJSON`; Apple platforms |
+| `StoicAttestation` | The server's App Attest verifier: attestations and assertions in Apple's order against Apple's root, signed requests, MAC'd challenges, a counter window that accepts each counter once in any order, account binding, a gate over the app's own ledger; a stand-in device for tests | `Stoic`, swift-crypto, swift-certificates, behind the `Attestation` trait |
 | `StoicObservability` | Events to swift-log and swift-metrics                 | behind the `Logging` / `Metrics` traits |
 | `StoicMacros`  | `@Schema` writes a type's schema from its declaration; `@Refined` a named refinement | `StoicSchema`, swift-syntax, behind the `Macros` trait |
 | `StoicLint`    | Build-tool plugin: unsafe patterns fail the build         | swift-syntax, behind the `Lint` trait |
@@ -261,6 +263,50 @@ without the trait, write that. Mistakes are compile errors at the line that is
 wrong: a `@Length` on an `Int`, a default that
 breaks its own `@Range`, a key used twice. See
 [design/06](design/06-validation.md#as-built-layer-4-stoicmacros).
+
+### Provenance and App Attest
+
+Where a value came from is part of its type (design/28). Data that crossed a
+trust boundary is a `Claimed<T>`; a function that needs a fact takes a
+`Verified<T, E>`, which only a verifier can make; a permission check has three
+answers, and "still loading" is not one of "denied" or "allowed":
+
+```swift
+func accept(_ waiver: WaiverID, at moment: Verified<Moment, OwnClock>, by parent: Verified<Someone, ParentLink>)
+try await accept(waiverID, at: Moment.stamped(), by: parent)        // a device's moment does not compile here
+
+switch try await EditPolicy().check(Claimed(eventID), by: me) {     // me: Verified<Someone, Session>
+case .granted(let event): edit(event)                                // the grant is the target
+case .denied(let denial): show(denial.reason)
+case .unknown:            showProgress()
+}
+```
+
+App Attest (design/29) is Apple's way for a server to tell its own app from a
+script. **What it proves:** a request came from an unmodified build of this
+app, on genuine Apple hardware, signed by one hardware-backed key, and was not
+altered on the way. **What it does not prove:** who the user is (anyone holding
+the device signs with the same key), or that what the request says is true (a
+genuine app can be handed a fake location, and signs it faithfully). The type
+says the same: `AppAttested` is content evidence, so an attested request does
+not compile where a person must be authenticated.
+
+```swift
+// The app
+let attester = AppAttester(account: user.id, secrets: KeychainSecretStore(service: "app.example"), server: .http(enrolmentClient))
+let client = HTTPClient(base: api, authenticator: AppAttestAuthenticator(attester, ifUnsupported: .declare))
+
+// The server (trait `Attestation`)
+switch try await gate.verify(request, account: session.userID) {
+case .attested(let attested, _): try attested.deriving { try CheckIn.decode($0.body) }   // the genuine app's word
+case .unsupported(let claim):    decideWithoutAttestation(claim)                          // anyone can say it
+}
+```
+
+The verifier is tested against seven real attestations and assertions captured
+from iPhones and Apple's real root. Nothing was run on a device for this
+release: on the Mac it was built on, `DCAppAttestService.isSupported` is
+`false`, as Apple documents for Macs, and the simulator cannot attest either.
 
 `StoicSealed` and `StoicDownloads` are opt in as well, so that adopting the other libraries fetches
 no cryptography package (and builds no BoringSSL on Linux):

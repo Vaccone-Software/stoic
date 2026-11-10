@@ -16,12 +16,14 @@
 # (on Apple platforms with StoicSealedKeychain's adapter, built on a secret
 # store, and the line design/24 shows for it, taken from that document so it
 # cannot drift): swift-crypto must resolve, and nothing else may be fetched
-# with it.
+# with it. A third enables the Attestation trait and runs StoicAttestation's
+# gate: swift-crypto, swift-asn1 and swift-certificates must resolve, and
+# nothing else.
 set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-portable="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicSealed StoicObservability StoicHTTP StoicDownloads StoicTime"
-apple="StoicApple StoicAppKit StoicUIKit StoicSealedKeychain StoicXPC"
+portable="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicSealed StoicObservability StoicHTTP StoicDownloads StoicTime StoicAttestation"
+apple="StoicApple StoicAppKit StoicUIKit StoicSealedKeychain StoicXPC StoicAttestedHTTP"
 case "$(uname -s)" in
     Darwin) products="$portable $apple" ;;
     *) products="$portable" ;;
@@ -163,3 +165,60 @@ if [ -n "$extra" ]; then
 fi
 swift run App
 echo "adopted StoicSealed with the Crypto trait: swift-crypto fetched, nothing else"
+
+# The Attestation trait: StoicAttestation is an empty module above, so adopt it
+# again with the trait on: a gate issues a challenge, checks it, and refuses an
+# unsigned request as `missing`.
+attestation="$(mktemp -d "${TMPDIR:-/tmp}/stoic-adoption-attestation.XXXXXX")"
+trap 'rm -rf "$work" "$crypto" "$attestation"' EXIT
+mkdir -p "$attestation/Sources/App"
+cat > "$attestation/Package.swift" <<EOF
+// swift-tools-version: 6.4
+import PackageDescription
+
+let package = Package(
+    name: "adopter-attestation",
+    platforms: [.macOS(.v27), .iOS(.v27), .tvOS(.v27), .watchOS(.v27), .visionOS(.v27)],
+    dependencies: [.package(path: "$root", traits: ["Attestation"])],
+    targets: [.executableTarget(name: "App", dependencies: [
+        .product(name: "StoicAttestation", package: "$identity"), .product(name: "Stoic", package: "$identity"),
+    ])]
+)
+EOF
+cat > "$attestation/Sources/App/main.swift" <<'EOF'
+import Stoic
+import StoicAttestation
+
+let gate = AppAttestGate(
+    app: try AppID("A1B2C3D4E5.app.adopter"), environment: .production, authority: "api.adopter.example",
+    challenges: try AppAttestChallenges(keys: [Secret(Array(repeating: 1, count: 32))]),
+    ledger: InMemoryAppAttestLedger(), ifUnsupported: .refuse)
+let challenge = gate.challenge(.requests)
+_ = try gate.challenges.check(challenge.bytes, for: .requests)
+let unsigned = SignedRequest(method: "POST", path: "/v1/x", query: "", headers: [], body: [])
+do {
+    _ = try await gate.verify(unsigned, account: nil)
+    fatalError("an unsigned request was accepted")
+} catch {
+    guard error.code == "missing" else { fatalError("refused as \(error.code), not missing") }
+}
+guard AppAttestRoot.apple.fingerprint.count == 32 else { fatalError("Apple's root is not embedded") }
+print("adopted StoicAttestation with the Attestation trait: a challenge issued and checked, an unsigned request refused")
+EOF
+
+cd "$attestation"
+swift package resolve
+for package in swift-crypto swift-asn1 swift-certificates; do
+    if [ ! -f Package.resolved ] || ! grep -q "\"identity\" : \"$package\"" Package.resolved; then
+        echo "error: adopting StoicAttestation with the Attestation trait did not resolve $package" >&2
+        exit 1
+    fi
+done
+extra="$(grep '"identity"' Package.resolved | grep -v -e swift-crypto -e swift-asn1 -e swift-certificates || true)"
+if [ -n "$extra" ]; then
+    echo "error: the Attestation trait fetched more than swift-crypto, swift-asn1 and swift-certificates:" >&2
+    printf '%s\n' "$extra" >&2
+    exit 1
+fi
+swift run App
+echo "adopted StoicAttestation with the Attestation trait: swift-crypto, swift-asn1 and swift-certificates fetched, nothing else"

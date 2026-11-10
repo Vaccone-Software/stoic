@@ -400,6 +400,23 @@ struct AppAttestGateTests {
         #expect(await refusing.verify(declared).refusal == "missing", "neither a signature nor a claim")
     }
 
+    @Test func aLedgerThatFailsIsUnavailableNeverARefusal() async throws {
+        struct Broken: AppAttestLedger {
+            struct Down: Error {}
+            func key(_ id: [UInt8]) async throws -> AppAttestKeyRecord? { throw Down() }
+            func insert(_ record: AppAttestKeyRecord) async throws -> Bool { throw Down() }
+            func commit(_ record: AppAttestKeyRecord, over revision: UInt64) async throws -> Bool { throw Down() }
+            func remove(_ id: [UInt8]) async throws { throw Down() }
+            func spend(challenge id: [UInt8], until expiry: Moment) async throws -> Bool { throw Down() }
+        }
+        let rig = try AttestationRig(gateLedger: Broken())
+        let (_, enrolment) = try await rig.attestedKey()
+        guard case .failure(let refusal) = await rig.enrol(enrolment) else { Issue.record("enrolled with no ledger"); return }
+        #expect(refusal.code == "unavailable" && refusal.status == 503 && refusal.retryDecision == .retry)
+        let event = try #require(rig.events.events(named: "attest.ledger_failed").first)
+        #expect(event.level == .error && event["error"]?.description.hasSuffix("Down") == true)
+    }
+
     @Test func anUnknownOrRevokedKeyIsRefusedByItsOwnCode() async throws {
         let rig = try AttestationRig()
         let (keyID, challenge) = try await rig.enrolledKey()

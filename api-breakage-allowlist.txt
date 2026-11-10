@@ -1,13 +1,1 @@
-API breakage: constructor BackgroundJob.init(identifier:kind:every:budget:scheduler:now:onReport:work:) has been removed
-API breakage: constructor DeliveryPolicy.Expiry.init(maxAge:wallClock:) has been removed
-API breakage: constructor HTTPPolicy.init(attemptTimeout:schedule:retryBudget:retryStatuses:maxRetryAfter:breaker:maxConcurrentPerHost:queueLimitPerHost:rateLimit:maxResponseBytes:maxRedirects:errorExcerptBytes:decodeOptions:coalesceGETs:ignoreHeadersForCoalescing:retryOnResponse:wallClock:) has been removed
-API breakage: func BackgroundJob.drainingOutbox(identifier:every:budget:requiresNetworkConnectivity:requiresExternalPower:scheduler:now:onReport:drain:) has been renamed to func drainingOutbox(identifier:every:budget:requiresNetworkConnectivity:requiresExternalPower:scheduler:onReport:drain:)
-API breakage: func BackgroundJob.drainingOutbox(identifier:every:budget:requiresNetworkConnectivity:requiresExternalPower:scheduler:now:onReport:drain:) has parameter 6 type change from () -> Foundation.Date to ((StoicApple.BackgroundRunReport) -> Swift.Void)?
-API breakage: func BackgroundJob.drainingOutbox(identifier:every:budget:requiresNetworkConnectivity:requiresExternalPower:scheduler:now:onReport:drain:) has parameter 7 type change from ((StoicApple.BackgroundRunReport) -> Swift.Void)? to () async throws -> Swift.Void
-API breakage: func BackgroundJob.drainingOutbox(identifier:every:budget:requiresNetworkConnectivity:requiresExternalPower:scheduler:now:onReport:drain:) has removed default argument from parameter 7
-API breakage: func HTTPRetry.decision(status:retryAfter:now:) has parameter 2 type change from Foundation.Date to Stoic.Moment
-API breakage: func HTTPRetry.retryAfterDelay(_:now:) has parameter 1 type change from Foundation.Date to Stoic.Moment
-API breakage: var DeliveryPolicy.Expiry.systemClock has been removed
-API breakage: var DeliveryPolicy.Expiry.wallClock has been removed
-API breakage: var HTTPPolicy.wallClock has been removed
 API breakage: enumelement HTTPError.authenticationFailed has been added as a new enum case

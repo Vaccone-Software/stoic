@@ -44,11 +44,13 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # attempts), and XPC peers and hosts (a run ended from several callbacks, a
 # reply settled once), expiring work, and lifecycles (a live machine's
 # effects performed from any sender, the device store's hand-off beside its
-# commits, the outbox that remembers). Their crash explorations, which run no
-# two tasks at once, are left to the plain step. A few minutes: the
-# instrumented build is separate from the one above.
+# commits, the outbox that remembers), permission checks, the HTTP
+# authenticator seam, and the App Attest client (an enrolment many callers
+# wait on, assertions beside it). Their crash explorations, which run no two
+# tasks at once, are left to the plain step. A few minutes: the instrumented
+# build is separate from the one above.
 swift test --sanitize=thread \
-    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember' \
+    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests' \
     --skip 'LifecycleCrashTests|OutboxRememberCrashTests'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
@@ -60,7 +62,7 @@ step "tests under Address Sanitizer: every suite (memory errors the type system 
 swift test --sanitize=address \
     --skip 'openingTwentyThousandPendingEntriesIsFast|theTimeToOpenGrowsLinearlyNotQuadratically|didYouMeanIsComputedOnlyForIssuesThatAreRecorded|positionsOfAThousandIssuesOnOneLongLineCostOnePass|deepNestingIsRefusedNotACrash'
 
-step "compile-fail: a Scope, TaskScope or Saga handle cannot escape its body (design/04)"
+step "compile-fail: a Scope, TaskScope or Saga handle cannot escape its body (design/04); a proof cannot be forged (design/28)"
 # Swift Testing cannot assert that code fails to compile, so each file in
 # scripts/compile-fail is compiled through SIL (where the noncopyable and
 # escaping-capture checks run) against the module just built. A file whose
@@ -147,31 +149,69 @@ step "downloads (Crypto trait): StoicDownloads builds and its tests pass: every 
 swift test --traits Crypto --filter 'StoicDownloadsTests'
 swift test --traits Crypto --sanitize=address --filter 'StoicDownloadsTests' --skip 'aCrashDuringTheRecoveryRunIsRecoverableToo'
 
-step "adoption: an app adopting every library, with no traits, fetches nothing and builds; with Crypto, only swift-crypto"
+step "App Attest (Attestation trait): StoicAttestation builds and its tests pass against Apple's real bytes and the stand-in; end to end with StoicAttestedHTTP"
+# swift-certificates is fetched only with the trait (the adoption step proves
+# an app without it fetches nothing), so the verifier is built and tested here
+# with it: every suite of both libraries, the client's and the server's
+# concurrency under Thread Sanitizer, everything under Address Sanitizer but
+# the property tests (a million counter sequences is a time test), and the
+# fixtures that must not compile against the trait build's modules.
+swift build --traits Attestation
+swift test --traits Attestation --filter 'StoicAttestationTests|StoicAttestedHTTPTests'
+swift test --traits Attestation --sanitize=thread --filter 'AppAttestGateTests|EndToEndTests|AppAttestAuthenticatorTests'
+swift test --traits Attestation --sanitize=address --filter 'StoicAttestationTests|StoicAttestedHTTPTests' \
+    --skip 'theWindowMatchesTheModelOverAMillionSequences|randomBytesNeverTrapAndNeverReadTwoWays|mutationsOfARealAttestationNeverTrap|randomTextNeverTraps|AttestationCompileFailTests'
+bin=$(swift build --traits Attestation --show-bin-path)
+for file in scripts/compile-fail/attestation/*.swift; do
+    expected=$(sed -n 's|^// expect-error: ||p' "$file" | head -1)
+    status=0
+    output=$(swiftc -emit-sil -o /dev/null -I "$bin" -I "$bin/Modules" -swift-version 6 \
+        -enable-upcoming-feature ExistentialAny -enable-upcoming-feature NonisolatedNonsendingByDefault \
+        "$file" 2>&1) || status=$?
+    if [ -z "$expected" ]; then
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$output"
+            printf 'FAIL %s: the control must compile\n' "$file"
+            exit 1
+        fi
+    elif [ "$status" -eq 0 ]; then
+        printf 'FAIL %s: it compiled, but must not (expected: %s)\n' "$file" "$expected"
+        exit 1
+    elif ! printf '%s\n' "$output" | grep 'error:' | grep -qF -- "$expected"; then
+        printf '%s\n' "$output"
+        printf 'FAIL %s: failed, but not with "%s"\n' "$file" "$expected"
+        exit 1
+    fi
+    printf '  ok %s\n' "$file"
+done
+
+step "adoption: an app adopting every library, with no traits, fetches nothing and builds; with Crypto, only swift-crypto; with Attestation, only swift-crypto, swift-asn1 and swift-certificates"
 # Also what proves a consumer that never enables Macros, Lint or Crypto never
 # fetches swift-syntax or swift-crypto.
 scripts/adoption.sh
 
 step "iOS: every library builds for iOS (UIKit paths compile only there)"
-# StoicSealed and StoicSealedKeychain are empty without their trait, which
-# xcodebuild cannot enable, so they are built for iOS with SwiftPM and the trait.
+# StoicSealed, StoicSealedKeychain, StoicDownloads and StoicAttestation are
+# empty without their trait, which xcodebuild cannot enable, so they are built
+# for iOS with SwiftPM and the trait.
 ios_sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 swift build --traits Crypto --target StoicSealed --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicSealedKeychain --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicDownloads --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicTime StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC; do
+swift build --traits Attestation --target StoicAttestation --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicTime StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC StoicAttestedHTTP; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done
 
 step "documentation: DocC builds with no warnings, in every library (broken links, undocumented parameters)"
-# Not here: StoicMacros, StoicSealed, StoicSealedKeychain and StoicDownloads, whose symbols exist only with the Macros
-# and Crypto traits, which xcodebuild cannot enable. A symbol of another Stoic library is written as
+# Not here: StoicMacros, StoicSealed, StoicSealedKeychain, StoicDownloads and StoicAttestation, whose symbols exist only
+# with the Macros, Crypto and Attestation traits, which xcodebuild cannot enable. A symbol of another Stoic library is written as
 # code, not as a ``link``: DocC resolves a link only inside the module it is
 # building. StoicUIKit builds for iOS, where its code compiles.
 docs=$(mktemp)
 for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings \
-    StoicHTTP StoicTime StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC; do
+    StoicHTTP StoicTime StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC StoicAttestedHTTP; do
     destination='platform=macOS'
     if [ "$scheme" = StoicUIKit ]; then destination='generic/platform=iOS'; fi
     xcodebuild docbuild -scheme "$scheme" -destination "$destination" -derivedDataPath .build/docs > "$docs" 2>&1 || {
