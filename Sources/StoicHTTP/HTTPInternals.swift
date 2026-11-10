@@ -171,8 +171,9 @@ final class GuardedBody: Sendable {
             return HTTPError.timedOut(attempt: attempts)
         case .transport(let code):
             return HTTPError.transport(code, attempts: attempts)
-        case .status:
-            // A body carries no status; a transport that says so is saying it failed.
+        case .status, .authentication:
+            // A body carries no status, and is never authenticated; a
+            // transport that says so is saying it failed.
             return HTTPError.transport(.unknown, attempts: attempts)
         }
     }
@@ -390,6 +391,7 @@ struct FlightKey: Hashable, Sendable {
     var schedule: BoundedSchedule?
     var bypassBreaker: Bool
     var reauthenticate: Bool
+    var authenticate: Bool
 
     init(_ request: HTTPRequest, ignoring ignored: [String], overrides: HTTPOverrides = .none) {
         url = request.url?.absoluteString ?? ""
@@ -397,6 +399,7 @@ struct FlightKey: Hashable, Sendable {
         schedule = overrides.schedule
         bypassBreaker = overrides.bypassBreaker
         reauthenticate = overrides.reauthenticate
+        authenticate = overrides.authenticate
         let skipped = Set(ignored.map { $0.lowercased() })
         headers = request.headers.fields
             .map { (name: $0.name.lowercased(), value: $0.value) }
@@ -411,4 +414,31 @@ struct FlightKey: Hashable, Sendable {
 struct FlightFailure: Error, Sendable {
     var error: HTTPError
     var starterDeadline: AnyClock.Instant?
+}
+
+/// The authenticator's state for one hop: its one replay, and whether it
+/// claimed the response the hop ended with, which keeps the reauthentication
+/// hook away from a `401` that is the authenticator's.
+final class AuthenticationHop: Sendable {
+    private struct State {
+        var replayed = false
+        var claimed = false
+    }
+
+    private let state = Mutex(State())
+
+    /// Takes the hop's replay: `true` the first time, `false` after.
+    func takeReplay() -> Bool {
+        state.withLock { state in
+            defer { state.replayed = true }
+            return !state.replayed
+        }
+    }
+
+    /// Marks the response the hop ended with as the authenticator's.
+    func claim() {
+        state.withLock { $0.claimed = true }
+    }
+
+    var claimed: Bool { state.withLock { $0.claimed } }
 }

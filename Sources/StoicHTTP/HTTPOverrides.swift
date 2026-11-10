@@ -27,8 +27,8 @@ public struct HTTPOverrides: Sendable {
     /// ``HTTPPolicy/coalesceGETs``.
     ///
     /// A call only shares a request with calls that ask for the same
-    /// ``attemptTimeout``, ``schedule``, ``bypassBreaker`` and
-    /// ``reauthenticate``; and a call with a ``retryOnResponse`` closure is
+    /// ``attemptTimeout``, ``schedule``, ``bypassBreaker``,
+    /// ``reauthenticate`` and ``authenticate``; and a call with a ``retryOnResponse`` closure is
     /// never shared (closures cannot be compared).
     public var coalesce: Bool?
 
@@ -43,6 +43,11 @@ public struct HTTPOverrides: Sendable {
     /// the hook. Default `true`.
     public var reauthenticate: Bool
 
+    /// Whether the client's ``HTTPAuthenticator`` authenticates this call.
+    /// Turn it off for a request the authenticator itself must not sign.
+    /// Default `true`; without an authenticator it changes nothing.
+    public var authenticate: Bool
+
     /// Decides whether to ask again after a response, instead of
     /// ``HTTPPolicy/retryOnResponse`` (which explains the contract).
     public var retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)?
@@ -55,6 +60,22 @@ public struct HTTPOverrides: Sendable {
         reauthenticate: Bool = true,
         retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil
     ) {
+        self.init(
+            attemptTimeout: attemptTimeout, schedule: schedule, coalesce: coalesce, bypassBreaker: bypassBreaker,
+            reauthenticate: reauthenticate, retryOnResponse: retryOnResponse, authenticate: true)
+    }
+
+    /// The same, saying whether the client's ``HTTPAuthenticator`` takes part.
+    /// An overload, so the initialiser above is unchanged.
+    public init(
+        attemptTimeout: Duration? = nil,
+        schedule: BoundedSchedule? = nil,
+        coalesce: Bool? = nil,
+        bypassBreaker: Bool = false,
+        reauthenticate: Bool = true,
+        retryOnResponse: (@Sendable (HTTPResponse) -> RetryDecision?)? = nil,
+        authenticate: Bool
+    ) {
         precondition(attemptTimeout.map { $0 > .zero } ?? true, "an attempt needs a positive timeout")
         self.attemptTimeout = attemptTimeout
         self.schedule = schedule
@@ -62,6 +83,7 @@ public struct HTTPOverrides: Sendable {
         self.bypassBreaker = bypassBreaker
         self.reauthenticate = reauthenticate
         self.retryOnResponse = retryOnResponse
+        self.authenticate = authenticate
     }
 
     /// No overrides: the client's policy as it is.

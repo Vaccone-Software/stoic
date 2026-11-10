@@ -10,3 +10,4 @@ API breakage: func HTTPRetry.retryAfterDelay(_:now:) has parameter 1 type change
 API breakage: var DeliveryPolicy.Expiry.systemClock has been removed
 API breakage: var DeliveryPolicy.Expiry.wallClock has been removed
 API breakage: var HTTPPolicy.wallClock has been removed
+API breakage: enumelement HTTPError.authenticationFailed has been added as a new enum case

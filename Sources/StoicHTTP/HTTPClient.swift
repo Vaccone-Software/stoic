@@ -51,6 +51,7 @@ public final class HTTPClient: Sendable {
     private let reauthenticate: (@Sendable () async throws -> HTTPHeaders)?
     private let credentials = Mutex(Credentials())
     private let refreshes: SingleFlight<Int, Void, ReauthenticationFailure>
+    private let authenticator: (any HTTPAuthenticator)?
 
     /// - Parameters:
     ///   - base: The API's URL.
@@ -83,6 +84,35 @@ public final class HTTPClient: Sendable {
         self.flights = SingleFlight(label: "\(label) coalesced")
         self.reauthenticate = reauthenticate
         self.refreshes = SingleFlight(label: "\(label) reauthentication")
+        self.authenticator = nil
+    }
+
+    /// A client whose requests to the base URL's origin are authenticated by
+    /// `authenticator`: a signature or proof of possession added to every
+    /// attempt (design/29). The other parameters are as for
+    /// ``init(base:policy:transport:headers:label:reauthenticate:)``.
+    ///
+    /// The authenticator's own requests (an enrolment, a challenge) go
+    /// through another client: a request it sent through this one would wait
+    /// on itself.
+    public init(
+        base: URL,
+        policy: HTTPPolicy = .standard,
+        transport: any HTTPTransport = URLSessionTransport(),
+        headers: HTTPHeaders = [:],
+        label: String = "http",
+        reauthenticate: (@Sendable () async throws -> HTTPHeaders)? = nil,
+        authenticator: any HTTPAuthenticator
+    ) {
+        self.base = base
+        self.policy = policy
+        self.transport = transport
+        self.defaultHeaders = headers
+        self.label = label
+        self.flights = SingleFlight(label: "\(label) coalesced")
+        self.reauthenticate = reauthenticate
+        self.refreshes = SingleFlight(label: "\(label) reauthentication")
+        self.authenticator = authenticator
     }
 
     // MARK: Sending
@@ -439,9 +469,14 @@ public final class HTTPClient: Sendable {
     /// the hook (`SingleFlight`, keyed by the generation of the credentials
     /// that were refused), and a request that finds the credentials already
     /// renewed since it was prepared replays without running the hook at all.
+    ///
+    /// The authenticator (design/29) comes first: its `prepare` before each
+    /// send, and its one replay per hop. A `401` the authenticator claimed is
+    /// not the reauthentication hook's.
     private func exchange(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool, mode: BodyMode) async -> Outcome {
-        let first = await execute(prepared, log: log, defers: defers, mode: mode)
-        guard reauthenticate != nil, prepared.overrides.reauthenticate, prepared.carriesClientHeaders,
+        let hop = AuthenticationHop()
+        let first = await send(prepared, hop: hop, log: log, defers: defers, mode: mode)
+        guard reauthenticate != nil, prepared.overrides.reauthenticate, prepared.carriesClientHeaders, !hop.claimed,
               case .failed(.status(401, _, _, _, _)) = first else {
             return first
         }
@@ -469,7 +504,49 @@ public final class HTTPClient: Sendable {
         } catch {
             return .failed(error)
         }
-        return await execute(replay, log: log, defers: defers, mode: mode)
+        return await send(replay, hop: hop, log: log, defers: defers, mode: mode)
+    }
+
+    // MARK: Authentication
+
+    /// Whether the client's authenticator takes part in `prepared`: there is
+    /// one, the request carries the client's headers (the base URL's origin,
+    /// a chain that has not left it), and the call did not turn it off.
+    private func authenticates(_ prepared: PreparedRequest) -> (any HTTPAuthenticator)? {
+        guard let authenticator, prepared.carriesClientHeaders, prepared.overrides.authenticate else { return nil }
+        return authenticator
+    }
+
+    /// The authenticator's `prepare`, then the host's policies; once more
+    /// when the authenticator asks for the hop's replay.
+    private func send(_ prepared: PreparedRequest, hop: AuthenticationHop, log: AttemptLog, defers: Bool, mode: BodyMode) async -> Outcome {
+        while true {
+            if let refused = await prepareAuthentication(prepared, log: log) { return refused }
+            switch await execute(prepared, hop: hop, log: log, defers: defers, mode: mode) {
+            case .outcome(let outcome): return outcome
+            case .replay: continue
+            }
+        }
+    }
+
+    /// Runs the authenticator's `prepare`, outside every host policy: a wait
+    /// here holds no slot. `nil` when the request may go on.
+    private func prepareAuthentication(_ prepared: PreparedRequest, log: AttemptLog) async -> Outcome? {
+        guard let authenticator = authenticates(prepared) else { return nil }
+        do throws(HTTPAuthenticationError) {
+            try await authenticator.prepare(prepared.request)
+            return nil
+        } catch {
+            if Self.callerCancelled { return .cancelled }
+            return failed(.failed(.authenticationFailed(error, attempts: log.count)), prepared, label: prepared.hostLabel(label))
+        }
+    }
+
+    /// Whether the caller cancelled: cancellation that is not its deadline
+    /// passing. A hook that gave up because the deadline passed has its own
+    /// word for it (`timed_out`), which the caller gets.
+    private static var callerCancelled: Bool {
+        Task.isCancelled && CancellationCause.current != .deadline && Deadline.current?.hasPassed != true
     }
 
     /// Calls the hook, unless another request got there first.
@@ -498,21 +575,22 @@ public final class HTTPClient: Sendable {
     /// its attempt timeout nor its `retryOnResponse`, which belong to its own
     /// retry. The operation's timer bounds the attempt, and what the operation
     /// retries is what its classification, ``HTTPError``'s, says.
-    private func execute(_ prepared: PreparedRequest, log: AttemptLog, defers: Bool, mode: BodyMode) async -> Outcome {
+    private func execute(_ prepared: PreparedRequest, hop: AuthenticationHop, log: AttemptLog, defers: Bool, mode: BodyMode) async -> Executed {
         if defers {
             let label = prepared.hostLabel(self.label)
             let result: Result<Received, AttemptError>
             do throws(AttemptError) {
-                result = .success(try await attempt(prepared, label: label, log: log, defers: true, mode: mode))
+                result = .success(try await attempt(prepared, hop: hop, label: label, log: log, defers: true, mode: mode))
             } catch {
                 result = .failure(error)
             }
             switch result {
             case .success(let received):
-                return .delivered(Delivered(
-                    response: received.response, stream: received.stream, attempts: log.count, label: label, fields: prepared.fields))
+                return .outcome(.delivered(Delivered(
+                    response: received.response, stream: received.stream, attempts: log.count, label: label, fields: prepared.fields)))
             case .failure(let error):
-                return failed(finalOutcome(for: .failed(error), prepared, attempts: log.count, watcher: nil, label: label), prepared, label: label)
+                if case .authentication(.replay) = error, !Task.isCancelled { return .replay }
+                return .outcome(failed(finalOutcome(for: .failed(error), prepared, attempts: log.count, watcher: nil, label: label), prepared, label: label))
             }
         }
         let host = leaseHost(for: prepared)
@@ -543,7 +621,7 @@ public final class HTTPClient: Sendable {
             () async -> Result<Received, PolicyError<AttemptError>> in
             do throws(PolicyError<AttemptError>) {
                 let received = try await pipeline.execute { () async throws(AttemptError) -> Received in
-                    try await self.attempt(prepared, label: host.label, log: log, defers: false, mode: mode)
+                    try await self.attempt(prepared, hop: hop, label: host.label, log: log, defers: false, mode: mode)
                 }
                 return .success(received)
             } catch {
@@ -553,12 +631,20 @@ public final class HTTPClient: Sendable {
 
         switch result {
         case .success(let received):
-            return .delivered(Delivered(
+            return .outcome(.delivered(Delivered(
                 response: received.response, stream: received.stream, attempts: log.count, label: prepared.hostLabel(label),
-                fields: prepared.fields))
+                fields: prepared.fields)))
         case .failure(let error):
-            return failed(finalOutcome(for: error, prepared, attempts: log.count, watcher: watcher, label: host.label), prepared, label: host.label)
+            if case .failed(.authentication(.replay)) = error, !Task.isCancelled { return .replay }
+            return .outcome(failed(finalOutcome(for: error, prepared, attempts: log.count, watcher: watcher, label: host.label), prepared, label: host.label))
         }
+    }
+
+    /// What one run of the host's policies ended with: an outcome, or the
+    /// authenticator's request for the hop's replay.
+    private enum Executed {
+        case outcome(Outcome)
+        case replay
     }
 
     /// Reports a failure the caller will see, and passes it on.
@@ -620,6 +706,12 @@ public final class HTTPClient: Sendable {
                 return .failed(.responseTooLarge(limit: limit, attempts: attempts))
             case .cancelled:
                 return .cancelled
+            case .authentication(.failed(let error)), .authentication(.refused(let error)):
+                return .failed(.authenticationFailed(error, attempts: attempts))
+            case .authentication(.replay):
+                // `execute` turns a replay into another send before this;
+                // reached only by a replay the caller's cancellation overtook.
+                return .cancelled
             }
         }
     }
@@ -637,9 +729,23 @@ public final class HTTPClient: Sendable {
     /// body, which a download that is progressing must be free to take as
     /// long as it needs. The body that comes back is the client's hold on the
     /// transport's (``GuardedBody``).
+    ///
+    /// The authenticator's `authenticate` runs first, before the attempt is
+    /// counted and before its timeout starts, and its headers go on this
+    /// attempt only; its `received` sees the response before anything else.
     private func attempt(
-        _ prepared: PreparedRequest, label: String, log: AttemptLog, defers: Bool, mode: BodyMode
+        _ prepared: PreparedRequest, hop: AuthenticationHop, label: String, log: AttemptLog, defers: Bool, mode: BodyMode
     ) async throws(AttemptError) -> Received {
+        var request = prepared.request
+        let authenticator = authenticates(prepared)
+        if let authenticator {
+            do throws(HTTPAuthenticationError) {
+                request.headers = request.headers.merging(try await authenticator.authenticate(request))
+            } catch {
+                if Self.callerCancelled { throw .cancelled }
+                throw .authentication(.failed(error))
+            }
+        }
         let clock = Ambient.current.clock
         let started = clock.now
         let (number, retry, gap, previous) = log.begin(at: started)
@@ -652,7 +758,7 @@ public final class HTTPClient: Sendable {
         }
 
         let transport = self.transport
-        let request = prepared.request
+        let sent = request
         let limit: Int
         let streamed: Bool
         switch mode {
@@ -671,10 +777,10 @@ public final class HTTPClient: Sendable {
             if let timeout {
                 result = .success(try await withTimeout(timeout, label: "\(label) attempt \(number)") {
                     () async throws(AttemptError) -> Received in
-                    try await Self.exchange(request, over: transport, mode: mode, limit: limit, excerptBytes: excerptBytes)
+                    try await Self.exchange(sent, over: transport, mode: mode, limit: limit, excerptBytes: excerptBytes)
                 })
             } else {
-                result = .success(try await Self.exchange(request, over: transport, mode: mode, limit: limit, excerptBytes: excerptBytes))
+                result = .success(try await Self.exchange(sent, over: transport, mode: mode, limit: limit, excerptBytes: excerptBytes))
             }
         } catch {
             result = .failure(error)
@@ -684,6 +790,25 @@ public final class HTTPClient: Sendable {
         // caller caused (cancelling, or its deadline passing) is not.
         if case .failure(.cancelled) = result, !Task.isCancelled, callerDeadline?.hasPassed != true {
             result = .failure(.timedOut)
+        }
+        // The authenticator sees the response first: it may take the hop's
+        // replay, or refuse. A second replay in the hop is not honoured: the
+        // response is the answer, and the authenticator's (no reauthentication).
+        if let authenticator, case .success(let received) = result {
+            switch await authenticator.received(received.response, to: sent) {
+            case .accept:
+                break
+            case .replay:
+                if hop.takeReplay() {
+                    received.stream?.cancel()
+                    result = .failure(.authentication(.replay))
+                } else {
+                    hop.claim()
+                }
+            case .refuse(let error):
+                received.stream?.cancel()
+                result = .failure(.authentication(.refused(error)))
+            }
         }
         if case .success(var received) = result {
             let response = received.response

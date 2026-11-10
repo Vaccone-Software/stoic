@@ -67,6 +67,14 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
     /// Never retried: the server will redirect the same way again.
     case redirectRefused(RedirectRefusal, status: Int, location: String, attempts: Int)
 
+    /// The client's ``HTTPAuthenticator`` could not authenticate the request
+    /// (its `prepare` or `authenticate` threw), or refused the response
+    /// (``HTTPAuthenticatorVerdict/refuse(_:)``). It classifies as the
+    /// authenticator's error says, and claims ``neverReachedBackend`` when no
+    /// request had been sent (`attempts` is 0). The reauthentication hook does
+    /// not run for it.
+    case authenticationFailed(HTTPAuthenticationError, attempts: Int)
+
     /// Why the client did not follow a redirect.
     public enum RedirectRefusal: String, Sendable, Hashable {
         /// The request was `https` and the `Location` is `http`: following it
@@ -83,7 +91,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
         switch self {
         case .status(_, _, _, _, let attempts), .transport(_, let attempts), .responseTooLarge(_, let attempts),
              .decoding(_, let attempts), .rejected(_, let attempts), .reauthenticationFailed(_, let attempts),
-             .redirectRefused(_, _, _, let attempts):
+             .redirectRefused(_, _, _, let attempts), .authenticationFailed(_, let attempts):
             attempts
         case .timedOut(let attempt):
             attempt
@@ -115,6 +123,7 @@ public enum HTTPError: Error, Hashable, Sendable, CustomStringConvertible {
         case .rejected(let rejection, _): return "rejected: \(rejection) after \(tries)"
         case .reauthenticationFailed(let status, _): return "HTTP \(status), and reauthenticating failed, after \(tries)"
         case .redirectRefused(let refusal, let status, _, _): return "HTTP \(status) redirect not followed (\(refusal.rawValue)) after \(tries)"
+        case .authenticationFailed(let error, _): return "\(error) after \(tries)"
         }
     }
 }
@@ -151,6 +160,8 @@ extension HTTPError: Retryable {
             return .retry
         case .responseTooLarge, .decoding, .reauthenticationFailed, .redirectRefused:
             return .stop
+        case .authenticationFailed(let error, _):
+            return error.retryDecision
         case .rejected(let rejection, _):
             switch rejection.reason {
             case .circuitOpen, .bulkheadFull, .rateLimited:
@@ -165,7 +176,7 @@ extension HTTPError: Retryable {
         switch self {
         case .transport(let code, let attempts):
             attempts <= 1 && URLError(code).neverReachedBackend
-        case .rejected(_, let attempts):
+        case .rejected(_, let attempts), .authenticationFailed(_, let attempts):
             attempts == 0
         case .status, .timedOut, .responseTooLarge, .decoding, .reauthenticationFailed, .redirectRefused:
             false
@@ -197,6 +208,11 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
     /// Cancelled by the caller, by the caller's deadline, or by the attempt's
     /// own timeout: the client tells these apart once the attempt is over.
     case cancelled
+    /// The authenticator ended the attempt: its `authenticate` threw (nothing
+    /// was sent), it refused the response, or it asked for the hop's replay.
+    /// Never retried, never counted against the host: the client acts on it
+    /// once the pipeline is over.
+    case authentication(AuthenticationStop)
 
     /// Whether this failure says something about the host's health, which is
     /// what a breaker is for: 5xx (never 4xx: the server answered and the
@@ -218,7 +234,7 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
             default:
                 return URLError(code).retryDecision != .stop
             }
-        case .tooLarge, .cancelled:
+        case .tooLarge, .cancelled, .authentication:
             return false
         }
     }
@@ -254,7 +270,7 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
             return URLError(code).retryDecision
         case .timedOut:
             return .retry
-        case .tooLarge, .cancelled:
+        case .tooLarge, .cancelled, .authentication:
             return .stop
         }
     }
@@ -271,6 +287,10 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
         case .timedOut: "timed_out"
         case .tooLarge: "too_large"
         case .cancelled: "cancelled"
+        // Never the code: an authenticator may pass on what a server sent.
+        case .authentication(.failed): "authentication_failed"
+        case .authentication(.refused): "authentication_refused"
+        case .authentication(.replay): "authentication_replay"
         }
     }
 
@@ -293,4 +313,14 @@ enum AttemptError: Error, Sendable, CustomStringConvertible {
             self = .transport(.unknown)
         }
     }
+}
+
+/// How an authenticator ended an attempt.
+enum AuthenticationStop: Sendable {
+    /// `authenticate` threw: the attempt was not sent.
+    case failed(HTTPAuthenticationError)
+    /// `received` refused the response.
+    case refused(HTTPAuthenticationError)
+    /// `received` asked for the hop's one replay.
+    case replay
 }
