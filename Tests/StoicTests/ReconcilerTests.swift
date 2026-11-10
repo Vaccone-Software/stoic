@@ -680,8 +680,15 @@ struct ReconcilerTests {
                 guard case .write = call, writes.add(1, ordering: .relaxed).newValue == 4 else { return }
                 handle.cancel()
             }
-            let task = Task<ReconcilePassReport<String>, any Error> { try await crashed.pass() }
+            // The pass starts once the interceptor can reach its task: on a
+            // busy machine it would otherwise finish before the handle is set.
+            let armed = TestGate()
+            let task = Task<ReconcilePassReport<String>, any Error> {
+                await armed.wait()
+                return try await crashed.pass()
+            }
             handle.set(task)
+            armed.open()
             await #expect(throws: ReconcileError.cancelled) { try await task.value }
             #expect(await derived.entries.count == 3, "the finished corrections stand")
             await derived.intercept(nil)
@@ -753,12 +760,15 @@ struct ReconcilerTests {
                 handle.cancel()
                 seenCause.withLock { $0 = CancellationCause.current }
             }
+            let armed = TestGate()
             let job = Task<ReconcilePassReport<String>, any Error> {
-                try await CancellationCauseBox.$current.withValueTyped(cause) { () async throws(ReconcileError) -> ReconcilePassReport<String> in
+                await armed.wait()
+                return try await CancellationCauseBox.$current.withValueTyped(cause) { () async throws(ReconcileError) -> ReconcilePassReport<String> in
                     try await reconciler.pass()
                 }
             }
             handle.set(job)
+            armed.open()
             await #expect(throws: ReconcileError.cancelled) { try await job.value }
             #expect(seenCause.withLock { $0 } == .systemExpiring, "the correction in flight sees why")
             #expect(await derived.entries.count == 1, "the finished correction stands")
