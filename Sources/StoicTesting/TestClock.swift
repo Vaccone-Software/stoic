@@ -192,7 +192,7 @@ public final class TestClock: Clock, Sendable {
     /// and on every machine, whatever today is.
     public static let wallClockStart = Moment(sinceEpoch: .seconds(1_767_225_600))
 
-    /// The wall clock that goes with this clock: ``Moment/now`` under
+    /// The wall clock that goes with this clock: `Moment.now` under
     /// ``withTestAmbient(clock:seed:events:operation:)``.
     ///
     /// It reads the start moment, plus the virtual time since the clock was
