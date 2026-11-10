@@ -1,14 +1,19 @@
-internal import StoicJSON
+package import StoicJSON
 
 /// Why a string is not in the format a leaf schema reads: what is wrong, if
 /// it can be said, and what was probably meant.
-struct FormatFailure: Error {
+///
+/// Package-wide, with ``Schema/formatted(name:format:describe:keywords:examples:counterexamples:parse:print:)``,
+/// so the leaves another Stoic library declares for its own types
+/// (`StoicTime`'s dates and times) report exactly as the Foundation leaves
+/// here do.
+package struct FormatFailure: Error {
     /// A clause about the value: `there is no month 13`. `nil` when there
     /// is nothing better to say than the expectation.
-    var message: String?
-    var suggestions: [String] = []
+    package var message: String?
+    package var suggestions: [String] = []
 
-    init(_ message: String? = nil, suggestions: [String] = []) {
+    package init(_ message: String? = nil, suggestions: [String] = []) {
         self.message = message
         self.suggestions = suggestions
     }
@@ -29,7 +34,7 @@ extension Schema {
     /// reason in its parameters. `print` returns `nil` for a Swift value the
     /// format cannot spell (a date in the year 10000), which `validate`
     /// reports and `encode` writes as `null`.
-    static func formatted(
+    package static func formatted(
         name: String,
         format: String?,
         describe: String,

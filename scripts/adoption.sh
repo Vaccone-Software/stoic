@@ -20,7 +20,7 @@
 set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-portable="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicSealed StoicObservability StoicHTTP StoicDownloads"
+portable="Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicSealed StoicObservability StoicHTTP StoicDownloads StoicTime"
 apple="StoicApple StoicAppKit StoicUIKit StoicSealedKeychain StoicXPC"
 case "$(uname -s)" in
     Darwin) products="$portable $apple" ;;

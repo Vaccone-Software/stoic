@@ -32,7 +32,9 @@ import Foundation
 /// needs both, so an app that adopts either alone builds neither the other nor
 /// what the other brings (swift-crypto, with its trait). XPC services sit on
 /// the core alone: a service's executable imports `StoicXPC` and nothing
-/// that brings the Keychain or background tasks (design/25).
+/// that brings the Keychain or background tasks (design/25). Time sits on the
+/// core, whose `Moment` it extends, and on schemas, for its text forms'
+/// leaves (design/26).
 let layering: [String: Set<String>] = [
     "Stoic": [],
     "StoicJSON": [],
@@ -51,6 +53,7 @@ let layering: [String: Set<String>] = [
     "StoicAppKit": ["Stoic"],
     "StoicUIKit": ["Stoic"],
     "StoicXPC": ["Stoic"],
+    "StoicTime": ["Stoic", "StoicSchema"],
     "StoicMacros": ["StoicSchema", "StoicMacrosPlugin"],
     "StoicMacrosPlugin": [],
     "StoicLintCore": [],

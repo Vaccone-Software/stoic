@@ -154,7 +154,7 @@ ios_sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 swift build --traits Crypto --target StoicSealed --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicSealedKeychain --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicDownloads --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC; do
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicTime StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done
@@ -166,7 +166,7 @@ step "documentation: DocC builds with no warnings, in every library (broken link
 # building. StoicUIKit builds for iOS, where its code compiles.
 docs=$(mktemp)
 for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings \
-    StoicHTTP StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC; do
+    StoicHTTP StoicTime StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC; do
     destination='platform=macOS'
     if [ "$scheme" = StoicUIKit ]; then destination='generic/platform=iOS'; fi
     xcodebuild docbuild -scheme "$scheme" -destination "$destination" -derivedDataPath .build/docs > "$docs" 2>&1 || {

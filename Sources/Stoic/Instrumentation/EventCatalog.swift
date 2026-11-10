@@ -172,6 +172,8 @@ public enum EventCatalog {
         Entry(name: "supervisor.escalated", level: .error, meaning: "Restarts exceeded the supervisor's intensity; it stopped every child and gave up."),
         Entry(name: "supervisor.stopped", level: .info, meaning: "A supervisor stopped: all children finished, or it was cancelled."),
         Entry(name: "throttle.dropped", level: .debug, meaning: "A throttled call did not run: a newer call replaced it, or it fell inside a window that lets none run."),
+        Entry(name: "time.resolved_in_gap", level: .info, meaning: "A local time fell in a gap in its zone (the clocks sprang forward over it) and was resolved by the policy: later or earlier by the gap's length. Reports the zone, the local time, the shift and the policy."),
+        Entry(name: "time.zone_rules_changed", level: .notice, meaning: "A zone rules sweep ran because the rules' version changed (or it never had): reports the previous and new versions, how many zoned values the app gave, how many future ones moved and were handed back, and how many could not be resolved."),
         Entry(name: "xpc.build_mismatch", level: .error, meaning: "An XPC service and its app are different builds (the app was replaced on disk while it ran): the handshake was refused. Reports both builds."),
         Entry(name: "xpc.call_stuck", level: .warning, meaning: "A request to an XPC service stayed unanswered past its method's ifStuck after its caller left; the run is being ended. Reports the method and the run."),
         Entry(name: "xpc.cancel_unknown", level: .debug, meaning: "An XPC service was asked to cancel a request it no longer holds (it had answered); the cancel was dropped."),

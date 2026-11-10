@@ -124,6 +124,11 @@ let package = Package(
         // Resumable, verified, durable file downloads (design/23), digests by
         // swift-crypto. Needs the `Crypto` trait: `.package(url: …, traits: ["Crypto"])`.
         .library(name: "StoicDownloads", targets: ["StoicDownloads"]),
+        // Time (design/26): plain dates and times, zoned date-times resolved
+        // by zone rules that can change under them, calendar periods, and
+        // their text forms and schemas. Portable; Foundation only for the
+        // system's zone rules and `Date`.
+        .library(name: "StoicTime", targets: ["StoicTime"]),
         // Calling a bundled XPC service (design/25): the service's lifecycle
         // explicit, every wait bounded, a handshake by build, and the host
         // the service runs. macOS only; empty elsewhere.
@@ -312,6 +317,15 @@ let package = Package(
             dependencies: ["StoicDownloads", "Stoic", "StoicHTTP", "StoicStore", "StoicTesting"] + crypto,
             swiftSettings: strict + [cryptoDefine]
         ),
+        // Time (design/26): the calendar types and the zone rules, beside the
+        // kernel's `Moment` and wall clock. The system's rules come from
+        // Foundation, in Sources/StoicTime/Foundation; everything else is
+        // stdlib arithmetic over the offsets they give, tested on scripted
+        // rules.
+        .target(name: "StoicTime", dependencies: ["Stoic", "StoicSchema"], swiftSettings: strict),
+        .testTarget(
+            name: "StoicTimeTests", dependencies: ["StoicTime", "Stoic", "StoicSchema", "StoicSchemaTesting", "StoicTesting"],
+            swiftSettings: strict),
         // XPC services (design/25): the app's peer and the service's host,
         // over XPCSession and XPCListener, with an in-process simulated
         // service for tests. macOS only: the sources compile to nothing
