@@ -250,6 +250,10 @@ public struct ReconcilePolicy: Sendable, Hashable {
     public var passDeadline: Duration = .seconds(600)
     /// Quiet time before a triggered pass.
     public var coalesce: Duration = .seconds(1)
+    /// The longest a trigger waits for that quiet: triggers that keep
+    /// arriving are served this long after the oldest. Not shorter than
+    /// `coalesce`.
+    public var coalesceAtMost: Duration = .seconds(5)
     /// When a scoped pass reads back what a pass corrected.
     public var verifyAfter: Duration = .seconds(2)
     /// Passes in a row a key may fail to converge before it is stuck.

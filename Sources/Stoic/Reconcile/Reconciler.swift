@@ -52,6 +52,7 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
         precondition(policy.concurrency >= 1, "reconciler \(name): concurrency must be at least one")
         precondition(policy.stuckAfter >= 1, "reconciler \(name): stuckAfter must be at least one")
         precondition(policy.pendingKeys >= 1, "reconciler \(name): pendingKeys must be at least one")
+        precondition(policy.coalesceAtMost >= policy.coalesce, "reconciler \(name): coalesceAtMost must not be shorter than coalesce")
         self.name = name
         self.schedule = schedule
         self.policy = policy
@@ -112,7 +113,8 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
     /// contract's promises itself: every read and write a declared operation,
     /// every write repeatable, no removals (a job that removes needs a keyed
     /// reconciliation and its guard). A job that throws is a pass that could
-    /// not read: the status says `.unreadable(.truth)`.
+    /// not read: the status says `.unreadable(.truth)`. So is a job that the
+    /// pass deadline cuts off: what it did is not known.
     ///
     /// - Parameters:
     ///   - name: Stable forever: the label of its events.
@@ -147,7 +149,9 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
     // MARK: Triggers
 
     /// These keys may have changed: a scoped pass over them follows once no
-    /// new keys have arrived for `coalesce`.
+    /// new keys have arrived for `coalesce`, and no later than
+    /// `coalesceAtMost` after the oldest key not yet served, so a side that
+    /// changes all day is still corrected promptly.
     ///
     /// Only recorded while `run()` is not running: the next `run()` begins
     /// with a full pass, which covers them.
@@ -155,7 +159,7 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
         let now = clock.now
         let overflow = core.withLock { core -> Int? in
             core.pending.formUnion(keys)
-            core.triggerDue = now.advanced(by: policy.coalesce)
+            core.triggered(at: now, policy: policy)
             guard core.pending.count > policy.pendingKeys else { return nil }
             defer {
                 core.pending = []
@@ -183,7 +187,7 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
         let now = clock.now
         core.withLock { core in
             core.fullRequested = true
-            core.triggerDue = now.advanced(by: policy.coalesce)
+            core.triggered(at: now, policy: policy)
         }
         bell.ring()
     }
@@ -284,6 +288,7 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
             core.pending = []
             core.fullRequested = false
             core.triggerDue = nil
+            core.triggerSince = nil
         }
         defer { core.withLock { $0.running = false } }
         var next = NextPass<Key>(scope: .all, cause: .start)
@@ -477,10 +482,16 @@ public final class Reconciler<Key: Hashable & Comparable & Sendable>: Sendable, 
             }
         }
         switch outcome {
-        case .failure(let error) where Task.isCancelled || containsCancellation(error):
+        case .failure where Task.isCancelled:
             return .cancelled
         case .failure(let error):
-            let failure = ReconcileFailure(error)
+            // Nobody cancelled the pass. A job that ends in cancellation all
+            // the same was cut off by the pass's deadline (or threw it by
+            // itself): what it did is not known, so it is a pass that could
+            // not read, tried again on the failed pass backoff. The loop goes
+            // on: `run()` ends only when it is cancelled.
+            let cutOff = deadline.hasPassed && containsCancellation(error)
+            let failure = ReconcileFailure(cutOff ? Rejection(.deadlineExceeded, label: name) : error)
             events.append(Event("reconciler.unreadable", level: .warning, label: name, fields: [
                 .init("side", .string(ReconcileSide.truth.rawValue), privacy: .public),
                 .init("error", .string(failure.errorType), privacy: .public),

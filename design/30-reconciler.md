@@ -301,6 +301,7 @@ public struct ReconcilePolicy: Sendable, Hashable {
     public var concurrency: Int = 4
     public var passDeadline: Duration = .seconds(600)
     public var coalesce: Duration = .seconds(1)         // quiet time before a triggered pass
+    public var coalesceAtMost: Duration = .seconds(5)   // the longest a trigger waits for that quiet
     public var verifyAfter: Duration = .seconds(2)      // a scoped pass over what was just corrected
     public var stuckAfter: Int = 3                       // passes in a row
     public var keyBackoff: Schedule = .exponential(base: .seconds(5)).capped(at: .seconds(3_600))
@@ -662,8 +663,9 @@ verification pass reading back ninety removals that a full pass of a thousand
 allowed is not held. A scoped pass for one deleted event removes its one entry,
 which is within the count. A scoped pass never removes a key of a standing
 hold: that is the person's to lift. A scoped read that comes back empty is
-indistinguishable from a deletion of its keys, so its removals are bounded by
-the count alone; the next full pass reads the whole truth again.
+indistinguishable from a deletion of its keys, so the empty-truth rule does not
+apply to it: its removals are bounded by the guard's limit alone, and the next
+full pass reads the whole truth again.
 
 ### Passes never overlap
 
@@ -690,8 +692,11 @@ earliest of:
 - **the schedule**: `every`'s next delay after the last full pass ended (15
   minutes by default, with equal jitter, so between 7.5 and 15 minutes);
 - **a trigger**: `changed(keys)` adds keys to a pending set, and a scoped pass
-  over them runs once no new keys have arrived for `coalesce`. Several triggers
-  during a pass are folded into the next one. `requestFullPass()` asks for a
+  over them runs once no new keys have arrived for `coalesce`, and no later
+  than `coalesceAtMost` after the oldest key not yet served: on a server where
+  some key changes every half second the quiet never comes, and triggers that
+  only ever waited for it would leave the schedule as the only pass. Several
+  triggers during a pass are folded into the next one. `requestFullPass()` asks for a
   full pass the same way. A full pass clears the pending set, because it covers
   it. A pending set that would exceed `pendingKeys` becomes a full pass request
   instead (`reconciler.pending_overflow`);
@@ -892,6 +897,7 @@ captures. The status is a value. Events are recorded outside every lock.
 | concurrency           | 4                                        | a remote backend's default capacity is 6; admission bounds it too                                 |
 | pass deadline         | 10 min                                   | twice a background read's default total (design/22); a hung pass ends                             |
 | coalesce              | 1 s                                      | a group sign-up of five people is one pass                                                        |
+| coalesce at most      | 5 s                                      | under changes that never pause, a key is still corrected within seconds, in passes of many keys   |
 | verify after          | 2 s                                      | read-after-write on most services; backoff covers slower ones                                     |
 | stuck after           | 3 passes in a row                        | one failure is weather, three are a fault worth a person's look                                   |
 | key backoff           | 5 s doubling, capped at 1 h              | a broken key costs at most one correction an hour                                                 |
@@ -932,6 +938,8 @@ captures. The status is a value. Events are recorded outside every lock.
 | a pass is asked for while one runs                                       | it runs after it; two passes never overlap; no key is corrected twice at once                                                                                                           |
 | a caller's deadline passes while it waits for a pass in progress         | `pass()` throws `.cancelled`; the pass in progress goes on                                                                                                                              |
 | keys are triggered during a pass                                         | they are folded into one scoped pass after the current one, once `coalesce` is quiet                                                                                                    |
+| keys keep being triggered, never quiet for coalesce                      | a scoped pass runs `coalesceAtMost` after the oldest key not yet served; the keys that arrive behind it wait for the next                                                               |
+| a job's pass reaches its deadline                                        | the job is cancelled; what it did is not known, so the pass could not read (`.unreadable(.truth)`); it runs again on the failed-pass backoff; `run()` goes on                           |
 | more keys are triggered than `pendingKeys`                               | a full pass replaces them; `reconciler.pending_overflow`                                                                                                                                |
 | a trigger is missed                                                      | the next full pass finds the difference and corrects it; `reconciler.drift_found` if the phase was converged                                                                            |
 | something else writes to the derived side                                | the next pass corrects it back; `reconciler.drift_found`                                                                                                                                |
@@ -1076,14 +1084,16 @@ Departures from the reviewed draft, and decisions it left open.
   reason (a verification pass over corrected removals). Before any full pass
   the measure is what it read.
 - **A scoped pass never removes a key of a standing hold**, and a scoped pass
-  past its own guard adds its removals to the hold (reported as a new hold).
-  Only a full pass releases a hold, or uses a confirmation.
+  past its own guard adds its removals to the hold (reported as a new hold,
+  which keeps the standing one's `truthWasEmpty` and the larger derived count:
+  what the person confirming is told must not be lost to a later, smaller
+  reading). Only a full pass releases a hold, or uses a confirmation.
 - **`confirm` asks for a full pass** after `coalesce`, so the person's
   confirmation is used promptly rather than at the schedule. A confirmed pass
   that is cut short before its removals still used the confirmation, as the
   contract says; the next hold must be confirmed again.
 - **An empty scoped read** is treated as the deletion it looks like, bounded by
-  the guard's count. The property test asserts the empty-truth rule for full
+  the guard's limit. The property test asserts the empty-truth rule for full
   passes only, and the count for every pass.
 - **A cancelled full pass that read both sides** counts as having read them
   (`lastFullPass`; the phase leaves `.starting`): its differences are known.
@@ -1094,6 +1104,13 @@ Departures from the reviewed draft, and decisions it left open.
   failed or did not take. A "did not take" verdict needs a reading after a
   correction, and the key then waits its backoff, so a key whose writes are
   dropped is stuck at its third such reading (the sixth pass).
+- **Triggers have a longest wait** (`coalesceAtMost`, 5 s), added in review:
+  the draft's triggers waited only for quiet, and a steady stream of changes
+  postponed every triggered pass until the stream stopped.
+- **A job cut off by the pass deadline is `.unreadable(.truth)`**, not a
+  cancelled pass: only a cancelled task ends `run()`. A correction or a read
+  that throws `CancellationError` by itself is a failure like any other, as
+  `perform` classifies it (design/22).
 - **A job's thrown error is `.unreadable(.truth)`**; a settle that fails in the
   store, or that its definition refuses, is refused with that reason (stuck at
   once, tried again on its backoff).

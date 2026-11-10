@@ -67,8 +67,11 @@ struct ReconcilerCore<Key: Hashable & Comparable & Sendable>: Sendable {
     var pending: Set<Key> = []
     var fullRequested = false
     /// When the triggers (and a full pass request) fall due: `coalesce` after
-    /// the latest.
+    /// the latest, and no later than `coalesceAtMost` after `triggerSince`.
     var triggerDue: AnyClock.Instant?
+    /// When the oldest trigger not yet served arrived: a pass follows no
+    /// later than `coalesceAtMost` after it, however many arrive behind it.
+    var triggerSince: AnyClock.Instant?
     var verify: Set<Key> = []
     var verifyDue: AnyClock.Instant?
     var scheduleDue: AnyClock.Instant?
@@ -120,11 +123,15 @@ struct ReconcilerCore<Key: Hashable & Comparable & Sendable>: Sendable {
             pending = []
             fullRequested = false
             triggerDue = nil
+            triggerSince = nil
             verify = []
             verifyDue = nil
         case .keys(let covered):
             pending.subtract(covered)
-            if pending.isEmpty, !fullRequested { triggerDue = nil }
+            if pending.isEmpty, !fullRequested {
+                triggerDue = nil
+                triggerSince = nil
+            }
             verify.subtract(covered)
             if verify.isEmpty { verifyDue = nil }
         }
@@ -133,6 +140,24 @@ struct ReconcilerCore<Key: Hashable & Comparable & Sendable>: Sendable {
         for (key, state) in keys where scope.contains(key) {
             if let wait = state.waitUntil, wait <= now { keys[key]?.waitUntil = nil }
         }
+    }
+
+    /// A trigger at `now`: its pass is due once no trigger has arrived for
+    /// `coalesce`, and never later than `coalesceAtMost` after the oldest one
+    /// not yet served, so triggers that never go quiet are still served.
+    mutating func triggered(at now: AnyClock.Instant, policy: ReconcilePolicy) {
+        let since = triggerSince ?? now
+        triggerSince = since
+        triggerDue = min(now.advanced(by: policy.coalesce), since.advanced(by: policy.coalesceAtMost))
+    }
+
+    /// Work a pass left: a full pass is due `coalesce` from `now`, or sooner
+    /// if a trigger already is.
+    mutating func owesFullPass(at now: AnyClock.Instant, policy: ReconcilePolicy) {
+        fullRequested = true
+        triggerSince = triggerSince ?? now
+        let due = now.advanced(by: policy.coalesce)
+        triggerDue = triggerDue.map { min($0, due) } ?? due
     }
 
     /// The next pass due at `now`, or how long to sleep; and whether the
@@ -263,7 +288,11 @@ struct ReconcilerCore<Key: Hashable & Comparable & Sendable>: Sendable {
         } else {
             let fresh = held.subtracting(hold?.keys ?? [])
             if !fresh.isEmpty {
-                newHold(held.union(hold?.keys ?? []), derived: reading.derivedKeys.count, truthWasEmpty: false, moment: moment, name: name, events: &events)
+                // Added to the standing hold, which keeps what the full pass
+                // that made it found: the measure, and an empty truth.
+                newHold(
+                    held.union(hold?.keys ?? []), derived: max(derived, hold?.derivedCount ?? 0),
+                    truthWasEmpty: hold?.truthWasEmpty ?? false, moment: moment, name: name, events: &events)
             }
         }
 
@@ -386,9 +415,7 @@ struct ReconcilerCore<Key: Hashable & Comparable & Sendable>: Sendable {
         if deferred > 0, !cancelled {
             // The rest follows after `coalesce`, as a full pass: the guard
             // judges removals over the whole derived side.
-            fullRequested = true
-            let due = now.advanced(by: policy.coalesce)
-            triggerDue = triggerDue.map { min($0, due) } ?? due
+            owesFullPass(at: now, policy: policy)
             events.append(Event("reconciler.cut_short", level: .notice, label: name, fields: [
                 .init("deferred", .int(deferred)),
                 .init("deadline", .bool(deadlinePassed)),
@@ -442,9 +469,7 @@ struct ReconcilerCore<Key: Hashable & Comparable & Sendable>: Sendable {
         if scope == .all { hasFullRead = true }
         jobDeferred = outcome.deferred
         if outcome.deferred > 0 {
-            fullRequested = true
-            let due = now.advanced(by: policy.coalesce)
-            triggerDue = triggerDue.map { min($0, due) } ?? due
+            owesFullPass(at: now, policy: policy)
             events.append(Event("reconciler.cut_short", level: .notice, label: name, fields: [
                 .init("deferred", .int(outcome.deferred)),
                 .init("deadline", .bool(false)),

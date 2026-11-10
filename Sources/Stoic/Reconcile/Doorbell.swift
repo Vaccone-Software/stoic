@@ -31,7 +31,14 @@ final class Doorbell: Sendable {
     /// `instant` on `clock`, whichever comes first. `nil` waits for the bell
     /// alone.
     func wait(until instant: AnyClock.Instant?, clock: AnyClock) async throws(CancellationError) {
-        if state.withLock({ state in defer { state.rung = false }; return state.rung }) { return }
+        let rung = state.withLock { state -> Bool in
+            // A ring that raced the last wait's timer can leave its
+            // cancellation noted with nobody waiting: it was that wait's.
+            state.cancelled = false
+            defer { state.rung = false }
+            return state.rung
+        }
+        if rung { return }
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 if let instant {

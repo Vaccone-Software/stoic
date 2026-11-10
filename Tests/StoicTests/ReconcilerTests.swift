@@ -128,6 +128,26 @@ struct ReconcilerTests {
         }
     }
 
+    @Test func aScopedPassThatAddsToAHoldKeepsWhatTheFullPassFound() async throws {
+        try await onReconcilerTime { _, _ in
+            let truth = Side(entries(4), label: "truth")
+            let derived = Side(entries(4), label: "derived")
+            await truth.inject(.readEmpty)
+            let reconciler = Reconciler(SideSync(truth: truth, derived: derived), policy: quickPolicy())
+            _ = try await reconciler.pass()
+            #expect(reconciler.status.hold?.truthWasEmpty == true)
+            // Six entries the truth never had appear and are triggered
+            // together: past the count of five, so they join the hold.
+            for index in 100..<106 { await derived.set(key(index), 1) }
+            let report = try await reconciler.pass(.keys(Set((100..<106).map(key))))
+            #expect(report.held == 6)
+            let hold = try #require(reconciler.status.hold)
+            #expect(hold.removals == 10)
+            #expect(hold.truthWasEmpty, "the person confirming it is still told the truth read empty")
+            #expect(hold.derivedCount == 6)
+        }
+    }
+
     @Test func aHeldPassStillAppliesItsCreatesAndUpdates() async throws {
         try await onReconcilerTime { _, _ in
             let truth = Side(entries(3), label: "truth")

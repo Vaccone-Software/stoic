@@ -313,4 +313,77 @@ struct ReconcilerLoopTests {
             #expect(reconciler.status.phase == .converging(differences: 4), "what it finished is reflected")
         }
     }
+
+    @Test(.failureMode("design/30", "keys keep being triggered, never quiet for coalesce"))
+    func triggersThatNeverGoQuietAreServedWithinCoalesceAtMost() async throws {
+        try await simulated { clock, _ in
+            let truth = Side([:], label: "truth")
+            let derived = Side([:], label: "derived")
+            let log = await Self.logging(truth, on: clock)
+            let reconciler = Reconciler(SideSync(truth: truth, derived: derived), every: .fixed(.seconds(900)), policy: quickPolicy())
+            try await Self.whileRunning(reconciler) {
+                await reconciler.progress.wait(for: .sleeps, count: 1)
+                try await Ambient.sleep(for: .milliseconds(100))
+                // A busy server: a key changes every 0.4 s, from 0.1 s to 10.1 s.
+                for index in 0..<26 {
+                    reconciler.changed(key(index))
+                    try await Ambient.sleep(for: .milliseconds(400))
+                }
+                await reconciler.progress.wait(for: .passes, count: 3)
+            }
+            #expect(log.times == [.zero, .milliseconds(5_100), .milliseconds(10_300)], "5 s after the oldest trigger not yet served")
+            #expect(log.scopes == [.all, .keys(Set((0..<13).map(key))), .keys(Set((13..<26).map(key)))])
+        }
+    }
+
+    @Test(.failureMode("design/30", "a job's pass reaches its deadline"))
+    func aJobCutOffByThePassDeadlineCouldNotReadAndTheLoopGoesOn() async throws {
+        try await simulated { clock, events in
+            let calls = Mutex(0)
+            let reconciler = Reconciler<String>(
+                name: "test.slow-job", every: .fixed(.seconds(900)), policy: quickPolicy { $0.passDeadline = .seconds(6) }
+            ) { _ in
+                let call = calls.withLock { count -> Int in
+                    count += 1
+                    return count
+                }
+                if call == 1 { try await Ambient.sleep(for: .seconds(60)) }
+                return ReconcileOutcome(differences: 0, corrected: 0)
+            }
+            try await Self.whileRunning(reconciler) {
+                try await Ambient.sleep(for: .seconds(10))
+                #expect(reconciler.status.phase == .unreadable(.truth), "cut off at 6 s: nothing is known of what it did")
+                try await Ambient.sleep(for: .seconds(30))
+            }
+            #expect(calls.withLock { $0 } == 2, "again after the failed pass backoff: the loop did not end")
+            #expect(reconciler.status.phase == .converged)
+            #expect(events.count("reconciler.unreadable") == 1)
+            _ = clock
+        }
+    }
+
+    @Test func aCorrectionThatCancelsItselfIsAFailureThatWaitsItsBackoff() async throws {
+        try await simulated { clock, _ in
+            let attempts = Mutex(0)
+            let reconciliation = ScriptedReconciliation(
+                truth: { _, _ in ["a": 1] }, derived: { _, _ in [:] },
+                apply: { _, _ in
+                    attempts.withLock { $0 += 1 }
+                    // As awaiting a cached task that was cancelled long ago does.
+                    throw CancellationError()
+                })
+            let reconciler = Reconciler(reconciliation, every: .fixed(.seconds(900)), policy: quickPolicy())
+            let report = try await reconciler.pass()
+            #expect(report.failed == 1)
+            #expect(report.deferred == 0, "not cut short: nothing cut it")
+            #expect(report.outcome == .partial)
+            try await Self.whileRunning(reconciler) {
+                try await Ambient.sleep(for: .seconds(60))
+            }
+            // 1 s, 2 s, 4 s, then 8 s apart: a correction on its backoff, never a pass every second.
+            #expect(attempts.withLock { $0 } <= 12, "\(attempts.withLock { $0 }) attempts in a minute")
+            #expect(reconciler.status.stuck.map(\.key) == ["a"])
+            _ = clock
+        }
+    }
 }
