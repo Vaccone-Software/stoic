@@ -97,6 +97,7 @@ left out. `debugDescription` prints everything.
 | a report wraps a `PolicyError` wrapping the root   | `first(Root.self)` finds it                             |
 | a report wraps a `ConcurrentFailure` whose primary is a cancellation | `isCancellation` is true; a primary failure with cancelled siblings is not |
 | cleanup fails while handling an error              | `suppressing(_:)` keeps it; shown in `debugDescription` |
+| an error is wrapped hundreds of layers deep        | Classified (cancellation, defect, `first`) and presented by loops, never by recursion: a recursive walk overflowed the stack at about 200 layers. Releasing such a chain is Swift's own recursion, and overflows at a few thousand layers (between 2,000 and 5,000 in a debug build) |
 
 ## Testing
 
@@ -109,7 +110,7 @@ a report stops a retry).
 - A platform error catalog (`URLError`, `POSIXError`, `CocoaError`,
   `NWError` → transient, permanent, needs-user, defect) in an Apple
   integration product, feeding retry classification.
-- A `UserFacing` protocol hook for presenting recoverable errors; the
-  presentation itself is the app's.
+- ~~A `UserFacing` protocol hook for presenting recoverable errors.~~ Built in
+  0.8.0 as `Presentable` and `error.presented()` (design/31).
 - Lint: `try?` on a call whose error matters, and `catch { print(error) }`,
   are flagged with a fix-it toward `withContext`.

@@ -168,4 +168,38 @@ struct ReportTests {
         #expect(report.frames[0].metadata.first?.key == "bytes")
         #expect(report.frames[0].fileID.hasSuffix("ReportTests.swift"))
     }
+
+    @Test(.failureMode("design/05", "an error is wrapped hundreds of layers deep"))
+    func aChainFiveHundredLayersDeepIsClassifiedAndPresented() throws {
+        // Two wrappers a layer (a report does not wrap a report), as code that
+        // wraps an error in a loop builds them; a recursive walk overflowed
+        // the stack at about 200 layers.
+        func chain(around root: any Error) -> any Error {
+            var error = root
+            for _ in 0..<500 { error = Report(PolicyError<any Error>.failed(error)) }
+            return error
+        }
+        #expect(containsCancellation(chain(around: CancellationError())))
+        #expect(!containsCancellation(chain(around: FileError.missing)))
+        #expect(containsDefect(chain(around: Invariant())))
+        #expect(!containsDefect(chain(around: FileError.missing)))
+        #expect(firstError(of: Rejection.self, in: chain(around: Rejection(.rateLimited))) == Rejection(.rateLimited))
+        #expect(firstError(of: Rejection.self, in: chain(around: FileError.missing)) == nil)
+        // Kept out of the macro, which would describe the whole chain.
+        let key = chain(around: FileError.missing).presented()?.message.key
+        #expect(key == "stoic.failure")
+        #expect(chain(around: CancellationError()).presented() == nil)
+    }
+
+    @Test func firstLooksAtAConcurrentFailuresChildrenInOrder() {
+        let failure = ConcurrentFailure<any Error>([
+            FileError.missing,
+            Report(PolicyError<any Error>.failed(Rejection(.bulkheadFull))),
+            Rejection(.rateLimited),
+        ])
+        #expect(firstError(of: Rejection.self, in: Report(failure)) == Rejection(.bulkheadFull), "depth first: the second child's, before the third")
+        #expect(containsDefect(ConcurrentFailure<any Error>([FileError.missing, Invariant()])), "a defect in any child")
+    }
+
+    struct Invariant: Defect {}
 }

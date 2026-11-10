@@ -226,19 +226,25 @@ func standardDecision(for failure: any Error) -> RetryDecision? {
 }
 
 /// Whether `error`, or any error it wraps, is a ``Defect``.
+///
+/// A loop over the errors still to look at, not a recursion: an error a
+/// program wrapped in a loop can be hundreds of layers deep, and a recursive
+/// walk overflowed the stack at about 200 (design/05, Failure modes).
 func containsDefect(_ error: any Error) -> Bool {
-    if error.isDefect { return true }
-    if let report = error as? Report { return containsDefect(report.root) }
-    if let operation = error as? any OperationErrorCarrying {
-        // A defect in a declared operation's last attempt is a defect to
-        // whoever catches it.
-        return operation.carriedLast.map(containsDefect) ?? false
-    }
-    if let policy = error as? any RejectionCarrying, let inner = policy.carriedFailure {
-        return containsDefect(inner)
-    }
-    if let concurrent = error as? any PrimaryFailureCarrying {
-        return concurrent.allFailures.contains(where: containsDefect)
+    var pending: [any Error] = [error]
+    while let current = pending.popLast() {
+        if current.isDefect { return true }
+        if let report = current as? Report {
+            pending.append(report.root)
+        } else if let operation = current as? any OperationErrorCarrying {
+            // A defect in a declared operation's last attempt is a defect to
+            // whoever catches it.
+            if let last = operation.carriedLast { pending.append(last) }
+        } else if let policy = current as? any RejectionCarrying, let inner = policy.carriedFailure {
+            pending.append(inner)
+        } else if let concurrent = current as? any PrimaryFailureCarrying {
+            pending.append(contentsOf: concurrent.allFailures)
+        }
     }
     return false
 }
@@ -256,18 +262,29 @@ func containsDefect(_ error: any Error) -> Bool {
 /// so a scope or a supervisor reports a cancelled child's possible payment
 /// as a failure, on purpose.
 func containsCancellation(_ error: any Error) -> Bool {
-    if error.isCancellation { return true }
-    if let report = error as? Report { return containsCancellation(report.root) }
-    if let operation = error as? any OperationErrorCarrying { return operation.carriedIsCancellation }
-    if let rejection = error as? Rejection { return rejection.reason == .cancelled }
-    if let policy = error as? any RejectionCarrying {
-        if let rejection = policy.carriedRejection { return rejection.reason == .cancelled }
-        if let inner = policy.carriedFailure { return containsCancellation(inner) }
+    // A loop down the chain, not a recursion (see `containsDefect`).
+    var current = error
+    while true {
+        if current.isCancellation { return true }
+        if let report = current as? Report {
+            current = report.root
+            continue
+        }
+        if let operation = current as? any OperationErrorCarrying { return operation.carriedIsCancellation }
+        if let rejection = current as? Rejection { return rejection.reason == .cancelled }
+        if let policy = current as? any RejectionCarrying {
+            if let rejection = policy.carriedRejection { return rejection.reason == .cancelled }
+            if let inner = policy.carriedFailure {
+                current = inner
+                continue
+            }
+        }
+        if let concurrent = current as? any PrimaryFailureCarrying {
+            current = concurrent.primaryFailure
+            continue
+        }
+        return false
     }
-    if let concurrent = error as? any PrimaryFailureCarrying {
-        return containsCancellation(concurrent.primaryFailure)
-    }
-    return false
 }
 
 /// Lets classification see inside a ``ConcurrentFailure`` of any failure type.

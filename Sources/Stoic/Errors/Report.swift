@@ -263,22 +263,35 @@ extension Error {
     }
 }
 
-/// The first `E` in `error` or the wrappers around it.
+/// The first `E` in `error` or the wrappers around it, depth first, outermost
+/// first, a concurrent failure's children in their order.
+///
+/// A loop over a stack of errors still to look at, not a recursion (see
+/// `containsDefect`): the next one looked at is the stack's last.
 func firstError<E: Error>(of type: E.Type, in error: any Error) -> E? {
-    if let match = error as? E { return match }
-    if let report = error as? Report { return firstError(of: type, in: report.root) }
-    if let policy = error as? any RejectionCarrying {
-        if let rejection = policy.carriedRejection, let match = rejection as? E { return match }
-        if let inner = policy.carriedFailure { return firstError(of: type, in: inner) }
-    }
-    if let concurrent = error as? any PrimaryFailureCarrying {
-        for failure in concurrent.allFailures {
-            if let match = firstError(of: type, in: failure) { return match }
+    var pending: [any Error] = [error]
+    while let current = pending.popLast() {
+        if let match = current as? E { return match }
+        if let report = current as? Report {
+            pending.append(report.root)
+            continue
         }
-    }
-    if let operation = error as? any OperationErrorCarrying {
-        if let rejection = operation.carriedRejection, let match = rejection as? E { return match }
-        if let last = operation.carriedLast { return firstError(of: type, in: last) }
+        if let policy = current as? any RejectionCarrying {
+            if let rejection = policy.carriedRejection, let match = rejection as? E { return match }
+            if let inner = policy.carriedFailure {
+                pending.append(inner)
+                continue
+            }
+        }
+        if let concurrent = current as? any PrimaryFailureCarrying {
+            // Reversed, so the first child is looked at first.
+            pending.append(contentsOf: concurrent.allFailures.reversed())
+            continue
+        }
+        if let operation = current as? any OperationErrorCarrying {
+            if let rejection = operation.carriedRejection, let match = rejection as? E { return match }
+            if let last = operation.carriedLast { pending.append(last) }
+        }
     }
     return nil
 }
