@@ -28,9 +28,12 @@ struct WallClockTests {
     func jumpingTheWallClockMovesMomentsAndNotDeadlinesOrSleeps() async throws {
         let clock = TestClock()
         let woke = SendableBox(false)
+        // Fixed before the task starts, so the sleep ends at +60 s whenever
+        // the task first runs.
+        let wake = clock.erased.now.advanced(by: .seconds(60))
         let task = Task {
             try await withTestAmbient(clock: clock) {
-                try await Ambient.sleep(for: .seconds(60))
+                try await Ambient.sleep(until: wake)
                 woke.mutate { $0 = true }
             }
         }
@@ -61,13 +64,14 @@ struct WallClockTests {
     @Test(.failureMode("design/26", "the wall clock jumps backwards during a timeout"))
     func aWallClockJumpBackwardsDuringATimeoutDoesNotMoveIt() async throws {
         let clock = TestClock()
+        // Both timers' instants are fixed here, before the task starts.
+        let deadline = Deadline(clock.erased.now.advanced(by: .seconds(30)), clock: clock.erased)
+        let workEnds = clock.erased.now.advanced(by: .seconds(3600))
         let task = Task {
             try await withTestAmbient(clock: clock) {
-                try await withTimeout(.seconds(30)) { try await Ambient.sleep(for: .seconds(3600)) }
+                try await withDeadline(deadline) { try await Ambient.sleep(until: workEnds) }
             }
         }
-        // Both timers (the timeout and the work's sleep) are armed before
-        // anything moves, so their instants are fixed.
         await clock.waitForSleepers(count: 2)
         clock.jumpWallClock(by: .seconds(-3600))
         await clock.advance(by: .seconds(29))
