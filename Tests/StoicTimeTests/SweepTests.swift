@@ -94,6 +94,33 @@ struct SweepTests {
         }
     }
 
+    /// The sweep refreshes each value by the policy it was made with: the
+    /// second 01:30 of an overlap is still the second after a rule change
+    /// that keeps the overlap and moves its instants.
+    @Test(.failureMode("design/26", "the sweep refreshes a value made with a policy"))
+    func theSweepKeepsTheOccurrenceEachValueWasMadeWith() async throws {
+        let rules = Zones.rules()
+        try await onTestTime(rules) {
+            let values: [String: ZonedDateTime] = [
+                "second": try ZonedDateTime(Zones.local(2027, 11, 7, 1, 30), in: Zones.newYork, resolving: .later),
+                "first": try ZonedDateTime(Zones.local(2027, 11, 7, 1, 30), in: Zones.newYork, resolving: .earlier),
+            ]
+            var sweep = ZoneRulesSweep(lastSweptVersion: "2026a")
+            deepenFallBack2027(rules)
+            var moved: [String: ZonedDateTime] = [:]
+            let report = await sweep.run(values: { values }) { moved = $0 }
+            #expect(report?.moved == 1)
+            #expect(moved.keys.sorted() == ["second"], "the first 01:30 did not move")
+            #expect(moved["second"]?.resolution == .overlap(chose: .later))
+            #expect(moved["second"]?.moment == Zones.moment("2027-11-07T07:30:00Z"))
+
+            // A policy given overrides each value's own.
+            var again = ZoneRulesSweep(lastSweptVersion: "2026a")
+            await again.run(resolving: .earlier, values: { values }) { moved = $0 }
+            #expect(moved["second"]?.moment == Zones.moment("2027-11-07T05:30:00Z"))
+        }
+    }
+
     @Test func aValueTheNewRulesCannotResolveIsCountedAndLeft() async throws {
         let rules = Zones.rules()
         try await onTestTime(rules) {

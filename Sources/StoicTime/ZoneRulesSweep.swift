@@ -61,8 +61,9 @@ public struct ZoneRulesSweep: Sendable, Hashable, Codable {
     ///
     /// - Parameters:
     ///   - now: Values at or before it are final, and never moved.
-    ///   - resolving: The policy for a local time a rule change moved into a
-    ///     gap or an overlap.
+    ///   - resolving: A policy for every value, overriding each value's
+    ///     own; `nil`, the default, refreshes each by the policy it was made
+    ///     with (``ZonedDateTime/refreshed(now:resolving:)``).
     ///   - values: The app's zoned values, by any key it can find them by
     ///     again. Asked only when the version changed.
     ///   - apply: Receives the refreshed values that moved, by key, to store
@@ -75,7 +76,7 @@ public struct ZoneRulesSweep: Sendable, Hashable, Codable {
     @discardableResult
     public mutating func run<Key: Hashable & Sendable, Failure: Error>(
         now: Moment = .now,
-        resolving: Disambiguation = .compatible,
+        resolving: Disambiguation? = nil,
         values: () async throws(Failure) -> [Key: ZonedDateTime],
         apply: ([Key: ZonedDateTime]) async throws(Failure) -> Void
     ) async throws(Failure) -> Report? {

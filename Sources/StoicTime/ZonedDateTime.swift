@@ -113,15 +113,23 @@ public struct ZonedDateTime: Sendable {
     /// the future: the same local time and zone, and the instant they give
     /// now. A value at or before `now` is final and comes back unchanged.
     ///
-    /// If a rule change moved the local time into a gap or an overlap,
-    /// `resolving` decides, and ``resolution`` says so.
+    /// The local time is resolved by the policy the value was made with,
+    /// as ``isStale(now:)`` resolves it: a value that took the later 01:30
+    /// of an overlap still takes the later one, and ``resolution`` says what
+    /// happened. Refreshing never silently changes which instant was meant.
+    /// A value read from text does not say which policy made it, and is
+    /// resolved by ``Disambiguation/compatible``.
     ///
+    /// - Parameters:
+    ///   - now: Values at or before it are final, and come back unchanged.
+    ///   - resolving: A policy that overrides the value's own; `nil`, the
+    ///     default, keeps the one it was made with.
     /// - Throws: ``TimeError/unknownZone(_:)`` if the rules in force do not
     ///   know the zone; ``TimeError/inGap(_:_:)`` or
     ///   ``TimeError/inOverlap(_:_:)`` under ``Disambiguation/reject``.
-    public func refreshed(now: Moment = .now, resolving: Disambiguation = .compatible) throws(TimeError) -> ZonedDateTime {
+    public func refreshed(now: Moment = .now, resolving: Disambiguation? = nil) throws(TimeError) -> ZonedDateTime {
         guard moment > now else { return self }
-        return try ZonedDateTime(local, in: zone, resolving: resolving)
+        return try ZonedDateTime(local, in: zone, resolving: resolving ?? resolution.policy ?? .compatible)
     }
 }
 

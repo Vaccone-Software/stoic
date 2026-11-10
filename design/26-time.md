@@ -154,7 +154,7 @@ public struct ZonedDateTime: Sendable, Hashable, Codable {           // equal by
     public var offset: Duration { get }      // what the rules said then
     public let resolution: Resolution        // .exact, .gap(shiftedBy:), .overlap(chose:), .decoded
     public func isStale(now: Moment = .now) throws(TimeError) -> Bool
-    public func refreshed(now: Moment = .now, resolving: Disambiguation = .compatible) throws(TimeError) -> ZonedDateTime
+    public func refreshed(now: Moment = .now, resolving: Disambiguation? = nil) throws(TimeError) -> ZonedDateTime   // nil: its own policy
 }
 extension Moment { public func `in`(_ zone: TimeZoneID) throws(TimeError) -> ZonedDateTime }   // an instant, seen from a place
 
@@ -178,7 +178,7 @@ public final class ScriptedZoneRules: Sendable {                     // zones, t
 public func withZoneRules<R, Failure>(_ rules: ZoneRules, operation: () async throws(Failure) -> R) async throws(Failure) -> R   // and a synchronous form
 public struct ZoneRulesSweep: Sendable, Hashable, Codable {          // a value the app persists with its settings
     public private(set) var lastSweptVersion: String?;  public var isDue: Bool { get }
-    public mutating func run<Key, Failure>(now: Moment = .now, resolving: Disambiguation = .compatible,
+    public mutating func run<Key, Failure>(now: Moment = .now, resolving: Disambiguation? = nil,
         values: () async throws(Failure) -> [Key: ZonedDateTime],
         apply: ([Key: ZonedDateTime]) async throws(Failure) -> Void) async throws(Failure) -> Report?
 }
@@ -222,8 +222,11 @@ all three (RFC 9557: the offset is the instant). The value is _stale_ when it
 is still in the future and resolving `local` in `zone` today, by the policy
 its `resolution` records (`.compatible` for an exact one), gives another
 instant: a rule changed. A value read from text does not say which policy
-made it, so it is stale only when no policy gives its instant. `refreshed()` resolves it again; a value in the past
-is final and is returned as it is. Display and "is it time?" decisions read
+made it, so it is stale only when no policy gives its instant. `refreshed()` resolves it again, by the same
+policy unless the caller names another (`.compatible` for a value read from
+text), so refreshing never silently moves a value to the other side of a gap
+or the other occurrence of an overlap; a value in the past is final and is
+returned as it is. The sweep refreshes the same way. Display and "is it time?" decisions read
 `local` and `zone`, or `refreshed()`, never a stale instant: so a missed sweep
 can put one event an hour out of order in a list, and can never show or act on
 a wrong time.
@@ -265,6 +268,8 @@ question of display, which stays Foundation's.
 | the zone's rules change for a future zoned value                | it is stale; `refreshed()` keeps the local time and zone and derives the new instant           |
 | the zone's rules change for a past zoned value                  | it is final: not stale, and `refreshed()` returns it unchanged                                 |
 | a rule change moves a stored local time into a gap              | `refreshed()` resolves it by the policy and reports `.gap`                                     |
+| a rule change keeps a stored local time in an overlap           | stale if its instants moved; `refreshed()` takes the same occurrence again, by the policy it was made with |
+| the sweep refreshes a value made with a policy                  | each value is refreshed by its own policy unless the sweep is given one                       |
 | a stale value is sorted before it is refreshed                  | it sorts by its old instant; its displayed time is still right                                 |
 | a zoned value's text has an offset its zone does not give       | it decodes, stale; it is not refused (RFC 9557's inconsistent offset)                          |
 | the rules version changes between launches                      | the sweep runs once and records the new version                                                |
@@ -305,9 +310,12 @@ Departures from the first draft, and decisions it left open.
   how it was first resolved, so a value read from text says so instead of
   claiming `.exact`. `resolution` is provenance: it is left out of equality and
   hashing, so a value reads back from its text as itself.
-- **Staleness by the recorded policy**, not "any policy": an exact time that a
-  rule change moved into a gap must be stale, though the gap's earlier side
-  is its old instant.
+- **Staleness and refreshing by the recorded policy**, not "any policy": an
+  exact time that a rule change moved into a gap must be stale, though the
+  gap's earlier side is its old instant. `refreshed(resolving:)` and the
+  sweep's `resolving:` are optional and default to that recorded policy (the
+  draft had `.compatible`, which refreshed a value made `.later` in an overlap
+  as `.earlier`).
 - **Read-only fields.** `PlainDate`'s year, month and day are `let`: a settable
   day would make 30 February. `PlainDateTime`'s parts stay `var` (each is valid
   alone).

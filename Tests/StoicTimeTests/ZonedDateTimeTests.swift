@@ -201,6 +201,36 @@ struct ZonedDateTimeTests {
         }
     }
 
+    /// Release `2026d` (made up) falls back two hours on 7 November 2027, from
+    /// EDT to -06:00: 01:30 is still shown twice, but its second showing is
+    /// an hour later. A value that took the second 01:30 is stale, and
+    /// refreshing it takes the second one again: the policy it was made with,
+    /// not the default's first.
+    @Test(.failureMode("design/26", "a rule change keeps a stored local time in an overlap"))
+    func refreshingKeepsTheOccurrenceTheValueWasMadeWith() async throws {
+        let rules = Zones.rules()
+        try await onTestTime(rules) {
+            let second = try ZonedDateTime(Zones.local(2027, 11, 7, 1, 30), in: Zones.newYork, resolving: .later)
+            let first = try ZonedDateTime(Zones.local(2027, 11, 7, 1, 30), in: Zones.newYork, resolving: .earlier)
+            #expect(second.moment == Zones.moment("2027-11-07T06:30:00Z"))
+            #expect(first.moment == Zones.moment("2027-11-07T05:30:00Z"))
+
+            deepenFallBack2027(rules)
+            #expect(try second.isStale() && !first.isStale())
+            let refreshed = try second.refreshed()
+            #expect(refreshed.resolution == .overlap(chose: .later), "still the second 01:30")
+            #expect(refreshed.moment == Zones.moment("2027-11-07T07:30:00Z"))
+            #expect(try !refreshed.isStale())
+            #expect(try first.refreshed() == first, "the first 01:30 did not move")
+            // A policy given is still obeyed.
+            let overridden = try second.refreshed(resolving: .earlier)
+            #expect(overridden.resolution == .overlap(chose: .earlier) && overridden.moment == first.moment)
+            // A value read from text has no policy of its own: the default's.
+            let read = try ZonedDateTime(parsing: second.description)
+            #expect(try read.refreshed().resolution == .overlap(chose: .earlier))
+        }
+    }
+
     /// Until it is refreshed, a stale value sorts by the instant it was
     /// resolved to; its local time and zone, which are what is shown, are
     /// still right.
@@ -319,6 +349,18 @@ struct ZonedDateTimeTests {
 }
 
 /// Release `2026b`: New York keeps standard time through 2027.
+/// Release `2026d` (made up): New York falls back two hours on 7 November
+/// 2027, from -04:00 to -06:00 at 06:00Z, so local 00:00 to 02:00 is shown
+/// twice; the second 01:30 is 07:30Z, not 06:30Z.
+func deepenFallBack2027(_ rules: ScriptedZoneRules) {
+    rules.version = "2026d"
+    rules.define(
+        Zones.newYork, offset: Zones.hours(-5),
+        transitions: Array(Zones.newYorkTransitions.prefix(3)) + [
+            .init(at: Zones.moment("2027-11-07T06:00:00Z"), offset: Zones.hours(-6))
+        ])
+}
+
 func abolishDaylightSaving2027(_ rules: ScriptedZoneRules) {
     rules.version = "2026b"
     rules.define(Zones.newYork, offset: Zones.hours(-5), transitions: Array(Zones.newYorkTransitions.prefix(2)))
