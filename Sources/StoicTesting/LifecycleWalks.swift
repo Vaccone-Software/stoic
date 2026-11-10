@@ -1,8 +1,8 @@
 public import Stoic
 
 /// Drives a lifecycle's definition with random walks of events and of time
-/// passing, through the record's own ``LifecycleRecord/applying(_:by:because:at:)``
-/// and ``LifecycleRecord/settling(at:)`` on a virtual moment, checking an
+/// passing, through the record's own `applying(_:by:because:at:)`
+/// and `settling(at:)` on a virtual moment, checking an
 /// invariant over the state and the committed history after every step;
 /// shrinks the first failure to the shortest walk that still fails.
 ///

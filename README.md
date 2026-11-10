@@ -183,12 +183,12 @@ that replays exactly.
 
 | Product        | What                                                      | Depends on                      |
 | -------------- | --------------------------------------------------------- | ------------------------------- |
-| `Stoic`        | Every runtime primitive                                   | stdlib, `Synchronization`, `os` |
+| `Stoic`        | Every runtime primitive, and lifecycles: a record's states, timeouts and effects declared once, read at rest (an expired state is expired on every path) and live | stdlib, `Synchronization`, `os` |
 | `StoicTesting` | Test clocks, fault injection, recorded events, test trait | `Stoic`, Swift Testing          |
 | `StoicJSON`    | Strict JSON: duplicate keys, exact numbers, positions     | stdlib                          |
 | `StoicSchema`  | One declaration per type: decode, encode, validate, JSON Schema, migrations, generators, `SchemaSuite` | `StoicJSON` |
 | `StoicSchemaTesting` | `expectSchemaSuite`, the Swift Testing glue for `SchemaSuite` | `StoicSchema`, Swift Testing |
-| `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read — checked at every crash point | `Stoic` |
+| `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read, lifecycle records whose head, history and effects commit as one — checked at every crash point | `Stoic` |
 | `StoicSettings` | Settings that a crash, a bad value, an old format or a newer app version cannot ruin; observable | `StoicSchema`, `StoicStore` |
 | `StoicSealed`  | Files and journals AES-256-GCM sealed, each bound to what it is for; keys in a keyring the app keeps in its own custody; tampered, torn, unknown-key and not-sealed told apart; deleting a record is destroying its key; crash-tested | `Stoic`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
 | `StoicSealedKeychain` | The Keychain (any `SecretStore`) as the custody of a sealed keyring, a locked keychain never read as "no keyring" | `StoicSealed`, `StoicApple`, behind the `Crypto` trait |

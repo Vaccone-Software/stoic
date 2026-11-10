@@ -32,6 +32,31 @@ final class Server: Sendable {
 
 func section(_ title: String) { print("\n▸ \(title)") }
 
+/// One release on this Mac, from staged to running or rolled back: a
+/// lifecycle declared once, read the same way on every path (design/27).
+enum Release: Lifecycle {
+    static let name = "tour.release"
+    enum Principal: Hashable, Sendable, Codable { case updater, successor, watchdog }
+    enum State: String, Hashable, Sendable, Codable { case staged, applying, running, rolledBack }
+    enum Event: String, Hashable, Sendable, Codable { case apply, confirm, stall }
+    enum Effect: Hashable, Sendable, Codable { case announce(State) }
+
+    static func transition(from state: State, on event: Event) -> Self.Step {
+        switch (state, event) {
+        case (.staged, .apply): .to(.applying)
+        case (.applying, .confirm): .to(.running, effects: [.announce(.running)])
+        case (.applying, .stall): .to(.rolledBack, effects: [.announce(.rolledBack)])
+        case (.rolledBack, _): .refuse("this release failed its handover once")
+        default: .ignore
+        }
+    }
+    // A successor that never confirms is rolled back after two minutes.
+    static func timeout(in state: State) -> Self.Timeout? {
+        state == .applying ? .after(.seconds(120), send: .stall) : nil
+    }
+    static func isFinal(_ state: State) -> Bool { state == .running || state == .rolledBack }
+}
+
 /// A call that outlives its timeout: the work is cancelled, with a cause, and
 /// the call ends in the cancellation its work threw.
 func slowCall() async throws {
@@ -182,6 +207,38 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
             print("  previous run ended cleanly: \(last.endedCleanly); its last events:")
             for event in last.events { print("    \(event)") }
         }
+    }
+
+    section("JournaledLifecycleStore: a release record that times out on every read, and says so once")
+    try await withScope(label: "tour releases") { scope in
+        let directory = try await scope.acquire(label: "releases directory", {
+            let path = FileManager.default.temporaryDirectory.appending(path: "stoic-releases-\(UUID().uuidString)").path()
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+            return path
+        }, release: { path, _ in try FileManager.default.removeItem(atPath: path) })
+        let releases = try await JournaledLifecycleStore<Release, String>.open(at: directory + "/releases")
+        _ = try await releases.insert(.new(in: .staged, by: .updater, because: "downloaded and verified"), as: "0.55")
+        try await releases.apply(.apply, to: "0.55", by: .updater, because: "relaunching into 0.55")
+        // The successor never confirms. Two minutes on, every read says so,
+        // though nothing wrote it; settling makes it a fact, with its effect.
+        let later = Moment.now + .seconds(121)
+        print("  two minutes on: \(try await releases.read("0.55", at: later).map { "\($0.state)" } ?? "no record")")
+        try await releases.settleDue(at: later)
+        _ = try await releases.deliverEffects { delivery in
+            print("  said once: \(delivery.effect) for \(delivery.id)")
+            return .delivered
+        }
+        // The store has seen "two minutes on" and never applies earlier, so
+        // this apply is dated then (lifecycle.clock_behind), and refused.
+        do throws(LifecycleUpdateError<Release, StoreError>) {
+            try await releases.apply(.apply, to: "0.55", by: .updater, because: "offered again")
+        } catch .refused(let refusal) {
+            print("  refused: \(refusal)")
+        }
+        for entry in try await releases.history(of: "0.55") {
+            print("  \(entry.from) → \(entry.to) by \(entry.by), because \(entry.because)")
+        }
+        try await releases.close()
     }
 
     section("Quarantine: never close a handle a wedged call may still be using")

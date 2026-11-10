@@ -141,14 +141,14 @@ fetches no other package at all.
  portable ─────────────────────────────────────────────────────────────────────
    Stoic ············ the kernel: Ambient · Deadline · Moment · Schedule ·
    (stdlib, Sync.)    Retry · Operations · Concurrency · Scope · Policies ·
-                      StateMachine · ServiceGraph · Supervisor · Report ·
-                      Instrumentation
+                      StateMachine · Lifecycle · ServiceGraph · Supervisor ·
+                      Report · Instrumentation
    StoicJSON ········ strict JSON, the trust boundary (stdlib only)
      StoicSchema ···· one declaration per type        ← StoicJSON
        StoicTime ···· dates, times, zones and their rules ← Stoic, StoicSchema
    StoicTesting ····· clocks, seeds, faults, simulation ← Stoic
    StoicFoundation ·· Foundation's errors classified  ← Stoic
-   StoicStore ······· atomic files, journal, outbox   ← Stoic
+   StoicStore ······· atomic files, journal, outbox, lifecycle records ← Stoic
      StoicSealed ···· sealed files and journals (Crypto) ← Stoic, StoicStore
    StoicObservability swift-log / swift-metrics       ← Stoic (+ traits)
      StoicSettings ·· settings that cannot corrupt    ← Stoic, StoicStore, StoicSchema
@@ -166,13 +166,13 @@ fetches no other package at all.
 
 | Product              | Contents                                                                       | Depends on                         |
 | -------------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
-| `Stoic`              | Every runtime primitive, and `Moment` with the ambient wall clock              | stdlib, `Synchronization`, `os`, the C library's real-time clock |
-| `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation     | `Stoic`, Swift Testing             |
+| `Stoic`              | Every runtime primitive, `Moment` with the ambient wall clock, and lifecycles read at rest and live | stdlib, `Synchronization`, `os`, the C library's real-time clock |
+| `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation, an in-memory lifecycle store | `Stoic`, Swift Testing             |
 | `StoicJSON`          | Strict JSON: duplicate keys, exact numbers, positions                          | stdlib                             |
 | `StoicSchema`        | Decode, encode, validate, JSON Schema, migrations, generators                 | `StoicJSON`                        |
 | `StoicTime`          | Plain dates and times, zoned date-times kept as local time + zone, periods, zone rules (system or scripted), the rules sweep | `Stoic`, `StoicSchema`; Foundation for the system's zone rules |
 | `StoicFoundation`    | `URLError`, `POSIXError`, `CocoaError` classified for retry                    | `Stoic`, Foundation                |
-| `StoicStore`         | Atomic files, journal, outbox, launch guard, flight recorder                   | `Stoic`                            |
+| `StoicStore`         | Atomic files, journal, outbox, launch guard, flight recorder, lifecycle records kept on a device | `Stoic`                            |
 | `StoicSettings`      | Schema-declared settings in an atomic file                                     | `Stoic`, `StoicStore`, `StoicSchema` |
 | `StoicSealed`        | Sealed files and journals: AES-256-GCM, keys in a keyring the app keeps in custody | `Stoic`, `StoicStore`; swift-crypto, behind `Crypto` |
 | `StoicHTTP`          | Resilient HTTP client; scripted transport for tests                            | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation(Networking) |
@@ -383,6 +383,7 @@ incident review is the wrong default.
 | 24  | [Sealed storage](design/24-sealed-storage.md) | private files in backups and synced folders, keys written beside their data, "decryption failed" for a tampered file, a lost key and a plaintext file alike | Built: `StoicSealed` behind the `Crypto` trait |
 | 25  | [XPC services](design/25-xpc.md) | a request sent to a service that is exiting, a loss handled twice, a hang on a wedged helper, an app talking to a service of another build | Built: `StoicXPC` (macOS) |
 | 26  | [Time](design/26-time.md) | `Date()` read in the middle of a test, a birthday shown a day early, an event with no zone, a future meeting stored in UTC an hour wrong after a rule change | Built: `Moment` and the ambient wall clock (kernel), `StoicTime`, `stoic.wall-clock-read` |
+| 27  | [Lifecycles](design/27-lifecycle.md) | status booleans and timestamps decoded by ternaries, an expiry checked on one path and forgotten on another, no record of who did what, an email sent twice or never | Built: `Lifecycle`, records at rest and `LifecycleStore` (kernel), `JournaledLifecycleStore` (`StoicStore`), `InMemoryLifecycleStore` (`StoicTesting`) |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical
@@ -475,6 +476,7 @@ write wrongly by hand.
 | `try?` and errors flattened to strings                                                        | The cause, the context and the decision to retry are all lost                      | `Report`, `Defect` (05)                |
 | Ranges and defaults repeated in the parser, the clamp, the settings UI and the docs            | They drift; invalid input is silently clamped instead of reported                  | `@Schema` (06)                         |
 | A handful of booleans tracking a lifecycle                                                     | Impossible combinations become reachable; work started in one phase leaks into the next | `StateMachine` (07)               |
+| Optional timestamps whose combinations mean a stored record's status                          | Each reader decodes the status again; an expiry is enforced on one path and not another; nobody knows who did what | `Lifecycle` (27)          |
 | A teardown list in `applicationWillTerminate`                                                  | Unordered, unbounded, failures swallowed, and synchronous where cleanup is async    | `ServiceGraph`, lifecycle bridges (08) |
 | A timer that pings a thread and aborts                                                         | Fires on wake from sleep and during slow launches; restarts become crash loops      | `Supervisor`, `Heartbeat` (09)         |
 | Nothing at all between the app and a failing dependency                                        | Every caller hammers it; one slow endpoint exhausts every thread                   | Circuit breaker, bulkhead (10)         |

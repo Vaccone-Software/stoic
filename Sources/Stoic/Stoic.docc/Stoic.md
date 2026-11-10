@@ -21,7 +21,7 @@ program beneath runs on virtual time with a fixed seed.
 - <doc:Time>
 - <doc:Failure>
 - <doc:Resources>
-- <doc:Lifecycle>
+- <doc:ServicesAndAppLifecycle>
 - <doc:Testing>
 
 ### Time
@@ -97,6 +97,24 @@ program beneath runs on virtual time with a fixed seed.
 - ``Transition``
 - ``StateTimeout``
 - ``StateGraph``
+
+### Lifecycles
+
+- ``Lifecycle``
+- ``LifecycleStep``
+- ``LifecycleTimeout``
+- ``Initiator``
+- ``LifecycleRecord``
+- ``LifecycleReading``
+- ``LifecycleEntry``
+- ``LifecycleChange``
+- ``LifecycleEffect``
+- ``LifecycleRefusal``
+- ``LifecycleHistory``
+- ``HistoryGap``
+- ``LifecycleStore``
+- ``LifecycleCommit``
+- ``LifecycleUpdateError``
 
 ### Supervision and services
 

@@ -1,6 +1,6 @@
 public import Stoic
 
-/// A ``LifecycleStore`` in memory, for tests: what a server's database does
+/// A `LifecycleStore` in memory, for tests: what a server's database does
 /// in one transaction, done in one actor turn.
 ///
 ///     let waivers = InMemoryLifecycleStore<ParentWaiver, String>()

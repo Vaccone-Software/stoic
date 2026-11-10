@@ -1,4 +1,4 @@
-# Lifecycle
+# Services and app lifecycle
 
 Start in order, stop in reverse, keep it running.
 

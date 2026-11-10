@@ -44,7 +44,7 @@ public import Stoic
 ///
 /// It is not a database: every record and its history are held in memory
 /// and the log is read whole at open. A thousand records with long
-/// histories belong in a database, through a ``LifecycleStore`` of its own.
+/// histories belong in a database, through a `LifecycleStore` of its own.
 public actor JournaledLifecycleStore<L: Lifecycle, ID: Hashable & Sendable & Codable>: LifecycleStore {
     public typealias Definition = L
     public typealias Failure = StoreError
@@ -313,7 +313,7 @@ public actor JournaledLifecycleStore<L: Lifecycle, ID: Hashable & Sendable & Cod
     }
 
     /// Commits `change` as one journal append, then hands its effects to
-    /// the outbox. Returns ``LifecycleCommit/committed`` once the append is
+    /// the outbox. Returns `LifecycleCommit.committed` once the append is
     /// durable, whatever the hand-off does (`lifecycle.handoff_deferred`).
     ///
     /// - Throws: `.corrupt` for a record this build cannot decode;
@@ -439,7 +439,7 @@ public actor JournaledLifecycleStore<L: Lifecycle, ID: Hashable & Sendable & Cod
     // MARK: Settling
 
     /// Commits every timeout due at the store's moment for `now`: the
-    /// settling change of every record whose ``LifecycleRecord/Written/dueAt``
+    /// settling change of every record whose `LifecycleRecord.Written.dueAt`
     /// is not after it, as **one batch append** (every record settled, or
     /// none), then hands their effects to the outbox.
     ///
