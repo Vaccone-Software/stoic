@@ -47,7 +47,7 @@ extension Moment {
 }
 
 extension Presenter {
-    /// ``Presenter/standard`` with rules for Foundation's errors (design/31):
+    /// `Presenter.standard` with rules for Foundation's errors (design/31):
     /// offline (no connection, a lost one, cellular not allowed) as "You're
     /// offline." with a wait; a timeout as "This is taking too long."; a host
     /// that cannot be found or connected to as "Couldn't reach the service.";

@@ -8,9 +8,9 @@ public import Testing
 /// Reads `<directory>/<format>/<release>/*.json` beside the calling test file
 /// (each release's payloads, exactly as that release wrote them, and its
 /// reader as `_schema.json`), checks `schema` against them with
-/// ``CompatibilityCheck``, and records each failure as a Swift Testing issue at
-/// the caller's line (each warning as a warning, or a failure with
-/// `warningsFail`).
+/// `CompatibilityCheck` (StoicSchema), and records each failure as a Swift
+/// Testing issue at the caller's line (each warning as a warning, or a
+/// failure with `warningsFail`).
 ///
 ///     @Test func reportRequests() {
 ///         expectCompatibility(ReportRequest.schema, format: "report-request",
@@ -129,7 +129,7 @@ private func misnamed(_ text: String, as parameter: String) -> CompatibilityFind
 /// files that are not `.json` are not payloads.
 ///
 /// A release folder whose name is not a version, and a `_schema.json` that is
-/// not JSON, are reported in ``CompatibilitySet/problems``; a format with no
+/// not JSON, are reported in `CompatibilitySet.problems`; a format with no
 /// folder is a set with no release, which the check reports.
 ///
 /// - Throws: ``CompatibilityLoadError`` when the folder exists and cannot be listed or read.
