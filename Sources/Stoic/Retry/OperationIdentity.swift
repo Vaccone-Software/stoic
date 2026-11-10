@@ -82,6 +82,10 @@ final class OperationIdentity: Sendable {
         // Bit `n % 64`: a same-backend `perform` inside attempt `n` is
         // borrowing its admission slot.
         var borrowed: UInt64 = 0
+        // Bit `n % 64`: a nested retry's attempt timed out inside attempt `n`.
+        // The retry rethrows the child's cancellation; the bit is how the
+        // enclosing retry tells that timer from the caller cancelling.
+        var timedOut: UInt64 = 0
         var ordinals: [Site: Int] = [:]
     }
 
@@ -216,6 +220,7 @@ final class OperationIdentity: Sendable {
             state.live |= Self.bit(number)
             state.settled &= ~Self.bit(number)
             state.borrowed &= ~Self.bit(number)
+            state.timedOut &= ~Self.bit(number)
         }
     }
 
@@ -251,6 +256,35 @@ final class OperationIdentity: Sendable {
     func settleEnclosingAttempt() {
         guard let parent else { return }
         parent.identity.settle(attempt: parent.attempt)
+    }
+
+    /// Forgets a timeout noted on the enclosing attempt. A nested retry
+    /// clears it on entry, so a timeout that an earlier nested retry threw
+    /// and the operation caught does not stick to a later failure.
+    func clearEnclosingAttemptTimedOut() {
+        guard let parent else { return }
+        parent.identity.state.withLock { $0.timedOut &= ~Self.bit(parent.attempt) }
+    }
+
+    /// Notes that this nested retry's attempt timed out, on the attempt it
+    /// runs inside. The enclosing retry reads it when the rethrown
+    /// cancellation arrives: that cancellation is the timer.
+    func noteEnclosingAttemptTimedOut() {
+        guard let parent else { return }
+        parent.identity.state.withLock { state in
+            if state.live & Self.bit(parent.attempt) != 0 { state.timedOut |= Self.bit(parent.attempt) }
+        }
+    }
+
+    /// Whether a nested retry noted a timeout for attempt `number`, then
+    /// clears the note.
+    func takeAttemptTimedOut(_ number: Int) -> Bool {
+        state.withLock { state in
+            let bit = Self.bit(number)
+            let set = state.timedOut & bit != 0
+            state.timedOut &= ~bit
+            return set
+        }
     }
 
     /// Takes attempt `number`'s admission slot for a same-backend `perform`

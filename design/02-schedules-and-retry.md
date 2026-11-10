@@ -100,7 +100,11 @@ layer that collapsed to one attempt cannot let the one outside it repeat
 what the operation refused to. (1) The task running the retry
 was cancelled → rethrow; a cancelled *attempt* (its own timeout fired) is not
 a cancelled retry. (2) Nested inside another retry's attempt with
-`.singleAttempt` → rethrow, `retry.nested`. (3) The classifier says stop (a
+`.singleAttempt` → rethrow, `retry.nested`. An attempt whose own timeout
+fired is still that one attempt, and the timeout is handed to the enclosing
+retry as a transient timeout: the child's `CancellationError` is the timer,
+not the caller cancelling, so the outer retry repeats it. The caller's
+cancellation still stops. (3) The classifier says stop (a
 `Defect` always does) → rethrow. (4) The schedule is exhausted → rethrow.
 (5) The next attempt could not finish before `Deadline.current`, assuming it
 takes as long as the last → rethrow, `retry.deadline_skip`. (6) The budget has
@@ -134,7 +138,10 @@ bounded attempts, not an outage. `.transientOnly` is one word away.
 **Nesting.** A task-local marks a running attempt. A `retry` started inside
 one makes a single attempt by default (`retry.nested`), enforcing AWS's
 "retry at one layer" at runtime instead of documenting it. `.allow` opts out
-for layers that retry different dependencies.
+for layers that retry different dependencies. An attempt that times out
+inside that single attempt is still one attempt, and the outer retry counts
+the timeout as transient: the cancellation the timer produced is not the
+caller cancelling.
 
 **Budgets.** On by default, one per call site. Each first attempt deposits
 `ratio` (0.2) earned tokens; a reserve refills at `reservePerSecond` (1) up to
@@ -214,6 +221,7 @@ or supervisor that can stop it.
 | the schedule is unbounded                          | Does not compile: `retry` takes only a `BoundedSchedule`                       |
 | `decorrelated` is given a base that is not positive | Precondition failure at construction: it could never back off                  |
 | a retry runs inside another retry's attempt        | One attempt only, `retry.nested`, unless `nesting: .allow`                     |
+| a nested retry's attempt times out                 | One attempt (`retry.nested`); the outer retry treats it as a transient timeout and retries; the caller's cancellation still stops |
 | an attempt's own timeout fires                     | Counted as transient and retried; `timed_out=true` on the event               |
 | the error is a `DecodingError`                     | Not retried (`.standard`): the same bytes fail the same way                   |
 | every attempt sends `attempt.idempotencyKey`       | The same key on every attempt; drawn once, on first read                       |

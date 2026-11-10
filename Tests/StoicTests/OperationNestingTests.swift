@@ -156,6 +156,82 @@ struct OperationNestingTests {
         #expect(inner.count == 3)   // one attempt per outer attempt
     }
 
+    @Test(.failureMode("design/22", "a same-backend inner perform's attempt times out"))
+    func anInnerPerformTimeoutIsRetriedByTheOuterPerform() async throws {
+        // The outer operation is long, so it has no attempt timer of its own.
+        // The inner brief call's timer is what fires, and the outer must retry it.
+        let backend = Backend.remote("nesting.inner-timeout")
+        let page = backend.readOnly("page", length: .long)
+        let item = backend.readOnly("item")
+        let inner = Script([.hang])
+        let outer = Counter()
+        let run = try await simulated { context in
+            _ = await withUrgency(.userInitiated) {
+                try? await page.perform { _ throws(OperationError<any Error>) -> Int in
+                    outer.next()
+                    return try await item.perform { attempt throws(any Error) in try await inner.call(attempt) }
+                }
+            }
+            return context.events
+        }
+        #expect(outer.value == 3)
+        #expect(inner.calls.map(\.attempt) == [1, 1, 1], "one inner attempt per outer attempt")
+        #expect(run.value.events(named: "retry.nested").count == 3)
+        #expect(run.value.events(named: "retry.permanent").isEmpty)
+        #expect(run.value.events(named: "retry.exhausted").count == 1)
+        #expect(!run.value.names.contains("retry.cancelled"))
+    }
+
+    @Test(.failureMode("design/22", "a same-backend inner perform's attempt times out"))
+    func cancellingDuringANestedPerformTimeoutStops() async {
+        let backend = Backend.remote("nesting.inner-timeout-cancel")
+        let page = backend.readOnly("page", length: .long)
+        let item = backend.readOnly("item")
+        let outer = Counter()
+        let clock = TestClock()
+        let events = RecordingInstrumentation()
+        let task = Task {
+            await withTestAmbient(clock: clock, events: events) {
+                await withUrgency(.userInitiated) {
+                    try? await page.perform { _ throws(OperationError<any Error>) -> Int in
+                        outer.next()
+                        return try await item.perform { _ throws(any Error) -> Int in
+                            try await Ambient.sleep(for: .seconds(1_000_000))
+                            return 0
+                        }
+                    }
+                }
+            }
+        }
+        // The outer deadline timer, the inner attempt timer, and the hang.
+        await clock.waitForSleepers(count: 3)
+        task.cancel()
+        _ = await task.value
+        #expect(outer.value == 1)
+        #expect(events.names.contains("retry.cancelled"))
+        #expect(!events.names.contains("retry.exhausted"))
+        #expect(!events.names.contains("retry.permanent"))
+        #expect(clock.now.offset == .zero)
+    }
+
+    @Test func aNonRepeatableInnerTimeoutStillSettlesTheOuterAttempt() async throws {
+        let backend = Backend.remote("nesting.inner-timeout-unsafe")
+        let page = backend.readOnly("page", length: .long)
+        let upload = backend.notRepeatable("upload")
+        let outer = Counter()
+        let run = try await simulated { context in
+            _ = await withUrgency(.userInitiated) {
+                try? await page.perform { _ throws(OperationError<any Error>) -> Int in
+                    outer.next()
+                    return try await upload.perform { attempt throws(any Error) in try await Script([.hang]).call(attempt) }
+                }
+            }
+            return context.events.events(named: "retry.stopped").map { $0.text("reason") }
+        }
+        #expect(outer.value == 1)
+        #expect(run.value == ["inner_settled"])
+    }
+
     @Test func overlappingInnerPerformsTakeTheirOwnSlots() async throws {
         let backend = Backend.remote("nesting.overlap", capacity: 4)
         let page = backend.readOnly("page")

@@ -321,7 +321,8 @@ public enum RetryNesting: Sendable, Hashable {
 /// 1. the task running the retry was cancelled (a cancelled *attempt* — one
 ///    whose own timeout fired — is retried; a cancelled *caller* is not);
 /// 2. this retry is nested inside another retry's attempt and `nesting` is
-///    `.singleAttempt`;
+///    `.singleAttempt` (an attempt that timed out is still one attempt, and
+///    the outer retry treats that timeout as transient);
 /// 3. the classifier says `.stop` (a ``Defect`` always stops);
 /// 4. the schedule is exhausted;
 /// 5. the retry could not finish before ``Deadline/current`` — it would
@@ -409,7 +410,7 @@ nonisolated(nonsending) func retryInline<R, Failure: Error>(
                 return .failure(error)
             }
         }
-        return (result, false)
+        return (result, nestedAttemptTimedOut(attempt, result))
     }
 }
 
@@ -451,7 +452,7 @@ public nonisolated(nonsending) func retry<R: Sendable, Failure: Error>(
                     try await operation(attempt)
                 }
             }
-            return (outcome.result, outcome.expired)
+            return (outcome.result, outcome.expired || nestedAttemptTimedOut(attempt, outcome.result))
         }
     } catch {
         throw error.lastError
@@ -497,7 +498,8 @@ nonisolated(nonsending) func retryBoundingEachAttempt<R, Failure: Error>(
         let outcome = await withoutActuallyEscaping(operation, do: bounded)
         // A closure, not a key path: a key path into a generic type is built
         // (and allocated) at run time on every evaluation.
-        return (outcome.result.map { $0.value }, outcome.expired)
+        let result = outcome.result.map { $0.value }
+        return (result, outcome.expired || nestedAttemptTimedOut(attempt, result))
     }
 }
 
@@ -814,6 +816,20 @@ struct RetryPacer {
     }
 }
 
+/// Whether `attempt` failed because a nested retry's own timer fired.
+///
+/// The nested retry made one attempt and rethrew the child's
+/// `CancellationError`. That error is a timeout only when the nested retry
+/// noted one, and only when the failure that left the operation is still
+/// that cancellation: an operation that caught the timeout and threw
+/// something else is classified as what it threw. The caller's own
+/// cancellation is the loop's first check and never reaches this.
+private func nestedAttemptTimedOut<R, Failure: Error>(_ attempt: Attempt, _ result: Result<R, Failure>) -> Bool {
+    let noted = attempt.operation.takeAttemptTimedOut(attempt.number)
+    guard noted, case .failure(let error) = result else { return false }
+    return containsCancellation(error)
+}
+
 /// The loop both forms of `retry` share; they differ only in how one
 /// attempt runs.
 private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
@@ -836,6 +852,9 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
     // given is an operation of its own.
     let operation = identity ?? OperationIdentity.starting(fileID: fileID, line: line)
     let nested = operation.isSubOperation && nesting == .singleAttempt
+    // A timeout an earlier nested retry threw, and this operation caught, must
+    // not attach to whatever this one ends by throwing.
+    if nested { operation.clearEnclosingAttemptTimedOut() }
     var pacer = RetryPacer(ambient: ambient, clock: clock, schedule: schedule, storage: storage, label: label, fileID: fileID, line: line)
     var number = 1
 
@@ -872,8 +891,14 @@ private nonisolated(nonsending) func retryLoop<R, Failure: Error>(
             pacer.report("retry.cancelled", common, level: .debug)
             throw RetryStopped(.cancelled, error)
         }
-        // 2. Nested inside another retry.
+        // 2. Nested inside another retry: one attempt, and the layer outside
+        // retries. An attempt that timed out is still that one attempt —
+        // classifying it here would retry at this layer too — but the
+        // timeout has to survive the rethrow. The error is the child's
+        // `CancellationError`, which the outer classifier cannot tell from
+        // the caller cancelling unless it is told the timer fired.
         if nested {
+            if timedOut { operation.noteEnclosingAttemptTimedOut() }
             pacer.report("retry.nested", common, level: .notice)
             throw RetryStopped(.nested, error)
         }
