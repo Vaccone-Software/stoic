@@ -141,11 +141,13 @@ fetches no other package at all.
  portable ─────────────────────────────────────────────────────────────────────
    Stoic ············ the kernel: Ambient · Deadline · Moment · Schedule ·
    (stdlib, Sync.)    Retry · Operations · Concurrency · Scope · Policies ·
-                      StateMachine · Lifecycle · ServiceGraph · Supervisor ·
-                      Claimed · Verified · permissions · Report · Instrumentation
+                      StateMachine · Lifecycle · Reconciler · ServiceGraph ·
+                      Supervisor · Claimed · Verified · permissions · Report ·
+                      Presentable · Instrumentation
    StoicJSON ········ strict JSON, the trust boundary (stdlib only)
      StoicSchema ···· one declaration per type        ← StoicJSON
        StoicTime ···· dates, times, zones and their rules ← Stoic, StoicSchema
+   StoicLive ········ values a screen shows, actions a person triggers ← Stoic
    StoicTesting ····· clocks, seeds, faults, simulation ← Stoic
    StoicFoundation ·· Foundation's errors classified  ← Stoic
    StoicStore ······· atomic files, journal, outbox, lifecycle records ← Stoic
@@ -169,12 +171,13 @@ fetches no other package at all.
 
 | Product              | Contents                                                                       | Depends on                         |
 | -------------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
-| `Stoic`              | Every runtime primitive, `Moment` with the ambient wall clock, lifecycles read at rest and live, and provenance (`Claimed`, `Verified`, minters, permissions) | stdlib, `Synchronization`, `os`, the C library's real-time clock |
-| `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation, an in-memory lifecycle store | `Stoic`, Swift Testing             |
+| `Stoic`              | Every runtime primitive, `Moment` with the ambient wall clock, lifecycles read at rest and live, reconcilers, provenance (`Claimed`, `Verified`, minters, permissions), and errors presented to a person (`Presentable`, `SupportReference`) | stdlib, `Synchronization`, `os`, the C library's real-time clock |
+| `StoicTesting`       | Virtual clock, seeded randomness, fault injection, model tests, simulation, an in-memory lifecycle store, a simulated side for reconcilers | `Stoic`, Swift Testing             |
 | `StoicJSON`          | Strict JSON: duplicate keys, exact numbers, positions                          | stdlib                             |
-| `StoicSchema`        | Decode, encode, validate, JSON Schema, migrations, generators                 | `StoicJSON`                        |
-| `StoicTime`          | Plain dates and times, zoned date-times kept as local time + zone, periods, zone rules (system or scripted), the rules sweep | `Stoic`, `StoicSchema`; Foundation for the system's zone rules |
-| `StoicFoundation`    | `URLError`, `POSIXError`, `CocoaError` classified for retry                    | `Stoic`, Foundation                |
+| `StoicSchema`        | Decode, encode, validate, JSON Schema, migrations, generators, compatibility with what released builds wrote and read | `StoicJSON`                        |
+| `StoicTime`          | Plain dates and times, zoned date-times kept as local time + zone, periods, zone rules (system or scripted), zoned values kept right by a reconciler | `Stoic`, `StoicSchema`; Foundation for the system's zone rules |
+| `StoicLive`          | `Live` (what a screen shows: phases, loads and streams, refresh, values joined by key, permission checks) and `Action` (what a person triggers: guarded, one key per intent, a failure that must be read) | `Stoic`                            |
+| `StoicFoundation`    | `URLError`, `POSIXError`, `CocoaError` classified for retry; presentations in the app's localized strings | `Stoic`, Foundation                |
 | `StoicStore`         | Atomic files, journal, outbox, launch guard, flight recorder, lifecycle records kept on a device | `Stoic`                            |
 | `StoicSettings`      | Schema-declared settings in an atomic file                                     | `Stoic`, `StoicStore`, `StoicSchema` |
 | `StoicSealed`        | Sealed files and journals: AES-256-GCM, keys in a keyring the app keeps in custody | `Stoic`, `StoicStore`; swift-crypto, behind `Crypto` |
@@ -391,6 +394,9 @@ incident review is the wrong default.
 | 27  | [Lifecycles](design/27-lifecycle.md) | status booleans and timestamps decoded by ternaries, an expiry checked on one path and forgotten on another, no record of who did what, an email sent twice or never | Built: `Lifecycle`, records at rest and `LifecycleStore` (kernel), `JournaledLifecycleStore` (`StoicStore`), `InMemoryLifecycleStore` (`StoicTesting`) |
 | 28  | [Provenance](design/28-provenance.md) | a `userId` argument trusted as who is asking, a device's clock taken as when, a permission still loading read as "denied", a signature taken for proof of what was signed | Built: `Claimed`, `Verified`, `Minter`, `OwnClock`, permissions with three outcomes (kernel), `TestProof`, `Sealing.verify`, three lint rules |
 | 29  | [App Attest](design/29-attestation.md) | every request failing after a reinstall, attesting on every launch, "unsupported" skipped silently, a chain checked and the nonce forgotten, counters refused when requests arrive out of order | Built: `AppAttester` (`StoicApple`), the `HTTPAuthenticator` seam (`StoicHTTP`), `StoicAttestedHTTP`, `StoicAttestation` behind the `Attestation` trait; tested against Apple's real attestations |
+| 30  | [Reconcilers](design/30-reconciler.md) | writing to two systems and hoping they agree, a sync job that deletes everything on an empty read, a nightly script nobody watches | Built: `Reconciliation` and `Reconciler` (guarded removals, holds confirmed by a verified principal, status, stuck keys), settling lifecycle stores (kernel, `StoicStore`), `Reconciler.zonedValues` (`StoicTime`), `SimulatedSide` (`StoicTesting`) |
+| 31  | [Live values, actions and presentable errors](design/31-live.md) | `isLoading` booleans, `data ?? []`, a button that fires twice, `error.localizedDescription` shown to a person | Built: `Presentable`, `Presentation`, `SupportReference` (kernel), `String(localized:)` (`StoicFoundation`), `Live` and `Action` (`StoicLive`), `stoic.error-text-shown` |
+| 32  | [Schema compatibility](design/32-schema-compatibility.md) | a comment that old clients still send a field, a settings key tidied away that a released build still writes | Built: `CompatibilityCheck` and `JSONSchemaValidator.violations` (`StoicSchema`), `expectCompatibility` (`StoicSchemaTesting`), `SettingsStore.read`; fixtures of Stoic's own formats from 0.7.0 |
 
 **The plan from here.** Every domain above is built; what follows is
 ordered by how much hand-written fragility each removes from a typical
@@ -489,6 +495,10 @@ write wrongly by hand.
 | Nothing at all between the app and a failing dependency                                        | Every caller hammers it; one slow endpoint exhausts every thread                   | Circuit breaker, bulkhead (10)         |
 | `DispatchSemaphore.wait()` and `usleep` inside async code                                      | Starves the cooperative pool; deadlocks under load                                 | Lint rules (13)                        |
 | Tests that sleep for real time                                                                 | Slow and flaky; the interesting interleavings are never reached                    | `TestClock`, seeds, fault injection (12) |
+| A sync job that writes both systems and deletes what one of them lacks                         | An empty read deletes everything; a failed write is never tried again; a key that never agrees goes unseen | `Reconciler` (30)              |
+| `isLoading` and `error` beside optional data; a button with no guard                           | A blank screen or a spinner over old data; a second tap starts a second request     | `Live`, `Action` (31)                  |
+| `error.localizedDescription` shown to a person                                                 | Text written for developers, or nothing a person can act on                         | `Presentable` (31)                     |
+| A comment saying released builds still send a field                                            | The field is tidied away, and builds people still run break                         | `expectCompatibility` (32)             |
 
 ## Roadmap
 

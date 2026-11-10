@@ -45,12 +45,15 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # reply settled once), expiring work, and lifecycles (a live machine's
 # effects performed from any sender, the device store's hand-off beside its
 # commits, the outbox that remembers), permission checks, the HTTP
-# authenticator seam, and the App Attest client (an enrolment many callers
-# wait on, assertions beside it). Their crash explorations, which run no two
+# authenticator seam, the App Attest client (an enrolment many callers
+# wait on, assertions beside it), reconcilers (a loop woken by changes,
+# triggers and backoffs while a pass corrects keys at once) and live values
+# and actions (loads, subscriptions and runs superseding one another on the
+# main actor). Their crash explorations, which run no two
 # tasks at once, are left to the plain step. A few minutes: the instrumented
 # build is separate from the one above.
 swift test --sanitize=thread \
-    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests' \
+    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests|Reconciler|StoicLiveTests' \
     --skip 'LifecycleCrashTests|OutboxRememberCrashTests'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"
@@ -199,7 +202,7 @@ swift build --traits Crypto --target StoicSealed --sdk "$ios_sdk" --triple arm64
 swift build --traits Crypto --target StoicSealedKeychain --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Crypto --target StoicDownloads --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
 swift build --traits Attestation --target StoicAttestation --sdk "$ios_sdk" --triple arm64-apple-ios27.0 --build-path .build/ios-sealed
-for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicTime StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC StoicAttestedHTTP; do
+for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings StoicHTTP StoicTime StoicLive StoicApple StoicUIKit StoicAppKit StoicObservability StoicXPC StoicAttestedHTTP; do
     xcodebuild -quiet -scheme "$scheme" -destination 'generic/platform=iOS' \
         -derivedDataPath .build/ios build
 done
@@ -211,7 +214,7 @@ step "documentation: DocC builds with no warnings, in every library (broken link
 # building. StoicUIKit builds for iOS, where its code compiles.
 docs=$(mktemp)
 for scheme in Stoic StoicTesting StoicJSON StoicSchema StoicSchemaTesting StoicFoundation StoicStore StoicSettings \
-    StoicHTTP StoicTime StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC StoicAttestedHTTP; do
+    StoicHTTP StoicTime StoicLive StoicObservability StoicApple StoicAppKit StoicUIKit StoicXPC StoicAttestedHTTP; do
     destination='platform=macOS'
     if [ "$scheme" = StoicUIKit ]; then destination='generic/platform=iOS'; fi
     xcodebuild docbuild -scheme "$scheme" -destination "$destination" -derivedDataPath .build/docs > "$docs" 2>&1 || {

@@ -76,9 +76,43 @@ func slowCall() async throws {
 extension Backend {
     static let catalogue = Backend.remote("catalogue")
     static let payments = Backend.remote("payments")
+    static let search = Backend.remote("search")
 }
 enum Catalogue { static let episode = Backend.catalogue.readOnly("episode") }
 enum Payments { static let subscribe = Backend.payments.keyed("subscribe") }
+
+/// Episode titles by id: the catalogue, or the search index derived from it.
+/// In memory here; a database and a search service in an app.
+actor Titles {
+    private(set) var titles: [String: String]
+    init(_ titles: [String: String]) { self.titles = titles }
+    func read(_ scope: ReconcileScope<String>) -> [String: String] { titles.filter { scope.contains($0.key) } }
+    func put(_ id: String, _ title: String?) { titles[id] = title }
+    func replaceAll(_ titles: [String: String]) { self.titles = titles }
+}
+
+/// The search index follows the catalogue (design/30). Nothing writes both:
+/// the catalogue is the truth, and the index is corrected to match it.
+struct IndexFollowsCatalogue: Reconciliation {
+    static let name = "tour.search-index"
+    static let readsTruth = Backend.catalogue.readOnly("titles")
+    static let readsDerived = Backend.search.readOnly("index.list")
+    static let corrects = Backend.search.idempotent("index.put")   // a put by id: twice is once
+    let catalogue: Titles, index: Titles
+
+    func desired(_ scope: ReconcileScope<String>, attempt: Attempt) async throws(Never) -> [String: String] {
+        await catalogue.read(scope)
+    }
+    func actual(_ scope: ReconcileScope<String>, attempt: Attempt) async throws(Never) -> [String: String] {
+        await index.read(scope)
+    }
+    func correct(_ correction: Correction<String, String, String>, attempt: Attempt) async throws(Never) {
+        switch correction {
+        case .create(let id, let title), .update(let id, let title, was: _): await index.put(id, title)
+        case .remove(let id, was: _): await index.put(id, nil)
+        }
+    }
+}
 
 try await withAmbient({ $0.instrumentation = PrintEvents() }) {
     section("retry: a bounded, jittered, budgeted policy")
@@ -240,6 +274,20 @@ try await withAmbient({ $0.instrumentation = PrintEvents() }) {
         }
         try await releases.close()
     }
+
+    section("Reconciler: a derived index follows its truth, and an empty read deletes nothing")
+    let titles = Titles([
+        "s1e1": "Pilot", "s1e2": "The Return", "s1e3": "Night Shift", "s1e4": "Low Tide",
+        "s1e5": "The Lighthouse", "s1e6": "Crossing", "s1e7": "Fog", "s1e8": "Home",
+    ])
+    let index = Titles(["s1e1": "Pilot", "s1e2": "Teh Return", "s0e9": "A pilot that never aired"])
+    let searchIndex = Reconciler(IndexFollowsCatalogue(catalogue: titles, index: index))
+    let first = try await searchIndex.pass()
+    print("  \(first.differences) differences, \(first.applied) corrected: \(await index.titles.count) titles indexed")
+    await titles.replaceAll([:])   // a deploy points the catalogue's query at an empty table
+    let second = try await searchIndex.pass()
+    print("  the truth read empty: \(second.held) removals held, \(await index.titles.count) titles still indexed")
+    print("  status: \(searchIndex.status.phase)")
 
     section("Quarantine: never close a handle a wedged call may still be using")
     try await withScope { scope in

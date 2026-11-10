@@ -183,19 +183,20 @@ that replays exactly.
 
 | Product        | What                                                      | Depends on                      |
 | -------------- | --------------------------------------------------------- | ------------------------------- |
-| `Stoic`        | Every runtime primitive, and lifecycles: a record's states, timeouts and effects declared once, read at rest (an expired state is expired on every path) and live | stdlib, `Synchronization`, `os` |
-| `StoicTesting` | Test clocks, fault injection, recorded events, test trait | `Stoic`, Swift Testing          |
+| `Stoic`        | Every runtime primitive; lifecycles: a record's states, timeouts and effects declared once, read at rest (an expired state is expired on every path) and live; reconcilers that keep a derived system level with its truth, never deleting on an empty read; errors that say what a person reads and can do, with a reference | stdlib, `Synchronization`, `os` |
+| `StoicTesting` | Test clocks, fault injection, recorded events, test trait, a simulated side for reconcilers | `Stoic`, Swift Testing |
 | `StoicJSON`    | Strict JSON: duplicate keys, exact numbers, positions     | stdlib                          |
-| `StoicSchema`  | One declaration per type: decode, encode, validate, JSON Schema, migrations, generators, `SchemaSuite` | `StoicJSON` |
-| `StoicSchemaTesting` | `expectSchemaSuite`, the Swift Testing glue for `SchemaSuite` | `StoicSchema`, Swift Testing |
+| `StoicSchema`  | One declaration per type: decode, encode, validate, JSON Schema, migrations, generators, `SchemaSuite`, compatibility with what released builds wrote and read | `StoicJSON` |
+| `StoicSchemaTesting` | `expectSchemaSuite` and `expectCompatibility`, the Swift Testing glue; fixtures kept per release | `StoicSchema`, Swift Testing |
 | `StoicStore`   | Atomic file writes done right, a crash-consistent journal, an outbox, a crash-loop launch guard, a flight recorder the next launch can read, lifecycle records whose head, history and effects commit as one — checked at every crash point | `Stoic` |
 | `StoicSettings` | Settings that a crash, a bad value, an old format or a newer app version cannot ruin; observable | `StoicSchema`, `StoicStore` |
 | `StoicSealed`  | Files and journals AES-256-GCM sealed, each bound to what it is for; keys in a keyring the app keeps in its own custody; tampered, torn, unknown-key and not-sealed told apart; deleting a record is destroying its key; crash-tested | `Stoic`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
 | `StoicSealedKeychain` | The Keychain (any `SecretStore`) as the custody of a sealed keyring, a locked keychain never read as "no keyring" | `StoicSealed`, `StoicApple`, behind the `Crypto` trait |
 | `StoicHTTP`    | An HTTP client with the resilience written once: per-host retry honouring `Retry-After`, circuit breaker and bulkhead, idempotency keys on `POST`, bounded responses decoded through schemas, coalesced `GET`s, redirects followed by the client (no credential leaves its origin, never `https` to `http`), no credentials in events; a scripted transport so every failure is a test on virtual time | `Stoic`, `StoicFoundation`, `StoicSchema`, Foundation |
 | `StoicDownloads` | Downloads that survive the network: resumed by `Range` with the server's validator in `If-Range` (a changed file starts over, never a splice), hashed with SHA-256 or git's blob id while they stream, `fullSync`ed and renamed over the destination only when verified, a model's files placed as one directory swap; retried on a schedule that starts over whenever bytes arrive, a `.long` operation, progress throttled on the ambient clock; crash-tested at every file operation | `Stoic`, `StoicHTTP`, `StoicStore`, swift-crypto, behind the `Crypto` trait |
-| `StoicTime`    | A type for each question "when" asks: `PlainDate` for a birthday, `ZonedDateTime` for a planned event (local time and zone kept, the instant derived, stale when a government changes the rules, refreshed by one sweep), `Period` apart from `Duration`; gaps and overlaps resolved by a named policy; RFC 3339 / RFC 9557 / ISO 8601 text and schemas; scripted zone rules for tests | `Stoic`, `StoicSchema`; Foundation for the system's zone rules |
-| `StoicFoundation` | Foundation's errors (`URLError`, `POSIXError`, `CocoaError`) classify themselves for retry; portable | `Stoic`, Foundation |
+| `StoicTime`    | A type for each question "when" asks: `PlainDate` for a birthday, `ZonedDateTime` for a planned event (local time and zone kept, the instant derived, stale when a government changes the rules, kept right by a reconciler), `Period` apart from `Duration`; gaps and overlaps resolved by a named policy; RFC 3339 / RFC 9557 / ISO 8601 text and schemas; scripted zone rules for tests | `Stoic`, `StoicSchema`; Foundation for the system's zone rules |
+| `StoicLive`    | What a screen shows and what a person triggers: `Live` (pending, fresh, stale or failed; loads and streams; lists joined by key, never by position; permission checks where loading is never "denied") and `Action` (a second tap joins or is refused, one idempotency key per intent, a failure nobody read is reported); portable | `Stoic` |
+| `StoicFoundation` | Foundation's errors (`URLError`, `POSIXError`, `CocoaError`) classify themselves for retry; presentations in the app's localized strings; portable | `Stoic`, Foundation |
 | `StoicApple`   | Device conditions; settled reachability; BGTask work bounded by expiry; Keychain secrets | `Stoic`, `StoicFoundation`, Apple frameworks |
 | `StoicAppKit`  | A Mac app finishes its async shutdown before quitting, with a hard deadline | `Stoic`, AppKit |
 | `StoicUIKit`   | Background work bounded by the time iOS grants             | `Stoic`, UIKit                  |
@@ -263,6 +264,49 @@ without the trait, write that. Mistakes are compile errors at the line that is
 wrong: a `@Length` on an `Int`, a default that
 breaks its own `@Range`, a key used twice. See
 [design/06](design/06-validation.md#as-built-layer-4-stoicmacros).
+
+### Reconcilers, live values and released formats
+
+A derived system (a calendar's attendee lists, a search index) is kept level
+with its truth by a reconciler, never by writing both and hoping (design/30).
+It reads both sides, corrects the differences through declared operations, and
+refuses to remove more than a tenth of what it read until someone confirms:
+an empty read after a bad deploy is held, not obeyed.
+
+```swift
+let attendees = Reconciler(CalendarAttendees(db: db, calendar: calendar))   // every 15 min, guarded, bounded
+attendees.changed(eventID)                                                     // follow at once; the pass would anyway
+try await attendees.run()                                                      // under a Supervisor
+```
+
+What a screen shows is a `Live` value with four phases, and what a person
+triggers is an `Action` (design/31). Neither has an `isLoading` to forget:
+
+```swift
+let roster = Live<[RosterRow]>.joining(attendees, minors, on: \.email, \.email) { RosterRow($0, minor: $1?.isMinor) }
+let signUp = Action(Events.signUp, whileRunning: .join) { id, attempt in
+    try await api.signUp(id, idempotencyKey: attempt.idempotencyKey)           // one key per intent, across taps
+}
+switch screen.canEdit.check() {                                                // loading is .unknown, never "denied"
+case .granted(let proof): Button("Delete") { screen.delete.trigger(proof) }
+case .denied:             EmptyView()
+case .unknown:            ProgressView()
+}
+if let failure = error.presented() { Text(String(localized: failure.message)) } // nil for a cancellation; never localizedDescription
+```
+
+A released format is a promise, and `expectCompatibility` makes it a test
+(design/32): what every release wrote still reads, and what today writes, the
+releases still in support still read.
+
+```swift
+@Test func settings() {
+    expectCompatibility(Prefs.schema, format: "settings", samples: ["defaults": Prefs(), "tuned": .tuned],
+                        reading: { SettingsStore<Prefs>.read($0, schema: Prefs.schema, format: .handEdited) },
+                        olderReadersMayRefuse: ["2.2.0": "settings version 5 is read from 2.3 on"])
+}
+// STOIC_RECORD_COMPATIBILITY=2.4.0 swift test --filter Compatibility   records a release's fixtures
+```
 
 ### Provenance and App Attest
 

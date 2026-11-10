@@ -27,9 +27,13 @@ Short on purpose: each rule is one you can check.
 | ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`      |
 | `NSXPCConnection` with handlers, a continuation and an epoch | `XPCPeer` + `XPCMethod`, and `XPCHost` in the service (design/25) |
 | status booleans/timestamps decoded by ternaries; an expiry checked in one place; no record of who did what | `Lifecycle`: states, timeouts and effects declared once; `store.apply(event, to:, by:, because:)`; `JournaledLifecycleStore` on a device (design/27) |
-| `Date()` / a date string / a UTC-stored future event        | `Moment.now` for when it happened; `PlainDate` for a day; `ZonedDateTime` (local time + zone) for a planned one, refreshed by `ZoneRulesSweep` (design/26) |
+| `Date()` / a date string / a UTC-stored future event        | `Moment.now` for when it happened; `PlainDate` for a day; `ZonedDateTime` (local time + zone) for a planned one, kept right after a rules change by `Reconciler.zonedValues` (design/26, design/30) |
 | a `userId`/`email`/timestamp argument trusted as a fact; `if isAllowed` on a value that may still be loading | `Claimed`/`Verified`, a permission check with three outcomes: data that crossed a boundary is `Claimed<T>`, code that needs a fact takes `Verified<T, E>`, `Moment.stamped()` for the service's own time, a `PermissionPolicy`'s `check` gives `.granted(proof)`, `.denied` or `.unknown` (design/28) |
 | hand-rolled DeviceCheck calls                              | `AppAttester` + `AppAttestAuthenticator`, verified by `StoicAttestation` (trait `Attestation`): one key per account, enrolled once, replaced when it dies; requests signed per attempt; the server's checks in Apple's order (design/29) |
+| writing to two systems and hoping they agree; a sync job that deletes on an empty read | a `Reconciliation` |
+| `isLoading` booleans, `data ?? []`, a button that fires without a guard | `Live` and `Action` |
+| `error.localizedDescription` or "unexpected error" shown to a person | `Presentable` |
+| a comment that old clients still send a field | `expectCompatibility` |
 
 ### Rules
 
