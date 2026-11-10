@@ -132,6 +132,7 @@ an error. design/24 builds its key custody on exactly this.
 | the system expires the task                                     | Work cancelled with cause `.systemExpiring`; task completed at once, once, `false`        |
 | the work ends after the system expired the task                 | No second completion                                                                      |
 | the system expires the task before the work starts              | The work never runs; task completed once with `success: false`                            |
+| the system expires the task while its work is being started     | The run is admitted before its work starts: an expiry before that refuses it (the work never runs), one after cancels the work with cause `.systemExpiring`; work that returns or throws reports its own outcome, never a `CancellationError` it did not see |
 | the system expires the task before the launch handler returns   | Handler and completion guard already installed; task completed once with `success: false`; the work never runs |
 | the budget runs out before the system expires the task          | Work cancelled with cause `.deadline`; task completed once with `success: false`          |
 | the next request cannot be submitted                            | The work still runs; the report carries the error                                         |

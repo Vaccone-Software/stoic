@@ -445,6 +445,64 @@ struct ExpiringWorkTests {
         #expect(!ran.value)
     }
 
+    /// The host expires in the window between a run's task starting and
+    /// that task becoming cancellable by expiry, after the work has already
+    /// finished: the run reports the work's own outcome, not a cancellation
+    /// it never saw.
+    @Test(.failureMode("design/21", "the system expires the task while its work is being started"))
+    func anExpiryAsTheWorkStartsReportsTheWorksOwnOutcome() async throws {
+        struct Refused: Error, Equatable {}
+        let finished = AsyncGate()
+        let expiring = SendableBox<ExpiringWork?>(nil)
+        expiring.mutate {
+            $0 = ExpiringWork(afterStarting: {
+                await finished.wait()
+                expiring.value?.expire()
+            })
+        }
+        let work = try #require(expiring.value)
+        let value = try await work.run {
+            defer { finished.open() }
+            return 42
+        }
+        #expect(value == 42, "the work returned")
+        #expect(work.isExpired)
+
+        let failing = AsyncGate()
+        let again = SendableBox<ExpiringWork?>(nil)
+        again.mutate {
+            $0 = ExpiringWork(afterStarting: {
+                await failing.wait()
+                again.value?.expire()
+            })
+        }
+        await #expect(throws: Refused()) {
+            try await #require(again.value).run { () throws -> Int in
+                defer { failing.open() }
+                throw Refused()
+            }
+        }
+    }
+
+    /// Expired in the same window, before the work has done anything: the
+    /// work is cancelled, and says why.
+    @Test func anExpiryAsTheWorkStartsCancelsItWithTheCause() async {
+        let expiring = SendableBox<ExpiringWork?>(nil)
+        expiring.mutate { $0 = ExpiringWork(afterStarting: { expiring.value?.expire() }) }
+        let observed = SendableBox<CancellationCause?>(nil)
+        await #expect(throws: CancellationError.self) {
+            try await expiring.value?.run {
+                // Only a cancellation ends this, whether it arrives before
+                // the sleep starts or during it.
+                do { try await Task.sleep(for: .seconds(3600)) } catch {
+                    observed.mutate { $0 = CancellationCause.current }
+                    throw error
+                }
+            }
+        }
+        #expect(observed.value == .systemExpiring)
+    }
+
     /// `beginBackgroundTask` returning `.invalid` is this gate with `granted`
     /// false. UIKit is not linked into the macOS or Linux test runs; the
     /// shell in `BackgroundWork` passes `identifier != .invalid` through here.

@@ -25,12 +25,26 @@ public final class ExpiringWork: Sendable {
 
     private struct Run {
         let cause: CancellationCauseBox
-        let cancel: @Sendable () -> Void
+        /// Cancels the run's task; `nil` until the task is started.
+        var cancel: (@Sendable () -> Void)?
     }
 
     private let state = Mutex(State())
 
-    public init() {}
+    /// Called by a run between starting its task and making it cancellable
+    /// by expiry, the window an ``expire()`` may land in; for tests.
+    private let afterStarting: (@Sendable () async -> Void)?
+
+    public init() {
+        afterStarting = nil
+    }
+
+    /// For tests: `afterStarting` runs inside every run after its work's
+    /// task is started and before that task can be cancelled by ``expire()``,
+    /// so a test can expire in exactly that window.
+    package init(afterStarting: @escaping @Sendable () async -> Void) {
+        self.afterStarting = afterStarting
+    }
 
     /// Whether ``expire()`` has been called.
     public var isExpired: Bool {
@@ -46,7 +60,8 @@ public final class ExpiringWork: Sendable {
     ///   - label: Names the work in events.
     ///   - work: The work.
     /// - Throws: `work`'s error; `CancellationError` when cut short, with
-    ///   ``CancellationCause/current`` saying why inside `work`.
+    ///   ``CancellationCause/current`` saying why inside `work`, or when the
+    ///   time was taken back before the run was admitted.
     public func run<R: Sendable>(
         within limit: Duration? = nil,
         label: String? = nil,
@@ -55,8 +70,21 @@ public final class ExpiringWork: Sendable {
         // Its own cause per run: one run's expiry or cancellation must not
         // be read as another's. Nested in the caller's, so a caller's
         // recorded cause is what the work sees when the caller is cancelled.
-        if isExpired { throw CancellationError() }
         let cause = CancellationCauseBox(parent: CancellationCauseBox.current)
+        // Admitted before the work exists. An expiry before this refuses the
+        // run, and the work never starts; one after it is this run's, and
+        // reaches the work as a cancellation. Either way the outcome is
+        // decided before the work can be observed: work that started is
+        // never reported as cancelled when it returned or threw its own
+        // error.
+        let id = state.withLock { state -> UInt64? in
+            if state.expired { return nil }
+            defer { state.nextID += 1 }
+            state.running[state.nextID] = Run(cause: cause, cancel: nil)
+            return state.nextID
+        }
+        guard let id else { throw CancellationError() }
+        defer { _ = state.withLock { $0.running.removeValue(forKey: id) } }
         let task = Task.stoic {
             try await CancellationCauseBox.$current.withValue(cause) {
                 if let limit {
@@ -66,20 +94,18 @@ public final class ExpiringWork: Sendable {
                 }
             }
         }
-        let id = state.withLock { state -> UInt64? in
-            if state.expired { return nil }
-            defer { state.nextID += 1 }
-            state.running[state.nextID] = Run(cause: cause, cancel: { task.cancel() })
-            return state.nextID
+        if let afterStarting { await afterStarting() }
+        let expiredMeanwhile = state.withLock { state -> Bool in
+            state.running[id]?.cancel = { task.cancel() }
+            return state.expired
         }
-        guard let id else {
-            // Expired between the check and now: the work starts cancelled.
+        if expiredMeanwhile {
+            // `expire()` found this run before its task could be cancelled:
+            // cancel it here, with the cause first, so the work never sees
+            // a cancellation without its reason.
             cause.record(.systemExpiring)
             task.cancel()
-            _ = await task.result
-            throw CancellationError()
         }
-        defer { _ = state.withLock { $0.running.removeValue(forKey: id) } }
         // Awaiting a task's value does not pass cancellation on: say so.
         return try await withTaskCancellationHandler {
             try await task.value
@@ -122,7 +148,9 @@ public final class ExpiringWork: Sendable {
         }
         for run in runs {
             run.cause.record(.systemExpiring)
-            run.cancel()
+            // A run whose task is not yet cancellable cancels itself when it
+            // sees `expired`.
+            run.cancel?()
         }
     }
 
