@@ -146,7 +146,9 @@ struct XPCHostTests {
             await rig.advance(by: .seconds(10))
             await eventually { rig.service.exits == [0] }
             #expect(rig.events.count("xpc.idle_exit") == 1)
-            await eventually { rig.peer.run == nil }
+            // The run's end is reported after the peer lets go of it: wait for
+            // the report, not the phase.
+            await eventually { rig.events.count("xpc.run_lost") == 1 }
             #expect(rig.events.events(named: "xpc.run_lost").first?.level == .notice, "nothing was in flight")
             #expect(try await rig.peer.call(Probe.echo, "second") == "second")
             #expect(rig.service.runs == 2)
@@ -157,7 +159,7 @@ struct XPCHostTests {
     func aRequestPutsOffTheIdleExit() async throws {
         try await withRig(host: XPCHostPolicy(idleExit: .seconds(10))) { (rig) async throws in
             _ = try await rig.peer.call(Probe.echo, "first")
-            await rig.advance(by: .seconds(6))
+            await rig.advance(by: .seconds(6), expecting: false)
             _ = try await rig.peer.call(Probe.echo, "second")
             await rig.advance(by: .seconds(6))
             #expect(rig.service.exits.isEmpty, "idle for six seconds since the second request")
@@ -171,13 +173,13 @@ struct XPCHostTests {
     func aHoldOutsideARequestPutsOffTheIdleExitUntilItsRelease() async throws {
         try await withRig(host: XPCHostPolicy(idleExit: .seconds(10))) { (rig) async throws in
             _ = try await rig.peer.call(Probe.echo, "first")
-            await rig.advance(by: .seconds(5))
+            await rig.advance(by: .seconds(5), expecting: false)
             let host = try #require(rig.service.host)
             host.hold("preload")
             await rig.advance(by: .seconds(30))
             #expect(rig.service.exits.isEmpty)
             host.release("preload")
-            await rig.advance(by: .seconds(9))
+            await rig.advance(by: .seconds(9), expecting: false)
             #expect(rig.service.exits.isEmpty, "the idle period starts again at the release")
             await rig.advance(by: .seconds(1))
             await eventually { rig.service.exits == [0] }

@@ -341,9 +341,12 @@ public final class XPCPeer: Sendable {
         }
         guard case .endService(let after) = method.ifStuck else { return }
         let name = method.name
+        // Stuck counts from the moment the caller left, not from when the
+        // watching task first runs.
+        let verdictAt = ambient.livenessClock.now.advanced(by: after)
         background { [self] in
             do {
-                try await ambient.livenessClock.sleep(for: after)
+                try await ambient.livenessClock.sleep(until: verdictAt)
             } catch {
                 return
             }

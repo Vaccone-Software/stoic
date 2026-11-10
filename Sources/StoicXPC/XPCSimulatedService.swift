@@ -246,9 +246,12 @@ final class SimulatedProcess: Sendable {
             return
         }
         let ambient = ambient
+        // Fixed now, not when the task first runs: a test that moves the
+        // clock meanwhile must not push the launch past its advance.
+        let launchAt = ambient.clock.now.advanced(by: delay)
         Task.owned(in: ambient) {
             do {
-                try await ambient.clock.sleep(for: delay)
+                try await ambient.clock.sleep(until: launchAt)
             } catch {
                 // Nothing cancels this task; were it cancelled, the process
                 // would launch at once rather than never.
@@ -321,10 +324,12 @@ final class SimulatedProcess: Sendable {
         guard first else { return }
         let lag = service?.exitLag ?? .zero
         let ambient = ambient
+        // The exit is due `lag` after the decision, whenever the task runs.
+        let exitAt = ambient.clock.now.advanced(by: lag)
         Task.owned(in: ambient) {
             if lag > .zero {
                 do {
-                    try await ambient.clock.sleep(for: lag)
+                    try await ambient.clock.sleep(until: exitAt)
                 } catch {
                     // Nothing cancels this task; were it cancelled, the
                     // process would exit at once rather than never.

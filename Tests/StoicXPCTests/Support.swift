@@ -224,18 +224,16 @@ struct Rig {
     }
 
     /// Moves the clock by `duration`, once something is asleep that is due
-    /// within it, waiting up to a fifth of a second of real time for that:
-    /// work woken by the test's last step (a grace, a backoff, a watcher)
-    /// goes to sleep on a task of its own, and a clock moved before it does
-    /// leaves it asleep past the advance.
-    func advance(by duration: Duration) async {
-        let real = ContinuousClock()
-        let until = real.now.advanced(by: .milliseconds(200))
-        while real.now < until, !clock.pendingDeadlines.contains(where: { clock.now.duration(to: $0) <= duration }) {
-            do {
-                try await real.sleep(for: .milliseconds(1))
-            } catch {
-                break
+    /// within it: work woken by the test's last step (a grace, a backoff, a
+    /// launch) goes to sleep on a task of its own, and a clock moved before
+    /// it does leaves it asleep past the advance. `expecting: false` for an
+    /// advance with nothing due, which moves at once.
+    func advance(
+        by duration: Duration, expecting: Bool = true, sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        if expecting {
+            await eventually(timeout: .seconds(5), "nothing due within \(duration) went to sleep", sourceLocation: sourceLocation) {
+                clock.pendingDeadlines.contains { clock.now.duration(to: $0) <= duration }
             }
         }
         await clock.advance(by: duration)

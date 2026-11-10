@@ -152,6 +152,7 @@ struct XPCPeerTests {
             #expect(error.outcome == .unknown)
             #expect(error.attempts == 1)
             #expect(rig.service.runs == 1, "no new run was started for it")
+            await eventually { rig.events.count("xpc.run_lost") == 1 }
             let lost = try #require(rig.events.events(named: "xpc.run_lost").first)
             #expect(lost.level == .warning)
             #expect(lost["in_flight"].map { "\($0)" } == "1", "the call whose reply failed is counted")
@@ -170,6 +171,7 @@ struct XPCPeerTests {
                 let error = try #require(await rig.failure(of: call, Never.self))
                 #expect(error.last == .lost(afterSending: true))
             }
+            await eventually { rig.events.count("xpc.run_lost") >= 1 }
             #expect(rig.events.count("xpc.run_lost") == 1)
             let lost = try #require(rig.events.events(named: "xpc.run_lost").first)
             #expect(lost.level == .warning)
@@ -186,7 +188,7 @@ struct XPCPeerTests {
             let throttled = try #require(rig.events.events(named: "xpc.relaunch_throttled").first)
             #expect(throttled.level == .notice)
             // A run that lived longer is not.
-            await rig.advance(by: .seconds(11))
+            await rig.advance(by: .seconds(11), expecting: false)
             await rig.service.crash()
             _ = try await rig.peer.call(Probe.echo, "c")
             #expect(rig.events.count("xpc.relaunch_throttled") == 1)
@@ -400,7 +402,9 @@ struct XPCPeerTests {
             await eventually { rig.peer.run == nil }
             let call = rig.start(Probe.echo, "second")
             await eventually { rig.service.sessions == 2 }
-            await eventually { rig.events.count("xpc.run_ended") == 0 && rig.peer.run == nil }
+            // Heard "exiting" before time moves: a process that died under
+            // the handshake would send the call into a backoff.
+            await eventually { rig.peer.isEnding }
             await rig.advance(by: .seconds(3))
             #expect(try await call.value == "second")
             #expect(rig.service.runs == 2)
@@ -420,6 +424,7 @@ struct XPCPeerTests {
             await eventually { rig.peer.run == nil }
             let call = rig.start(Probe.echo, "second")
             await eventually { rig.service.sessions == 2 }
+            await eventually { rig.peer.isEnding }
             await rig.advance(by: .seconds(2))
             // The kill grace runs on the clock too: let the killed process go
             // and the call reach the next one before time moves again.
