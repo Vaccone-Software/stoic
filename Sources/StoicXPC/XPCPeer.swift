@@ -234,26 +234,36 @@ public final class XPCPeer: Sendable {
     private func attempt<Request, Reply, Failure>(
         _ method: XPCMethod<Request, Reply, Failure>, _ request: Request, ifRunning: Bool, key: IdempotencyKey?
     ) async throws(XPCCallError<Failure>) -> Reply {
-        let run = try await liveRun(ifRunning: ifRunning, as: Failure.self)
-        guard !Task.isCancelled, let connection = run.connection else { throw .cancelled(afterSending: false) }
         let id = requestIDs.add(1, ordering: .relaxed).newValue
+        let slot = ReplySlot<Delivery<Reply, Failure>>()
+        // A run that ended, or began to end, after it was chosen takes no
+        // request: the attempt looks again (the next look waits for it to
+        // go), spending neither an attempt nor a send.
+        var chosen: (run: RunState, connection: any XPCConnection)?
+        for _ in 0..<8 where chosen == nil {
+            let run = try await liveRun(ifRunning: ifRunning, as: Failure.self)
+            if Task.isCancelled { throw .cancelled(afterSending: false) }
+            if let connection = run.connection, run.register(id, fail: { slot.settle(.lost) }) {
+                chosen = (run, connection)
+            }
+        }
+        guard let (run, connection) = chosen else { throw .lost(afterSending: false) }
         let message = Outgoing(
             kind: .call, id: id, method: method.name, budgetNanoseconds: Deadline.current?.remaining.wireNanoseconds,
             key: key?.rawValue, payload: request)
-        let slot = ReplySlot<Delivery<Reply, Failure>>()
-        guard run.register(id, fail: { slot.settle(.lost) }) else { throw .lost(afterSending: false) }
         do {
-            try connection.send(message) { [self] (result: Result<Answer<Reply, Failure>, XPCDeliveryFailure>) in
+            try connection.send(message) { [weak self] (result: Result<Answer<Reply, Failure>, XPCDeliveryFailure>) in
                 // A connection lost is no answer, and the first sign that the
                 // run is gone: the run's end fails this request with the
-                // others in flight, and counts it.
+                // others in flight, and counts it. (A peer already released
+                // ended the run as it went.)
                 if case .failure(.connectionLost) = result {
-                    runGone(run)
+                    self?.runGone(run)
                     return
                 }
                 run.answered(id)
                 if !slot.settle(.delivered(result)), case .success = result {
-                    report("xpc.late_reply", .debug, [.init("method", .string(method.name), privacy: .public), .init("run", .int(run.number))])
+                    self?.report("xpc.late_reply", .debug, [.init("method", .string(method.name), privacy: .public), .init("run", .int(run.number))])
                 }
             }
         } catch {
@@ -273,7 +283,8 @@ public final class XPCPeer: Sendable {
             abandon(id, on: run, connection: connection, method: method)
             throw .cancelled(afterSending: true)
         case .lost, .delivered(.failure(.connectionLost)):
-            // An end the app decided (`end`, a stuck request, `shutdown`) is
+            // (A lost connection reaches the attempt as `.lost`, through the
+            // run's end.) An end the app decided (`end`, a stuck request, `shutdown`) is
             // not the service failing.
             throw run.endedByApp ? .ended(afterSending: true) : .lost(afterSending: true)
         case .delivered(.failure(.undecodable(let why))):
@@ -490,7 +501,9 @@ public final class XPCPeer: Sendable {
             run.setInfo(info)
             let current = state.withLock { state -> Bool in
                 guard case .starting(let starting) = state.phase, starting === run else { return false }
-                state.phase = .running(run)
+                // An end asked while it started: it is ending from the
+                // first, and no call is sent to it.
+                state.phase = run.endReason == nil ? .running(run) : .ending(run)
                 return true
             }
             guard current else {
@@ -510,7 +523,7 @@ public final class XPCPeer: Sendable {
             // The process that answered is the last one, still leaving. Its
             // pid comes with the answer, so the end can kill it if it lingers.
             if let welcome = answer.reply {
-                run.setInfo(XPCRun(number: run.number, pid: welcome.pid, build: welcome.build))
+                run.setLingering(XPCRun(number: run.number, pid: welcome.pid, build: welcome.build))
             }
             exiting(run)
             run.ready.open(.retry)
@@ -545,12 +558,13 @@ public final class XPCPeer: Sendable {
         // The process is another build's: it is asked to exit, so it does not
         // live on, unused, beside the app.
         do {
+            // Its session ends when it does, and the run with it; cancelling
+            // the session now could drop the message.
             try connection.send(Outgoing<XPCEmpty>(kind: .end))
         } catch {
             // Its session has ended already: so has its process.
-            return
+            connection.cancel()
         }
-        connection.cancel()
     }
 
     /// The service said its run is exiting: it is ending, by its own choice.
@@ -613,36 +627,60 @@ public final class XPCPeer: Sendable {
     /// waiting (`.inProgress`).
     @discardableResult
     public func end(reason: String) async -> XPCEndResult {
-        let (run, starting) = state.withLock { state -> (RunState?, Bool) in
+        let run = state.withLock { state -> RunState? in
             switch state.phase {
-            case .starting(let run): (run, true)
-            case .running(let run), .ending(let run): (run, false)
-            case .idle, .wedged, .mismatched, .shutDown: (nil, false)
+            case .starting(let run), .running(let run), .ending(let run): run
+            case .idle, .wedged, .mismatched, .shutDown: nil
             }
         }
         guard let run else { return .notRunning }
-        if starting {
-            // A run that is starting has no process to ask yet: its handshake
-            // decides first, and the calls waiting on it are not failed for it.
-            guard let readiness = await run.ready.wait() else { return .inProgress }
-            guard case .live = readiness else { return run.hasEnded ? .exited : .notRunning }
-        }
         return await end(run, reason: reason, byApp: true)
     }
 
+    private enum EndStart {
+        case escalate
+        case afterHandshake
+        case settled(XPCEndResult)
+        case joined
+    }
+
+    /// Ends `run`: the ask and the move to ending are one step under the
+    /// peer's lock, so no call chooses the run after it is asked to end. The
+    /// work is the peer's: it goes on if the caller stops waiting.
     private func end(_ run: RunState, reason: String, byApp: Bool) async -> XPCEndResult {
-        let (outcome, first) = run.askToEnd(reason: reason, byApp: byApp, at: ambient.clock.now)
-        if first {
-            let proceeding = state.withLock { state -> Bool in
-                guard let current = state.phase.run, current === run, !run.hasEnded else { return false }
-                if case .wedged = state.phase { return false }
+        let now = ambient.clock.now
+        let (outcome, start) = state.withLock { state -> (Gate<XPCEndResult>, EndStart) in
+            let (outcome, first) = run.askToEnd(reason: reason, byApp: byApp, at: now)
+            guard first else { return (outcome, .joined) }
+            guard state.phase.run === run, !run.hasEnded else { return (outcome, .settled(run.hasEnded ? .exited : .notRunning)) }
+            switch state.phase {
+            case .starting:
+                // No process to ask yet: its handshake decides first, and
+                // moves it to ending.
+                return (outcome, .afterHandshake)
+            case .running, .ending:
                 state.phase = .ending(run)
-                return true
+                return (outcome, .escalate)
+            case .wedged:
+                return (outcome, .settled(.wedged))
+            case .idle, .mismatched, .shutDown:
+                return (outcome, .settled(.notRunning))
             }
-            if proceeding {
-                background { [self] in outcome.open(await escalate(run)) }
-            } else {
-                outcome.open(run.hasEnded ? .exited : .notRunning)
+        }
+        switch start {
+        case .joined:
+            break
+        case .settled(let result):
+            outcome.open(result)
+        case .escalate:
+            background { [self] in outcome.open(await escalate(run)) }
+        case .afterHandshake:
+            background { [self] in
+                guard case .live? = await run.ready.wait(), !run.hasEnded else {
+                    outcome.open(run.hasEnded ? .exited : .notRunning)
+                    return
+                }
+                outcome.open(await escalate(run))
             }
         }
         return await outcome.wait() ?? .inProgress
@@ -658,7 +696,7 @@ public final class XPCPeer: Sendable {
             return .exited
         }
         if await gone(run, within: policy.endGrace) { return .exited }
-        let killed = run.info.map(transport.terminate) ?? false
+        let killed = run.process.map(transport.terminate) ?? false
         report("xpc.end_escalated", .warning, [
             .init("run", .int(run.number)), .init("killed", .bool(killed)), .init("grace", .duration(policy.endGrace)),
         ])
@@ -670,7 +708,7 @@ public final class XPCPeer: Sendable {
         }
         guard wedged else { return killed ? .killed : .exited }
         report("xpc.run_wedged", .error, [
-            .init("run", .int(run.number)), .init("pid", .int(Int(run.info?.pid ?? 0))), .init("killed", .bool(killed)),
+            .init("run", .int(run.number)), .init("pid", .int(Int(run.process?.pid ?? 0))), .init("killed", .bool(killed)),
         ])
         run.settled.open(false)
         return .wedged
@@ -686,9 +724,9 @@ public final class XPCPeer: Sendable {
 
     // MARK: Shutting down
 
-    /// Ends the peer: the live session is cancelled, calls waiting on it
-    /// fail `.unavailable` or `.lost`, and every later call fails
-    /// `.unavailable`. For an app that is quitting, and for tests.
+    /// Ends the peer: calls on the live run fail `.ended` (they may have been
+    /// run), its session is cancelled, and every later call fails
+    /// `.unavailable(.shutDown)`. For an app that is quitting, and for tests.
     public func shutdown() {
         let run = state.withLock { state -> RunState? in
             let run = state.phase.run
@@ -705,6 +743,11 @@ public final class XPCPeer: Sendable {
     }
 
     // MARK: Support
+
+    /// Whether an end of the current run has been asked (tests).
+    var isEnding: Bool {
+        state.withLock { $0.phase.run?.endReason != nil }
+    }
 
     private var isShutDown: Bool {
         state.withLock { state in

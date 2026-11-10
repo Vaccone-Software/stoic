@@ -63,11 +63,12 @@ extension Task where Success == Void, Failure == Never {
     /// XPC peer's handshake and the end of a run, a simulated service's
     /// handlers (design/25). Inheriting that one caller's deadline would fail
     /// the work for every other caller waiting on it, and its retry attempt
-    /// would make a `perform` inside the work look nested in it.
+    /// would make a `perform` inside the work look nested in it. It runs at
+    /// its creator's priority.
     @discardableResult
     package static func owned(in ambient: Ambient, _ operation: sending @escaping () async -> Void) -> Task {
         // stoic:allow(task-detached): inheriting nothing is the point; the ambient context is bound again inside, and the executor preference passed.
-        Task.detached(executorPreference: ambient.taskExecutor) {
+        Task.detached(executorPreference: ambient.taskExecutor, priority: Task<Never, Never>.currentPriority) {
             await withAmbient({ $0 = ambient }, operation: operation)
         }
     }

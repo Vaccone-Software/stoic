@@ -31,6 +31,9 @@ final class RunState: Sendable {
     private struct Mutable {
         var connection: (any XPCConnection)?
         var info: XPCRun?
+        /// The process a handshake found exiting: never this run's own, but
+        /// the one to kill if it lingers.
+        var lingering: XPCRun?
         var pending: [UInt64: Pending] = [:]
         var ended = false
         /// Why the run is ending, and since when; `nil` while it is not.
@@ -96,6 +99,16 @@ final class RunState: Sendable {
 
     func setInfo(_ info: XPCRun) {
         mutable.withLock { $0.info = info }
+    }
+
+    func setLingering(_ process: XPCRun) {
+        mutable.withLock { $0.lingering = process }
+    }
+
+    /// The process an end kills if it does not go: this run's own, or the
+    /// exiting one its handshake reached.
+    var process: XPCRun? {
+        mutable.withLock { $0.info ?? $0.lingering }
     }
 
     /// Marks the run as asked to end, once. Returns the gate the end's

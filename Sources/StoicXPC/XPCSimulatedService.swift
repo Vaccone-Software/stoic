@@ -72,6 +72,12 @@ public final class XPCSimulatedService: XPCTransport {
         state.withLock { $0.sessions }
     }
 
+    /// How many sessions with the live process are open: not yet cancelled
+    /// or ended.
+    public var liveSessions: Int {
+        state.withLock { $0.current }?.liveSessions ?? 0
+    }
+
     /// The live process's pid, if one is running (exiting or not).
     public var pid: Int32? {
         state.withLock { state in state.current.flatMap { $0.isAlive ? $0.pid : nil } }
@@ -218,6 +224,10 @@ final class SimulatedProcess: Sendable {
 
     var ambient: Ambient {
         service?.ambient ?? host.ambient
+    }
+
+    var liveSessions: Int {
+        state.withLock { $0.alive ? $0.connections : [] }.count { $0.isOpen }
     }
 
     func add(_ connection: SimulatedConnection) {
@@ -431,6 +441,10 @@ final class SimulatedConnection: XPCConnection {
         let session = session
         let host = process.host
         process.enqueue { host.receive(incoming, on: session) }
+    }
+
+    var isOpen: Bool {
+        state.withLock { $0.open }
     }
 
     /// Cancelling ends the session at once; its pending replies are not

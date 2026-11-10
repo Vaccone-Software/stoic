@@ -5,7 +5,7 @@
   "suppressions" : [
     {
       "file" : "Sources/Stoic/Ambient/StoicTask.swift",
-      "hash" : "ba0526a6dc0ce75c",
+      "hash" : "3a1d89c4e6930ca6",
       "rule" : "stoic.task-detached"
     },
     {

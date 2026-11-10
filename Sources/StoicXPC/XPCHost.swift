@@ -156,7 +156,8 @@ public final class XPCHost: Sendable {
     }
 
     /// Keeps an idle service from exiting while `reason` is held: a model
-    /// it has loaded. Holding a reason twice holds it once.
+    /// it has loaded. Holding a reason twice holds it once. A service that
+    /// has already decided to exit is not kept.
     public func hold(_ reason: String) {
         state.withLock { state in
             state.holds.insert(reason)

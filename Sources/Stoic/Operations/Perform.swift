@@ -600,7 +600,7 @@ private struct PerformCall {
     static func verdict(for failure: any Error, cut: Cut?, nothingReached: Bool, kind: Backend.Kind) -> CircuitBreaker.Verdict {
         if containsDefect(failure) { return .ignored("defect") }
         if nothingReached { return .ignored("not_reached") }
-        if let ended = failure as? any CallerDecidedFailure, ended.isCallerDecided { return .ignored("caller_decided") }
+        if let ended = failure.unwrappedForClassification as? any CallerDecidedFailure, ended.isCallerDecided { return .ignored("caller_decided") }
         switch cut {
         case .ownTimeout: return .recorded(failed: true, timedOut: true)
         case .deadline: return .ignored("deadline")

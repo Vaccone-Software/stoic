@@ -644,6 +644,7 @@ to be `static let`s.
 | a remote backend answers 404 (a permanent failure)                        | the breaker records a success                                                                              |
 | a window full of slow `.long` calls                                       | the breaker does not open                                                                                  |
 | the device is offline (`neverReachedBackend`)                             | the breaker records nothing                                                                                |
+| an attempt fails with a failure the caller decided | the breaker records nothing, as for a cancellation (`CallerDecidedFailure`, package-level: an XPC peer that ended the run, design/25) |
 | `perform` is called inside another retry's attempt                        | `perform` retries by its own policy                                                                        |
 | `perform` throws inside another retry's attempt                           | the attempt is settled; the enclosing retry does not repeat it                                             |
 | an enclosing attempt's timeout cuts a `.readOnly` `perform` off           | the attempt is not settled; the enclosing retry may try again                                              |

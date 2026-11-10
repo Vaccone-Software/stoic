@@ -176,8 +176,10 @@ because the connection did. Whichever comes first ends the run once; the other
 is ignored. Every call still waiting on that run fails at once with
 `.lost(afterSending: true)`, or `.ended(afterSending: true)` when the app
 decided the end. A peer opens a new session only when the run before it is
-gone, and sends nothing on a run it has begun to end, so a request never
-reaches a process the peer knows is leaving.
+gone, and sends nothing on a run once it has begun to end it: a call that chose
+the run just before looks again, at no cost of an attempt, and waits for the
+next. A request sent before the end was asked is in flight when it comes, and
+fails `.ended` if the process goes first.
 
 **Starting.** The first call with no run starts one; calls that arrive while it
 starts wait for the same handshake (one session, one hello). The handshake runs
@@ -227,9 +229,11 @@ not the backend failing: calls on that run fail `.ended`, which the breaker
 ignores as it ignores a cancellation (`CallerDecidedFailure`, package-level in
 the kernel).
 
-**Ending.** `end(reason:)` on a run that is starting waits for its handshake
-first (the calls waiting on it are not failed for the end). It then moves the
-run to _ending_, asks the service to exit,
+**Ending.** `end(reason:)` asks, and moves the run to _ending_, in one step
+under the peer's lock. A run that is starting is ended once its handshake
+decides; the calls waiting on that handshake are not sent to it, and go to the
+next run. The end is the peer's work: it goes on if its caller stops waiting
+(`.inProgress`). It asks the service to exit,
 and waits up to `endGrace` (2 s) for it to be gone. Calls made meanwhile wait
 for it too, within their own deadlines, and then reach a new run. A run still
 there after the grace is killed — `SIGKILL`, to the pid from its handshake, only
@@ -293,7 +297,7 @@ that session's handlers.
 | a cancel arrives for a request the service no longer holds       | it is dropped and reported at debug level                                                |
 | a cancelled request stays unanswered past `ifStuck` | the run is ended and `xpc.call_stuck` reported |
 | the app ends a run with other calls in flight | they fail `.ended`, outcome `.unknown`; the breaker does not count them |
-| the app ends a run while it is starting | the end waits for the handshake, then asks the process to exit; waiting calls are not failed for it |
+| the app ends a run while it is starting | the end waits for the handshake, then asks the process to exit, even if its caller left; waiting calls go to the next run, unsent |
 | the run does not exit when asked                                 | it is killed, after the pid is checked to be this app's service                          |
 | the run cannot be killed (a sandbox) and does not exit | `xpc.run_wedged`; calls fail `.unavailable(.wedged)` at once until it goes, then a new run starts |
 | the service is another build | `xpc.build_mismatch`; it is asked to exit; every call fails `.buildMismatch`, not repeated |
@@ -375,6 +379,16 @@ the code and this contract. What they found, and what changed:
   registry forgot a surviving peer. All fixed, with tests.
 - The simulation's handlers inherited the client's deadline and retry
   attempt; host and simulation tasks are now `Task.owned`.
+
+A second pass by both over the fixes found them sound, and a smaller layer
+beneath, also fixed: an end of a starting run that its caller left never
+happened (the end is now the peer's work, asked and recorded at once); a call
+that chose a run just as it began to end lost an attempt, or read "cancelled"
+(it now looks again, free); the process a handshake found exiting was taken
+for a run of the peer's, which reported a false relaunch delay; the reply
+handler held the peer; and the wrong build's exit could be dropped by an
+immediate cancel. The kernel's `CallerDecidedFailure` has its own row in
+design/22.
 
 Kept as they are, on purpose: `hold`/`release` by reason (a model's handle is
 a reason), the pid reported by the service (the session's audit token is not

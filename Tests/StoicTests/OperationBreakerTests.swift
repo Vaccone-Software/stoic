@@ -168,6 +168,18 @@ struct OperationBreakerTests {
         #expect(run.value.calls == 0)
     }
 
+    @Test(.failureMode("design/22", "an attempt fails with a failure the caller decided"))
+    func aFailureTheCallerDecidedIsNotRecorded() async throws {
+        let backend = Backend.remote("breaker.caller_decided")
+        let fetch = backend.readOnly("fetch")
+        let run = try await simulated { _ in
+            for _ in 0..<15 { _ = await withUrgency(.interactive) { await performing(fetch, Script([.fail(EndedByCaller())])) } }
+            return Self.breaker(backend)!.snapshot
+        }
+        #expect(run.value.state == .closed)
+        #expect(run.value.calls == 0)
+    }
+
     @Test func anAttemptTimeoutCountsAndTheCallsDeadlineDoesNot() async throws {
         let backend = Backend.remote("breaker.timeouts")
         let fetch = backend.readOnly("fetch")
@@ -216,4 +228,11 @@ struct OperationBreakerTests {
         #expect(run.value.state == .open)
         #expect(try #require(run.value.retryAfter) <= .seconds(1))
     }
+}
+
+/// A failure the calling side decided: an XPC peer ending the run its
+/// request was on (design/25). Transient, and reached the backend.
+struct EndedByCaller: Error, Retryable, CallerDecidedFailure, Equatable {
+    var retryDecision: RetryDecision { .retry }
+    var isCallerDecided: Bool { true }
 }

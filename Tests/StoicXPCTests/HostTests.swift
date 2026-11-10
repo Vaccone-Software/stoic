@@ -24,7 +24,7 @@ struct XPCHostTests {
     }
 
     @Test(.failureMode("design/25", "a request names a method the service does not handle"))
-    func anUnknownMethodIsAProtocolViolation() async throws {
+    func anUnknownMethodIsRefusedUnrun() async throws {
         try await withRig { (rig) async throws in
             let error = try #require(await rig.failure(of: rig.start(Probe.missing, XPCEmpty()), Never.self))
             #expect(error.last == .refused("the service has no method xpc.tests.missing"))
@@ -35,7 +35,7 @@ struct XPCHostTests {
     }
 
     @Test(.failureMode("design/25", "a request does not decode as the method's type"))
-    func aMistypedRequestIsAProtocolViolation() async throws {
+    func aMistypedRequestIsRefusedUnrun() async throws {
         try await withRig { (rig) async throws in
             let error = try #require(await rig.failure(of: rig.start(Probe.mistyped, 42), Never.self))
             guard case .refused? = error.last else {
