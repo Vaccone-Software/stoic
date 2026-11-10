@@ -16,7 +16,7 @@ struct FoundationPresentationTests {
         #expect(wording.map { String(localized: $0, bundle: .module) } == "Translated: too many requests.")
     }
 
-    @Test // design/31: "a wording has no translation"
+    @Test(.failureMode("design/31", "a wording has no translation"))
     func aMissingKeyReadsAsItsDefaultTextWithItsArgumentsFormatted() {
         let wording = Wording("app.not-translated", default: "{count} places left.", table: "Stoic", arguments: ["count": .integer(1_234)])
         #expect(String(localized: wording, bundle: .module, locale: Self.english) == "1,234 places left.")

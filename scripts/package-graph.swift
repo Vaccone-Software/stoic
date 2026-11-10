@@ -60,6 +60,7 @@ let layering: [String: Set<String>] = [
     "StoicAttestedHTTP": ["Stoic", "StoicApple", "StoicHTTP", "StoicJSON"],
     "StoicAttestation": ["Stoic"],
     "StoicTime": ["Stoic", "StoicSchema"],
+    "StoicLive": ["Stoic"],
     "StoicMacros": ["StoicSchema", "StoicMacrosPlugin"],
     "StoicMacrosPlugin": [],
     "StoicLintCore": [],

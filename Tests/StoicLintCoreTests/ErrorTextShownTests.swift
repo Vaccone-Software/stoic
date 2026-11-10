@@ -7,7 +7,7 @@ import Testing
 struct ErrorTextShownTests {
     private let rule = "error-text-shown"
 
-    @Test // design/31: "code shows error.localizedDescription"
+    @Test(.failureMode("design/31", "code shows error.localizedDescription"))
     func showingAnErrorsTextIsRefusedWithTheFix() throws {
         let source = """
             func save() {

@@ -171,7 +171,7 @@ struct PresentationTests {
         #expect(refused.message.defaultText == "this reminder is already done")
     }
 
-    @Test // design/31: "an error is a cancellation"
+    @Test(.failureMode("design/31", "an error is a cancellation"))
     func cancellationPresentsNothingAndRecordsNothing() {
         let cancellations: [any Error] = [
             CancellationError(),
@@ -190,7 +190,7 @@ struct PresentationTests {
         #expect(StoicTest.events.events(named: "failure.presented").isEmpty)
     }
 
-    @Test // design/31: "a keyed operation is cancelled after reaching the backend"
+    @Test(.failureMode("design/31", "a keyed operation is cancelled after reaching the backend"))
     func aKeyedCallCancelledAfterReachingTheBackendIsNotCancellation() throws {
         let error = operationError(.cancelled, outcome: .unknown, safety: .keyed)
         let presented = try #require(error.presented())
@@ -198,7 +198,7 @@ struct PresentationTests {
         #expect(presented.message.defaultText == "We couldn't confirm this finished. Trying again is safe.")
     }
 
-    @Test // design/31: "an error conforms to Presentable"
+    @Test(.failureMode("design/31", "an error conforms to Presentable"))
     func aPresentableErrorDecidesWithANewReference() throws {
         let first = try #require(SignUpFull().presented())
         let second = try #require(SignUpFull().presented())
@@ -208,7 +208,7 @@ struct PresentationTests {
         #expect(first.reference != second.reference, "each presentation is its own failure")
     }
 
-    @Test // design/31: "an app error wraps a Stoic error"
+    @Test(.failureMode("design/31", "an app error wraps a Stoic error"))
     func theOuterPresentableDecides() throws {
         let error = SyncFailed(underlying: Rejection(.circuitOpen))
         #expect(try #require(error.presented()).message.key == "sync.failed")
@@ -216,7 +216,7 @@ struct PresentationTests {
         #expect(try #require(wrapped.presented()).message.key == "sync.failed")
     }
 
-    @Test // design/31: "a Report wraps a Presentable error"
+    @Test(.failureMode("design/31", "a Report wraps a Presentable error"))
     func aReportShowsItsRootNotItsFrames() throws {
         let report = Report(SignUpFull()).adding(Report.Frame("signing up for the beach clean"))
         let presented = try #require(report.presented())
@@ -224,7 +224,7 @@ struct PresentationTests {
         #expect(!presented.message.description.contains("beach clean"))
     }
 
-    @Test // design/31: "an OperationError was refused by a policy"
+    @Test(.failureMode("design/31", "an OperationError was refused by a policy"))
     func aPolicysRefusalReadsAsItsRow() throws {
         let error = operationError(.rejected(Rejection(.rateLimited, retryAfter: .seconds(60))), outcome: .notExecuted)
         let presented = try #require(error.presented())
@@ -232,7 +232,7 @@ struct PresentationTests {
         #expect(presented.recovery == .wait(until: Self.now + .seconds(60)))
     }
 
-    @Test // design/31: "an OperationError's failure is Presentable"
+    @Test(.failureMode("design/31", "an OperationError's failure is Presentable"))
     func anOperationsPresentableFailureDecidesUnlessTheOutcomeIsUnknown() throws {
         for outcome: OperationError<any Error>.Outcome in [.executed, .notExecuted] {
             let error = operationError(.failed(SignUpFull()), outcome: outcome, safety: .keyed)
@@ -248,7 +248,7 @@ struct PresentationTests {
         #expect(try #require(once.presented()).message.key == "stoic.outcome.unknown")
     }
 
-    @Test // design/31: "nobody classified an error"
+    @Test(.failureMode("design/31", "nobody classified an error"))
     func anUnclassifiedErrorGetsTheGenericWordsAndAWarning() throws {
         let presented = try #require(Opaque().presented())
         #expect(presented.message.key == "stoic.failure")
@@ -261,7 +261,7 @@ struct PresentationTests {
         #expect(event["classified"]?.description == "false")
     }
 
-    @Test // design/31: "an error is a Defect"
+    @Test(.failureMode("design/31", "an error is a Defect"))
     func aDefectIsOursAndReportedAtErrorLevel() throws {
         let presented = try #require(Report(OurBug()).presented())
         #expect(presented.message.defaultText == "Something went wrong on our side.")
@@ -278,7 +278,7 @@ struct PresentationTests {
         #expect(event["recovery"]?.description == "tryAgain")
     }
 
-    @Test // design/31: "an error's description holds private data"
+    @Test(.failureMode("design/31", "an error's description holds private data"))
     func theDescriptionReachesOnlyThePrivateFieldOfTheEvent() throws {
         struct Leaky: Error, CustomStringConvertible {
             var description: String { "SENTINEL-ana@example.com" }
@@ -305,7 +305,7 @@ struct PresentationTests {
         }
     }
 
-    @Test // design/31: "a presentation carries a server's reference"
+    @Test(.failureMode("design/31", "a presentation carries a server's reference"))
     func aServersReferenceIsShownAsItIs() throws {
         let theirs = try #require(SupportReference("K7Q2M-9XD4F"))
         let presented = try #require(Report(ServerSaid(reference: theirs)).presented())
@@ -387,7 +387,7 @@ struct SupportReferenceTests {
         #expect(SupportReference(text) == reference)
     }
 
-    @Test // design/31: "a person reads a reference back with the wrong case or an O for a 0"
+    @Test(.failureMode("design/31", "a person reads a reference back with the wrong case or an O for a 0"))
     func readingBackIsForgiving() throws {
         let reference = try #require(SupportReference("K7Q2M-9XD10"))
         #expect(SupportReference("k7q2m9xd10") == reference)
@@ -429,7 +429,7 @@ struct WordingTests {
         #expect(wording.description == "Beach clean has 3 places left until 2026-01-01T00:00:00Z, 90.0 seconds from now.")
     }
 
-    @Test // design/31: "a wording's text names an argument it was not given"
+    @Test(.failureMode("design/31", "a wording's text names an argument it was not given"))
     func aPlaceholderWithNoArgumentIsLeftAsItIs() {
         let wording = Wording("w", default: "Hello {name}, {missing} and {open", arguments: ["name": .text("Ana")])
         #expect(wording.description == "Hello Ana, {missing} and {open")

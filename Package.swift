@@ -140,6 +140,10 @@ let package = Package(
         // their text forms and schemas. Portable; Foundation only for the
         // system's zone rules and `Date`.
         .library(name: "StoicTime", targets: ["StoicTime"]),
+        // Values that arrive for a screen and actions a person triggers
+        // (design/31): Live and Action, main-actor Observation types.
+        // Portable; a server never builds it.
+        .library(name: "StoicLive", targets: ["StoicLive"]),
         // Calling a bundled XPC service (design/25): the service's lifecycle
         // explicit, every wait bounded, a handshake by build, and the host
         // the service runs. macOS only; empty elsewhere.
@@ -358,6 +362,11 @@ let package = Package(
         .testTarget(
             name: "StoicTimeTests", dependencies: ["StoicTime", "Stoic", "StoicSchema", "StoicSchemaTesting", "StoicTesting"],
             swiftSettings: strict),
+        // Live values and actions (design/31): what a screen shows, joined by
+        // key, and what a person triggers, guarded and keyed per intent. On
+        // the kernel alone: TaskSlot, declared operations, presentations.
+        .target(name: "StoicLive", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicLiveTests", dependencies: ["StoicLive", "Stoic", "StoicTesting"], swiftSettings: strict),
         // XPC services (design/25): the app's peer and the service's host,
         // over XPCSession and XPCListener, with an in-process simulated
         // service for tests. macOS only: the sources compile to nothing
