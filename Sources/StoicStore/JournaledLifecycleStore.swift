@@ -211,7 +211,7 @@ public actor JournaledLifecycleStore<L: Lifecycle, ID: Hashable & Sendable & Cod
             case .commit:
                 let id = try decodeID(record.documents[0], path: path)
                 if state.slots[id] == nil { state.order.append(id) }
-                state.slots[id] = following(
+                state.slots[id] = try following(
                     state.slots[id], id: record.documents[0], head: record.documents[1], entries: record.entries)
                 if !record.effects.isEmpty { state.handOff.append((stored.sequence, record.effects)) }
             case .purge:
@@ -260,17 +260,19 @@ public actor JournaledLifecycleStore<L: Lifecycle, ID: Hashable & Sendable & Cod
 
     /// The record after a commit's documents: decoded if it and everything
     /// before it decode, else all of it kept as bytes.
-    private static func following(_ slot: Slot?, id: [UInt8], head: [UInt8], entries: [[UInt8]]) -> Slot {
+    private static func following(
+        _ slot: Slot?, id: [UInt8], head: [UInt8], entries: [[UInt8]]
+    ) throws(StoreError) -> Slot {
         switch slot {
         case .kept(_, let history):
             if case .kept(let record, let added) = Self.slot(id: id, head: head, entries: entries) {
                 return .kept(record, history + added)
             }
             // The history this build decoded, written back as it was decoded,
-            // ahead of what it cannot read.
-            let earlier = history.compactMap { entry -> [UInt8]? in
-                do throws(StoreError) { return try LifecycleStoreFormat.encode(entry, "an entry") } catch { return nil }
-            }
+            // ahead of what it cannot read. It decoded from this form, so it
+            // encodes to it; if it ever did not, opening fails rather than
+            // drop an entry.
+            let earlier = try history.map { (entry) throws(StoreError) in try LifecycleStoreFormat.encode(entry, "an entry") }
             return .undecodable(id: id, head: head, entries: earlier + entries)
         case .undecodable(_, _, let earlier):
             return .undecodable(id: id, head: head, entries: earlier + entries)
