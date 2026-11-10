@@ -17,31 +17,10 @@ extension ZoneRules {
 
 /// Foundation's `TimeZone` as a source of offsets.
 struct SystemZoneRules: ZoneRulesSource {
-    var version: String {
-        #if canImport(Darwin)
-        TimeZone.timeZoneDataVersion
-        #else
-        Self.installedVersion
-        #endif
-    }
-
-    #if !canImport(Darwin)
-    /// Off Apple platforms the database's own files say which release is
-    /// installed: `tzdata.zi` opens with `# version 2026a`, and some systems
-    /// keep a `+VERSION` file. Empty when neither can be read, which a sweep
-    /// takes as "unknown: sweep whenever asked".
-    private static let installedVersion: String = {
-        for path in ["/usr/share/zoneinfo/tzdata.zi", "/usr/share/zoneinfo/+VERSION"] {
-            guard let data = FileManager.default.contents(atPath: path) else { continue }
-            let firstLine = String(decoding: data.prefix(64), as: UTF8.self)
-                .split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-            let version = firstLine.replacing("# version", with: "").filter { !$0.isWhitespace }
-            if !version.isEmpty { return version }
-        }
-        return ""
-    }()
-    #endif
-
+    // Foundation reports the version of the database it resolves with, on
+    // every platform (off Apple platforms that is the one bundled with its
+    // ICU, not the system's files).
+    var version: String { TimeZone.timeZoneDataVersion }
     var deviceZone: TimeZoneID {
         // The device's own zone, read here and only here (design/26): this
         // is the seam every "device zone" in StoicTime goes through.

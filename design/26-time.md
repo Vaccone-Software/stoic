@@ -274,7 +274,7 @@ question of display, which stays Foundation's.
 | a zoned value's text has an offset its zone does not give       | it decodes, stale; it is not refused (RFC 9557's inconsistent offset)                          |
 | the rules version changes between launches                      | the sweep runs once and records the new version                                                |
 | the rules version is unchanged                                  | the sweep does nothing                                                                         |
-| the rules version cannot be read | the sweep runs whenever it is asked: unknown is not unchanged (off Apple platforms the version is read from the database's own files, and is empty when they are not there) |
+| the rules version cannot be read | the sweep runs whenever it is asked: an empty version is unknown, not unchanged |
 | the wall clock jumps backwards during a timeout                 | the timeout is unaffected: it is on the continuous clock                                       |
 | a test advances its clock                                       | `Moment.now` and `PlainDate.today` move with it                                             |
 | a test jumps the wall clock alone                               | moments jump; deadlines and sleeps do not                                                   |

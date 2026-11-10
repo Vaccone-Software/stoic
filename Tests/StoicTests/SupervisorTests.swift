@@ -139,10 +139,12 @@ struct SupervisorTests {
         var seen: [String: Int] = [:]
         for await name in starts {
             seen[name, default: 0] += 1
-            if seen["middle", default: 0] >= 2 && seen["last", default: 0] >= 2 { break }
+            // Children start concurrently: first's one start may come after
+            // the others' second, so it is waited for too.
+            if seen["first", default: 0] >= 1 && seen["middle", default: 0] >= 2 && seen["last", default: 0] >= 2 { break }
         }
-        // First never restarts: its one start came before middle crashed,
-        // and the restart that would have included it is the one just seen.
+        // First never restarts: the restart that would have included it is
+        // the one just seen.
         #expect(script.count("first") == 1)
         #expect(script.count("middle") == 2)
         #expect(script.count("last") == 2)
