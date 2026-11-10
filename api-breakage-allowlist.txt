@@ -1,1 +1,0 @@
-API breakage: enumelement HTTPError.authenticationFailed has been added as a new enum case
