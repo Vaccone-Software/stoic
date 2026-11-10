@@ -30,7 +30,8 @@ public struct ZoneRules: Sendable {
     @TaskLocal static var stored: ZoneRules?
 
     /// The version of the rules: the IANA release, such as `2026a`, for
-    /// the system's. A change of version is what ``ZoneRulesSweep`` watches.
+    /// the system's. A change of version is one cause of stale zoned values,
+    /// which `Reconciler.zonedValues(name:reads:writes:values:write:)` refreshes.
     public var version: String { source.version }
 
     /// The zone the device is set to, which ``TimeZoneID/device`` reads.

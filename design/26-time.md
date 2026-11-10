@@ -237,6 +237,14 @@ the rules version it last ran under and, when the system's differs, hands the
 app's future zoned values to a closure once. Most releases change nothing an
 app holds.
 
+**Deprecated in 0.8.0** in favour of `Reconciler.zonedValues(name:reads:writes:values:write:)`
+(design/30): one way to keep zoned values right, and the level-triggered one.
+The sweep runs once per change of the rules' version, so a value written by a
+device or a server whose rules were older or newer is never refreshed; the
+reconciler's daily full pass checks every future value, whatever rules wrote
+it. `ZoneRulesSweep` stays, working as before, for this release; its
+deprecation message names the replacement.
+
 **Gaps and overlaps.** A local time that does not exist (clocks sprang forward
 over it) or exists twice (they fell back) is resolved by a named policy:
 `.compatible` (Temporal's default: after the gap; the first of two), `.earlier`,
@@ -363,4 +371,5 @@ Departures from the first draft, and decisions it left open.
   duration-based `Schedule`. `PlainTime` and `Weekday` are its parts.
 - Formatting for people (`formatted`): Foundation's, through the conversions.
 - Calendars other than ISO 8601's.
-- The sweep as a `Reconciler` job, when that exists (planned).
+- ~~The sweep as a `Reconciler` job~~: built in 0.8.0 as
+  `Reconciler.zonedValues` (design/30), which replaces the sweep.

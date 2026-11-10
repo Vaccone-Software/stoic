@@ -21,8 +21,8 @@ public import Stoic
 /// instant again, keeping the local time and zone. A value in the past is
 /// final. A stale value sorts by its old instant until it is refreshed, but
 /// its local time and zone, which display and decisions read, are never
-/// wrong. ``ZoneRulesSweep`` refreshes an app's values once per change of
-/// the rules.
+/// wrong. `Reconciler.zonedValues(name:reads:writes:values:write:)` keeps an
+/// app's values refreshed.
 ///
 /// **Gaps and overlaps.** A local time the clocks sprang forward over does
 /// not exist, and one they fell back over exists twice. A ``Disambiguation``

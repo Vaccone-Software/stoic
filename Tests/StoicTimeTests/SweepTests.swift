@@ -1,9 +1,11 @@
 import Foundation
 import Stoic
 import StoicTesting
-import StoicTime
+@testable import StoicTime
 import Testing
 
+/// `ZoneRulesSweep` is deprecated (design/30) and forwards to `VersionSweep`,
+/// which these test so that they compile without the deprecation warning.
 @Suite("Zone rules sweep")
 struct SweepTests {
     /// The app's upcoming events: a June meeting in New York (moved by
@@ -24,7 +26,7 @@ struct SweepTests {
             var stored = try Self.upcoming()
             // The first run: nothing swept yet, so it sweeps under 2026a,
             // where nothing moves.
-            var sweep = ZoneRulesSweep()
+            var sweep = VersionSweep()
             #expect(sweep.isDue)
             let first = await sweep.run(values: { stored }) { _ in Issue.record("nothing moved under the same rules") }
             #expect(first?.summary == "none → 2026a: given 3, moved 0, unresolved 0")
@@ -32,7 +34,7 @@ struct SweepTests {
 
             // An OS update between launches: the sweep, persisted with the
             // app's settings, comes back and finds a new version.
-            let persisted = try JSONDecoder().decode(ZoneRulesSweep.self, from: JSONEncoder().encode(sweep))
+            let persisted = try JSONDecoder().decode(VersionSweep.self, from: JSONEncoder().encode(sweep))
             #expect(persisted == sweep)
             abolishDaylightSaving2027(rules)
             sweep = persisted
@@ -66,7 +68,7 @@ struct SweepTests {
     func anUnchangedVersionDoesNothingAndAsksForNothing() async throws {
         let events = RecordingInstrumentation()
         try await onTestTime(events: events) {
-            var sweep = ZoneRulesSweep(lastSweptVersion: "2026a")
+            var sweep = VersionSweep(lastSweptVersion: "2026a")
             #expect(!sweep.isDue)
             let report = try await sweep.run(values: { () throws -> [String: ZonedDateTime] in
                 Issue.record("the values were asked for")
@@ -83,7 +85,7 @@ struct SweepTests {
         let rules = Zones.rules(version: "")
         try await onTestTime(rules) {
             let stored = try Self.upcoming()
-            var sweep = ZoneRulesSweep()
+            var sweep = VersionSweep()
             let first = await sweep.run(values: { stored }) { _ in }
             #expect(first != nil)
             #expect(sweep.isDue, "unknown is not unchanged")
@@ -98,7 +100,7 @@ struct SweepTests {
         let rules = Zones.rules()
         try await onTestTime(rules) {
             let values = try Self.upcoming()
-            var sweep = ZoneRulesSweep(lastSweptVersion: "2026a")
+            var sweep = VersionSweep(lastSweptVersion: "2026a")
             abolishDaylightSaving2027(rules)
             do throws(Unwritable) {
                 try await sweep.run(values: { () throws(Unwritable) in values }) { _ throws(Unwritable) in throw Unwritable() }
@@ -120,7 +122,7 @@ struct SweepTests {
                 "second": try ZonedDateTime(Zones.local(2027, 11, 7, 1, 30), in: Zones.newYork, resolving: .later),
                 "first": try ZonedDateTime(Zones.local(2027, 11, 7, 1, 30), in: Zones.newYork, resolving: .earlier),
             ]
-            var sweep = ZoneRulesSweep(lastSweptVersion: "2026a")
+            var sweep = VersionSweep(lastSweptVersion: "2026a")
             deepenFallBack2027(rules)
             var moved: [String: ZonedDateTime] = [:]
             let report = await sweep.run(values: { values }) { moved = $0 }
@@ -130,7 +132,7 @@ struct SweepTests {
             #expect(moved["second"]?.moment == Zones.moment("2027-11-07T07:30:00Z"))
 
             // A policy given overrides each value's own.
-            var again = ZoneRulesSweep(lastSweptVersion: "2026a")
+            var again = VersionSweep(lastSweptVersion: "2026a")
             await again.run(resolving: .earlier, values: { values }) { moved = $0 }
             #expect(moved["second"]?.moment == Zones.moment("2027-11-07T05:30:00Z"))
         }
@@ -141,7 +143,7 @@ struct SweepTests {
         try await onTestTime(rules) {
             var values = try Self.upcoming()
             values["moon"] = try ZonedDateTime(parsing: "2027-06-01T09:00:00+00:00[Moon/Tranquility]")
-            var sweep = ZoneRulesSweep(lastSweptVersion: "2026a")
+            var sweep = VersionSweep(lastSweptVersion: "2026a")
             abolishDaylightSaving2027(rules)
             let report = await sweep.run(values: { values }) { moved in #expect(moved.keys.sorted() == ["standup"]) }
             #expect(report?.moved == 1 && report?.unresolved == 1)
@@ -150,7 +152,7 @@ struct SweepTests {
     }
 }
 
-extension ZoneRulesSweep.Report {
+extension VersionSweep.Report {
     var summary: String {
         "\(previousVersion ?? "none") → \(version): given \(given), moved \(moved), unresolved \(unresolved)"
     }

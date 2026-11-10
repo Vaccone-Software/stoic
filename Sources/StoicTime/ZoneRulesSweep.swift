@@ -3,6 +3,12 @@ public import Stoic
 /// Refreshes an app's future zoned values once each time the zone rules
 /// change, and remembers the version it last ran under.
 ///
+/// Deprecated in favour of `Reconciler.zonedValues(name:reads:writes:values:write:)`:
+/// one way to keep zoned values right, and the level-triggered one. A sweep
+/// runs once per change of the rules' version, so a value that another device
+/// or a server wrote under older rules is never refreshed; the reconciler's
+/// daily full pass checks every value. The type stays for this release.
+///
 ///     // Kept with the app's settings, which persist it.
 ///     var sweep = settings.zoneRulesSweep
 ///     try await sweep.run(values: { try await store.upcomingStarts() }) { moved in
@@ -23,22 +29,24 @@ public import Stoic
 /// if `apply` throws, the version is not recorded, and the next run tries
 /// again. A missed sweep is never a wrong time on screen: display and "is it
 /// time?" read the local time and zone (design/26).
+@available(
+    *, deprecated,
+    message: "use Reconciler.zonedValues(name:reads:writes:values:write:): a daily level pass that also refreshes values written under other rules"
+)
 public struct ZoneRulesSweep: Sendable, Hashable, Codable {
+    private var sweep: VersionSweep
+
     /// The version of the rules the last completed sweep ran under; `nil`
     /// before the first.
-    public private(set) var lastSweptVersion: String?
+    public var lastSweptVersion: String? { sweep.lastSweptVersion }
 
     public init(lastSweptVersion: String? = nil) {
-        self.lastSweptVersion = lastSweptVersion
+        sweep = VersionSweep(lastSweptVersion: lastSweptVersion)
     }
 
     /// Whether the rules in force are of another version than the last
     /// sweep's, so ``run(now:resolving:values:apply:)`` would sweep.
-    public var isDue: Bool {
-        let version = ZoneRules.current.version
-        // A version that cannot be read is unknown, not unchanged.
-        return version.isEmpty || lastSweptVersion != version
-    }
+    public var isDue: Bool { sweep.isDue }
 
     /// What one sweep did.
     public struct Report: Sendable, Hashable {
@@ -55,6 +63,14 @@ public struct ZoneRulesSweep: Sendable, Hashable, Codable {
         /// do not know, or a gap under ``Disambiguation/reject``), and were
         /// left as they were.
         public let unresolved: Int
+
+        init(_ report: VersionSweep.Report) {
+            previousVersion = report.previousVersion
+            version = report.version
+            given = report.given
+            moved = report.moved
+            unresolved = report.unresolved
+        }
     }
 
     /// If the zone rules in force are of another version than the last
@@ -77,6 +93,80 @@ public struct ZoneRulesSweep: Sendable, Hashable, Codable {
     ///   not recorded.
     @discardableResult
     public mutating func run<Key: Hashable & Sendable, Failure: Error>(
+        now: Moment = .now,
+        resolving: Disambiguation? = nil,
+        values: () async throws(Failure) -> [Key: ZonedDateTime],
+        apply: ([Key: ZonedDateTime]) async throws(Failure) -> Void
+    ) async throws(Failure) -> Report? {
+        try await sweep.run(now: now, resolving: resolving, values: values, apply: apply).map(Report.init)
+    }
+
+    /// `{"lastSweptVersion": "2026a"}`, as it always was.
+    public init(from decoder: any Decoder) throws {
+        sweep = try VersionSweep(from: decoder)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        try sweep.encode(to: encoder)
+    }
+}
+
+/// `ZoneRulesSweep`'s implementation, not deprecated so that its tests compile
+/// without warnings while the public type stays for this release.
+struct VersionSweep: Sendable, Hashable, Codable {
+    /// The version of the rules the last completed sweep ran under; `nil`
+    /// before the first.
+    private(set) var lastSweptVersion: String?
+
+    init(lastSweptVersion: String? = nil) {
+        self.lastSweptVersion = lastSweptVersion
+    }
+
+    /// Whether the rules in force are of another version than the last
+    /// sweep's, so ``run(now:resolving:values:apply:)`` would sweep.
+    var isDue: Bool {
+        let version = ZoneRules.current.version
+        // A version that cannot be read is unknown, not unchanged.
+        return version.isEmpty || lastSweptVersion != version
+    }
+
+    /// What one sweep did.
+    struct Report: Sendable, Hashable {
+        /// The version swept under before; `nil` on the first sweep.
+        let previousVersion: String?
+        /// The version swept under now.
+        let version: String
+        /// How many values the app gave.
+        let given: Int
+        /// How many were future values whose instant changed, and were
+        /// handed to `apply`.
+        let moved: Int
+        /// How many could not be resolved under the new rules (a zone they
+        /// do not know, or a gap under ``Disambiguation/reject``), and were
+        /// left as they were.
+        let unresolved: Int
+    }
+
+    /// If the zone rules in force are of another version than the last
+    /// sweep's, refreshes the stale ones among the app's values and hands
+    /// them to `apply`, once; then records the version.
+    ///
+    /// - Parameters:
+    ///   - now: Values at or before it are final, and never moved.
+    ///   - resolving: A policy for every value, overriding each value's
+    ///     own; `nil`, the default, refreshes each by the policy it was made
+    ///     with (``ZonedDateTime/refreshed(now:resolving:)``).
+    ///   - values: The app's zoned values, by any key it can find them by
+    ///     again. Asked only when the version changed.
+    ///   - apply: Receives the refreshed values that moved, by key, to store
+    ///     (and, if the app wishes, to tell people about). Not called when
+    ///     nothing moved.
+    /// - Returns: What the sweep did, or `nil` if the version was the one
+    ///   last swept, and nothing was asked or done.
+    /// - Throws: Whatever `values` or `apply` throws; the version is then
+    ///   not recorded.
+    @discardableResult
+    mutating func run<Key: Hashable & Sendable, Failure: Error>(
         now: Moment = .now,
         resolving: Disambiguation? = nil,
         values: () async throws(Failure) -> [Key: ZonedDateTime],

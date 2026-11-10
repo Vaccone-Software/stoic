@@ -1083,12 +1083,11 @@ outbox: send the emails as lifecycle effects.
 - **A live machine bound to a stored record**, whose transitions are
   committed through a store and whose `whileIn` work follows the record. The
   two readings share a definition, not a record.
-- **Running `settleDue` at `nextDue`**: the reconciler planned for 0.8 owns
-  that. Until then an app calls it at launch and on a timer, and a server runs
-  its own sweep. So the effects of a timed transition ("tell the coordinator
-  when an attendance closes unattended") wait for a commit: the next event
-  applied to the record, `settle`, `settleDue` or the server's sweep. At rest
-  nothing runs; the reconciler will run it on time.
+- ~~**Running `settleDue` at `nextDue`**~~: built in 0.8.0 (design/30).
+  `Reconciler.settling(journaledStore)` runs `settleDue` on a device, waking at
+  its `nextDue`; `Reconciler.settling(store, due:query:)` is the server's sweep,
+  over any `LifecycleStore`, given the app's query. Without a reconciler the
+  effects of a timed transition still wait for a commit.
 - **A server outbox.** The core hands effects to the app's store. Delivery
   from a server database is the app's, under the effect's key.
 - **Principals with provenance** (`Verified<Principal>`, 0.7): `Principal` is
@@ -1119,7 +1118,7 @@ The review settled the draft's open questions:
 7. The settled-key bound is a count, and the hand-off mark rides the next
    append.
 8. Effects of timed transitions wait for a commit (`settleDue`); the
-   reconciler (0.8) will run it on time (Not built).
+   reconciler runs it on time from 0.8.0 (design/30).
 9. No TypeScript reading is promised; the stored format is fixed and
    documented.
 10. The name stays `Lifecycle`.

@@ -135,6 +135,10 @@ struct PresentationTests {
         Row(
             name: "PermissionRefusal.unknown(.unavailable)", error: PermissionRefusal<EditEvent>.unknown(.unavailable("down")),
             key: "stoic.permission.unknown", recovery: .tryAgain),
+        Row(
+            name: "ReconcileError.unreadable",
+            error: ReconcileError.unreadable(.truth, ReconcileFailure(Opaque())), key: "stoic.sync", recovery: .tryAgain),
+        Row(name: "ReconcileError.holdChanged", error: ReconcileError.holdChanged, key: "stoic.lifecycle.conflict", recovery: .tryAgain),
     ]
 
     /// Every way a Stoic layer can carry an error to the screen.
@@ -177,6 +181,7 @@ struct PresentationTests {
             operationError(.cancelled, outcome: .unknown, safety: .idempotent),
             Report(CancellationError()).adding(Report.Frame("loading")),
             LifecycleUpdateError<Reminder, Opaque>.cancelled,
+            ReconcileError.cancelled,
             ConcurrentFailure<any Error>([CancellationError()]),
         ]
         for error in cancellations {
