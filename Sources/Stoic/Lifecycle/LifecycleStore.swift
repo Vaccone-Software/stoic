@@ -153,6 +153,19 @@ extension LifecycleStore {
         }
     }
 
+    /// Applies `event` by a principal a verifier authenticated, recording
+    /// the principal's value (design/28). See ``apply(_:to:by:because:)``.
+    ///
+    /// A server's write path takes this one, so "who did it" is never an
+    /// argument the caller chose. History read back is the store's record of
+    /// whom the service authenticated at the time: data, not a proof.
+    @discardableResult
+    public func apply<E: PrincipalEvidence>(
+        _ event: Definition.Event, to id: ID, by principal: Verified<Definition.Principal, E>, because: String
+    ) async throws(LifecycleUpdateError<Definition, Failure>) -> Definition.Record {
+        try await apply(event, to: id, by: principal.value, because: because)
+    }
+
     /// Commits the timeouts of the record under `id` that are due at the
     /// store's moment for now, and returns the record; a record with
     /// nothing due is returned as stored, and nothing is written.

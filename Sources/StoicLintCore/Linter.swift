@@ -75,6 +75,9 @@ public struct Linter: Sendable {
         { UnboundedTaskGroupRule(reporter: $0) },
         { UnsafeContinuationRule(reporter: $0) },
         { WallClockReadRule(reporter: $0) },
+        { UnverifiedClaimRule(reporter: $0) },
+        { EvidenceMintAccessRule(reporter: $0) },
+        { DerivationIgnoresInputRule(reporter: $0) },
     ]
 }
 

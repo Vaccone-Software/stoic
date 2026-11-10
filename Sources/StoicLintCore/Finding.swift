@@ -24,6 +24,9 @@ public enum RuleID: String, CaseIterable, Sendable, Codable {
     case unboundedTaskGroup = "stoic.unbounded-task-group"
     case unsafeContinuation = "stoic.unsafe-continuation"
     case wallClockRead = "stoic.wall-clock-read"
+    case unverifiedClaim = "stoic.unverified-claim"
+    case evidenceMintAccess = "stoic.evidence-mint-access"
+    case derivationIgnoresInput = "stoic.derivation-ignores-input"
     /// A suppression comment that does not say why. Never itself suppressible:
     /// a reason is the whole point of allowing something.
     case allowWithoutReason = "stoic.allow-without-reason"

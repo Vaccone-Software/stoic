@@ -90,6 +90,82 @@ struct CompileFailTests {
         #expect(outcome.errors.contains(expected), "failed, but not with \"\(expected)\":\n\(outcome.errors)")
     }
 
+    // MARK: Provenance (design/28)
+
+    /// Compiles `name`, which must fail with its `expect-error` line.
+    static func expectRefusal(_ name: String, sourceLocation: SourceLocation = #_sourceLocation) throws {
+        let found = try expectedError(in: name)
+        let expected = try #require(found, sourceLocation: sourceLocation)
+        let outcome = try compile(name)
+        #expect(!outcome.compiled, "\(name) compiled, but must not", sourceLocation: sourceLocation)
+        #expect(outcome.errors.contains(expected), "\(name) failed, but not with \"\(expected)\":\n\(outcome.errors)",
+                sourceLocation: sourceLocation)
+    }
+
+    @Test func theProvenanceControlCompiles() throws {
+        let outcome = try Self.compile("provenance-control")
+        #expect(outcome.compiled, "every public API of design/28, used as intended, must compile: \(outcome.errors)")
+    }
+
+    @Test(.failureMode("design/28", "a claim is passed where a function needs a verified value"))
+    func aClaimIsNotAVerifiedValue() throws {
+        try Self.expectRefusal("provenance-claim-for-verified")
+    }
+
+    @Test(.failureMode("design/28", "code outside a verifier constructs a Verified"),
+          arguments: ["provenance-construct-verified", "provenance-extension-init", "provenance-mint-grant"])
+    func onlyAVerifierMints(_ name: String) throws {
+        try Self.expectRefusal(name)
+    }
+
+    @Test(.failureMode("design/28", "a real proof's evidence is put on another value"))
+    func evidenceCannotBeCopiedOntoAnotherValue() throws {
+        try Self.expectRefusal("provenance-mint-own-clock")
+    }
+
+    @Test(.failureMode("design/28", "one evidence kind is passed where another is required"))
+    func oneEvidenceKindIsNotAnother() throws {
+        try Self.expectRefusal("provenance-other-evidence")
+    }
+
+    @Test(.failureMode("design/28", "content evidence (an attested request) is passed where a principal must be authenticated"),
+          arguments: ["provenance-content-as-principal", "provenance-content-policy"])
+    func contentEvidenceIsNotAPrincipal(_ name: String) throws {
+        try Self.expectRefusal(name)
+    }
+
+    @Test(.failureMode("design/28", "a verified value is decoded"))
+    func aProofIsNeverDecoded() throws {
+        try Self.expectRefusal("provenance-decode-verified")
+    }
+
+    @Test(.failureMode("design/28", "a Decodable record declares a Verified property"))
+    func aDecodableRecordCannotHoldAProof() throws {
+        try Self.expectRefusal("provenance-decodable-record")
+    }
+
+    @Test(.failureMode("design/28", "a test imports a Stoic module with @testable"))
+    func testableImportCannotMint() throws {
+        try Self.expectRefusal("provenance-testable-mint")
+    }
+
+    @Test(.failureMode("design/28", "a stamped moment, a grant or a principal is derived into another value"),
+          arguments: ["provenance-derive-own-clock", "provenance-derive-grant", "provenance-derive-principal"])
+    func onlyContentEvidenceDerives(_ name: String) throws {
+        try Self.expectRefusal(name)
+    }
+
+    @Test(.failureMode("design/28", "an unauthenticated principal is offered to a check"))
+    func aCheckTakesAVerifiedPrincipal() throws {
+        try Self.expectRefusal("provenance-unauthenticated-check")
+    }
+
+    @Test(.failureMode("design/28", "a check's policy has not loaded"),
+          arguments: ["provenance-check-as-bool", "provenance-check-equals-granted"])
+    func aCheckHasNoBool(_ name: String) throws {
+        try Self.expectRefusal(name)
+    }
+
     @Test(.failureMode("design/02", "the schedule is unbounded"))
     func retryRefusesAnUnboundedSchedule() throws {
         let found = try Self.expectedError(in: "retry-unbounded-schedule")

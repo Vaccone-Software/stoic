@@ -1,6 +1,7 @@
 #if STOIC_CRYPTO
 internal import Crypto
 internal import Foundation
+public import Stoic
 
 /// Seals and opens values: AES-256-GCM through swift-crypto, with a header that
 /// names the key and a context that binds the value to its purpose.
@@ -121,6 +122,32 @@ public enum Sealing {
         }
     }
 
+    // MARK: Opening, as a verification
+
+    /// ``open(_:context:keyring:)`` as a verification (design/28): the
+    /// plaintext, proved to have been sealed for `context` under a key the
+    /// keyring holds, and unchanged since.
+    ///
+    ///     let note = try Sealing.verify(Claimed(bytes), context: "app.notes", keyring: ring)
+    ///         .deriving { try Note.decode($0) }
+    ///
+    /// What it proves is ``AuthenticatedDecryption``, and no more: not who
+    /// sealed it (anything holding the key could), not when, and not that it
+    /// is the latest version (an older sealed copy put back verifies just as
+    /// well, design/24). A value that was a proof when it was sealed opens as
+    /// this, never as the proof it was.
+    ///
+    /// - Throws: what ``open(_:context:keyring:)`` throws.
+    public static func verify(
+        _ sealed: Claimed<[UInt8]>, context: SealContext, keyring: Keyring
+    ) throws(SealError) -> Verified<[UInt8], AuthenticatedDecryption> {
+        let bytes = decryptionMinter.read(sealed)
+        let id = try keyID(of: bytes)
+        guard let key = keyring.key(id: id) else { throw .unknownKey(id) }
+        let plaintext = try decrypt(bytes, context: context, key: key)
+        return decryptionMinter.verified(plaintext, AuthenticatedDecryption(key: id, purpose: context.purpose))
+    }
+
     // MARK: Looking without decrypting
 
     /// Whether `bytes` begin with the sealed-value magic. Nothing is
@@ -147,4 +174,33 @@ public enum Sealing {
         return id
     }
 }
+
+/// Evidence that bytes were sealed for a context under a key a keyring
+/// holds, and are unchanged since (design/28): what opening a sealed value
+/// proves.
+///
+/// Content evidence, so a value decoded from the plaintext keeps it
+/// (`deriving`). It proves nothing about who sealed the bytes (anything
+/// holding the key), when, or whether they are the latest version.
+public struct AuthenticatedDecryption: ContentEvidence, Hashable {
+    /// Constructible only in this file, by ``Sealing/verify(_:context:keyring:)``.
+    public struct Mint: Sendable {
+        fileprivate init() {}
+    }
+
+    public static let proves = "these bytes were sealed for this context under a key this keyring holds, and are unchanged"
+
+    /// The key that opened them.
+    public let key: KeyID
+    /// The purpose of the context they were sealed for.
+    public let purpose: String
+
+    fileprivate init(key: KeyID, purpose: String) {
+        self.key = key
+        self.purpose = purpose
+    }
+}
+
+/// `Sealing.verify`'s authority, private to this file.
+private let decryptionMinter = Minter<AuthenticatedDecryption>(AuthenticatedDecryption.Mint())
 #endif
