@@ -10,6 +10,7 @@ Products: `Stoic` (runtime), `StoicTesting` (test clocks, faults, trait), `Stoic
 - `abandoningAsyncAfter(_ duration:, label:, limit:) { await uncancellableStart() }`: the async sibling for work that never checks cancellation (continuation-based starts); same ledger, limit and error; the work is cancelled at the deadline in case it does check.
 - `CancellationCause.current`: `.deadline`, `.userRequested`, `.superseded`, `.siblingFailed`, `.scopeEnded`, `.supervisorStopped`, `.stateExited`.
 - `Ambient.sleep(for:)`: sleep on the ambient (injectable) clock.
+- `Inactivity(after:label:)`: `poke()` at each sign of life; `try await untilQuiet()`, `for await spell in quietSpells()` (each quiet spell once), `nextPoke()`, `quietFor`/`isQuiet`. Measured on `Ambient.livenessClock` (stops while the machine sleeps: sleep is not silence). Notices only; a `Supervisor` heartbeat restarts. design/34.
 - `Moment.now`: when something happened, from the ambient wall clock (`Ambient.wallClock`, `CLOCK_REALTIME` by default; a test's under `withTestAmbient`). A `Duration` since the Unix epoch; `+`/`-` a `Duration`; RFC 3339 UTC text and `Codable`. Never measure with it (it jumps); never convert a clock instant into one.
 
 ## Retry

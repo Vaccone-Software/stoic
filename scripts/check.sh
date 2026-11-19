@@ -56,7 +56,7 @@ step "tests under Thread Sanitizer: the concurrency primitives (data races the m
 # tasks at once, are left to the plain step. A few minutes: the instrumented
 # build is separate from the one above.
 swift test --sanitize=thread \
-    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests|Reconciler|StoicLiveTests|URLSessionTransportTests|StreamTransferTests' \
+    --filter 'Semaphore|Channel|SingleFlight|TaskSlot|Scope|RaceAndMap|Supervis|ServiceGraph|StateMachine|Simulation|Abandoning|Hedge|CircuitBreaker|RateLimiter|Bulkhead|AttemptKey|Perform|Operation|Urgency|StoicXPCTests|Inactivity|ExpiringWork|Lifecycle|ReleaseScenario|OutboxRemember|Provenance|HTTPAuthenticator|AppAttester|StoicAttestedHTTPTests|Reconciler|StoicLiveTests|URLSessionTransportTests|StreamTransferTests' \
     --skip 'LifecycleCrashTests|OutboxRememberCrashTests|aSlowConsumerMakesTheServerWait'
 
 step "tests under Address Sanitizer: every suite (memory errors the type system cannot rule out)"

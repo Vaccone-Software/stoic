@@ -82,6 +82,7 @@ public enum EventCatalog {
         Entry(name: "http.request", level: .debug, meaning: "One attempt reached the transport; reports method, host, path, status or outcome, duration and attempt number."),
         Entry(name: "http.response_too_large", level: .warning, meaning: "A response body passed the byte limit and the transfer was cancelled."),
         Entry(name: "http.retry", level: .info, meaning: "A request is being retried; reports the attempt number, the wait since the last attempt and why that one failed."),
+        Entry(name: "inactivity.quiet", level: .info, meaning: "Work an Inactivity watches went quiet: no poke for its stretch, measured on the liveness clock (sleep is not silence). Reported once per spell, with how long it had been quiet."),
         Entry(name: "launch.interrupted", level: .info, meaning: "A launch that never became stable was not counted as a crash: the app was backgrounded, the device restarted, or the build changed."),
         Entry(name: "launch.record_failed", level: .error, meaning: "A launch could not be recorded in the launch guard's state file (a full or read-only disk): the launch goes on, judged on the history that could be read, and the next launch will not count this one."),
         Entry(name: "launch.safe_mode", level: .error, meaning: "Too many launches in a row did not finish; the app was told to start in safe mode."),
