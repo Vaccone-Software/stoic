@@ -140,7 +140,7 @@ let api = Pipeline(
 let response = try await api.execute { try await client.send(request) }
 ```
 
-And more: `Inactivity`, `race`, `hedge`, `mapConcurrent`, `SingleFlight`, `AsyncSemaphore`,
+And more: `ChildProcess` (StoicProcess: programs in process groups of their own, stopped with their owner, found again after a crash), `Inactivity`, `race`, `hedge`, `mapConcurrent`, `SingleFlight`, `AsyncSemaphore`,
 `AsyncMutex`, a bounded `Channel` with explicit overflow policies, `Saga`,
 `Report` errors with context chains, `Secret`, `IdempotencyKey`, and
 `StoicJSON`, a strict JSON parser that is the foundation of the validation

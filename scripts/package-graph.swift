@@ -57,6 +57,7 @@ let layering: [String: Set<String>] = [
     "StoicAppKit": ["Stoic"],
     "StoicUIKit": ["Stoic"],
     "StoicXPC": ["Stoic"],
+    "StoicProcess": ["Stoic"],
     "StoicAttestedHTTP": ["Stoic", "StoicApple", "StoicHTTP", "StoicJSON"],
     "StoicAttestation": ["Stoic"],
     "StoicTime": ["Stoic", "StoicSchema"],

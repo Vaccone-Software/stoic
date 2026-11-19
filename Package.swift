@@ -148,6 +148,11 @@ let package = Package(
         // explicit, every wait bounded, a handshake by build, and the host
         // the service runs. macOS only; empty elsewhere.
         .library(name: "StoicXPC", targets: ["StoicXPC"]),
+        // Running other programs (design/33): each child in a process group
+        // of its own, its output read as it is asked for, its input queued
+        // in order and bounded, stopped with the group when its owner goes,
+        // and found again after a crash. macOS only; empty elsewhere.
+        .library(name: "StoicProcess", targets: ["StoicProcess"]),
         // App Attest as an HTTP authenticator (design/29): the one place
         // StoicApple (the key) and StoicHTTP (the client) meet. Apple
         // platforms; empty elsewhere.
@@ -385,6 +390,8 @@ let package = Package(
         // elsewhere.
         .target(name: "StoicXPC", dependencies: ["Stoic"], swiftSettings: strict),
         .testTarget(name: "StoicXPCTests", dependencies: ["StoicXPC", "Stoic", "StoicTesting"], swiftSettings: strict),
+        .target(name: "StoicProcess", dependencies: ["Stoic"], swiftSettings: strict),
+        .testTarget(name: "StoicProcessTests", dependencies: ["StoicProcess", "Stoic", "StoicTesting"], swiftSettings: strict),
         // App Attest on the device, as an HTTP authenticator (design/29): the
         // AppAttester from StoicApple signing StoicHTTP's requests, and the
         // wire protocol with the app's server. It meets both so that neither

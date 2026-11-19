@@ -25,6 +25,7 @@ Short on purpose: each rule is one you can check.
 | a token in a `String` property                             | `Secret<String>`                                      |
 | private data in a plain file, or a key beside it           | `SealedFile` / `SealedJournal`, the key in a `Keyring` kept in custody (trait `Crypto`, design/24) |
 | ranges and defaults repeated in parser, clamp, UI and docs | `@Schema` (trait `Macros`), else `Schema.object`      |
+| `Process` with a termination handler, pipes, `terminate()` and a `kill` walk | `ChildProcess.run` / `ChildProcess.start` (`StoicProcess`): a process group, output read as asked, ordered bounded input, a shielded stop, a `ProcessLedger` for crashes (design/33) |
 | a `lastActivity` date compared with `Date()` to find stuck work | `Inactivity`: `poke()`, `quietSpells()`, on the liveness clock (design/34) |
 | `NSXPCConnection` with handlers, a continuation and an epoch | `XPCPeer` + `XPCMethod`, and `XPCHost` in the service (design/25) |
 | status booleans/timestamps decoded by ternaries; an expiry checked in one place; no record of who did what | `Lifecycle`: states, timeouts and effects declared once; `store.apply(event, to:, by:, because:)`; `JournaledLifecycleStore` on a device (design/27) |
