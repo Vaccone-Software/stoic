@@ -26,6 +26,18 @@ func collectProblems(_ stream: AsyncStream<SettingsProblemChange>, count: Int) -
     }
 }
 
+/// What a collector gathered. Waiting ends with the test: cancelled at its
+/// time limit, it cancels the collector, which returns what it has, so a
+/// change that never comes fails the test instead of hanging the bundle
+/// (`Task.value` alone does not wake for cancellation).
+func gathered<T: Sendable>(_ collector: Task<T, Never>) async -> T {
+    await withTaskCancellationHandler {
+        await collector.value
+    } onCancel: {
+        collector.cancel()
+    }
+}
+
 /// How an app learns that its file stopped parsing and parses again, without Observation.
 ///
 /// A test that says "and nothing else" ends with a sentinel, as the changes' do: one more
@@ -79,7 +91,7 @@ struct ProblemsStreamTests {
         try settings.reload()                                                    // and the file as the store last saw it
         try HandEditedTests.place(Self.good, on: disk)
         try settings.reload()                                                    // the sentinel: fixed
-        let changes = await collector.value
+        let changes = await gathered(collector)
         #expect(changes.map(\.began) == [true, false])
         #expect(changes[1].ended, "the next after the first is the fix, so nothing was announced in between")
     }
@@ -92,7 +104,7 @@ struct ProblemsStreamTests {
         let collector = collectProblems(settings.problems(), count: 1)
         try HandEditedTests.place("{\n\n\n\n  \"speed\": ,\n}\n", on: disk)
         try settings.reload()
-        let change = try #require(await collector.value.first)
+        let change = try #require(await gathered(collector).first)
         #expect(!change.began && !change.ended)
         #expect(change.old?.location?.line == 3)
         #expect(change.new?.location?.line == 5)
@@ -105,7 +117,7 @@ struct ProblemsStreamTests {
         let collector = collectProblems(settings.problems(), count: 1)
         try HandEditedTests.place(HandEditedTests.garbage, on: disk)
         #expect(throws: SettingsStore<LodePrefs>.UpdateError.self) { try settings.update { $0.speed = 900 } }
-        let change = try #require(await collector.value.first)
+        let change = try #require(await gathered(collector).first)
         #expect(change.began)
         #expect(change.cause == .reload, "found by the update's own read of the file")
     }
@@ -116,7 +128,7 @@ struct ProblemsStreamTests {
         let settings = try Self.open(disk, file: HandEditedTests.garbage)
         let collector = collectProblems(settings.problems(), count: 1)
         try settings.replaceUnusableFile(with: LodePrefs(speed: 900))
-        let change = try #require(await collector.value.first)
+        let change = try #require(await gathered(collector).first)
         #expect(change.ended)
         #expect(change.cause == .reset)
         #expect(settings.fileProblem == nil)
@@ -129,7 +141,7 @@ struct ProblemsStreamTests {
         let collector = collectProblems(settings.problems(), count: 1)
         try disk.remove(HandEditedTests.path)
         try settings.reload()
-        #expect(await collector.value.first?.ended == true)
+        #expect(await gathered(collector).first?.ended == true)
         #expect(settings.source == .defaults(.missing))
     }
 
@@ -157,7 +169,7 @@ struct ProblemsStreamTests {
         try settings.reload()
         disk.clearFaults()
         try settings.reload()
-        let changes = await collector.value
+        let changes = await gathered(collector)
         guard case .unreadable? = changes.first?.new else {
             Issue.record("expected an unreadable file, got \(String(describing: changes.first))")
             return
@@ -221,7 +233,7 @@ struct ProblemsStreamTests {
         try #require(settings).update { $0.speed = 900 }
         try #require(settings).reload()
         settings = nil
-        #expect(await collector.value.isEmpty)
+        #expect(await gathered(collector).isEmpty)
     }
 
     @Test(.failureMode("design/18", "the file's problem changes"), .timeLimit(.minutes(1)))
@@ -236,10 +248,17 @@ struct ProblemsStreamTests {
             try HandEditedTests.place(HandEditedTests.garbage, on: disk)
             await clock.waitForSleepers(count: 1)
             await clock.advance(by: .milliseconds(300))
+            // The reload for the garbage has run before the fix is written.
+            // `advance` returns once the watch is woken, not once it has run:
+            // a fix written before then is the latest change, the watch waits
+            // its debounce from it, the garbage is never reloaded for, and no
+            // problem begins (lost in 1 round of 76 to 329 under Address
+            // Sanitizer; it hung the 0.9.1 release run).
+            await waitUntil(settings) { settings.fileProblem != nil }
             try HandEditedTests.place(Self.better, on: disk)
             await clock.waitForSleepers(count: 1)
             await clock.advance(by: .milliseconds(300))
-            #expect(await collector.value.map(\.began) == [true, false])
+            #expect(await gathered(collector).map(\.began) == [true, false])
             watch.stop()
         }
     }

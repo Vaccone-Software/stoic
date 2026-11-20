@@ -147,7 +147,7 @@ struct BlockingWholeFileTests {
         let settings = try HandEditedTests.open(disk)
         let collector = collect(settings.changes(), count: 1)
         try settings.blockingReplaceUnusableFile(with: LodePrefs(speed: 900), source: "reset button")
-        #expect(await collector.value == [LodeChange(old: LodePrefs(), new: LodePrefs(speed: 900), cause: .reset, source: "reset button")])
+        #expect(await gathered(collector) == [LodeChange(old: LodePrefs(), new: LodePrefs(speed: 900), cause: .reset, source: "reset button")])
     }
 
     @Test func aFileThatIsUsableByTheTimeTheLockIsHeldIsNotReplaced() throws {

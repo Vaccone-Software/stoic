@@ -24,7 +24,7 @@ struct UpdateSourceTests {
         let collector = collect(settings.changes(), count: 2)
         try settings.update(source: "settings window") { $0.speed = 900 }
         try settings.update { $0.speed = 800 }
-        let changes = await collector.value
+        let changes = await gathered(collector)
         #expect(changes == [
             Self.change(LodePrefs(), LodePrefs(speed: 900), source: "settings window"),
             Self.change(LodePrefs(speed: 900), LodePrefs(speed: 800), source: nil),
@@ -39,7 +39,7 @@ struct UpdateSourceTests {
         try await settings.coordinatedUpdate(source: "cli: set speed") { $0.speed = 900 }
         try settings.blockingUpdate(waitingUpTo: .zero, source: "") { $0.speed = 800 }       // the empty tag is a tag
         try settings.blockingUpdate(source: "import \u{2028}\"quoted\"\n") { $0.speed = 700 }   // as given, whatever it holds
-        let changes = await collector.value
+        let changes = await gathered(collector)
         #expect(changes.map(\.source) == ["cli: set speed", "", "import \u{2028}\"quoted\"\n"])
         #expect(changes.map(\.cause) == [.update, .update, .update])
     }
@@ -53,7 +53,7 @@ struct UpdateSourceTests {
         try HandEditedTests.place(#"{"version": 2, "speed": 700, "lode": "tool"}"#, on: disk)
         try settings.update(source: "menu") { $0.hosts = ["app"] }
         let tool = LodePrefs(lode: "tool", speed: 700)
-        #expect(await collector.value == [
+        #expect(await gathered(collector) == [
             Self.change(LodePrefs(speed: 700), tool, .reload, source: nil),
             Self.change(tool, LodePrefs(lode: "tool", speed: 700, hosts: ["app"]), .update, source: "menu"),
         ], "what the person did is not attributed to the app")
@@ -66,7 +66,7 @@ struct UpdateSourceTests {
         let collector = collect(settings.changes(), count: 2)
         try settings.update(source: "a") { $0.speed = 900 }
         try settings.blockingUpdate(source: "b") { $0.speed = 800 }
-        #expect(await collector.value.map(\.source) == ["a", "b"])
+        #expect(await gathered(collector).map(\.source) == ["a", "b"])
     }
 
     @Test(.failureMode("design/18", "an update is given a source"), .timeLimit(.minutes(1)))
@@ -76,7 +76,7 @@ struct UpdateSourceTests {
         let collector = collect(settings.changes(), count: 1)
         try settings.update(source: "nothing") { $0.speed = 600 }       // the value it has
         try settings.update(source: "sentinel") { $0.speed = 900 }
-        #expect(await collector.value.map(\.source) == ["sentinel"])
+        #expect(await gathered(collector).map(\.source) == ["sentinel"])
     }
 
     @Test func aChangeBuiltWithoutASourceHasNone() {

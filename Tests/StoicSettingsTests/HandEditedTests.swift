@@ -872,7 +872,9 @@ func waitUntil<V: Sendable & Equatable>(_ settings: SettingsStore<V>, _ conditio
         } onChange: {
             signal.yield()
         }
-        if condition() { return }
+        // Cancelled (the test's time limit), it returns, rather than spin on
+        // a stream that no longer waits.
+        if condition() || Task.isCancelled { return }
         var iterator = changes.makeAsyncIterator()
         await iterator.next()
     }

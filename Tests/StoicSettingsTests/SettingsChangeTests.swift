@@ -69,7 +69,7 @@ struct SettingsChangeTests {
         try settings.reload()                                     // the file changed; the value did not (an issue did)
         #expect(!settings.issues.isEmpty)
         try Self.makeSentinel(settings)
-        #expect(await collector.value == [Self.sentinel(after: LodePrefs(speed: 700))])
+        #expect(await gathered(collector) == [Self.sentinel(after: LodePrefs(speed: 700))])
     }
 
     @Test(.failureMode("design/18", "the value of a store changes"), .timeLimit(.minutes(1)))
@@ -82,7 +82,7 @@ struct SettingsChangeTests {
         try settings.reload()
         try Self.makeSentinel(settings)
         let edited = LodePrefs(lode: "tool", speed: 800)
-        #expect(await collector.value == [
+        #expect(await gathered(collector) == [
             LodeChange(old: LodePrefs(speed: 700), new: edited, cause: .reload),
             Self.sentinel(after: edited),
         ])
@@ -97,7 +97,7 @@ struct SettingsChangeTests {
         try HandEditedTests.place(#"{"version": 2, "speed": 700, "lode": "tool"}"#, on: disk)   // the tool, a moment ago
         try settings.update { $0.hosts = ["app"] }
         let tool = LodePrefs(lode: "tool", speed: 700)
-        #expect(await collector.value == [
+        #expect(await gathered(collector) == [
             LodeChange(old: LodePrefs(speed: 700), new: tool, cause: .reload),
             LodeChange(old: tool, new: LodePrefs(lode: "tool", speed: 700, hosts: ["app"]), cause: .update),
         ], "what the person did, then what the app did, so a history can tell them apart")
@@ -120,7 +120,7 @@ struct SettingsChangeTests {
             try settings.reload()                                      // serialised after it: it is over
             try Self.makeSentinel(settings)
             watch.stop()
-            #expect(await collector.value == [
+            #expect(await gathered(collector) == [
                 LodeChange(old: LodePrefs(), new: LodePrefs(speed: 800), cause: .update),
                 Self.sentinel(after: LodePrefs(speed: 800)),
             ], "one change for the edit; none for the watcher's reading of it")
@@ -139,7 +139,7 @@ struct SettingsChangeTests {
             try HandEditedTests.place(#"{"version": 2, "speed": 850}"#, on: base)
             await clock.waitForSleepers(count: 1)
             await clock.advance(by: .milliseconds(300))
-            #expect(await collector.value == [LodeChange(old: LodePrefs(speed: 700), new: LodePrefs(speed: 850), cause: .reload)])
+            #expect(await gathered(collector) == [LodeChange(old: LodePrefs(speed: 700), new: LodePrefs(speed: 850), cause: .reload)])
             watch.stop()
         }
     }
@@ -154,7 +154,7 @@ struct SettingsChangeTests {
         try settings.reload()   // broken: the last good value stays, and no change
         try settings.replaceUnusableFile(with: LodePrefs(lode: "fresh"))
         try Self.makeSentinel(settings)
-        #expect(await collector.value == [
+        #expect(await gathered(collector) == [
             LodeChange(old: LodePrefs(speed: 700), new: LodePrefs(lode: "fresh"), cause: .reset),
             Self.sentinel(after: LodePrefs(lode: "fresh")),
         ])
@@ -166,7 +166,7 @@ struct SettingsChangeTests {
         let collector = collect(settings.changes(), count: 1)
         try settings.materialize()
         try Self.makeSentinel(settings)
-        #expect(await collector.value == [Self.sentinel(after: LodePrefs())])
+        #expect(await gathered(collector) == [Self.sentinel(after: LodePrefs())])
     }
 
     @Test(.failureMode("design/18", "the value of a store changes"), .timeLimit(.minutes(1)))
@@ -184,7 +184,7 @@ struct SettingsChangeTests {
             }
             try await group.waitForAll()
         }
-        let all = await collector.value
+        let all = await gathered(collector)
         #expect(all.count == 120)
         #expect(all.map(\.new.speed) == Array(601...720), "every update, in order")
         #expect(zip(all, all.dropFirst()).allSatisfy { $0.new == $1.old }, "a history with no gaps")
@@ -249,7 +249,7 @@ struct SettingsChangeTests {
         try settings.update { $0.speed = 900 }
         try settings.reload()   // the file as the store wrote it: the same value, no change
         try settings.update { $0.speed = 1000 }
-        #expect(await collector.value == [
+        #expect(await gathered(collector) == [
             SettingsChange(old: Prefs(), new: Prefs(speed: 900), cause: .update),
             SettingsChange(old: Prefs(speed: 900), new: Prefs(speed: 1000), cause: .update),
         ])
