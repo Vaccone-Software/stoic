@@ -38,16 +38,87 @@ jobs:
           swift --version
 
       - name: Check
-        run: ./scripts/check.sh ${{ inputs.stress && '--stress' || '' }}
+        # Through a pseudo-terminal, so the test output reaches the log line by
+        # line (to a pipe it is block-buffered, and a hung run showed nothing of
+        # its last minutes). A watchdog: once a test process has run for 6
+        # minutes with nothing new printed, it samples the test processes,
+        # prints the stacks, and ends them, so the job fails with the evidence
+        # instead of waiting for the job's limit.
+        run: |
+          log="$RUNNER_TEMP/check.log"
+          : > "$log"
+          (
+            last=-1; quiet=0
+            while sleep 30; do
+              size=$(stat -f %z "$log" 2>/dev/null || echo 0)
+              if [ "$size" = "$last" ] && pgrep -f 'xctest/Contents/MacOS' > /dev/null; then quiet=$((quiet + 30)); else quiet=0; fi
+              last=$size
+              if [ "$quiet" -ge 360 ]; then
+                echo "::group::watchdog: a test process printed nothing for 6 minutes"
+                uptime
+                ps -Ao pid,ppid,pcpu,etime,command | grep -iE 'xctest|swiftpm-testing|swift-test' | grep -v grep
+                for p in $(pgrep -f 'xctest/Contents/MacOS'); do
+                  sample "$p" 5 -file "$RUNNER_TEMP/sample-$p.txt" > /dev/null 2>&1
+                  echo "---- sample of $p"; cat "$RUNNER_TEMP/sample-$p.txt"
+                done
+                echo "::endgroup::"
+                echo "::error::a test process printed nothing for 6 minutes; stacks above"
+                pkill -f 'xctest/Contents/MacOS'
+                exit 0
+              fi
+            done
+          ) &
+          watchdog=$!
+          # script exits with check.sh's own status, which fails the step.
+          status=0
+          script -q -F "$log" ./scripts/check.sh ${{ inputs.stress && '--stress' || '' }} || status=$?
+          kill "$watchdog" 2> /dev/null || true
+          exit "$status"
 
   linux:
     name: scripts/linux.sh
     # The libraries that do not depend on Apple frameworks stay portable.
     runs-on: ubuntu-latest
-    container: swift:6.4
+    container:
+      image: swift:6.4
+      # lldb attaches to a hung test process for the watchdog's backtraces.
+      options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
       - name: Build
-        run: ./scripts/linux.sh
+        # As on macOS: line by line through a pseudo-terminal, and after 6
+        # silent minutes with a test process running, every thread's
+        # backtrace (lldb), then the test processes are ended and the job fails.
+        shell: bash
+        run: |
+          log=/tmp/linux.log
+          : > "$log"
+          (
+            last=-1; quiet=0
+            while sleep 30; do
+              size=$(stat -c %s "$log" 2>/dev/null || echo 0)
+              if [ "$size" = "$last" ] && pgrep -f -- '-test-runner|PackageTests.xctest' > /dev/null; then quiet=$((quiet + 30)); else quiet=0; fi
+              last=$size
+              if [ "$quiet" -ge 360 ]; then
+                echo "::group::watchdog: a test process printed nothing for 6 minutes"
+                uptime
+                ps -eo pid,ppid,pcpu,etime,nlwp,args | grep -E 'xctest|test-runner|swift-test' | grep -v grep
+                for p in $(pgrep -f -- '-test-runner|PackageTests.xctest'); do
+                  echo "---- lldb backtrace of $p"
+                  timeout 120 lldb -p "$p" --batch -o "thread backtrace all" 2>&1 | head -4000
+                done
+                echo "::endgroup::"
+                echo "::error::a test process printed nothing for 6 minutes; backtraces above"
+                pkill -f -- '-test-runner|PackageTests.xctest'
+                exit 0
+              fi
+            done
+          ) &
+          watchdog=$!
+          # -e: the step fails with linux.sh's own exit status.
+          status=0
+          script -qefc ./scripts/linux.sh "$log" || status=$?
+          kill "$watchdog" 2> /dev/null || true
+          exit "$status"
