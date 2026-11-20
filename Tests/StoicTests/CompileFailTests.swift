@@ -31,32 +31,31 @@ struct CompileFailTests {
         let errors: String
     }
 
-    static func compile(_ name: String) throws -> Outcome {
+    static func compile(_ name: String) async throws -> Outcome {
         guard let products else {
             Issue.record("no built Stoic module under \(root.path())/.build")
             return Outcome(compiled: false, errors: "")
         }
-        let process = Process()
         #if canImport(Darwin)
-        process.executableURL = URL(filePath: "/usr/bin/xcrun")
+        let driver = URL(filePath: "/usr/bin/xcrun")
         #else
-        process.executableURL = URL(filePath: "/usr/bin/env")
+        let driver = URL(filePath: "/usr/bin/env")
         #endif
-        process.arguments = [
+        let arguments = [
             "swiftc", "-emit-sil", "-o", "/dev/null",
             "-I", products.path(), "-I", products.appending(path: "Modules").path(),
             "-swift-version", "6",
             "-enable-upcoming-feature", "ExistentialAny", "-enable-upcoming-feature", "NonisolatedNonsendingByDefault",
             root.appending(path: "scripts/compile-fail/\(name).swift").path(),
         ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        process.waitUntilExit()
-        let errors = output.split(separator: "\n").filter { $0.contains("error:") }.joined(separator: "\n")
-        return Outcome(compiled: process.terminationStatus == 0, errors: errors)
+        // Off the cooperative pool: a compiler waited for on it holds one of
+        // the pool's few threads for the whole compile.
+        guard let run = try await runOffThePool(driver, arguments) else {
+            Issue.record("swiftc did not finish \(name) in time, or the test was cancelled; it was terminated")
+            return Outcome(compiled: false, errors: "")
+        }
+        let errors = run.output.split(separator: "\n").filter { $0.contains("error:") }.joined(separator: "\n")
+        return Outcome(compiled: run.status == 0, errors: errors)
     }
 
     static func expectedError(in name: String) throws -> String? {
@@ -65,27 +64,27 @@ struct CompileFailTests {
             .map { String($0.dropFirst("// expect-error: ".count)) }
     }
 
-    @Test func theControlCompiles() throws {
-        let outcome = try Self.compile("control")
+    @Test func theControlCompiles() async throws {
+        let outcome = try await Self.compile("control")
         #expect(outcome.compiled, "the harness is broken: \(outcome.errors)")
     }
 
     @Test(.failureMode("design/04", "someone tries to keep the Scope"),
           arguments: ["keep-scope-in-a-variable", "return-scope-from-body", "escape-scope-into-task",
                       "escape-task-scope-into-task", "escape-saga-into-task"])
-    func aScopeHandleCannotEscapeItsBody(_ name: String) throws {
+    func aScopeHandleCannotEscapeItsBody(_ name: String) async throws {
         let found = try Self.expectedError(in: name)
         let expected = try #require(found)
-        let outcome = try Self.compile(name)
+        let outcome = try await Self.compile(name)
         #expect(!outcome.compiled, "\(name) compiled, but must not")
         #expect(outcome.errors.contains(expected), "\(name) failed, but not with \"\(expected)\":\n\(outcome.errors)")
     }
 
     @Test(.failureMode("design/03", "a TaskSlot is called off an actor"))
-    func aTaskSlotRefusesACallOffAnActor() throws {
+    func aTaskSlotRefusesACallOffAnActor() async throws {
         let found = try Self.expectedError(in: "task-slot-off-an-actor")
         let expected = try #require(found)
-        let outcome = try Self.compile("task-slot-off-an-actor")
+        let outcome = try await Self.compile("task-slot-off-an-actor")
         #expect(!outcome.compiled, "a slot accepted a call from nonisolated code")
         #expect(outcome.errors.contains(expected), "failed, but not with \"\(expected)\":\n\(outcome.errors)")
     }
@@ -93,84 +92,84 @@ struct CompileFailTests {
     // MARK: Provenance (design/28)
 
     /// Compiles `name`, which must fail with its `expect-error` line.
-    static func expectRefusal(_ name: String, sourceLocation: SourceLocation = #_sourceLocation) throws {
+    static func expectRefusal(_ name: String, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let found = try expectedError(in: name)
         let expected = try #require(found, sourceLocation: sourceLocation)
-        let outcome = try compile(name)
+        let outcome = try await compile(name)
         #expect(!outcome.compiled, "\(name) compiled, but must not", sourceLocation: sourceLocation)
         #expect(outcome.errors.contains(expected), "\(name) failed, but not with \"\(expected)\":\n\(outcome.errors)",
                 sourceLocation: sourceLocation)
     }
 
-    @Test func theProvenanceControlCompiles() throws {
-        let outcome = try Self.compile("provenance-control")
+    @Test func theProvenanceControlCompiles() async throws {
+        let outcome = try await Self.compile("provenance-control")
         #expect(outcome.compiled, "every public API of design/28, used as intended, must compile: \(outcome.errors)")
     }
 
     @Test(.failureMode("design/28", "a claim is passed where a function needs a verified value"))
-    func aClaimIsNotAVerifiedValue() throws {
-        try Self.expectRefusal("provenance-claim-for-verified")
+    func aClaimIsNotAVerifiedValue() async throws {
+        try await Self.expectRefusal("provenance-claim-for-verified")
     }
 
     @Test(.failureMode("design/28", "code outside a verifier constructs a Verified"),
           arguments: ["provenance-construct-verified", "provenance-extension-init", "provenance-mint-grant"])
-    func onlyAVerifierMints(_ name: String) throws {
-        try Self.expectRefusal(name)
+    func onlyAVerifierMints(_ name: String) async throws {
+        try await Self.expectRefusal(name)
     }
 
     @Test(.failureMode("design/28", "a real proof's evidence is put on another value"))
-    func evidenceCannotBeCopiedOntoAnotherValue() throws {
-        try Self.expectRefusal("provenance-mint-own-clock")
+    func evidenceCannotBeCopiedOntoAnotherValue() async throws {
+        try await Self.expectRefusal("provenance-mint-own-clock")
     }
 
     @Test(.failureMode("design/28", "one evidence kind is passed where another is required"))
-    func oneEvidenceKindIsNotAnother() throws {
-        try Self.expectRefusal("provenance-other-evidence")
+    func oneEvidenceKindIsNotAnother() async throws {
+        try await Self.expectRefusal("provenance-other-evidence")
     }
 
     @Test(.failureMode("design/28", "content evidence (an attested request) is passed where a principal must be authenticated"),
           arguments: ["provenance-content-as-principal", "provenance-content-policy"])
-    func contentEvidenceIsNotAPrincipal(_ name: String) throws {
-        try Self.expectRefusal(name)
+    func contentEvidenceIsNotAPrincipal(_ name: String) async throws {
+        try await Self.expectRefusal(name)
     }
 
     @Test(.failureMode("design/28", "a verified value is decoded"))
-    func aProofIsNeverDecoded() throws {
-        try Self.expectRefusal("provenance-decode-verified")
+    func aProofIsNeverDecoded() async throws {
+        try await Self.expectRefusal("provenance-decode-verified")
     }
 
     @Test(.failureMode("design/28", "a Decodable record declares a Verified property"))
-    func aDecodableRecordCannotHoldAProof() throws {
-        try Self.expectRefusal("provenance-decodable-record")
+    func aDecodableRecordCannotHoldAProof() async throws {
+        try await Self.expectRefusal("provenance-decodable-record")
     }
 
     @Test(.failureMode("design/28", "a test imports a Stoic module with @testable"))
-    func testableImportCannotMint() throws {
-        try Self.expectRefusal("provenance-testable-mint")
+    func testableImportCannotMint() async throws {
+        try await Self.expectRefusal("provenance-testable-mint")
     }
 
     @Test(.failureMode("design/28", "a stamped moment, a grant or a principal is derived into another value"),
           arguments: ["provenance-derive-own-clock", "provenance-derive-grant", "provenance-derive-principal"])
-    func onlyContentEvidenceDerives(_ name: String) throws {
-        try Self.expectRefusal(name)
+    func onlyContentEvidenceDerives(_ name: String) async throws {
+        try await Self.expectRefusal(name)
     }
 
     @Test(.failureMode("design/28", "an unauthenticated principal is offered to a check"))
-    func aCheckTakesAVerifiedPrincipal() throws {
-        try Self.expectRefusal("provenance-unauthenticated-check")
+    func aCheckTakesAVerifiedPrincipal() async throws {
+        try await Self.expectRefusal("provenance-unauthenticated-check")
     }
 
     @Test(.failureMode("design/28", "a check's policy has not loaded"),
           arguments: ["provenance-check-as-bool", "provenance-check-equals-granted"])
-    func aCheckHasNoBool(_ name: String) throws {
-        try Self.expectRefusal(name)
+    func aCheckHasNoBool(_ name: String) async throws {
+        try await Self.expectRefusal(name)
     }
 
     @Test(.failureMode("design/02", "the schedule is unbounded"))
-    func retryRefusesAnUnboundedSchedule() throws {
+    func retryRefusesAnUnboundedSchedule() async throws {
         let found = try Self.expectedError(in: "retry-unbounded-schedule")
         let expected = try #require(found)
-        let outcome = try Self.compile("retry-unbounded-schedule")
+        let outcome = try await Self.compile("retry-unbounded-schedule")
         #expect(!outcome.compiled, "retry accepted an unbounded schedule")
         #expect(outcome.errors.contains(expected), "failed, but not with \"\(expected)\":\n\(outcome.errors)")
     }

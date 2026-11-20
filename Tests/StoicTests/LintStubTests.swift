@@ -23,23 +23,18 @@ struct LintStubTests {
     }
 
     @Test(.failureMode("design/13", "the plugin is attached but the Lint trait is off"))
-    func theStubFailsTheBuildAndSaysHowToGetTheTool() throws {
+    func theStubFailsTheBuildAndSaysHowToGetTheTool() async throws {
         let tool = try #require(Self.tool, "stoic-lint is not built")
-        let process = Process()
-        process.executableURL = tool
-        process.arguments = ["--output", "/dev/null", "Sources"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        process.waitUntilExit()
+        // Off the cooperative pool, as the compile-fail tests run swiftc.
+        let finished = try await runOffThePool(tool, ["--output", "/dev/null", "Sources"], timeout: .seconds(60))
+        let run = try #require(finished, "stoic-lint did not finish in time, or the test was cancelled")
+        let output = run.output
         // Under `swift test --traits Lint` this is the real tool, whose
         // behaviour StoicLintCoreTests covers; the stub exists only without it.
         let isStub = output.contains("built without the Lint trait")
         if !isStub, output.contains("no such file or directory") { return }   // the real tool
         #expect(isStub, "expected the stub, got: \(output)")
-        #expect(process.terminationStatus == 2)
+        #expect(run.status == 2)
         #expect(output.contains("traits: [\"Lint\"]"))
     }
 }

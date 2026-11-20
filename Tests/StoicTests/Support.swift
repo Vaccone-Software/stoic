@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Synchronization
 
@@ -24,6 +25,69 @@ let underSanitizer: Bool = {
     #endif
     return unsafe dlsym(everywhere, "__tsan_init") != nil || dlsym(everywhere, "__asan_init") != nil
 }()
+
+/// What a program run to its end printed, and how it ended.
+struct ProgramRun: Sendable {
+    let status: Int32
+    let output: String
+}
+
+/// Runs a program to its end without blocking the cooperative pool.
+///
+/// Foundation's `Process` is waited for with blocking calls
+/// (`readDataToEndOfFile`, `waitUntilExit`). Made from a test, they hold one of
+/// the pool's threads, which are as many as the machine has cores (three or
+/// four on a CI runner), for as long as the program runs, and every other test
+/// in the bundle waits for those threads. A dedicated thread waits instead.
+/// At `timeout`, or when the test is cancelled, the program is terminated and
+/// the result is nil at once, whether or not its output has ended (a compiler
+/// it started may still hold the pipe), so a program that does not finish
+/// fails its test rather than hanging the bundle.
+func runOffThePool(_ executable: URL, _ arguments: [String], timeout: Duration = .seconds(180)) async throws -> ProgramRun? {
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = arguments
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    let program = RunningProgram(process)
+    let pending = SendableBox<CheckedContinuation<ProgramRun?, Never>?>(nil)
+    @Sendable func settle(_ run: ProgramRun?) -> Bool {
+        guard let continuation = pending.mutate({ waiting -> CheckedContinuation<ProgramRun?, Never>? in
+            defer { waiting = nil }
+            return waiting
+        }) else { return false }
+        continuation.resume(returning: run)
+        return true
+    }
+    return await withTaskCancellationHandler {
+        await withCheckedContinuation { (continuation: CheckedContinuation<ProgramRun?, Never>) in
+            pending.mutate { $0 = continuation }
+            Thread {
+                let output = pipe.fileHandleForReading.readDataToEndOfFile()
+                program.process.waitUntilExit()
+                _ = settle(ProgramRun(status: program.process.terminationStatus,
+                                      output: String(decoding: output, as: UTF8.self)))
+            }.start()
+            let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
+                if settle(nil) { program.process.terminate() }
+            }
+        }
+    } onCancel: {
+        if settle(nil) { program.process.terminate() }
+    }
+}
+
+/// A started `Process`, handed to the thread that waits for it and to the
+/// timer that may end it. `Process` is not `Sendable`; it is safe here
+/// because after `run()` it is only waited for, read and terminated, which
+/// Foundation allows from any thread.
+private final class RunningProgram: @unchecked Sendable {
+    let process: Process
+    init(_ process: Process) { self.process = process }
+}
 
 /// A value shared between test tasks behind a lock.
 final class SendableBox<Value: Sendable>: Sendable {
