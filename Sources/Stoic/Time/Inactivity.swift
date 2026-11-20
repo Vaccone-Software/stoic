@@ -87,10 +87,18 @@ public final class Inactivity: Sendable, CustomStringConvertible {
         }
     }
 
-    /// Returns at the next poke.
+    /// Returns at the first poke made after it was called.
     ///
     /// - Throws: `CancellationError` when the task is cancelled.
     public func nextPoke() async throws(CancellationError) {
+        try await poke(after: state.withLock { $0.pokes })
+    }
+
+    /// Returns once a poke after the `seen`-th has been made: at once if one
+    /// already has. The count is compared and the waiter registered under one
+    /// lock, so a poke between a caller's reading of the count and its wait
+    /// is never lost.
+    private func poke(after seen: UInt64) async throws(CancellationError) {
         let id = state.withLock { state -> UInt64 in
             defer { state.nextWaiter &+= 1 }
             return state.nextWaiter
@@ -98,7 +106,7 @@ public final class Inactivity: Sendable, CustomStringConvertible {
         await withTaskCancellationHandler {
             await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
                 let now = state.withLock { state -> Bool in
-                    if Task.isCancelled { return true }
+                    if Task.isCancelled || state.pokes != seen { return true }
                     state.waiters.append((id, waiter))
                     return false
                 }
@@ -146,8 +154,8 @@ public final class Inactivity: Sendable, CustomStringConvertible {
         do {
             while true {
                 // A spell already reported lasts until the next poke.
-                let reportedThisSpell = state.withLock { $0.reported == $0.pokes }
-                if reportedThisSpell { try await nextPoke() }
+                let (reportedThisSpell, pokes) = state.withLock { ($0.reported == $0.pokes, $0.pokes) }
+                if reportedThisSpell { try await poke(after: pokes) }
                 try await untilQuiet()
                 let (fresh, quiet) = state.withLock { state -> (Bool, Duration) in
                     let quiet = state.lastPoke.duration(to: clock.now)

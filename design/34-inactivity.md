@@ -52,16 +52,22 @@ A poke records the clock's now under a lock and wakes anyone waiting in
 the latest poke and sleeps again for what is left. So a poke per line of
 output costs a lock, not a wake-up. `quietSpells` yields when the work has
 been quiet for `after`, then nothing until a poke and another quiet stretch.
+`nextPoke` returns at the first poke made after it was called; a waiter
+reads the count of pokes and registers in one step, so a poke between a
+caller's check and its wait is never lost. (0.9.0 checked and registered in
+two steps: `quietSpells` could miss the poke that came as it turned from one
+spell to wait for the next, and report nothing more until another poke.)
 
 ## Failure modes
 
-| What happens if…                  | Behaviour                                                                 |
-| --------------------------------- | ------------------------------------------------------------------------- |
-| nothing pokes it for the stretch  | `untilQuiet` returns once `after` has passed since the last poke          |
-| it is poked while a watcher waits | The wait ends `after` from the latest poke                                |
-| the machine sleeps                | The liveness clock does not advance: no quiet time accrues                |
-| a quiet spell goes on             | `quietSpells` reports it once; the next comes only after a poke           |
-| the watcher is cancelled          | `untilQuiet` and `nextPoke` throw `CancellationError`; `quietSpells` ends |
+| What happens if…                                | Behaviour                                                                                                                              |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| nothing pokes it for the stretch                | `untilQuiet` returns once `after` has passed since the last poke                                                                       |
+| it is poked while a watcher waits               | The wait ends `after` from the latest poke                                                                                             |
+| the machine sleeps                              | The liveness clock does not advance: no quiet time accrues                                                                             |
+| a quiet spell goes on                           | `quietSpells` reports it once; the next comes only after a poke                                                                        |
+| a poke lands as a watcher turns to wait for one | Heard: the count of pokes is read and the waiter registered under one lock, so the next spell still comes after the quiet that follows |
+| the watcher is cancelled                        | `untilQuiet` and `nextPoke` throw `CancellationError`; `quietSpells` ends                                                              |
 
 ## Events
 

@@ -90,6 +90,38 @@ struct InactivityTests {
         #expect(StoicTest.events.events(named: "inactivity.quiet").count == 2)
     }
 
+    /// A poke that lands as the watcher turns from one spell to wait for
+    /// the next is heard. 0.9.0 read whether the spell had been reported and
+    /// registered for the next poke in two steps, and a poke between them was
+    /// lost: the watcher waited for another poke, and the quiet that followed
+    /// was never reported (75 of 2,000 rounds on an M-series Mac). Raced on
+    /// real threads; a correct round always reaches the clock, a lost one
+    /// never does, so the first lost round ends the test.
+    @Test(.stoic(seed: 7), .failureMode("design/34", "a poke lands as a watcher turns to wait for one"))
+    func aPokeAsTheWatcherTurnsToTheNextSpellIsHeard() async throws {
+        for round in 0..<500 {
+            let clock = TestClock()
+            let inactivity = Inactivity(after: .seconds(10), label: "session", clock: clock.erased)
+            let spells = inactivity.quietSpells()
+            let first = Task { var spell = spells.makeAsyncIterator(); return await spell.next() }
+            await clock.waitForSleepers(count: 1)
+            await clock.advance(by: .seconds(10))
+            #expect(await first.value == .seconds(10))
+            // The watcher turns to the next spell as the work pokes, on two threads.
+            let second = Task.detached { var spell = spells.makeAsyncIterator(); return await spell.next() }
+            await Task.detached { inactivity.poke() }.value
+            let heard = await eventually { clock.sleeperCount == 1 }
+            #expect(heard, "round \(round): the poke was lost, and the watcher waits for another")
+            guard heard else {
+                second.cancel()
+                _ = await second.value
+                return
+            }
+            await clock.advance(by: .seconds(10))
+            #expect(await second.value == .seconds(10))
+        }
+    }
+
     @Test(.stoic(seed: 5), .failureMode("design/34", "the watcher is cancelled"))
     func aCancelledWatcherEnds() async {
         let clock = TestClock()
