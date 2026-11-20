@@ -142,13 +142,26 @@ struct InactivityTests {
         #expect(await spells.value == 0)
     }
 
+    /// A poke made before the waiter has registered is not its next poke,
+    /// so the test pokes until the waiter hears one: a fixed number of
+    /// yields was not enough on a three-core CI runner, the one poke came
+    /// first, and the test waited for another forever (0.9.0's release run
+    /// hung on it). Bounded, and a waiter that hears nothing is not awaited,
+    /// so it can fail but never hang.
     @Test(.stoic(seed: 6))
     func aPokeWakesThoseWaitingForOne() async throws {
         let clock = TestClock()
         let inactivity = Inactivity(after: .seconds(10), label: "session", clock: clock.erased)
-        let waiting = Task { try await inactivity.nextPoke() }
-        await settle()
-        inactivity.poke()
-        try await waiting.value
+        let heard = SendableBox(false)
+        let waiting = Task {
+            try await inactivity.nextPoke()
+            heard.mutate { $0 = true }
+        }
+        let wasHeard = await eventually { inactivity.poke(); return heard.value }
+        #expect(wasHeard, "no poke reached the waiter")
+        // Awaited only once it has heard: a waiter that never does is left
+        // cancelled, so a lost wake-up fails the test instead of hanging it.
+        waiting.cancel()
+        if wasHeard { try await waiting.value }
     }
 }
